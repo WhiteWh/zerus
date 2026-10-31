@@ -404,6 +404,73 @@ fn kimi_environment(home: &Path) -> KimiEnvironment {
     }
     environment
 }
+// A successful authenticated identity answer is the only proof of sign-in: a
+// plan may report no quota at all, so a quota answer only ever decides the quota
+// status. Returns the allowlisted identity and whether the service named a user.
+fn kimi_identity(value: &Value) -> (Value, bool) {
+    let user = value
+        .get("user")
+        .or_else(|| value.get("data"))
+        .unwrap_or(value);
+    let identity = json!({
+        "name": text(user, "nickname"),
+        "email": text(user, "email"),
+        "plan": text(user, "user_level_name"),
+        "auth_method": "Kimi Code",
+    });
+    // Only a stable account field proves the token belongs to a user; a plan or
+    // a nickname alone also appears in anonymous and half-filled answers.
+    let known = ["email", "user_id", "global_id"]
+        .into_iter()
+        .any(|key| !text(user, key).is_empty());
+    (identity, known)
+}
+
+// Only the windows the service reports; a plan without quota answers `{}`, or
+// leaves `usages` out, which is not an error.
+fn kimi_windows(usage: &Value) -> Vec<Value> {
+    let usages = &usage["usages"];
+    let mut windows = Vec::new();
+    for (key, label, minutes) in [
+        ("limit_5h", "", Some(300)),
+        ("limit_7d", "", Some(10080)),
+        ("limit_month_total", "Monthly", None),
+        ("limit_month_code", "Monthly code", None),
+    ] {
+        let w = &usages[key];
+        if let Some(w) = window(
+            key,
+            label,
+            w["used_ratio"].as_f64().map(|x| x * 100.),
+            minutes,
+            w["reset_time"].clone(),
+        ) {
+            windows.push(w);
+        }
+    }
+    windows
+}
+
+fn kimi_report(me: Option<&Value>, usage: Option<&Value>) -> Value {
+    let mut result =
+        json!({"identity":{},"windows":[],"source":"Kimi Code","status":"unavailable"});
+    if let Some(me) = me {
+        let (identity, verified) = kimi_identity(me);
+        if verified {
+            result["auth_status"] = json!("signed_in");
+        }
+        result["identity"] = identity;
+    }
+    if let Some(usage) = usage {
+        let windows = kimi_windows(usage);
+        if !windows.is_empty() {
+            result["windows"] = json!(windows);
+            result["status"] = json!("ok");
+        }
+    }
+    result
+}
+
 fn kimi(home: &Path) -> Value {
     let mut result =
         json!({"identity":{},"windows":[],"source":"Kimi Code","status":"unavailable"});
@@ -435,10 +502,14 @@ fn kimi(home: &Path) -> Value {
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or(result);
         // Without renewal the grant stays expired: opening Kimi or signing in again
-        // renews it, which "unavailable" would not say.
+        // renews it, which "unavailable" would not say. A sign-in the native server
+        // just verified outranks that stale on-disk expiry, though.
         let renewed = read_json(&credentials);
-        if output["status"] != "ok"
-            && renewed["expires_at"].as_u64().is_some_and(|expiry| expiry <= now() + 60)
+        if output["auth_status"] != "signed_in"
+            && output["status"] != "ok"
+            && renewed["expires_at"]
+                .as_u64()
+                .is_some_and(|expiry| expiry <= now() + 60)
         {
             output["status"] = json!("expired");
         }
@@ -453,35 +524,9 @@ fn kimi(home: &Path) -> Value {
     {
         return result;
     }
-    if let Ok(a) = http_json(&format!("{}/me", environment.base_url), token, &[]) {
-        let a = a.get("user").or_else(|| a.get("data")).unwrap_or(&a);
-        result["identity"] = json!({"name":text(a,"nickname"),"email":text(a,"email"),"plan":text(a,"user_level_name"),"auth_method":"Kimi Code"});
-    }
-    if let Ok(usage) = http_json(&format!("{}/usages", environment.base_url), token, &[]) {
-        let mut windows = Vec::new();
-        for (key, label, minutes) in [
-            ("limit_5h", "", Some(300)),
-            ("limit_7d", "", Some(10080)),
-            ("limit_month_total", "Monthly", None),
-            ("limit_month_code", "Monthly code", None),
-        ] {
-            let w = &usage["usages"][key];
-            if let Some(w) = window(
-                key,
-                label,
-                w["used_ratio"].as_f64().map(|x| x * 100.),
-                minutes,
-                w["reset_time"].clone(),
-            ) {
-                windows.push(w);
-            }
-        }
-        if !windows.is_empty() {
-            result["windows"] = json!(windows);
-            result["status"] = json!("ok");
-        }
-    }
-    result
+    let me = http_json(&format!("{}/me", environment.base_url), token, &[]).ok();
+    let usage = http_json(&format!("{}/usages", environment.base_url), token, &[]).ok();
+    kimi_report(me.as_ref(), usage.as_ref())
 }
 pub(super) fn dsh(home: &Path) -> Value {
     let fallback =
@@ -838,6 +883,65 @@ oauth_host = "https://auth.kimi.ai"
         let opaque = signature(home, "kimi");
         fs::write(home.join("credentials/kimi-code.json"), r#"{"access_token":"opaque-2"}"#).unwrap();
         assert_ne!(signature(home, "kimi"), opaque);
+    }
+
+    #[test]
+    fn kimi_verified_identity_stands_without_any_quota() {
+        let me = json!({"user":{"user_id":"u-1","nickname":"Fixture","email":"kimi@example.invalid","user_level_name":"Free"}});
+        // An empty quota answer is a plan without limits to report, not a sign-out.
+        let signed_in = kimi_report(Some(&me), Some(&json!({})));
+        assert_eq!(signed_in["auth_status"], "signed_in");
+        assert_eq!(signed_in["status"], "unavailable");
+        assert_eq!(signed_in["windows"], json!([]));
+        assert_eq!(signed_in["identity"]["plan"], "Free");
+        // A quota read that fails entirely changes nothing about the sign-in.
+        let no_usage = kimi_report(Some(&me), None);
+        assert_eq!(no_usage["auth_status"], "signed_in");
+        assert_eq!(no_usage["status"], "unavailable");
+        // The identity rides in data too, and quotas keep their own status.
+        let wrapped = json!({"data":{"email":"other@example.invalid"}});
+        assert_eq!(kimi_report(Some(&wrapped), None)["identity"]["email"], "other@example.invalid");
+        // A stable id verifies even when the display identity carries no email.
+        let id_only = json!({"data":{"global_id":"g-1","user_level_name":"Free"}});
+        let id_report = kimi_report(Some(&id_only), None);
+        assert_eq!(id_report["auth_status"], "signed_in");
+        assert_eq!(id_report["identity"]["email"], "");
+        let quota = json!({"usages":{"limit_5h":{"used_ratio":0.25,"reset_time":null}}});
+        let both = kimi_report(Some(&me), Some(&quota));
+        assert_eq!((both["auth_status"].as_str(),both["status"].as_str()), (Some("signed_in"),Some("ok")));
+    }
+
+    #[test]
+    fn kimi_identity_report_never_invents_a_sign_in() {
+        // A plan, a nickname or an empty answer proves nothing on its own.
+        for empty in [
+            json!({"user":{}}),
+            json!({}),
+            json!({"message":"ok"}),
+            json!({"user":{"nickname":"Fixture","user_level_name":"Free"}}),
+        ] {
+            let report = kimi_report(Some(&empty), None);
+            assert_eq!(report["auth_status"], Value::Null, "{empty}");
+            assert_eq!(report["status"], "unavailable");
+        }
+        // Without a verified profile a quota answer adds no explicit auth_status;
+        // its "ok" status keeps the meaning it already had.
+        let usage = json!({"usages":{"limit_7d":{"used_ratio":1.5}}});
+        let quota_only = kimi_report(None, Some(&usage));
+        assert_eq!(quota_only["auth_status"], Value::Null);
+        assert_eq!(quota_only["status"], "ok");
+    }
+
+    #[test]
+    fn kimi_missing_quota_sections_are_not_windows() {
+        for usage in [json!({}),json!({"usages":null}),json!({"usages":[]}),json!({"usages":{}})] {
+            assert!(kimi_windows(&usage).is_empty(), "{usage}");
+        }
+        let usage = json!({"usages":{"limit_7d":{"used_ratio":1.5,"reset_time":1793000000}}});
+        let windows = kimi_windows(&usage);
+        assert_eq!(windows.len(), 1);
+        assert_eq!((windows[0]["id"].as_str(),windows[0]["window_minutes"].as_u64()), (Some("limit_7d"),Some(10080)));
+        assert_eq!(windows[0]["used_percent"], 150.0);
     }
 
     #[test]

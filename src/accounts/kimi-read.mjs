@@ -26,13 +26,21 @@ try {
     const r=await fetch(`${base}/api/v1/oauth/${path}`,{headers:{Authorization:`Bearer ${token}`},redirect:'error',signal:AbortSignal.timeout(9000)});
     if(!r.ok)throw new Error('request');return (await r.json()).data;
   };
+  // One failed read must not hide the other: a plan without quota still has a verified sign-in.
+  const read=async path=>{try{return await get(path);}catch{return null;}};
   // Sequence these so the first native call finishes token renewal before the second.
-  const usage=await get('usage');const profile=await get('userinfo');
+  const usage=await read('usage');const profile=await read('userinfo');
   const clean=v=>typeof v==='string'?v.replace(/[\x00-\x1f\x7f]/g,'').slice(0,256):'';
-  if(profile?.kind==='ok'){const p=profile.userInfo;output.identity={name:clean(p.nickname),email:clean(p.email),plan:clean(p.userLevelName),auth_method:'Kimi Code'};}
+  if(profile?.kind==='ok'){
+    const p=profile.userInfo??{};
+    output.identity={name:clean(p.nickname),email:clean(p.email),plan:clean(p.userLevelName),auth_method:'Kimi Code'};
+    // A stable account field verifies this token; the quota answer only decides the quota status.
+    if([p.email,p.userId,p.globalId].some(v=>typeof v==='string'&&v.length>0))output.auth_status='signed_in';
+  }
   if(usage?.kind==='ok') {
+    const usages=usage.quota?.usages??{};
     for(const [key,label,minutes] of [['limit5h','',300],['limit7d','',10080],['monthTotal','Monthly',null],['monthCode','Monthly code',null]]) {
-      const w=usage.quota.usages[key];if(w && typeof w.usedRatio==='number' && Number.isFinite(w.usedRatio) && w.usedRatio>=0)
+      const w=usages[key];if(w && typeof w.usedRatio==='number' && Number.isFinite(w.usedRatio) && w.usedRatio>=0)
         output.windows.push({id:key,label,used_percent:w.usedRatio*100,window_minutes:minutes,resets_at:w.resetAt??null});
     }
     if(output.windows.length)output.status='ok';

@@ -301,6 +301,19 @@ class Accounts(unittest.TestCase):
         data = inspect()
         self.assertEqual((data['status'], data['identity']['email']), ('ok', 'kimi@example.invalid'))
         self.assertEqual(data['windows'][0]['used_percent'], 25.0)
+        self.assertEqual(data['auth_status'], 'signed_in')
+        # A plan without a quota report still proves the sign-in, and the grant stays
+        # unavailable rather than expired: the native server answered with a live token.
+        routes.pop('/api/v1/oauth/usage')
+        data = inspect()
+        self.assertEqual((data['status'], data['auth_status']), ('unavailable', 'signed_in'))
+        self.assertEqual((data['identity']['email'], data['windows']), ('kimi@example.invalid', []))
+        # A failed identity read is never reported as a sign-in, even with a quota.
+        routes['/api/v1/oauth/usage'] = {'data': {'kind': 'ok', 'quota': {'usages': {'limit5h': {'usedRatio': 0.25, 'resetAt': None}}}}}
+        routes.pop('/api/v1/oauth/userinfo')
+        data = inspect()
+        self.assertNotIn('auth_status', data)
+        self.assertEqual(data['status'], 'ok')
 
     def test_ollama_account_runs_claude_code_on_a_local_model(self):
         import http.server, threading
