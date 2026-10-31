@@ -824,7 +824,8 @@ elif a[:2]==['team','waiting']:
 elif a[:3]==['team','catalog','get']:sys.stdout.write(open(__file__+'.catalog').read())
 elif a[:2]==['team','add-to-phase']:
  # U29: the first call warns and keeps the addition pending; the second adds it.
- if body.get('confirm'):print(json.dumps({'status':'added','phase':body.get('phase'),'tasks':[7]}))
+ if body.get('decline'):print(json.dumps({'status':'declined','pending':body.get('confirm'),'found':True,'phase':body.get('phase'),'tasks':[7]}))
+ elif body.get('confirm'):print(json.dumps({'status':'added','phase':body.get('phase'),'tasks':[7]}))
  else:print(json.dumps({'status':'warning','phase':body.get('phase'),'pending':'pending-1','tasks':[7],
   'warning':'Adding tasks to running phase %d changes its scope after you approved it. The load balance of the lanes shifts and members may sit idle: members do not work ahead and later phases are not approved.'%body.get('phase')}))
 elif a[:3]==['team','catalog','decide'] or a[:3]==['team','catalog','apply']:

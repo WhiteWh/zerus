@@ -1387,6 +1387,26 @@ A refusal is never the owner's word: a sentence carrying a negation ("Don't
 remove backend2", "не надо добавлять второго тестера") authorizes no roster,
 scale, drain or phase change in either language.
 
+### Tasks added to a running phase
+
+A task joins a running phase only on the owner's word twice. The first
+`hgs team add-to-phase` call (`{"team","phase","tasks"}`, the lead's with
+`owner_word`) changes nothing: it keeps the addition pending and answers with a
+warning and its `pending` id. The confirmation names that id in `confirm`, with
+the owner's newer word (the lead) or the typed `"confirmation":"add"` or the
+phase number (the owner on the desktop); only then the tasks join as Pending.
+An addition waits 30 minutes. An expired one is no longer listed in Waiting for
+you, cannot be confirmed and leaves the team on its next change.
+
+The owner declines a pending addition with `{"team":"<id>","phase":N,
+"confirm":"<pending id>","decline":true} | hgs team add-to-phase --json`; Cancel
+in Waiting for you sends it. The addition leaves, nothing joins and the feed
+records `phase_addition_declined`. Only the owner declines. A decline of an
+addition that is already gone (confirmed, replaced, expired or declined)
+changes nothing and succeeds, also when the phase no longer runs. An Allow on
+the lead's add-to-phase proposal warns and confirms at once; when its
+confirmation fails, its warning is declined, so no addition is left waiting.
+
 ### Task pipelines and stage verdicts
 
 A task may pass its team's pipeline before it reaches the lead: an ordered list

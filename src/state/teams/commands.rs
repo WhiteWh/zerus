@@ -1464,6 +1464,25 @@ fn owner_change(store: &mut Store, op: &str, value: &Value) -> anyhow::Result<Va
     })
 }
 
+/// U29: the second write of an Allowed add-to-phase confirms the addition its
+/// warning stored. When the confirmation fails, that warning is declined (best
+/// effort), so no addition is left waiting that the Allow meant to settle; a
+/// retried Allow asks for a new warning anyway. The confirmation's error is
+/// what the owner sees.
+fn confirm_allowed_addition(store: &mut Store, team_id: &str, value: &Value) -> anyhow::Result<Value> {
+    let request = text(value, "request_id").to_owned();
+    let confirmed = store.mutate(Some((&request, value)), team_id, None, |team, events| {
+        ops::apply(team, "add-to-phase", value, &Actor::Human, &BTreeSet::new(), events)
+    });
+    if confirmed.is_err() {
+        let decline = json!({"team":team_id,"by":"human","phase":value["phase"],"confirm":value["confirm"],"decline":true});
+        let _ = store.mutate(None, team_id, None, |team, events| {
+            ops::apply(team, "add-to-phase", &decline, &Actor::Human, &BTreeSet::new(), events)
+        });
+    }
+    confirmed
+}
+
 /// N3: the request id an accepted proposal's change runs under. It is stored
 /// with the proposal the first time it is needed (proposals made before this
 /// field get one then), so a decision retried or interrupted between its writes
@@ -1611,9 +1630,7 @@ fn decide_proposal_in(store: &mut Store, input: &Value, caller: &Actor) -> anyho
                         Some(confirm) => {
                             let value = json!({"team":team_id,"request_id":confirm_request,"by":"human","phase":phase,
                                 "tasks":change["tasks"],"confirm":confirm,"confirmation":"add"});
-                            store.mutate(Some((&confirm_request, &value)), &team_id, None, |team, events| {
-                                super::ops::apply(team, "add-to-phase", &value, &Actor::Human, &BTreeSet::new(), events)
-                            })?
+                            confirm_allowed_addition(store, &team_id, &value)?
                         }
                         None => first,
                     }
@@ -3262,7 +3279,9 @@ fn check_phase_word(
     caller: &Actor,
     verify: impl Fn(&Team, &Value, u32, super::owner_word::PhaseWord, f64, f64) -> anyhow::Result<super::model::OwnerWord>,
 ) -> anyhow::Result<()> {
-    if !matches!(caller, Actor::Member(id) if *id == team.lead) {
+    // A decline is the owner's alone and needs no word; the change refuses
+    // anyone else.
+    if !matches!(caller, Actor::Member(id) if *id == team.lead) || input["decline"].as_bool() == Some(true) {
         return Ok(());
     }
     let phase = input["phase"].as_u64().and_then(|n| u32::try_from(n).ok()).filter(|n| *n > 0).context("A phase number is required")?;

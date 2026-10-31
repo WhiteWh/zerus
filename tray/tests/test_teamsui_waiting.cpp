@@ -177,6 +177,7 @@ private slots:
     void waitingPagePagesStayStableWhileItemsArrive();
     void waitingPageEmptyAndRefused();
     void waitingItemsAreAnsweredInPlace();
+    void waitingAdditionCancelDeclinesIt();
     void waitingBannerAnswersInPlaceAndWithdrawsTheNotice();
     void aWaitingReadThatChangesNothingRedrawsNothing();
 };
@@ -1805,7 +1806,7 @@ void TestTeamsUiWaiting::waitingPageEmptyAndRefused()
 // #724 (owner, 2026-10-30): Waiting for you answers a one-click decision in
 // its row, with the team view's command and confirmation, bound to the item:
 // the lead's proposal (Deny with a reason, Allow), an addition (the typed
-// "add", Add or Cancel), an escalated permission (Allow, Deny) and a phase
+// "add" and Add), an escalated permission (Allow, Deny) and a phase
 // draft (Approve… with the team's question). A report and a held task keep
 // Open team only. A stale item says so and sends nothing; an answered one
 // leaves at once.
@@ -1895,12 +1896,7 @@ void TestTeamsUiWaiting::waitingItemsAreAnsweredInPlace()
     QCOMPARE(native["selected_option_ids"].toArray(), QJsonArray{question.native.allow});
     QTRY_VERIFY(!row(permission));
     storeDrops(permission);
-    // The addition: Cancel closes it and sends nothing; Add wants the typed word.
-    row(addition)->findChild<QPushButton *>("teamWaitingAdditionCancel")->click();
-    QTRY_VERIFY(!row(addition)->findChild<QLineEdit *>("teamWaitingAdditionConfirm"));
-    QCOMPARE(calls(script(), "add-to-phase").size(), 0);
-    toggle(addition);
-    QTRY_VERIFY(row(addition)->findChild<QLineEdit *>("teamWaitingAdditionConfirm"));
+    // The addition: Add wants the typed word (Cancel declines it: below).
     auto *typed = row(addition)->findChild<QLineEdit *>("teamWaitingAdditionConfirm");
     auto *add = row(addition)->findChild<QPushButton *>("teamWaitingAdditionAdd");
     QVERIFY(!add->isEnabled());
@@ -1957,6 +1953,43 @@ void TestTeamsUiWaiting::waitingItemsAreAnsweredInPlace()
     // An answer between rebuilds never shows as a window of its own.
     for (auto *window : QApplication::topLevelWidgets())
         QVERIFY2(!(window->objectName() == QLatin1String("teamWaitingAnswer") && window->isVisible()), "a stray answer window");
+}
+
+// U29 (owner, 2026-10-31: an addition waited for the owner and could be
+// neither added nor cancelled): Cancel declines the addition with its id, so
+// nothing joins and the item leaves at once.
+void TestTeamsUiWaiting::waitingAdditionCancelDeclinesIt()
+{
+    Settings::set("workspace/skin", "whitewh");
+    const auto restore = qScopeGuard([] { Settings::remove("workspace/skin"); darkPalette(); });
+    const double now = double(QDateTime::currentSecsSinceEpoch());
+    setTeam(answerTeam());
+    QVERIFY(writeWaiting(script() + ".waiting", answerItems(now)));
+    HgsClient client(FakeCli::program(script()));
+    TeamController controller(&client);
+    TeamWaitingPage page(&controller);
+    QStringList answered;
+    page.answered = [&](const TeamWaitingPage::Item &item) { answered << item.id; };
+    darkPalette(); page.setDark(true);
+    page.resize(900, 1000); page.show();
+    const QString addition = "team-1/owner_word_asked/addition-add-1";
+    const auto row = [&](const QString &id) -> QFrame * {
+        for (auto *frame : page.findChildren<QFrame *>("teamWaitingRow")) if (frame->property("itemId") == id) return frame;
+        return nullptr;
+    };
+    QTRY_VERIFY(row(addition));
+    row(addition)->findChild<QPushButton *>("teamWaitingAnswerToggle")->click();
+    QTRY_VERIFY(row(addition)->findChild<QPushButton *>("teamWaitingAdditionCancel"));
+    row(addition)->findChild<QPushButton *>("teamWaitingAdditionCancel")->click();
+    QTRY_COMPARE(calls(script(), "add-to-phase").size(), 1);
+    const auto sent = calls(script(), "add-to-phase").first();
+    QCOMPARE(sent["team"].toString(), QStringLiteral("team-1"));
+    QCOMPARE(sent["phase"].toInt(), 1);
+    QCOMPARE(sent["confirm"].toString(), QStringLiteral("add-1"));
+    QCOMPARE(sent["decline"].toBool(), true);
+    QVERIFY(!sent.contains("confirmation"));
+    QTRY_VERIFY(!row(addition));
+    QCOMPARE(answered, QStringList{addition});
 }
 
 // #724: the banner answers in its row too; an item answered there leaves the

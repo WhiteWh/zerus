@@ -24,7 +24,8 @@ class TeamProposalCards;
 //   optional reason and Allow, bound to the proposal's content hash;
 // - an addition to a running phase: the tasks that would join, the typed
 //   "add" (or the phase number) and Add, bound to the addition's id; Cancel
-//   closes it and sends nothing, as the team's dialog does;
+//   declines it (hgs team add-to-phase with "decline"), so it leaves the
+//   list and nothing joins;
 // - a permission escalated to the owner: the command, Deny with an optional
 //   reason and Allow, bound to the question's id and hash;
 // - a phase or plan draft: Approve…, asking the team view's question
@@ -54,7 +55,7 @@ public:
     bool busy() const { return m_asking || m_sending; }
     // The store took the answer: the item leaves the page and the banner.
     std::function<void(const Item &item)> answered;
-    // Cancel of an addition: the row closes its answer.
+    // The row closes its answer.
     std::function<void()> closed;
     // The confirmation dialogs; empty: a warning box like TeamPanel::confirm.
     std::function<bool(const QString &name, const QString &title, const QString &text, const QString &action)> confirm;
@@ -71,6 +72,8 @@ private:
     QString staleReason(const Teams::Team &team) const;
     void sendPermission(bool allow);
     void sendAddition();
+    // Cancel of an addition: the owner declines it; nothing joins.
+    void declineAddition();
     // #740: the member the item names: by id, else (an older hgs) by role.
     const Teams::Member *memberOf(const Teams::Team &team) const;
     // #740: a session's question (the lead's AskUserQuestion, a member's

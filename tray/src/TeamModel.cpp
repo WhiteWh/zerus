@@ -2067,6 +2067,12 @@ FeedLine feedLine(const Team &team, const QJsonObject &event)
                        : tr("Asked to add %1 tasks to running phase %2 · waits for your confirmation").arg(count).arg(phase);
         line.tone = Tone::Warn;
     }
+    else if (k == "phase_addition_declined") {
+        const int count = d.value("tasks").toArray().size();
+        const int phase = d.value("phase").toInt();
+        t = count == 1 ? tr("Declined adding 1 task to running phase %1").arg(phase)
+                       : tr("Declined adding %1 tasks to running phase %2").arg(count).arg(phase);
+    }
     else if (k == "phase_tasks_added") {
         QStringList ids; for (const auto &id : d.value("tasks").toArray()) ids << QStringLiteral("#%1").arg(id.toInt());
         t = tr("Added %1 to running phase %2 · outside its original scope").arg(ids.join(QStringLiteral(", "))).arg(d.value("phase").toInt());

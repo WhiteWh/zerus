@@ -369,6 +369,17 @@ fn a_task_joins_a_running_phase_on_the_owners_word_twice() {
         let added = request(human(json!({"phase":1,"confirm":pending,"confirmation":"1"}))).unwrap();
         assert_eq!(added["status"], "added", "{added}");
         assert_eq!(stored().task(3).unwrap().added_late.as_ref().unwrap().by, "You");
+        // The owner's Cancel declines a warning, with no word; the lead never does.
+        let warned = request(human(json!({"phase":1,"tasks":[{"id":4,"title":"Maybe","assignee":"dev"}]}))).unwrap();
+        let pending = warned["pending"].as_str().unwrap().to_owned();
+        lead();
+        let error = request(json!({"phase":1,"confirm":pending,"decline":true})).unwrap_err().to_string();
+        assert!(error.contains("Only you decline"), "{error}");
+        assert_eq!(stored().pending_additions.len(), 1);
+        super::set_test_caller_identities(Some((None, None, None)));
+        let declined = request(human(json!({"phase":1,"confirm":pending,"decline":true}))).unwrap();
+        assert_eq!((declined["status"].as_str(), declined["found"].as_bool()), (Some("declined"), Some(true)), "{declined}");
+        assert!(stored().pending_additions.is_empty() && stored().task(4).is_none());
         // A draft phase keeps edit-draft.
         let mut draft = stored();
         let mut events = Vec::new();

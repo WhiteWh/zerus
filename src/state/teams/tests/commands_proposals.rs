@@ -331,6 +331,32 @@ fn an_allowed_addition_to_the_running_phase_adds_its_tasks() {
     assert_eq!((added.phase, added.title.as_str()), (1, "Find the crash"));
 }
 
+/// U29: an Allow whose confirmation fails after its warning was stored
+/// leaves no addition waiting that nobody can settle; the error is the
+/// confirmation's.
+#[test]
+fn a_failed_allow_confirmation_leaves_no_addition_waiting() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open_at(&dir.path().join("teams/teams.sqlite3"), true).unwrap();
+    store.create("11111111-1111-4111-8111-111111111111", &json!({}), running_team(), vec![]).unwrap();
+    let warned = store
+        .mutate(None, "t", None, |team, events| {
+            let input = json!({"phase":1,"tasks":[{"id":2,"title":"Find the crash","assignee":"dev"}]});
+            ops::apply(team, "add-to-phase", &input, &Actor::Human, &BTreeSet::new(), events)
+        })
+        .unwrap();
+    let pending = warned["pending"].as_str().unwrap().to_owned();
+    assert_eq!(store.load("t").unwrap().unwrap().pending_additions.len(), 1);
+    let confirm = json!({"team":"t","request_id":"22222222-2222-4222-8222-222222222222","by":"human","phase":1,
+        "confirm":pending,"confirmation":"sure"});
+    let error = super::confirm_allowed_addition(&mut store, "t", &confirm).unwrap_err().to_string();
+    assert!(error.contains("Type \"add\""), "{error}");
+    let team = store.load("t").unwrap().unwrap();
+    assert!(team.pending_additions.is_empty(), "{:?}", team.pending_additions);
+    assert!(team.task(2).is_none());
+    assert!(store.events("t", None, 50).unwrap().to_string().contains("phase_addition_declined"));
+}
+
 /// U59: the desktop's switch dialog decides through decide-proposal; its
 /// Allow switches the plan mode once, and a Deny keeps it and tells the lead.
 #[test]

@@ -142,8 +142,10 @@ fn team_items(team: &Team, now: f64, out: &mut Vec<Value>) {
         found["proposal"] = json!(key);
         out.push(found);
     }
-    // U29: an addition to a running phase waits for the owner's confirmation.
-    for addition in &team.pending_additions {
+    // U29: an addition to a running phase waits for the owner's confirmation
+    // until it expires; an expired one can no longer be confirmed and is not
+    // listed (it leaves the team on its next change).
+    for addition in team.pending_additions.iter().filter(|addition| super::ops::addition_fresh(addition, now)) {
         let count = addition.tasks.len();
         let mut found = item(
             team,
@@ -245,7 +247,8 @@ mod tests {
     /// One fixture per kind, across several teams, each naming its team.
     #[test]
     fn every_kind_across_teams_names_its_team_newest_first() {
-        let now = 100_000.0;
+        // Within the addition's confirmation window (warned at 4500).
+        let now = 6_200.0;
         let planning = team("t-plan", TeamStatus::Planning);
 
         let mut phased = team("t-phase", TeamStatus::Running);
@@ -306,6 +309,17 @@ mod tests {
         assert_eq!((list[5]["task"].as_u64(), list[5]["member"].as_str()), (Some(1), Some("Backend")));
         assert_eq!(list[6]["phase"], 2);
         assert_eq!((list[7]["team"].as_str(), list[7]["action"].as_str()), (Some("t-plan"), Some("approve_plan")));
+    }
+
+    /// U29: an addition past its confirmation window is not listed: it can
+    /// no longer be confirmed, and it leaves on the team's next change.
+    #[test]
+    fn an_expired_addition_is_not_listed() {
+        let mut asking = team("t", TeamStatus::Running);
+        asking.pending_additions.push(PendingAddition { id: "a1".into(), phase: 1, tasks: vec![Task::default()], warned_at: 1000.0, ..Default::default() });
+        assert_eq!(kinds(&items(std::slice::from_ref(&asking), 1000.0 + 60.0)), ["owner_word_asked"]);
+        let expired = 1000.0 + super::super::owner_word::FRESH_SECONDS + 1.0;
+        assert!(items(&[asking], expired).is_empty());
     }
 
     /// A report or permission is the owner's only once the attention list

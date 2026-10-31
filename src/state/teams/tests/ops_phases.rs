@@ -1731,3 +1731,53 @@ fn start_ahead_needs_an_auto_draft_and_the_lead_and_can_be_undone_before_a_hand_
     let error = apply(&mut team, "start-ahead", &json!({"phase":2,"undo":true}), &lead, &none, &mut events).unwrap_err().to_string();
     assert!(error.contains("handed-out"), "{error}");
 }
+
+/// U29: an addition the owner never confirmed leaves once it expires, on the
+/// team's next change. The owner declines one at any time, also after it
+/// expired or once its phase no longer runs; only the owner does.
+#[test]
+fn a_warned_addition_expires_or_is_declined() {
+    let mut team = running_team();
+    let none = BTreeSet::new();
+    let mut events = Vec::new();
+    let warn = |team: &mut Team, events: &mut Vec<Event>| {
+        let input = json!({"phase":1,"tasks":[{"id":3,"title":"Late","assignee":"dev"}]});
+        let warned = apply(team, "add-to-phase", &input, &Actor::Human, &none, events).unwrap();
+        assert_eq!(warned["status"], "warning", "{warned}");
+        warned["pending"].as_str().unwrap().to_owned()
+    };
+    let decline = |pending: &str| json!({"phase":1,"confirm":pending,"decline":true});
+    // Expired: the next change of any kind drops it.
+    let pending = warn(&mut team, &mut events);
+    team.pending_additions[0].warned_at -= super::super::owner_word::FRESH_SECONDS + 1.0;
+    apply(&mut team, "settings", &json!({"settings":{"remind_lead_minutes":9}}), &Actor::Human, &none, &mut events).unwrap();
+    assert!(team.pending_additions.is_empty());
+    // Declining it afterwards changes nothing and still succeeds.
+    events.clear();
+    let declined = apply(&mut team, "add-to-phase", &decline(&pending), &Actor::Human, &none, &mut events).unwrap();
+    assert_eq!((declined["status"].as_str(), declined["found"].as_bool()), (Some("declined"), Some(false)), "{declined}");
+    assert!(events.is_empty());
+    // A fresh one: the lead never declines it; the owner does.
+    let pending = warn(&mut team, &mut events);
+    let error = apply(&mut team, "add-to-phase", &decline(&pending), &Actor::Member("lead".into()), &none, &mut events)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, "Only you decline an addition to a running phase");
+    events.clear();
+    let declined = apply(&mut team, "add-to-phase", &decline(&pending), &Actor::Human, &none, &mut events).unwrap();
+    assert_eq!((declined["found"].as_bool(), declined["phase"].as_u64()), (Some(true), Some(1)), "{declined}");
+    assert!(team.pending_additions.is_empty() && team.task(3).is_none());
+    assert_eq!(kinds(&events), ["phase_addition_declined"]);
+    // Its phase no longer runs (the team stopped): still declined.
+    let pending = warn(&mut team, &mut events);
+    team.status = TeamStatus::Stopped;
+    let declined = apply(&mut team, "add-to-phase", &decline(&pending), &Actor::Human, &none, &mut events).unwrap();
+    assert_eq!(declined["found"], true, "{declined}");
+    assert!(team.pending_additions.is_empty());
+    // A confirmation of a declined addition is refused.
+    team.status = TeamStatus::Running;
+    let error = apply(&mut team, "add-to-phase", &json!({"phase":1,"confirm":pending,"confirmation":"add"}), &Actor::Human, &none, &mut events)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("unknown or expired"), "{error}");
+}

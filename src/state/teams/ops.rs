@@ -1211,6 +1211,13 @@ fn intake_phase(team: &mut Team, input: &Value, actor: &Actor, offline: &BTreeSe
 
 /// U29: how long a warned addition waits for the owner's confirmation.
 const PENDING_ADDITION_SECONDS: f64 = super::owner_word::FRESH_SECONDS;
+
+/// U29: a warned addition still waits for the owner's confirmation; an
+/// expired one is neither listed nor confirmed, and leaves on the team's next
+/// change.
+pub(crate) fn addition_fresh(pending: &PendingAddition, now: f64) -> bool {
+    now - pending.warned_at <= PENDING_ADDITION_SECONDS
+}
 /// U29: at most this many additions wait at once (one per phase).
 const PENDING_ADDITIONS: usize = 8;
 /// U29: at most this many tasks join a running phase in one addition.
@@ -1289,7 +1296,31 @@ fn renumbered_json(numbers: &BTreeMap<u32, u32>) -> Value {
     Value::Object(numbers.iter().map(|(old, new)| (old.to_string(), json!(new))).collect())
 }
 
+/// The owner declines a warned addition: it leaves and nothing joins. The
+/// owner's Cancel in Waiting for you sends it, and so does an Allow whose
+/// confirmation failed after its warning was stored. A decline of an addition
+/// that is already gone (confirmed, replaced, expired or declined) changes
+/// nothing and still succeeds, so a retried Cancel never strands the item;
+/// the phase need not be running any more.
+fn decline_addition(team: &mut Team, input: &Value, actor: &Actor, events: &mut Vec<Event>) -> anyhow::Result<Value> {
+    ensure!(matches!(actor, Actor::Human), "Only you decline an addition to a running phase");
+    let id = input["confirm"].as_str().filter(|id| !id.is_empty()).context("Name the addition to decline in \"confirm\"")?;
+    let Some(found) = team.pending_additions.iter().position(|pending| pending.id == id) else {
+        return Ok(json!({"status":"declined","pending":id,"found":false}));
+    };
+    let pending = team.pending_additions.remove(found);
+    let ids: Vec<u32> = pending.tasks.iter().map(|task| task.id).collect();
+    events.push(Event::new(
+        "phase_addition_declined",
+        json!({"by":actor.label(team),"phase":pending.phase,"tasks":ids,"request":pending.request}),
+    ));
+    Ok(json!({"status":"declined","pending":id,"found":true,"phase":pending.phase,"tasks":ids}))
+}
+
 fn add_to_phase(team: &mut Team, input: &Value, actor: &Actor, offline: &BTreeSet<String>, events: &mut Vec<Event>) -> anyhow::Result<Value> {
+    if input["decline"].as_bool() == Some(true) {
+        return decline_addition(team, input, actor, events);
+    }
     ensure!(matches!(actor, Actor::Human) || actor.is_lead(team), "Only the lead, on your word, or you add a task to a running phase");
     ensure!(matches!(team.status, TeamStatus::Running | TeamStatus::Paused), "Only a running or paused team takes a task in a running phase");
     let n = phase_number(input)?;
@@ -1301,7 +1332,7 @@ fn add_to_phase(team: &mut Team, input: &Value, actor: &Actor, offline: &BTreeSe
     let word = verified_word(input)?;
     ensure!(!actor.is_lead(team) || word.is_some(), "The lead adds a task to a running phase only on your word: pass \"owner_word\"");
     let at = now();
-    team.pending_additions.retain(|pending| at - pending.warned_at <= PENDING_ADDITION_SECONDS);
+    team.pending_additions.retain(|pending| addition_fresh(pending, at));
     let by = actor.label(team);
     let quote = word.as_ref().map(|word| word.text.clone()).unwrap_or_default();
     // The tasks as they would join: numbered on from the highest live id,
@@ -4477,6 +4508,9 @@ pub(crate) fn apply(team: &mut Team, op: &str, input: &Value, actor: &Actor, off
             team.owner_word_used(event).unwrap_or_default()
         );
     }
+    // U29: an expired addition waits for nobody: it leaves on the team's next
+    // change, so a stored one is never listed or confirmed again.
+    team.pending_additions.retain(|pending| addition_fresh(pending, now()));
     // F285: a stored team with discarded drafts is compacted on its next
     // change - the dead records leave and the drafts close the gaps - so the
     // change that follows sees live numbers only.
