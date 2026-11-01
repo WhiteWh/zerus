@@ -44,7 +44,7 @@ public:
     // feed's build can only replace it, once the owner confirms.
     enum class Offer { Current, Newer, Replacement };
     static Offer offerFor(qint64 installed, const QString &runningCommit, qint64 build, const QString &commit);
-    // The source_commit in a portable folder's build-info.json, or empty.
+    // On the preparation thread: source_commit in build-info.json, or empty.
     static QString sourceCommit(const QString &folder);
     // Built with a feed and running from a supported installation.
     bool enabled() const { return m_enabled; }

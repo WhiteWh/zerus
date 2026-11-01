@@ -280,14 +280,14 @@ echo "gui $HGS_TRAY_RESTART $ZERUS_DEV_BUILD_NUMBER $ZERUS_FORK_FEED_URL" >> "$L
     }
     void forkRunningCommitComesFromBuildInfo(){
         QTemporaryDir root;QVERIFY(root.isValid());
-        QCOMPARE(ForkUpdater::sourceCommit(root.path()),QString());
+        QCOMPARE(offGuiThread([&]{return ForkUpdater::sourceCommit(root.path());}),QString());
         const auto write=[&](const QByteArray &text){QFile file(root.filePath("build-info.json"));QVERIFY(file.open(QIODevice::WriteOnly|QIODevice::Truncate));file.write(text);};
         write(R"({"source_commit":"0123456789abcdef0123456789abcdef01234567"})");
-        QCOMPARE(ForkUpdater::sourceCommit(root.path()),QStringLiteral("0123456789abcdef0123456789abcdef01234567"));
+        QCOMPARE(offGuiThread([&]{return ForkUpdater::sourceCommit(root.path());}),QStringLiteral("0123456789abcdef0123456789abcdef01234567"));
         write(R"({"source_commit":"0123456"})");
-        QCOMPARE(ForkUpdater::sourceCommit(root.path()),QString());
+        QCOMPARE(offGuiThread([&]{return ForkUpdater::sourceCommit(root.path());}),QString());
         write("not json");
-        QCOMPARE(ForkUpdater::sourceCommit(root.path()),QString());
+        QCOMPARE(offGuiThread([&]{return ForkUpdater::sourceCommit(root.path());}),QString());
     }
     void devVersionSequenceIsVisibleAndMatchesTheFeed(){
         auto value=devRaw();

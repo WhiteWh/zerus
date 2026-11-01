@@ -310,7 +310,7 @@ QString ForkUpdater::sourceCommit(const QString &folder)
 {
     QFile file(QDir(folder).filePath(QStringLiteral("build-info.json")));
     if (!file.open(QIODevice::ReadOnly)) return {};
-    const QString commit = QJsonDocument::fromJson(file.read(feedLimit)).object().value("source_commit").toString();
+    const QString commit = JsonParse::object(file.read(feedLimit)).value("source_commit").toString();
     static const QRegularExpression full(QStringLiteral("\\A[0-9a-f]{40}\\z"));
     return full.match(commit).hasMatch() ? commit : QString();
 }
@@ -336,7 +336,11 @@ ForkUpdater::ForkUpdater(QObject *parent) : QObject(parent)
     m_layout = layoutFor(QCoreApplication::applicationFilePath());
     m_install = m_layout.install;
     m_stage = m_layout.stage;
-    m_runningCommit = m_install.isEmpty() ? QString() : sourceCommit(m_install);
+    // The preparation queue applies this before any later feed result, so the
+    // offer comparison still sees the running commit without parsing on the GUI.
+    if (!m_install.isEmpty())
+        ProcessRunner::post(this, [folder = m_install] { return sourceCommit(folder); },
+                            [this](const QString &commit) { if (!commit.isEmpty()) m_runningCommit = commit; });
 #ifdef Q_OS_WIN
     // Only the portable zip carries build-info.json next to hgs-tray.exe.
     m_portable = !m_install.isEmpty() && QFileInfo::exists(m_install + QStringLiteral("/build-info.json")) && !m_layout.superseded;

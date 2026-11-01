@@ -1,4 +1,5 @@
 #include "Settings.h"
+#include "SettingsJson.h"
 #include "MachinesPage.h"
 #include <QScopedValueRollback>
 #include "HgsClient.h"
@@ -129,6 +130,7 @@ QString osName(const QString &os)
 MachinesPage::MachinesPage(const QString &path, QWidget *parent) : QWidget(parent), m_client(new HgsClient(path, this))
 {
     setObjectName("machinesPage");
+    SettingsJson::warm(this, {QStringLiteral("machines/otherTransport/*")});
     // #647 (prototype, Machines): the machine list is a column of its own with
     // its title, Refresh, Add machine and the summary; the chosen machine's
     // cards scroll beside it.
@@ -614,7 +616,7 @@ void MachinesPage::loadSelection() {
     // into their (hidden) fields, so switching the type back restores them.
     if (!local && !m_new) {
         // #709 L8: through the overlay, so a save still queued behind the lock reads back.
-        const auto other = QJsonDocument::fromJson(Settings::value(otherTransportKey(m_selected)).toByteArray()).object();
+        const auto other = SettingsJson::object(otherTransportKey(m_selected));
         if (m_transport->currentIndex() == 1) {
             m_hostname->setText(other.value("hostname").toString()); m_user->setText(other.value("user").toString());
             m_port->setValue(other.value("port").toInt()); m_key->setText(other.value("identity_file").toString());
@@ -859,7 +861,7 @@ void MachinesPage::rememberOtherTransport() {
     }
     // #694: a GUI-thread write never waits on the settings file's lock.
     if (other.isEmpty()) Settings::remove(otherTransportKey(alias()));
-    else Settings::set(otherTransportKey(alias()), QJsonDocument(other).toJson(QJsonDocument::Compact));
+    else SettingsJson::store(otherTransportKey(alias()), QJsonDocument(other));
 }
 void MachinesPage::save() {
     if (m_request || m_installing || (m_new && aliasExists())) return;

@@ -1,4 +1,5 @@
 #include "Settings.h"
+#include "ChildProcess.h"
 #include "ConversationSource.h"
 #include "WslFileOpenDialog.h"
 #include "SettingsJson.h"
@@ -2000,6 +2001,7 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
             tr("Give your Windows user full control of\n%1\n\nThe DeepSeek sandbox needs it to start a session there. Only your own access to this folder changes.").arg(folder))!=QMessageBox::Yes)return;
         m_creationFixAccess->setEnabled(false);m_creationFixAccess->setText(tr("Fixing folder rights…"));
         auto *process=new QProcess(this);
+        ChildProcess::inheritStdioOnly(*process);
         connect(process,&QProcess::finished,this,[this,process,id](int code,QProcess::ExitStatus status){
             process->deleteLater();
             const auto error=QString::fromUtf8(process->readAllStandardError()).trimmed();

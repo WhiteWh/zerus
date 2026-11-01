@@ -4,6 +4,7 @@ import ast
 from pathlib import Path
 import plistlib
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -339,7 +340,8 @@ def main():
         if path.suffix == ".py" or name in {"packaging/linux/zerus-setup", "packaging/macos/zerus-setup"}:
             ast.parse(path.read_text(), filename=name)
         elif path.read_bytes().split(b"\n", 1)[0].startswith((b"#!/bin/sh", b"#!/usr/bin/env bash")) or path.name in {"PKGBUILD", "PKGBUILD.in"}:
-            subprocess.run(["bash", "-n", str(path)], check=True)
+            # CreateProcess searches System32 before PATH; use the selected Git Bash on Windows.
+            subprocess.run([shutil.which("bash") or "bash", "-n", path.as_posix()], check=True)
     print("Source syntax, privacy, child process, JSON parsing and release version checks passed.")
 
 
