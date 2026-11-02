@@ -2212,10 +2212,10 @@ mod tests {
         let path = folder.join("held");
         let file = fs::File::create(&path).unwrap();
         let own = std::process::id();
-        assert_eq!(holds_open(own, &path).unwrap(), super::OpenFiles::Held);
+        assert_eq!(holds_open(own, &path).unwrap(), crate::platform::OpenFiles::Held);
         assert!(open_files(own).unwrap().contains(&path));
         drop(file);
-        assert_eq!(holds_open(own, &path).unwrap(), super::OpenFiles::NotHeld);
+        assert_eq!(holds_open(own, &path).unwrap(), crate::platform::OpenFiles::NotHeld);
 
         let mut child = Command::new("sleep")
             .arg("30")

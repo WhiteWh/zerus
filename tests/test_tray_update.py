@@ -305,7 +305,8 @@ class TrayUpdate(unittest.TestCase):
         """A copy of tray/install.sh whose cmake builds `build` and, given bytes, the native UI plugin."""
         tray = self.root / 'tray'
         if not tray.exists():
-            for name in ('install.sh', 'update-installed.py', 'packaging/hgs-tray.service', 'packaging/hgs-tray.desktop'):
+            for name in ('install.sh', 'update-installed.py', 'linux-source-update.sh',
+                         'packaging/hgs-tray.service', 'packaging/hgs-tray.desktop'):
                 (tray / name).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(REPO / 'tray' / name, tray / name)
             shutil.copytree(REPO / 'tray/resources/icons', tray / 'resources/icons')
