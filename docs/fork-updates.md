@@ -5,19 +5,52 @@ upstream Zerus; the branch `whitewh/main` carries it on top of upstream `main`.
 
 ## Builds
 
-`.github/workflows/fork-windows.yml` runs on every push to `whitewh/main` and on
-manual dispatch, only in `WhiteWh/zerus`. On a standard `windows-2025` runner it:
+In `WhiteWh/zerus`, `.github/workflows/fork-windows.yml` runs on every push to
+`whitewh/main` and on manual dispatch. On a standard `windows-2025` runner it:
 
 1. runs the Rust tests and builds the release `hgs.exe`;
 2. builds the desktop app with the pinned Qt 6.10.3 and runs its offscreen Qt suites;
 3. packages and self-tests the portable zip (`scripts/package-windows.py`,
    `scripts/check-windows-portable.py`);
-4. publishes release `whitewh-<run number>` with `zerus-windows-x86_64.zip` and
-   `zerus-fork-feed.json`, marked as the latest release.
+4. publishes the tested ZIP to the selected release channel.
 
-A failing step publishes nothing. The run number is embedded in `hgs-tray.exe` as
-`ZERUS_FORK_BUILD`, together with the feed address `ZERUS_FORK_FEED_URL`; CMake
-accepts only release assets of `WhiteWh/zerus` for the latter.
+### Rolling Latest on push
+
+Every branch push refreshes **one** prerelease named `Latest`, with the fixed tag
+`latest` and asset `zerus-windows-x86_64.zip`. It creates no numbered release.
+Download it from `/releases/tag/latest` or use the stable asset URL
+`https://github.com/WhiteWh/zerus/releases/download/latest/zerus-windows-x86_64.zip`.
+This prerelease is separate from GitHub's latest stable release and carries no
+automatic update feed.
+
+The workflow keeps one running build and one pending run (GitHub's default
+`queue: single`, with `cancel-in-progress: false`). The `queue` key is omitted for
+compatibility with the pinned actionlint version. New pushes replace the pending
+run without stopping the running build. The slot covers both building and
+publishing. After acquiring it, a Latest run checks out the current head of
+`whitewh/main`, including commits that arrived while it waited. That checked-out
+SHA, not the triggering event's SHA, identifies the package, rolling tag and
+release notes. The run summary records both SHAs.
+
+A failed build leaves the previous Latest in place. The publisher uploads and
+verifies the next ZIP before replacing the previous asset, then advances only
+the `latest` tag. Existing numbered releases and their tags are preserved.
+
+### Manual numbered releases
+
+Use **Actions -> Fork Windows build -> Run workflow**, leaving `channel` set to
+`numbered` (the default), to publish `whitewh-<run number>` with the ZIP and
+`zerus-fork-feed.json`. These releases retain the stable GitHub Latest designation
+and feed used by existing WhiteWh installations. A numbered build keeps the exact
+commit selected at dispatch; it does not silently advance while waiting.
+
+Manual dispatch also offers `channel: latest` to refresh the rolling prerelease.
+Runs are accepted only from `whitewh/main` or an experimental tag. The internal
+build number remains available for diagnostics, even though the rolling release
+has no number. Only numbered WhiteWh builds embed `ZERUS_FORK_FEED_URL`; Latest
+and experimental builds embed no automatic update feed.
+
+### Experimental builds
 
 An experimental build of any commit: push a tag `whitewh-exp-<name>` for it. The
 same workflow builds, tests and packages that commit and publishes the zip as a
