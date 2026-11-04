@@ -6,6 +6,11 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 use tauri::Url;
 
+#[cfg(all(target_os = "linux", feature = "live"))]
+pub(crate) mod linux;
+#[cfg(feature = "live")]
+pub(crate) mod runtime;
+
 /// Bound the private launch address before parsing or hashing it.
 pub const ADDRESS_LIMIT: usize = 16 * 1024;
 
@@ -78,7 +83,8 @@ impl Launch {
     }
 
     fn same_origin(&self, next: &Url) -> bool {
-        next.username().is_empty()
+        next.scheme() == self.url.scheme()
+            && next.username().is_empty()
             && next.password().is_none()
             && next.origin() == self.url.origin()
     }
@@ -201,6 +207,7 @@ mod tests {
             "ipc://localhost/metrics",
             "javascript:alert(1)",
             "data:text/html,fixture",
+            "blob:http://127.0.0.1:43210/fixture",
             "http://user@127.0.0.1:43210/",
         ] {
             assert_eq!(

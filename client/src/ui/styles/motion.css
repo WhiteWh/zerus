@@ -10,7 +10,7 @@
                               place): no endless motion at all, and entrances are
                               instant. In Qt the setting stops only the Zerus
                               mark; here it covers all endless motion.
-   data-page-hidden="1"       The window is hidden or minimised: everything pauses
+   data-page-hidden="1"       The document is hidden: everything pauses
                               where it is, as the Qt widgets stop their timers in
                               hideEvent.
 
@@ -40,7 +40,9 @@
 :root[data-reduce-motion="1"] .busy-arc,
 :root[data-reduce-motion="1"] .su-spin,
 :root[data-reduce-motion="1"] .set-spinner,
+:root[data-reduce-motion="1"] .atm-spin,
 :root[data-reduce-motion="1"] .tchip.rec svg,
+:root[data-reduce-motion="1"] .su-progress.su-indet > i,
 :root[data-reduce-motion="1"] .cmp-progress::after,
 :root[data-reduce-motion="1"] .vm-frames,
 :root[data-reduce-motion="1"] .tk-glyph.st-active::after { animation: none !important; }
@@ -54,5 +56,25 @@
 :root[data-reduce-motion="1"] .icard-chev, :root[data-reduce-motion="1"] .col-edge::before,
 :root[data-reduce-motion="1"] .insp-resize > i, :root[data-reduce-motion="1"] .sp-resize > i { transition: none; }
 
-/* Hidden or minimised: nothing moves, and each animation resumes from where it stopped. */
+/* A hidden document pauses everything. New entrances in a visible, unfocused
+   Linux window must still finish, including questions, approvals and toasts. */
 :root[data-page-hidden="1"] *, :root[data-page-hidden="1"] *::before, :root[data-page-hidden="1"] *::after { animation-play-state: paused !important; }
+
+/* Linux toplevel focus loss pauses the maintained endless set only. */
+:root[data-motion-unfocused="1"] .sbadge.k-working .sb-mark::after,
+:root[data-motion-unfocused="1"] .gb-count.working,
+:root[data-motion-unfocused="1"] .status.working .dot,
+:root[data-motion-unfocused="1"] .state-dot.working,
+:root[data-motion-unfocused="1"] .typing i,
+:root[data-motion-unfocused="1"] .skeleton::before,
+:root[data-motion-unfocused="1"] .busy-arc,
+:root[data-motion-unfocused="1"] .su-spin,
+:root[data-motion-unfocused="1"] .set-spinner,
+:root[data-motion-unfocused="1"] .atm-spin,
+:root[data-motion-unfocused="1"] .tchip.rec svg,
+:root[data-motion-unfocused="1"] .su-progress.su-indet > i,
+:root[data-motion-unfocused="1"] .cmp-progress::after,
+:root[data-motion-unfocused="1"] .vm-frames,
+:root[data-motion-unfocused="1"] .tk-glyph.st-active::after,
+:root[data-motion-unfocused="1"] .mtile.s-connecting .mtile-dot::after,
+:root[data-motion-unfocused="1"] .zlogo, :root[data-motion-unfocused="1"] .zlogo * { animation-play-state: paused !important; }

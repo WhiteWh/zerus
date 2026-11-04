@@ -341,6 +341,9 @@ def start(installed):
             time.sleep(0.25)
         run(['launchctl', 'bootstrap', domain, PLIST])
     else:
+        # The local source install's optional launcher reads its saved WebKit
+        # prefix on every start, including update recovery and Qt rollback.
+        # Do not import the installer's library environment into the manager.
         run(['systemctl', '--user', 'start', UNIT])
 
 

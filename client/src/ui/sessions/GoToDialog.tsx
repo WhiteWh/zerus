@@ -3,6 +3,7 @@ import { keys } from "../../store/shortcuts";
 import { activateGoTo, closeGoTo, goToItems, goToOrigin } from "../../store/goTo";
 import { goToDetails, goToKey, goToKindLabel, rankGoTo, visibleGoToRows, type GoToKeyState } from "./goTo";
 import { Icon } from "../lib/icons";
+import { tr } from "../../i18n";
 
 export function GoToDialog() {
   let field: HTMLInputElement | undefined;
@@ -51,14 +52,14 @@ export function GoToDialog() {
   return (
     <Show when={goToOrigin()}>
       <div class="goto-scrim" data-shortcut-context="none">
-        <div class="goto" ref={frame} role="dialog" aria-label="Go to">
+        <div class="goto" ref={frame} role="dialog" aria-label={tr("Go to")}>
           <div class="goto-field">
             <Icon name="search" size={15} />
-            <input ref={field} value={query()} placeholder="Go to… (type > for commands)" onInput={(event) => { setQuery(event.currentTarget.value); setCurrent(0); }} onKeyDown={onKey} />
+            <input ref={field} value={query()} placeholder={tr("Go to… (type > for commands)")} onInput={(event) => { setQuery(event.currentTarget.value); setCurrent(0); }} onKeyDown={onKey} />
             <span class="kbd">Esc</span>
           </div>
-          <ul class="goto-list" role="listbox" aria-label="Results">
-            <For each={visible().rows} fallback={<li class="goto-empty">Nothing matches</li>}>{(item, index) => (
+          <ul class="goto-list" role="listbox" aria-label={tr("Results")}>
+            <For each={visible().rows} fallback={<li class="goto-empty">{tr("Nothing matches")}</li>}>{(item, index) => (
               <li role="option" aria-selected={visible().start + index() === current()} classList={{ on: visible().start + index() === current() }}
                 onMouseEnter={() => setCurrent(visible().start + index())} onClick={() => activateGoTo(item)}>
                 <span class="goto-kind">{goToKindLabel(item.kind)}</span>

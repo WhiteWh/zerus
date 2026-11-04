@@ -421,14 +421,30 @@ original organization key and Qt store hash/path/time/mtime condition. Invalid
 or ambiguous candidates retry without a partial family or a handled record;
 handled families never repeat after rollback. Original private evidence stays
 unchanged and vivid never enters shared organization or local layout.
-Local Windows folders remain private evidence until the Windows Next Projects
-model (`.66.2.31`, G3 dependent `.66.5.3.10`) exists. Neither creates a new
-organization-layout field or an independent G3 folder stack.
+Local Windows folders use the existing `local_windows_folders` Layout family.
+The switch app calls its bounded Qt preparer on the organization worker after
+a current local Windows watch and matching catalog are adopted. Explicit
+original folder machine IDs must match that node; aliases and path spellings
+never establish ownership. Existing whole-family presence (including empty or
+unsupported values) wins before Qt is read. A fresh catalog/source check and
+current live project IDs are required at the existing Layout writer commit.
+Folders and handled metadata share one checkpoint; absent Qt organization stays
+unhandled without a repeated error or fabricated empty family. This local
+presentation import does not enable native folder actions or change shared data.
 
-The design owner's 2026-10-30 ruling retains `projectFolderSplit` and
-`tasks/inspectorSplit` as private typed evidence, with no Qt splitter decoding
-or seed, including when Next's Projects splitter lands. Tasks has no equivalent
-splitter; never map it onto a different inspector panel. The remembered
+The 2026-11-01 release assignment supersedes the earlier deferral of the
+Projects splitter. The first-G3 `project-folder-splitter`, `session-splitter`
+and `window-geometry` families decode bounded Qt saved states into the
+matching Next Projects split, Sessions list width and main-window normal
+bounds/maximized/fullscreen state. They commit values and family metadata
+through Settings, once, with every stored Next value winning. Unknown versions
+or malformed/truncated data remain quarantined/unhandled and preserve Qt.
+Next's former browser-stored split widths move through its existing migration
+before loading the Qt seed, so prior Next choices still win. Window bounds
+restore within an available display and subsequent moves use Settings; this
+never writes Qt. `tasks/inspectorSplit` still has no equivalent Tasks splitter
+and remains private typed evidence; it never maps to another inspector panel.
+The remembered
 `removeWorktreeAfterTermination` value is retained as private evidence and now
 prefills the `.10.17` Terminate checkbox through one `termination-default` G3
 family. Import only when Next has no stored value: a current false wins. The
@@ -495,7 +511,7 @@ Implement the five remaining UI gaps: the Go to popup and shortcut-help dialog; 
 
 | Data family | Required handling |
 | --- | --- |
-| Workspace appearance and behavior | Existing switch seeds include activity/content scaling, theme/language, detailed Sessions/Processes controls and updates/downloads preferences. Add readers for the remaining launch defaults, collapsed rows, project folder splits, cleanup choices and geometry/splitter families; never convert a UI preference into a background opt-in |
+| Workspace appearance and behavior | Existing switch seeds include activity/content scaling, theme/language, detailed Sessions/Processes controls and updates/downloads preferences. Read-only one-time imports cover launch defaults, collapsed rows, project folder splits, the termination cleanup choice and matching window geometry/splitters; unsupported shapes remain preserved. Never convert a UI preference into a background opt-in |
 | Organization and Swarm | Preserve `workspace/organization`, `organizationBeforeProjects`/`BeforeSwarm`, `swarm/observedOrganization`/`observedVersions`, imported machines, explicit/unassigned placement and local Windows paths. Keep `.40`/`.47` run groups/tokens in local `organization-layout.json`; reconcile only shared organization through the `hgs` replica |
 | Zerus Next interim stores | Migrate the switch identity's `settings.json`, draft store, `local_messages`, attention file, `organization-layout.json`, creation records (`.10.9`, `.55` ended launches), approvals journal, termination-cleanup outcomes and download cache. Read once, idempotently and without replay; honor the writer-handoff marker before `hgs` takes ownership |
 | Drafts and forms | Extend the existing Qt v1 read-only import for message, child, question, voice/video and task description/comment/draft forms, cursors/form state and content-hashed immutable attachments. Qt drafts remain readable after rollback through previous-app Saved drafts/Recover; failed/uncertain recovery never submits |

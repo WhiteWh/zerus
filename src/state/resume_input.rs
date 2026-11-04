@@ -71,6 +71,15 @@ fn fork_directory(record: &Value) -> Result<PathBuf> {
 }
 
 pub(super) fn pending(record: &Value) -> bool {
+    pending_binding(record)
+        && ((record.get("session_end").is_none()
+            && record["last_event_at"].as_f64().unwrap_or(0.0) == 0.0)
+            || clear_context::ended_resume(record))
+}
+
+/// Binding shape only, never process/composer verification or input permission.
+/// A real clear SessionStart may finish an older run's unmarked SessionEnd.
+pub(super) fn pending_binding(record: &Value) -> bool {
     record["agent"] == "codex"
         && record["run_identity_version"] == 1
         && record["startup_kind"] == "resume"
@@ -79,8 +88,6 @@ pub(super) fn pending(record: &Value) -> bool {
         && record["expected_id"] == record["conversation_id"]
         && string(record, "requested_id").is_empty()
         && string(record, "error").is_empty()
-        && record.get("session_end").is_none()
-        && record["last_event_at"].as_f64().unwrap_or(0.0) == 0.0
         && ["", "unknown"].contains(&string(record, "activity"))
         && ["", "unknown"].contains(&string(record, "phase"))
 }
@@ -111,7 +118,7 @@ fn owns_rollout(record: &Value) -> Result<()> {
     Ok(())
 }
 
-fn checked_process(record: &Value) -> Result<u64> {
+pub(super) fn checked_process(record: &Value) -> Result<u64> {
     if !process_alive(record) || !matches(record, live()?.get(string(record, "name"))) {
         return Err("The tracked agent is no longer running".into());
     }
@@ -200,6 +207,13 @@ fn history_directory(path: &Path) -> Result<fs::File> {
         return Err("Fork history directory changed or is a link".into());
     }
     Ok(file)
+}
+
+#[cfg(all(unix, test))]
+fn history_candidate_options() -> fs::OpenOptions {
+    let mut options = fs::OpenOptions::new();
+    crate::platform::no_follow(&mut options);
+    options
 }
 
 #[cfg(any(windows, test))]
@@ -291,9 +305,14 @@ where
             return Err("Fork history candidate escaped the selected account".into());
         }
         let path = canonical.as_path();
+        #[cfg(unix)]
+        let mut options = history_candidate_options();
+        #[cfg(windows)]
         let mut options = fs::OpenOptions::new();
         options.read(true);
+        #[cfg(windows)]
         crate::platform::refuse_link(&mut options);
+        #[cfg(windows)]
         crate::platform::never_block(&mut options);
         #[cfg(windows)]
         {
@@ -524,8 +543,8 @@ pub(super) fn ready(record: &Value) -> Result<()> {
 
 /// A pending resume that may also clear or pause before its deferred
 /// SessionStart once `idle` verifies it. A sent message may already have
-/// started a turn, and an archive restore commits only on the hook that names
-/// its exact conversation (archive::confirm_restore).
+/// started a turn. The shared pause path excludes archive restores; Clear has
+/// a separately scoped restore transaction in clear_context.
 pub(super) fn clearable(record: &Value) -> bool {
     pending(record)
         && string(record, "restore_archive_id").is_empty()
@@ -979,6 +998,26 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(!queried);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fork_history_verification_open_refuses_a_candidate_replaced_by_a_symlink() {
+        use std::os::{fd::AsRawFd, unix::fs::symlink};
+        let fixture = ForkHistory::new();
+        let canonical = crate::platform::canonical(&fixture.rollout).unwrap();
+        assert!(canonical.starts_with(&fixture.sessions));
+        let mut options = history_candidate_options();
+        options.read(true);
+        let file = options.open(&canonical).unwrap();
+        let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+        assert!(flags >= 0 && flags & libc::O_NONBLOCK != 0);
+        drop(file);
+        // Replace the already checked path before the actual verification open.
+        let target = fixture.temporary.path().join("outside-history.jsonl");
+        fs::rename(&fixture.rollout, &target).unwrap();
+        symlink(&target, &fixture.rollout).unwrap();
+        assert!(options.open(&canonical).is_err());
     }
 
     #[cfg(unix)]

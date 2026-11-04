@@ -4,7 +4,7 @@
 //! frame and costs about five times the CPU of DMA-BUF with explicit sync off
 //! (`bench/results/spike-29-webkitgtk-idle-2026-10-28.md`, "Client-side renderer
 //! policy"). WebKit reads its renderer variables when GTK starts, so `choose`
-//! runs first in `main`, before Tauri, GTK or any thread.
+//! runs after GUI admission, before GTK or any listener/renderer thread.
 //!
 //! `ZERUS_CLIENT_RENDERER=auto|dmabuf|shm` is the only switch (default `auto`).
 //! The decision itself is the pure `decide`; detection reads a root directory so
@@ -408,7 +408,7 @@ pub fn choose() {
             }
         }
     }
-    // SAFETY: `main` calls this before Tauri, GTK or any thread exists, so no
+    // SAFETY: GUI admission calls this before GTK or any thread exists, so no
     // other thread can read or write the environment concurrently.
     unsafe {
         for (name, value) in &decision.set {

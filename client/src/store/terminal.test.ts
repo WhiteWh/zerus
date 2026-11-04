@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createRoot } from "solid-js";
-import { cleanPaste, createTerminal, RESIZE_MS, type Screen, type TerminalPort, type Timers } from "./terminal";
+import { cleanPaste, createTerminal, RESIZE_MS, screenShowsLatest, type Screen, type ScreenBuffer, type TerminalPort, type Timers } from "./terminal";
 import type { PageVisibility } from "./visibility";
 import type { TerminalEvent, TerminalStatus, TerminalTarget } from "../types";
 
@@ -734,6 +734,74 @@ describe("terminal store: Rust's attach and the view agree", () => {
       t.leaveSession();
       await t.setTarget(undefined, undefined);
       expect(f.views.size).toBe(0);
+    });
+  });
+});
+
+describe("the latest output in view (checkViewedReply's Terminal branch)", () => {
+  const buffer = (lines: string[], viewportY: number, baseY: number, rows = 3): ScreenBuffer => ({
+    rows, buffer: { active: { viewportY, baseY, getLine: (y) => (y < lines.length ? { translateToString: () => lines[y] } : undefined) } },
+  });
+
+  it("is the bottom of a screen with text", () => {
+    expect(screenShowsLatest(buffer(["old", "", "$ done"], 0, 0))).toBe(true);
+    expect(screenShowsLatest(buffer(["a", "b", "c", "d", "e"], 2, 2))).toBe(true);
+  });
+
+  it("is not a screen scrolled back or a blank screen", () => {
+    expect(screenShowsLatest(buffer(["a", "b", "c", "d", "e"], 1, 2))).toBe(false);
+    expect(screenShowsLatest(buffer(["", "   ", "\t"], 0, 0))).toBe(false);
+    expect(screenShowsLatest(buffer([], 0, 0))).toBe(false);
+  });
+
+  it("reads the actual xterm buffer", async () => {
+    Object.defineProperty(globalThis, "self", { value: globalThis, configurable: true });
+    const { Terminal } = await import("@xterm/xterm");
+    const term = new Terminal({ rows: 4, cols: 20, scrollback: 100 });
+    expect(screenShowsLatest(term)).toBe(false);
+    await new Promise<void>((resolve) => term.write(Array.from({ length: 10 }, (_, n) => `line ${n}`).join("\r\n"), resolve));
+    expect(screenShowsLatest(term)).toBe(true);
+    term.scrollLines(-2);
+    expect(screenShowsLatest(term)).toBe(false);
+    term.scrollToBottom();
+    expect(screenShowsLatest(term)).toBe(true);
+    term.dispose();
+  });
+
+  it("needs a connected attach and a shown screen that reports it", async () => {
+    const f = fakes();
+    await createRoot(async () => {
+      const t = createTerminal(f.port, f.timers, f.visibility);
+      let latest = true;
+      const screen: Screen = { ...f.screen, latest: () => latest };
+      await t.setTarget(target(), ok);
+      expect(t.showsLatest()).toBe(false);
+      t.show(screen);
+      await tick();
+      expect(t.connected()).toBe(true);
+      expect(t.showsLatest()).toBe(true);
+      latest = false;
+      expect(t.showsLatest()).toBe(false);
+      latest = true;
+      await t.disconnect();
+      expect(t.showsLatest()).toBe(false);
+      await t.connect();
+      expect(t.showsLatest()).toBe(true);
+      t.hide();
+      expect(t.connected()).toBe(true);
+      expect(t.showsLatest()).toBe(false);
+    });
+  });
+
+  it("is false for a screen that cannot say", async () => {
+    const f = fakes();
+    await createRoot(async () => {
+      const t = createTerminal(f.port, f.timers, f.visibility);
+      await t.setTarget(target(), ok);
+      t.show(f.screen);
+      await tick();
+      expect(t.connected()).toBe(true);
+      expect(t.showsLatest()).toBe(false);
     });
   });
 });

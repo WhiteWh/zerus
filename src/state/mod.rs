@@ -18,6 +18,7 @@ mod computer_files;
 pub(crate) mod voice;
 mod interrupt;
 mod clear_context;
+mod codex_clear_recovery;
 mod compact_context;
 mod continuations;
 mod cache_hint;
@@ -63,6 +64,7 @@ mod codex_trust;
 mod codex_hooks_trust;
 mod codex_update;
 mod codex_goal_resume;
+mod codex_rate_limit;
 mod read_marks;
 mod notifications;
 mod recipes;
@@ -90,7 +92,9 @@ pub(crate) mod teams;
 pub(crate) mod iron_rules;
 mod telemetry;
 mod terminate;
+mod untracked_shell;
 mod session_action;
+pub(crate) use session_action::status_machine as lifecycle_receipt_machine;
 mod shown_path;
 mod startup_choice;
 mod terminal;
@@ -98,7 +102,7 @@ mod conversation_history;
 mod usage;
 mod workspace;
 mod git_status;
-mod repositories;
+pub(crate) mod repositories;
 mod worktrees;
 mod worktree_requests;
 mod worktree_cleanup;
@@ -805,6 +809,9 @@ pub(crate) fn inspect_reference(reference: &crate::session_reference::Reference)
     if !reference.agent.is_empty() && output["parent_conversation_id"].as_str() != Some(reference.conversation.as_str()) {
         return Err("Parent conversation changed while resolving its child reference".into());
     }
+    if reference.archive.is_empty() && reference.agent.is_empty() && !opencode::exists(&name) && !dsh::exists(&name) {
+        read_marks::observation::enrich(&mut output);
+    }
     output["session_reference"] = json!({"machine_id":reference.machine,"host":reference.host,"original_name":reference.name,
         "name":name,"conversation_id":reference.conversation,"agent_id":reference.agent});
     Ok(output)
@@ -831,10 +838,51 @@ pub(crate) fn task_reply_receipt(name: &str, request: &Value) -> Result<Option<V
 /// Task routing uses saved identity metadata only: no provider inspection,
 /// history, process reconciliation or native API calls for each task row.
 pub(crate) fn task_bindings() -> Result<Vec<Value>> {
+    task_bindings_in(&root())
+}
+
+/// The record fields task routing reads (`tasks::sessions`).
+const TASK_BINDING_FIELDS: [&str; 6] = ["name", "run_id", "launch_id", "journal_name", "legacy_shadow", "rename_shadow"];
+
+/// A saved record reduced to [`TASK_BINDING_FIELDS`]. Every other field, such
+/// as up to 128 shell jobs with their full command texts, is skipped while
+/// parsing rather than built into a value.
+struct TaskBinding(serde_json::Map<String, Value>);
+
+impl<'de> serde::Deserialize<'de> for TaskBinding {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        struct Fields;
+        impl<'de> serde::de::Visitor<'de> for Fields {
+            type Value = TaskBinding;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a session record object")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> std::result::Result<TaskBinding, A::Error> {
+                let mut row = serde_json::Map::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if TASK_BINDING_FIELDS.contains(&key.as_str()) {
+                        row.insert(key, map.next_value()?);
+                    } else {
+                        map.next_value::<serde::de::IgnoredAny>()?;
+                    }
+                }
+                Ok(TaskBinding(row))
+            }
+        }
+        deserializer.deserialize_map(Fields)
+    }
+}
+
+/// [`task_bindings`] below the state directory `root`. A record that cannot be
+/// read is reported and skipped; one removed meanwhile is skipped silently.
+/// One buffer, bounded by the session graph's record limit, serves every
+/// record: a record it indexes also routes tasks.
+pub(crate) fn task_bindings_in(root: &Path) -> Result<Vec<Value>> {
     use std::fs;
-    use std::io::Read;
+    let limit = session_graph::MAX_RECORD;
+    let mut bytes = Vec::new();
     let mut rows = Vec::new();
-    for directory in [root(), root().join("bindings"), root().join("dsh/bindings"), root().join("opencode/bindings")] {
+    for directory in [root.to_owned(), root.join("bindings"), root.join("dsh/bindings"), root.join("opencode/bindings")] {
         let entries = match fs::read_dir(directory) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -844,16 +892,30 @@ pub(crate) fn task_bindings() -> Result<Vec<Value>> {
             let path = entry.path();
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             if path.extension().is_none_or(|s| s != "json") || stem.len() != 64 || !stem.bytes().all(|c| c.is_ascii_hexdigit()) { continue; }
-            let row = (|| {
-                let mut bytes = Vec::new();
-                let file = crate::platform::no_follow(std::fs::OpenOptions::new().read(true)).open(&path).ok()?;
-                if !file.metadata().ok()?.is_file() { return None; }
-                file.take(1024 * 1024 + 1).read_to_end(&mut bytes).ok()?;
-                if bytes.len() > 1024 * 1024 { return None; }
-                let row: Value = serde_json::from_slice(&bytes).ok()?;
-                (row["rename_shadow"] != true && !string(&row, "name").is_empty() && !string(&row, "run_id").is_empty()).then_some(row)
+            let row = (|| -> Result<Option<Value>> {
+                let file = match crate::platform::no_follow(fs::OpenOptions::new().read(true)).open(&path) {
+                    Ok(file) => file,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                    Err(error) => return Err(error.to_string()),
+                };
+                let metadata = file.metadata().map_err(|e| e.to_string())?;
+                let too_large = || format!("larger than {} MiB", limit >> 20);
+                if !metadata.is_file() { return Err("not a regular file".into()); }
+                if metadata.len() > limit { return Err(too_large()); }
+                bytes.clear();
+                file.take(limit + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+                if bytes.len() as u64 > limit { return Err(too_large()); }
+                // Parser text may quote private record data; report its position only.
+                let TaskBinding(row) = serde_json::from_slice(&bytes)
+                    .map_err(|e| format!("invalid saved binding at line {} column {}", e.line(), e.column()))?;
+                let row = Value::Object(row);
+                Ok((row["rename_shadow"] != true && !string(&row, "name").is_empty() && !string(&row, "run_id").is_empty()).then_some(row))
             })();
-            if let Some(row) = row { rows.push(row); }
+            match row {
+                Ok(Some(row)) => rows.push(row),
+                Ok(None) => {}
+                Err(error) => eprintln!("hgs: cannot read {} for task routing: {error}", path.display()),
+            }
         }
     }
     Ok(rows)
@@ -862,6 +924,8 @@ pub(crate) fn task_bindings() -> Result<Vec<Value>> {
 /// Compatibility entry point used by `hgs __state` and the legacy hook shim.
 pub fn dispatch(args: &[String]) -> Result<i32> {
     if args.first().map(String::as_str)==Some("rules") { return iron_rules::dispatch(&args[1..]); }
+    // Receipt observation needs neither a native host nor a state writer.
+    if args.first().map(String::as_str)==Some("session-action-status") { return session_action::status_dispatch(&args[1..]); }
     // Coordination metadata never starts or controls a native session host.
     if args.first().map(String::as_str)==Some("wait") { return waits::dispatch(&args[1..]); }
     // WhiteWh fork: agent teams.
@@ -985,14 +1049,16 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
         "inspect" => {
             let name = args
                 .first()
-                .ok_or("usage: hgs inspect <session> [--archive ID] [--after cursor] [--skip-processes]")?;
+                .ok_or("usage: hgs inspect <session> [--archive ID] [--after cursor] [--skip-processes] [--read-observation]")?;
             let mut after = 0;
             let mut archive_id = None;
             let mut agent_id = None;
             let mut include_processes = true;
+            let mut read_observation = false;
             let mut index = 1;
             while index < args.len() {
                 if args[index] == "--skip-processes" { include_processes = false; index += 1; continue; }
+                if args[index] == "--read-observation" { read_observation = true; index += 1; continue; }
                 let value = args.get(index + 1).ok_or("missing inspect option value")?;
                 match args[index].as_str() {
                     "--after" => {
@@ -1009,17 +1075,20 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
             if after < 0 {
                 return Err("cursor must be nonnegative".into());
             }
-            let mut inspection = if let Some(id) = agent_id {
+            let mut output = if let Some(id) = agent_id {
                 subagents::inspection(name, id, archive_id)?
             } else {
                 journal::inspection(name, after, archive_id, include_processes)?
             };
+            if read_observation && archive_id.is_none() && agent_id.is_none() {
+                read_marks::observation::enrich(&mut output);
+            }
             // #569: this computer's refused private stores, with their fix;
             // empty when none is refused.
-            if inspection.is_object() {
-                inspection["private_stores"] = json!(crate::private_stores::refused());
+            if output.is_object() {
+                output["private_stores"] = json!(crate::private_stores::refused());
             }
-            println!("{inspection}");
+            println!("{output}");
         }
         "archive" => {
             if args.len() != 1 {
@@ -1081,6 +1150,38 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
         _ => return Err(format!("unknown state operation: {command}")),
     }
     Ok(0)
+}
+
+#[cfg(test)]
+mod task_binding_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn task_bindings_keep_routing_fields_of_any_reasonable_record() {
+        let state = tempfile::tempdir().unwrap();
+        let root = state.path();
+        let file = |n: u8| root.join(format!("{n:064x}.json"));
+        let jobs: serde_json::Map<String, Value> = (0..128)
+            .map(|i| (format!("main:call-{i}"), json!({"command": "y".repeat(12_000), "output": "z".repeat(4096)})))
+            .collect();
+        let large = json!({"version":1,"name":"codex/big","run_id":"run-big","launch_id":"launch-big","journal_name":"codex/first",
+            "legacy_shadow":{"name":"codex/older","run_id":"run-big"},"conversation_id":"conversation","shell_jobs":jobs});
+        fs::write(file(1), serde_json::to_vec(&large).unwrap()).unwrap();
+        assert!(fs::metadata(file(1)).unwrap().len() > 1024 * 1024);
+        // Damaged and absurdly large records are reported and skipped; other
+        // JSON files are not session records.
+        fs::write(file(2), br#"{"name":"codex/damaged","run_id":"#).unwrap();
+        fs::write(file(3), br#"["codex/listed","run-listed"]"#).unwrap();
+        fs::File::create(file(4)).unwrap().set_len(session_graph::MAX_RECORD + 1).unwrap();
+        fs::write(root.join("presence.json"), br#"{"name":"codex/other","run_id":"run-other"}"#).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(file(1), file(5)).unwrap();
+        let rows = task_bindings_in(root).unwrap();
+        assert_eq!(rows, vec![json!({"name":"codex/big","run_id":"run-big","launch_id":"launch-big","journal_name":"codex/first",
+            "legacy_shadow":{"name":"codex/older","run_id":"run-big"}})]);
+        assert_eq!(task_bindings_in(&root.join("missing")).unwrap(), Vec::<Value>::new());
+    }
 }
 
 #[cfg(all(test, not(unix)))]

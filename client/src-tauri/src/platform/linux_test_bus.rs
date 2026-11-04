@@ -26,6 +26,15 @@ impl Bus {
             address: address.trim().to_owned(),
         }
     }
+    /// Backpressure fixture, only for this helper's owned private daemon.
+    #[cfg(feature = "live")]
+    pub fn suspend(&self) -> Suspended<'_> {
+        assert_eq!(
+            unsafe { libc::kill(self.child.id() as i32, libc::SIGSTOP) },
+            0
+        );
+        Suspended(self)
+    }
     pub fn connect(&self) -> zbus::blocking::Connection {
         zbus::blocking::connection::Builder::address(self.address.as_str())
             .unwrap()
@@ -38,5 +47,14 @@ impl Drop for Bus {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+#[cfg(feature = "live")]
+pub struct Suspended<'bus>(&'bus Bus);
+#[cfg(feature = "live")]
+impl Drop for Suspended<'_> {
+    fn drop(&mut self) {
+        let _ = unsafe { libc::kill(self.0.child.id() as i32, libc::SIGCONT) };
     }
 }

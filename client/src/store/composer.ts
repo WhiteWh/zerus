@@ -1,3 +1,4 @@
+import { bus as noticeBus } from "./notices";
 import { batch, createMemo, createRoot, createSignal } from "solid-js";
 import * as bridge from "../bridge";
 import { notify } from "./actions";
@@ -5,6 +6,7 @@ import { suggestions } from "./suggestions";
 import { documentVisibility, type PageVisibility } from "./visibility";
 import type { Timers } from "./terminal";
 import type { Answer, ClearControl, ColdPrompt, ComposerView, Inspect, SendReply, SessionRef, StartQuestion } from "../types";
+import { trNoop, tr } from "../i18n";
 
 // The open composer (Qt MessageComposer) over the Rust hub. The webview owns
 // the text while the user types: edits go to Rust 250 ms after the last key,
@@ -33,9 +35,9 @@ export const EDIT_MS = 250;
 export const MAX_TEXT_BYTES = 64 * 1024;
 /** Qt refuses a pasted image above this many pixels (MessageComposer.cpp:394; core `MAX_IMAGE_PIXELS`). */
 export const MAX_PIXELS = 32_000_000;
-export const TOO_LONG = "Message exceeds 64 KiB.";
-const TOO_LARGE = "Image is too large. Use an image below 32 megapixels.";
-const UNREADABLE = "Could not read the pasted image.";
+export const TOO_LONG = trNoop("Message exceeds 64 KiB.");
+const TOO_LARGE = trNoop("Image is too large. Use an image below 32 megapixels.");
+const UNREADABLE = trNoop("Could not read the pasted image.");
 /** How long the disabled Send's hint shows (Qt's QToolTip, MessageComposer.cpp:817). */
 const HINT_MS = 5000;
 
@@ -55,7 +57,7 @@ export interface ComposerPort {
   allowRetry(handle: number): Promise<void>;
   cancelSend(handle: number): Promise<void>;
   interrupted(handle: number): Promise<void>;
-  clear(handle: number, run: string, conversation: string, dismiss: boolean): Promise<SendReply>;
+  clear(handle: number, run: string, conversation: string, dismiss: boolean, delay?: import("./endActionBusy").EndReference): Promise<SendReply>;
   refresh(handle: number): Promise<void>;
   /** Opens a draft attachment by its `zerus-file` path: null when it opened, else a notice; rejects with why not (Task 9). */
   openAttachment(path: string): Promise<string | null>;
@@ -94,8 +96,10 @@ const realTimers: Timers = { now: () => performance.now(), later: (fn, ms) => { 
 const appNotices: Notices = (tone, text, sticky) => { notify(tone, text, sticky); };
 const utf8 = new TextEncoder();
 
-/** Qt's draft key: `machine\nsession[\narchive]` (src-tauri `draft_key`). */
-export const draftKey = (s: SessionRef) => (s.archive_id ? `${s.computer}\n${s.name}\n${s.archive_id}` : `${s.computer}\n${s.name}`);
+/** Qt's main/archive and four-part child draft keys (src-tauri `session_draft_key`). */
+export const draftKey = (s: SessionRef) => s.subagent
+  ? `${s.computer}\n${s.name}\n${s.subagent.parent_conversation_id}\n${s.subagent.agent_id}`
+  : s.archive_id ? `${s.computer}\n${s.name}\n${s.archive_id}` : `${s.computer}\n${s.name}`;
 
 export type Dialog =
   | { kind: "cold"; token: number; prompt: ColdPrompt }
@@ -115,10 +119,10 @@ export interface StatusLine { text: string; error: boolean }
 export function statusLine(v: ComposerView | undefined, own: string | undefined, tooLong: boolean): StatusLine {
   if (v?.waiting) return { text: v.status, error: v.status_error };
   if (own) return { text: own, error: true };
-  if (!v) return tooLong ? { text: TOO_LONG, error: true } : { text: "", error: false };
+  if (!v) return tooLong ? { text: tr(TOO_LONG), error: true } : { text: "", error: false };
   const below = v.status === "" || v.status === TOO_LONG || v.status === v.session_status || v.status === v.unavailable_reason;
   if (!below) return { text: v.status, error: v.status_error };
-  if (tooLong) return { text: TOO_LONG, error: true };
+  if (tooLong) return { text: tr(TOO_LONG), error: true };
   // Rust's length check may still see older text: the next item then.
   const text = v.status === TOO_LONG ? v.session_status || v.unavailable_reason : v.status;
   return { text, error: text !== "" && text === v.session_status && v.session_status_error };
@@ -138,7 +142,8 @@ function handleSet() {
   };
 }
 
-export function createComposer(port: ComposerPort, timers: Timers = realTimers, images: Images = browserImages, notices: Notices = appNotices, sent: (key: string) => void = () => {}) {
+export type ClearDriver = (session: SessionRef | undefined, control: ClearControl, execute: (reference: import("./endActionBusy").EndReference, key: string) => Promise<SendReply>) => Promise<SendReply | undefined>;
+export function createComposer(port: ComposerPort, timers: Timers = realTimers, images: Images = browserImages, notices: Notices = appNotices, sent: (key: string) => void = () => {}, delayClear?: ClearDriver) {
   const [view, setView] = createSignal<ComposerView | undefined>();
   const [text, setText] = createSignal("");
   /** `start` is the anchor and `end` the cursor position (Qt's anchor and position); start may follow end. */
@@ -171,6 +176,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
   let hintTimer: (() => void) | undefined;
   /** The draft key of the session last opened; a view of another composer is an older answer. */
   let expected: string | undefined;
+  let openedSession: SessionRef | undefined;
   let suggestionKey = "";
   let opens = 0;
   let inFlight = 0;
@@ -206,7 +212,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
     return !(v.attachments.length > 0 && !v.attachments_available);
   };
   /** Qt adds the push action to this message field only (MessageComposer.cpp:841-853). */
-  const pushEnabled = () => !closing() && opening() === 0 && !!view() && view()?.input_visible !== false;
+  const pushEnabled = () => !closing() && opening() === 0 && !!view() && !view()?.subagent && view()?.input_visible !== false;
   /** The old session's queue must not remain actionable while its successor opens. */
   const queue = () => opening() > 0 ? null : view()?.queue ?? null;
 
@@ -356,9 +362,9 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
 
   /** Panel and window shortcut use this hub command; a push keeps its own handle. */
   async function sendNow(queueId?: string): Promise<boolean> {
-    if (closing()) return false;
+    if (closing() || view()?.subagent) return false;
     if (opening() > 0) {
-      notices("info", "Nothing queued can be sent now", false);
+      notices("info", tr("Nothing queued can be sent now"), false);
       return false;
     }
     try { return await port.sendNow(queueId ?? null); }
@@ -414,6 +420,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
     apply, receive,
     async open(session: SessionRef | undefined) {
       if (closing()) return;
+      openedSession = session ? { ...session } : undefined;
       setOpening((n) => n + 1);
       try {
         // The composer being left keeps what was typed: its edit goes first.
@@ -461,10 +468,10 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
           if (blob.type === "image/png") png = new Uint8Array(await blob.arrayBuffer());
           else {
             const { width, height } = await images.size(blob);
-            if (width * height > MAX_PIXELS) { setError(TOO_LARGE); return; }
+            if (width * height > MAX_PIXELS) { setError(tr(TOO_LARGE)); return; }
             png = await images.png(blob);
           }
-        } catch { setError(UNREADABLE); return; }
+        } catch { setError(tr(UNREADABLE)); return; }
         const s = ordered();
         await port.pasteImage(h, png, s.start, s.end);
       });
@@ -503,7 +510,12 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
       if (h === undefined || d?.kind !== "clear") return;
       const at = epoch;
       let r: SendReply;
-      try { r = await port.clear(h, d.control.run, d.control.conversation, d.control.dismiss); } catch (e) {
+      try {
+        const execute = (delay?: import("./endActionBusy").EndReference) => port.clear(h, d.control.run, d.control.conversation, d.control.dismiss, delay);
+        const result = delayClear ? await delayClear(openedSession, d.control, (ref) => execute(ref)) : await execute();
+        if (!result) return;
+        r = result;
+      } catch (e) {
         notices("error", typeof e === "string" ? e : String(e), true);
         return;
       }
@@ -580,7 +592,18 @@ export const composer = createRoot(() => createComposer({
   send: bridge.sendMessage, push: (...args) => bridge.sendPush(...args), sendNow: (id) => bridge.queueSendNow(id), answer: bridge.sendAnswer, remove: bridge.composerRemove, undo: bridge.composerUndoRemove,
   allowRetry: bridge.composerAllowRetry, cancelSend: bridge.sendCancel, interrupted: bridge.sendInterrupted, clear: bridge.clearContext,
   refresh: bridge.composerRefresh, openAttachment: (path) => bridge.attachmentOpenDraft(path), localRetry: bridge.localRetry, localDelete: bridge.localDelete, localInspect: bridge.localInspect,
-}, realTimers, browserImages, appNotices, suggestions.dismiss));
+}, realTimers, browserImages, appNotices, suggestions.dismiss, async (session, control, execute) => {
+  const [{ endActions }, { catalog, rowId }, { captureEnd, sameEnd }] = await Promise.all([import("./endActions"), import("./catalog"), import("./endActionBusy")]);
+  const row = session ? catalog.rows[rowId(session.computer, session.key)] : undefined;
+  if (!row || row.runId !== control.run || row.conversationId !== control.conversation) return;
+  const captured = { ...row };
+  return endActions.schedule([captureEnd(captured, { kind: "clear_context", dismiss_prompt: control.dismiss })], async ([ref], key) => {
+    const reply = await execute(ref, key);
+    if (reply.kind !== "notice") return reply;
+    const changed = reply.error && reply.text === "The session state changed. Open its actions again.";
+    noticeBus.notify(changed || !reply.error ? "info" : "error", changed ? tr("Clear cancelled: the session changed.") : reply.text, !changed && reply.error, key);
+  }, { current: () => sameEnd(captured, catalog.rows[captured.key]) });
+}));
 
 /**
  * Typing not yet flushed goes to Rust when the window hides or the page goes:

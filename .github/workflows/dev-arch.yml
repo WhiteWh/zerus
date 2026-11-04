@@ -41,7 +41,7 @@ jobs:
       # desktop build, so it has a cache family of its own.
       - name: Arch packaging dependencies and unprivileged builder
         run: |
-          pacman -Syu --noconfirm --needed base-devel git rust cmake ninja qt6-base qt6-tools qt6-webengine qt6-multimedia qt6-svg kstatusnotifieritem kwindowsystem kidletime tmux openssh python ccache namcap desktop-file-utils
+          pacman -Syu --noconfirm --needed base-devel git rust nodejs npm webkit2gtk-4.1 gtk3 alsa-lib gstreamer gst-plugins-base-libs libappindicator dbus gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav tmux openssh python ccache namcap desktop-file-utils
           grep -qx 'BUILDENV=(!distcc color !ccache check !sign)' /etc/makepkg.conf ||
             { echo 'The default makepkg BUILDENV changed; review the ccache drop-in.' >&2; exit 1; }
           echo 'BUILDENV=(!distcc color ccache check !sign)' > /etc/makepkg.conf.d/ccache.conf
@@ -57,7 +57,7 @@ jobs:
           path: |
             /home/user/.cargo/registry
             /home/user/.cargo/git
-          key: arch-cargo-v1-${{ steps.epoch.outputs.month }}-${{ hashFiles('Cargo.lock', 'services/mobile/connector/Cargo.lock') }}
+          key: arch-cargo-v1-${{ steps.epoch.outputs.month }}-${{ hashFiles('Cargo.lock', 'services/mobile/connector/Cargo.lock', 'client/src-tauri/Cargo.lock', 'client/media/Cargo.lock', 'client/core/Cargo.lock') }}
           restore-keys: arch-cargo-v1-${{ steps.epoch.outputs.month }}-
       - name: Restore ccache
         id: ccache-restore

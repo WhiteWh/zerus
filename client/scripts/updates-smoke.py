@@ -14,26 +14,35 @@ CLIENT = Path(__file__).resolve().parent.parent
 STATES = ("unchecked", "available", "cached-error", "restart-required", "statusbar")
 THEMES = ("dark", "light")
 
+def text(source):
+    """A core Text (client/src/text.ts) the webview translates."""
+    return {"source": source}
+
+
+def verbatim(value):
+    return {"source": "%1", "args": [{"kind": "verbatim", "value": value}]}
+
+
 BASE = {
     "busy": False,
     "available": False,
-    "heading": "Updates have not been checked",
-    "installed": "0.46.2 (abcdef0)",
-    "latest": "Not checked",
-    "comparison": "",
+    "heading": text("Updates have not been checked"),
+    "installed": verbatim("0.46.2 (abcdef0)"),
+    "latest": text("Not checked"),
+    "comparison": None,
     "last_checked": "Never",
     "cached": False,
-    "error": "",
+    "error": None,
     "channel": "stable",
     "automatic": True,
-    "release_label": "View release",
+    "release_label": text("View release"),
     "release_enabled": False,
     "download_label": None,
     "details": {
-        "ownership": "Local source checkout. Update it from the exact verified source.",
-        "command": "yay -S zerus",
-        "copy_name": "Copy the update command",
-        "instructions": "Review the installation instructions before updating.",
+        "ownership": text("Local source checkout. Update it from the exact verified source."),
+        "command": verbatim("yay -S zerus"),
+        "copy_name": text("Copy the update command"),
+        "instructions": text("Review the installation instructions before updating."),
     },
     "restart_required": False,
     "login_item_deprioritized": False,
@@ -45,20 +54,20 @@ BASE = {
 def view(state):
     result = copy.deepcopy(BASE)
     if state == "checking":
-        result.update(busy=True, heading="Checking for updates…", comparison="A previous comparison")
+        result.update(busy=True, heading=text("Checking for updates…"), comparison=text("A previous comparison"))
     elif state in ("available", "cached-error", "restart-required", "statusbar"):
         result.update(
             available=True,
-            heading="Update available",
-            latest="0.47.0",
-            comparison="Update available for this local build.",
+            heading=text("Update available"),
+            latest=verbatim("0.47.0"),
+            comparison=text("Update available for this local build."),
             last_checked="2026-10-30T00:00:00Z",
             release_enabled=True,
-            download_label="Download dev source",
+            download_label=text("Download dev source"),
             version="0.47.0",
         )
         if state == "cached-error":
-            result.update(cached=True, error="Check failed. Try again later.")
+            result.update(cached=True, error=text("Check failed. Try again later."))
         elif state in ("restart-required", "statusbar"):
             result["restart_required"] = True
         if state == "statusbar":

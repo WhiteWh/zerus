@@ -32,6 +32,9 @@
 //! projected again only after a read finished, the fleet changed, or account
 //! reads started while Overview or Accounts shows (their busy state).
 
+pub mod account_edits;
+pub mod machine_setup;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -286,6 +289,7 @@ impl Hub {
 type SessionNotify = Arc<dyn Fn() + Send + Sync>;
 
 struct Shared {
+    edits: account_edits::Edits,
     hub: Mutex<Hub>,
     hgs: PathBuf,
     allowed: bool,
@@ -306,6 +310,18 @@ struct Shared {
 /// The managed state of the screen commands; clones share it.
 #[derive(Clone)]
 pub struct Screens(Arc<Shared>);
+
+/// Existing Machines page admission, held across an explicit local action.
+struct MachineWork(Screens);
+impl Drop for MachineWork {
+    fn drop(&mut self) {
+        let mut hub = self.0.lock();
+        hub.machines.finish_write();
+        hub.dirty.insert(Screen::Machines);
+        drop(hub);
+        self.0.publish();
+    }
+}
 
 /// A read the hub decided to start.
 #[derive(Clone)]
@@ -355,6 +371,7 @@ impl Screens {
     ) -> Self {
         Self(Arc::new(Shared {
             hub: Mutex::new(Hub::default()),
+            edits: account_edits::Edits::default(),
             hgs,
             allowed,
             spawn,
@@ -567,7 +584,6 @@ impl Screens {
         let hgs = &self.0.hgs;
         let local = ComputerId::local();
         let mut heard: Option<ComputerId> = None;
-        let mut limits: Vec<Run> = Vec::new();
         let runs = match job {
             Run::Catalog(host) => {
                 // Qt's requestAccounts texts, for the Accounts page as for New session.
@@ -576,69 +592,14 @@ impl Screens {
                 } else {
                     launch::read_accounts(hgs, &host)
                 };
-                let failure = reply.as_ref().err().cloned();
                 let now = if failed {
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.now()))
                         .unwrap_or(0)
                 } else {
                     self.now()
                 };
-                let mut hub = self.lock();
-                // A queued follow-up is the page's (its forced poll), for a host it lists.
-                let listed = account_hosts(&hub.fleet);
-                let again = hub.accounts.finish_catalog(&host, reply, now, &listed);
-                hub.stale = true;
-                hub.dirty.extend(ACCOUNT_SCREENS);
-                if hub
-                    .launch
-                    .as_ref()
-                    .is_some_and(|watch| watch.computer == host)
-                {
-                    heard = Some(host.clone());
-                }
-                // Only the first reply since the dialog's ask answers it; a later
-                // one, such as the page's poll, only updated the shared store.
-                if hub
-                    .launch
-                    .as_ref()
-                    .is_some_and(|watch| watch.computer == host && !watch.answered)
-                {
-                    let grouped = match &failure {
-                        // Grouped when the catalog arrives (`m_regroupAccounts`, 380-386, 883).
-                        None => hub.launch.as_ref().and_then(|watch| {
-                            let (entry, members) = launch_members(&hub, watch)?;
-                            Some((style_of(&entry), accounts::group(&members)))
-                        }),
-                        Some(_) => None,
-                    };
-                    let mut late: Option<bool> = None;
-                    if let Some(watch) = hub.launch.as_mut() {
-                        watch.replied = true;
-                        watch.answered = true;
-                        match failure {
-                            None => {
-                                watch.error = None;
-                                watch.groups = grouped;
-                                // No `launch_accounts` waits for it any more: the
-                                // catalog arrived late, and Qt's accountsReady
-                                // asks for its limits (380-388), forced once.
-                                if watch.waiting == 0 {
-                                    late = Some(std::mem::take(&mut watch.force));
-                                }
-                            }
-                            Some(detail) => {
-                                watch.error = Some(format!("Could not load accounts: {detail}"));
-                            }
-                        }
-                    }
-                    if let Some(force) = late {
-                        limits = self.launch_limits(&mut hub, &host, force);
-                    }
-                }
-                let mut runs: Vec<Run> = again.then_some(Run::Catalog(host)).into_iter().collect();
-                runs.append(&mut limits);
-                runs.extend(self.accounts_due(&mut hub, now, false));
-                self.0.catalog_done.notify_all();
+                let (runs, computer) = self.catalog_reply(host, reply, now, false);
+                heard = computer;
                 runs
             }
             Run::Usage(r) => {
@@ -738,6 +699,90 @@ impl Screens {
         if let (Some(computer), Some(notify)) = (heard, self.0.launch_notify.get()) {
             notify(&computer);
         }
+    }
+
+    /// A list read and a catalog mutation complete through the same path:
+    /// New session waiters, queued refreshes and usage reads all hear it.
+    fn catalog_reply(
+        &self,
+        host: ComputerId,
+        reply: Result<Value, String>,
+        now: u64,
+        mutation: bool,
+    ) -> (Vec<Run>, Option<ComputerId>) {
+        let failure = reply.as_ref().err().cloned();
+        let mut heard = None;
+        let mut limits = Vec::new();
+        let mut hub = self.lock();
+        // A queued follow-up is the page's (its forced poll), for a host it lists.
+        let listed = account_hosts(&hub.fleet);
+        let previous_error = hub
+            .accounts
+            .catalogs
+            .get(&host)
+            .and_then(|slot| slot.error.clone());
+        let again = hub.accounts.finish_catalog(&host, reply, now, &listed);
+        // Qt reports a failed edit through its notice bus, without turning
+        // the retained catalog into a failed list read. Dialog waiters still
+        // receive the failure and cannot launch from an unconfirmed reply.
+        if mutation && failure.is_some() {
+            if let Some(slot) = hub.accounts.catalogs.get_mut(&host) {
+                slot.error = previous_error;
+            }
+        }
+        hub.stale = true;
+        hub.dirty.extend(ACCOUNT_SCREENS);
+        if hub
+            .launch
+            .as_ref()
+            .is_some_and(|watch| watch.computer == host)
+        {
+            heard = Some(host.clone());
+        }
+        // Only the first reply since the dialog's ask answers it; a later
+        // one, such as the page's poll, only updated the shared store.
+        if hub
+            .launch
+            .as_ref()
+            .is_some_and(|watch| watch.computer == host && !watch.answered)
+        {
+            let grouped = match &failure {
+                // Grouped when the catalog arrives (`m_regroupAccounts`, 380-386, 883).
+                None => hub.launch.as_ref().and_then(|watch| {
+                    let (entry, members) = launch_members(&hub, watch)?;
+                    Some((style_of(&entry), accounts::group(&members)))
+                }),
+                Some(_) => None,
+            };
+            let mut late: Option<bool> = None;
+            if let Some(watch) = hub.launch.as_mut() {
+                watch.replied = true;
+                watch.answered = true;
+                match failure {
+                    None => {
+                        watch.error = None;
+                        watch.groups = grouped;
+                        // No `launch_accounts` waits for it any more: the
+                        // catalog arrived late, and Qt's accountsReady
+                        // asks for its limits (380-388), forced once.
+                        if watch.waiting == 0 {
+                            late = Some(std::mem::take(&mut watch.force));
+                        }
+                    }
+                    Some(detail) => {
+                        watch.error = Some(format!("Could not load accounts: {detail}"));
+                    }
+                }
+            }
+            if let Some(force) = late {
+                limits = self.launch_limits(&mut hub, &host, force);
+            }
+        }
+        let mut runs: Vec<Run> = again.then_some(Run::Catalog(host)).into_iter().collect();
+        runs.append(&mut limits);
+        runs.extend(self.accounts_due(&mut hub, now, false));
+        self.0.catalog_done.notify_all();
+        (runs, heard)
     }
 
     /// A panic files a failed reply through the existing completion path,
@@ -1008,6 +1053,84 @@ impl Screens {
             self.run([Run::Machines]);
         }
         self.machines_answer()
+    }
+
+    /// One explicit local profile write. The existing CLI owns the config file
+    /// lock/revision; this hub only serializes the page's admission.
+    pub fn change_machine(
+        &self,
+        request: zerus_client_core::machine_connections::Request,
+    ) -> Result<(), String> {
+        use zerus_client_core::machine_connections;
+        if !self.0.allowed {
+            return Err(REPLAY_NEEDS_HGS.into());
+        }
+        let call = {
+            let mut hub = self.lock();
+            let list = hub
+                .machines
+                .list
+                .as_ref()
+                .ok_or(machine_connections::CHANGED)?;
+            let call = machine_connections::prepare(list, &request)?;
+            if !hub.machines.start_write() {
+                return Err("A machine request is already running.".into());
+            }
+            hub.dirty.insert(Screen::Machines);
+            call
+        };
+        let _writing = MachineWork(self.clone());
+        self.publish();
+        let exit = zerus_client_core::run_limited(
+            &self.0.hgs,
+            &call,
+            &[],
+            machine_connections::RESPONSE_BYTES,
+        )
+        .map_err(|_| machine_connections::UNCERTAIN.to_owned())?;
+        machine_connections::checked(exit, &request.alias)?;
+        let reply = message(reads::read(
+            &self.0.hgs,
+            &ComputerId::local(),
+            &Read::Machines,
+        ));
+        self.lock().machines.finish_list(reply);
+        Ok(())
+    }
+
+    /// Open the saved alias in the configured terminal, including offline
+    /// aliases whose host key or login needs manual repair. No remote probe.
+    pub fn ssh_machine(
+        &self,
+        reference: zerus_client_core::machine_connections::Reference,
+        terminal: &mut zerus_client_core::terminal_launch::Launcher,
+    ) -> Result<Option<String>, String> {
+        use zerus_client_core::machine_connections;
+        if !self.0.allowed {
+            return Err(REPLAY_NEEDS_HGS.into());
+        }
+        {
+            let mut hub = self.lock();
+            let list = hub
+                .machines
+                .list
+                .as_ref()
+                .ok_or(machine_connections::CHANGED)?;
+            machine_connections::ssh_arguments(list, &reference)?;
+            if !hub.machines.start_write() {
+                return Err("A machine request is already running.".into());
+            }
+            hub.dirty.insert(Screen::Machines);
+        }
+        let _work = MachineWork(self.clone());
+        self.publish();
+        let fresh = message(reads::read(
+            &self.0.hgs,
+            &ComputerId::local(),
+            &Read::Machines,
+        ))?;
+        let args = machine_connections::ssh_arguments(&fresh, &reference)?;
+        terminal.open_program(&self.0.hgs.to_string_lossy(), &args)
     }
 
     /// The selected peer's effective connection, read on selection.
@@ -1334,6 +1457,78 @@ pub fn machines_view(
     force: bool,
 ) -> Result<Revisioned<MachinesView>, String> {
     Ok(state.machines(force))
+}
+
+#[tauri::command]
+pub async fn machine_change(
+    state: State<'_, Screens>,
+    request: zerus_client_core::machine_connections::Request,
+) -> Result<(), String> {
+    let screens = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || screens.change_machine(request))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// Explicit Machines click: use the existing terminal/console host and hgs.
+#[tauri::command]
+pub async fn machine_ssh(
+    app: tauri::AppHandle,
+    state: State<'_, Screens>,
+    reference: zerus_client_core::machine_connections::Reference,
+) -> Result<Option<String>, String> {
+    use tauri::Manager;
+    if crate::actions::blocked() {
+        return Err(REPLAY_NEEDS_HGS.into());
+    }
+    let screens = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?;
+        let settings = crate::desk::terminal_settings(&dir);
+        let mut terminal = zerus_client_core::terminal_launch::Launcher::new(settings);
+        screens.ssh_machine(reference, &mut terminal)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Choose a path only. The draft owns late-result checks; no key bytes are read.
+#[tauri::command]
+pub async fn machine_pick_key(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    if crate::actions::blocked() {
+        return Err(REPLAY_NEEDS_HGS.into());
+    }
+    let window = crate::main_window(&app).ok_or("The main window is unavailable.")?;
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("Choose SSH private key")
+            .set_parent(&window)
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    let Some(file) = picked else {
+        return Ok(None);
+    };
+    let path = file
+        .into_path()
+        .map_err(|_| "Choose a local SSH key file.".to_owned())?;
+    if !path.is_absolute() {
+        return Err("Choose a local SSH key file.".into());
+    }
+    let path = path
+        .to_str()
+        .ok_or("Choose a local SSH key file.")?
+        .to_owned();
+    if path.len() > 4096 || path.chars().any(char::is_control) {
+        return Err("Choose an absolute SSH key path or a path starting with ~/ .".into());
+    }
+    Ok(Some(path))
 }
 
 #[tauri::command(async)]
@@ -2155,6 +2350,266 @@ mod tests {
         h.drain();
         assert_eq!(h.count("account ls"), 2);
         assert_eq!(h.published(Screen::Accounts)["busy"], json!(false));
+    }
+
+    #[test]
+    fn machine_setup_rechecks_and_runs_only_the_original_confirmed_call() {
+        let snapshot = json!({"local":"fixture-local","revision":"a".repeat(64),"machines":[{"alias":"fixture-peer"}]});
+        let command = format!(
+            "machine setup fixture-peer --revision {} --source /synthetic/source",
+            "a".repeat(64)
+        );
+        let h = harness(
+            json!({"machine ls":{"stdout":snapshot.to_string()},(command.clone()):{"stdout":"setup complete"}}),
+            true,
+        );
+        h.screens.lock().machines.finish_list(Ok(snapshot));
+        let result = h
+            .screens
+            .setup_machine(
+                machine_setup::Request::Install {
+                    reference: zerus_client_core::machine_connections::Reference {
+                        alias: "fixture-peer".into(),
+                        revision: "a".repeat(64),
+                    },
+                    source: "/synthetic/source".into(),
+                },
+                None,
+            )
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(h.count("machine ls"), 1);
+        assert_eq!(h.count(&command), 1);
+        assert!(!h.screens.machines(false).busy);
+    }
+    #[test]
+    fn machine_setup_local_enable_checks_current_console_and_original_identity() {
+        use zerus_client_core::machine::{LocalHost, MachineMeta};
+        let h = harness(
+            json!({"session-host status --json":{"stdout":"{\"enabled\":false}"},"session-host install --json":{"stdout":"{\"enabled\":true}"}}),
+            true,
+        );
+        let meta = MachineMeta {
+            machine_id: Some("original".into()),
+            platform: Some("windows".into()),
+            local_sessions: Some(false),
+            local_host: Some(LocalHost {
+                state: Some("not-installed".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(h
+            .screens
+            .setup_machine(
+                machine_setup::Request::Enable {
+                    machine_id: "replaced".into()
+                },
+                Some(meta.clone())
+            )
+            .is_err());
+        assert_eq!(h.count("session-host install --json"), 0);
+        let result = h
+            .screens
+            .setup_machine(
+                machine_setup::Request::Enable {
+                    machine_id: "original".into(),
+                },
+                Some(meta),
+            )
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(h.count("session-host status --json"), 1);
+        assert_eq!(h.count("session-host install --json"), 1);
+    }
+
+    struct MachineTerminal(Arc<Mutex<Vec<zerus_client_core::terminal_launch::Start>>>);
+    impl zerus_client_core::terminal_launch::Desktop for MachineTerminal {
+        fn find(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn env(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn exists(&self, _: &str) -> bool {
+            false
+        }
+        fn home(&self) -> String {
+            "/synthetic/home".into()
+        }
+        fn console_host(&self) -> String {
+            "unused".into()
+        }
+        fn start(
+            &mut self,
+            start: &zerus_client_core::terminal_launch::Start,
+        ) -> Result<(), String> {
+            self.0.lock().unwrap().push(start.clone());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn machine_ssh_rechecks_the_saved_alias_and_uses_the_maintained_terminal_route() {
+        use zerus_client_core::{
+            machine_connections::Reference,
+            terminal_launch::{Launcher, NoKonsole, Platform, Settings},
+        };
+        let snapshot = json!({"local":"fixture-local","revision":"a".repeat(64),"machines":[{"alias":"fixture-peer","enabled":false}]});
+        let h = harness(json!({"machine ls":{"stdout":snapshot.to_string()}}), true);
+        h.screens.lock().machines.finish_list(Ok(snapshot));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut terminal = Launcher::with(
+            Settings {
+                template: "fixture-terminal --command {cmd}".into(),
+                ..Default::default()
+            },
+            Platform::Linux,
+            Box::new(MachineTerminal(calls.clone())),
+            Box::new(NoKonsole),
+        );
+        let reference = Reference {
+            alias: "fixture-peer".into(),
+            revision: "a".repeat(64),
+        };
+        assert_eq!(h.screens.ssh_machine(reference, &mut terminal), Ok(None));
+        assert_eq!(
+            h.count("machine ls"),
+            1,
+            "one local recheck, no remote connection probe"
+        );
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].program, "fixture-terminal");
+        assert_eq!(
+            calls[0].arguments,
+            [
+                "--command",
+                &format!("{} machine ssh fixture-peer", h.fake.hgs.display())
+            ]
+        );
+        assert!(!h.screens.machines(false).busy);
+    }
+
+    #[test]
+    fn machine_ssh_refuses_a_changed_revision_before_any_terminal_launch() {
+        use zerus_client_core::{
+            machine_connections::{Reference, CHANGED},
+            terminal_launch::{Launcher, NoKonsole, Platform, Settings},
+        };
+        let snapshot = json!({"local":"fixture-local","revision":"a".repeat(64),"machines":[{"alias":"fixture-peer"}]});
+        let mut changed = snapshot.clone();
+        changed["revision"] = json!("b".repeat(64));
+        let h = harness(json!({"machine ls":{"stdout":changed.to_string()}}), true);
+        h.screens.lock().machines.finish_list(Ok(snapshot));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut terminal = Launcher::with(
+            Settings {
+                template: "fixture-terminal --command {cmd}".into(),
+                ..Default::default()
+            },
+            Platform::Linux,
+            Box::new(MachineTerminal(calls.clone())),
+            Box::new(NoKonsole),
+        );
+        assert_eq!(
+            h.screens.ssh_machine(
+                Reference {
+                    alias: "fixture-peer".into(),
+                    revision: "a".repeat(64)
+                },
+                &mut terminal
+            ),
+            Err(CHANGED.into())
+        );
+        assert!(calls.lock().unwrap().is_empty());
+        assert!(!h.screens.machines(false).busy);
+    }
+
+    #[test]
+    fn machine_profile_write_uses_the_saved_revision_then_refreshes_the_same_hub() {
+        use zerus_client_core::machine_connections::{Change, Request};
+        let old = json!({"local":"fixture-local","revision":"a".repeat(64),
+            "machines":[{"alias":"fixture-peer","source":"local","inherited":true}]});
+        let mut updated = old.clone();
+        updated["revision"] = json!("b".repeat(64));
+        let command = format!("machine reset fixture-peer --revision {}", "a".repeat(64));
+        let h = harness(
+            json!({
+                command.clone():{"stdout":json!({"ok":true,"alias":"fixture-peer","dry_run":false}).to_string()},
+                "machine ls":{"stdout":updated.to_string()}
+            }),
+            true,
+        );
+        h.screens.lock().machines.finish_list(Ok(old));
+        let req = Request {
+            alias: "fixture-peer".into(),
+            revision: "a".repeat(64),
+            change: Change::Reset,
+        };
+        assert!(h.screens.change_machine(req.clone()).is_ok());
+        assert_eq!(h.count(&command), 1);
+        assert_eq!(h.count("machine ls"), 1);
+        assert_eq!(
+            h.screens.machines(false).connection_revision,
+            "b".repeat(64)
+        );
+        assert!(!h.screens.machines(false).busy);
+        assert!(h.screens.change_machine(req).is_err());
+        assert_eq!(
+            h.count(&command),
+            1,
+            "stale original write never reaches hgs again"
+        );
+    }
+
+    #[test]
+    fn machine_profile_unknown_reply_releases_the_page_lane_without_replay() {
+        use zerus_client_core::machine_connections::{Change, Request, UNCERTAIN};
+        let command = format!("machine remove fixture-peer --revision {}", "a".repeat(64));
+        let h = harness(json!({command.clone():{"stdout":"not-json"}}), true);
+        h.screens.lock().machines.finish_list(Ok(json!({"local":"fixture-local","revision":"a".repeat(64),"machines":[{"alias":"fixture-peer"}]})));
+        let req = Request {
+            alias: "fixture-peer".into(),
+            revision: "a".repeat(64),
+            change: Change::Remove,
+        };
+        assert_eq!(h.screens.change_machine(req), Err(UNCERTAIN.into()));
+        assert!(!h.screens.machines(false).busy);
+        assert_eq!(h.count(&command), 1);
+        assert_eq!(
+            h.queued(),
+            0,
+            "unknown result queues neither retry nor another effect"
+        );
+        assert_eq!(
+            h.count("machine ls"),
+            0,
+            "failed write keeps the reviewed snapshot"
+        );
+    }
+
+    #[test]
+    fn machine_profile_replay_and_an_active_page_read_refuse_before_writing() {
+        use zerus_client_core::machine_connections::{Change, Request};
+        let h = harness(json!({}), false);
+        let req = Request {
+            alias: "fixture-peer".into(),
+            revision: "a".repeat(64),
+            change: Change::Remove,
+        };
+        assert_eq!(
+            h.screens.change_machine(req.clone()),
+            Err(REPLAY_NEEDS_HGS.into())
+        );
+        assert!(h.fake.calls().is_empty());
+        let h = harness(json!({}), true);
+        let mut hub = h.screens.lock();
+        hub.machines.finish_list(Ok(json!({"local":"fixture-local","revision":"a".repeat(64),"machines":[{"alias":"fixture-peer"}]})));
+        assert!(hub.machines.start_check("fixture-peer"));
+        drop(hub);
+        assert!(h.screens.change_machine(req).is_err());
+        assert!(h.fake.calls().is_empty());
     }
 
     #[test]

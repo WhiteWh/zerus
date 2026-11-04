@@ -4,6 +4,7 @@ import { inTauri } from "../../../bridge";
 import { Icon } from "../../lib/icons";
 import { Group, NumberField, Row, SectionHead, Select, Status } from "./ui";
 import { formatDataSize, limitSize, selectedLimit } from "./files-size";
+import { tr, trNoop } from "../../../i18n";
 
 // Settings > Files (tray/src/DownloadCacheSettings.cpp) as the approved
 // mockup lays it out (design/webui/src/screens/settings/General.tsx). The
@@ -65,31 +66,31 @@ export function FilesSection() {
     if (checking()) return undefined;
     if (failure()) return failure();
     if (!v) return undefined;
-    return v.error ?? `Downloaded copies: ${formatDataSize(v.bytes)} in ${v.files} files`;
+    return v.error ?? tr("Downloaded copies: %1 in %2 files", formatDataSize(v.bytes), v.files);
   };
   return (
     <>
-      <SectionHead title="Files" intro="Download and open reuses a verified saved copy from the same machine and path. Show file selects it in your file manager. Download again gets a fresh copy; Download… lets you choose where to save. Existing files are preserved." />
+      <SectionHead title={trNoop("Files")} intro={tr("Download and open reuses a verified saved copy from the same machine and path. Show file selects it in your file manager. Download again gets a fresh copy; Download… lets you choose where to save. Existing files are preserved.")} />
       <Group>
-        <Row label="Downloaded files" for="set-dl-folder">
+        <Row label={trNoop("Downloaded files")} for="set-dl-folder">
           <input id="set-dl-folder" class="field mono set-path" readOnly value={view()?.folder ?? ""} />
-          <button type="button" class="icon-btn" aria-label="Open folder" disabled={!view()} onClick={() => void invoke("files_open_folder").catch(failed)}>
+          <button type="button" class="icon-btn" aria-label={tr("Open folder")} disabled={!view()} onClick={() => void invoke("files_open_folder").catch(failed)}>
             <Icon name="folder" size={15} />
           </button>
         </Row>
-        <Row label="Keep copies" for="set-dl-mode">
+        <Row label={trNoop("Keep copies")} for="set-dl-mode">
           <Select id="set-dl-mode" value={mode()} onChange={setMode}
-            options={[{ value: "never", label: "Never clear" }, { value: "limit", label: "Limit size" }]} />
+            options={[{ value: "never", label: trNoop("Never clear") }, { value: "limit", label: trNoop("Limit size") }]} />
         </Row>
-        <Row label="Maximum size" disabled={mode() !== "limit"}>
-          <NumberField value={size()} min={0.1} max={1024} step={0.5} decimals={1} suffix="GiB" label="Maximum size"
+        <Row label={trNoop("Maximum size")} disabled={mode() !== "limit"}>
+          <NumberField value={size()} min={0.1} max={1024} step={0.5} decimals={1} suffix="GiB" label={trNoop("Maximum size")}
             disabled={mode() !== "limit"} onChange={setSize} />
         </Row>
-        <p class="set-group-hint">Never clear is the default. With a limit, Zerus removes its least recently used downloaded copies first. Files you add or edit are kept. Downloads in progress and copies used in the last minute are protected, so usage can briefly exceed the limit. This setting applies to this computer.</p>
+        <p class="set-group-hint">{tr("Never clear is the default. With a limit, Zerus removes its least recently used downloaded copies first. Files you add or edit are kept. Downloads in progress and copies used in the last minute are protected, so usage can briefly exceed the limit. This setting applies to this computer.")}</p>
         <div class="set-actions">
-          <button type="button" class="btn primary" disabled={!changed() || checking()} onClick={onApply}>Apply</button>
+          <button type="button" class="btn primary" disabled={!changed() || checking()} onClick={onApply}>{tr("Apply")}</button>
           <Show when={checking()} fallback={<Show when={usageText()}>{(text) => <Status kind={failure() || view()?.error ? "error" : "muted"}>{text()}</Status>}</Show>}>
-            <Status kind="busy">Checking downloaded files…</Status>
+            <Status kind="busy">{tr("Checking downloaded files…")}</Status>
           </Show>
         </div>
       </Group>
@@ -108,12 +109,12 @@ function LimitQuestion(props: { bytes: number; answer: (yes: boolean) => void })
   return (
     <dialog class="dlg" ref={(el) => { dialog = el; queueMicrotask(() => el.showModal()); }} aria-labelledby="files-limit-title"
       onCancel={(e) => { e.preventDefault(); answer(false); }}>
-      <div class="dlg-head"><h2 id="files-limit-title">Limit downloaded files?</h2></div>
-      <div class="dlg-body">{`Zerus will automatically delete its oldest downloaded copies when they exceed ${formatDataSize(props.bytes)}. Files you added or edited will be kept.`}</div>
+      <div class="dlg-head"><h2 id="files-limit-title">{tr("Limit downloaded files?")}</h2></div>
+      <div class="dlg-body">{tr("Zerus will automatically delete its oldest downloaded copies when they exceed %1. Files you added or edited will be kept.", formatDataSize(props.bytes))}</div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn" onClick={() => answer(true)}>Apply limit</button>
-        <button type="button" class="btn primary" autofocus onClick={() => answer(false)}>Cancel</button>
+        <button type="button" class="btn" onClick={() => answer(true)}>{tr("Apply limit")}</button>
+        <button type="button" class="btn primary" autofocus onClick={() => answer(false)}>{tr("Cancel")}</button>
       </div>
     </dialog>
   );

@@ -77,7 +77,7 @@ class HostCase(unittest.TestCase):
         if not HGS.is_file():
             raise AssertionError(f"{HGS} is missing; run cargo build --locked")
         self.temp = tempfile.TemporaryDirectory(prefix="hgs-host-")
-        self.addCleanup(self.temp.cleanup)
+        self.addCleanup(self.cleanup_temp)
         self.root = Path(self.temp.name)
         self.state = self.root / "state"
         self.home = self.root / self.PROFILE
@@ -94,6 +94,9 @@ class HostCase(unittest.TestCase):
         # Host processes this case saw running, by process ID.
         self.hosts = {}
         self.addCleanup(self.stop_host)
+
+    def cleanup_temp(self):
+        self.temp.cleanup()
 
     # The host and its tools.
 

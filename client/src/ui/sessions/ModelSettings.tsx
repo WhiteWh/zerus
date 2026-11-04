@@ -5,6 +5,7 @@ import { setDetailTab } from "../../store/ui";
 import { ModelList } from "./ModelPicker";
 import { Icon } from "../lib/icons";
 import "../styles/newsession.css";
+import { tr } from "../../i18n";
 
 function SettingsDialog(props: { anchor: () => HTMLButtonElement | undefined }) {
   let dialog!: HTMLDialogElement;
@@ -34,23 +35,23 @@ function SettingsDialog(props: { anchor: () => HTMLButtonElement | undefined }) 
   return (
     <dialog ref={dialog} class="dlg cmp-settings-dialog" aria-labelledby="cmp-settings-title" onPointerDown={outside}
       onCancel={(e) => { e.preventDefault(); models.close(); }}>
-      <div class="dlg-head"><Icon name="sparkles" size={18} class="accent" /><h2 id="cmp-settings-title">Model and effort</h2><span class="grow" />
-        <button type="button" class="icon-btn" aria-label="Close" title="Close" onClick={() => models.close()}><Icon name="x" size={16} /></button>
+      <div class="dlg-head"><Icon name="sparkles" size={18} class="accent" /><h2 id="cmp-settings-title">{tr("Model and effort")}</h2><span class="grow" />
+        <button type="button" class="icon-btn" aria-label={tr("Close")} title={tr("Close")} onClick={() => models.close()}><Icon name="x" size={16} /></button>
       </div>
       <div class="dlg-body">
         <Show when={!native()}>
-          <div class="form-row"><label for="session-model-choice">Model</label><Show when={v().openCode} fallback={
-            <select id="session-model-choice" class="field" aria-label="Model" value={models.model()} disabled={!v().enabled || choices().length < 2}
+          <div class="form-row"><label for="session-model-choice">{tr("Model")}</label><Show when={v().openCode} fallback={
+            <select id="session-model-choice" class="field" aria-label={tr("Model")} value={models.model()} disabled={!v().enabled || choices().length < 2}
               onChange={(e) => models.chooseModel(e.currentTarget.value)}>
               <For each={choices()}>{(m) => <option value={m.id} selected={m.id === models.model()}>{m.label}</option>}</For>
             </select>
           }>
-            <fieldset disabled={!v().enabled} class="cmp-settings-models" aria-label="Model">
+            <fieldset disabled={!v().enabled} class="cmp-settings-models" aria-label={tr("Model")}>
               <ModelList view={models.picker} act={models.pickerActions} disabled={!v().enabled} />
             </fieldset>
           </Show></div>
-          <div class="form-row"><label for="session-effort-choice">Reasoning effort</label>
-            <select id="session-effort-choice" class="field" aria-label="Reasoning effort" value={models.effort()} disabled={!effortEnabled()}
+          <div class="form-row"><label for="session-effort-choice">{tr("Reasoning effort")}</label>
+            <select id="session-effort-choice" class="field" aria-label={tr("Reasoning effort")} value={models.effort()} disabled={!effortEnabled()}
               onChange={(e) => models.chooseEffort(e.currentTarget.value)}>
               <For each={models.efforts()}>{(e) => <option value={e.value} selected={e.value === models.effort()}>{e.label}</option>}</For>
             </select>
@@ -60,9 +61,9 @@ function SettingsDialog(props: { anchor: () => HTMLButtonElement | undefined }) 
         <Show when={v().changeNotice}><div class="notice warn cmp-settings-notice"><Icon name="info" size={14} /><div>{v().changeNotice}</div></div></Show>
       </div>
       <div class="dlg-foot">
-        <button type="button" class="btn ghost cmp-settings-terminal" onClick={openTerminal}>Open Terminal</button>
+        <button type="button" class="btn ghost cmp-settings-terminal" onClick={openTerminal}>{tr("Open Terminal")}</button>
         <span class="spacer" />
-        <button type="button" class="btn" title="Close without applying changes" onClick={() => models.close()}>Cancel</button>
+        <button type="button" class="btn" title={tr("Close without applying changes")} onClick={() => models.close()}>{tr("Cancel")}</button>
         <Show when={!native()}><button type="button" class="btn primary" disabled={!models.canApply()} onClick={() => { void models.apply(); }}>{v().applyLabel}</button></Show>
       </div>
     </dialog>

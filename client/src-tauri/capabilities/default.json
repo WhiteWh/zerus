@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "The main window of Zerus Next. App commands need no entry here; plugins are added per need.",
-  "windows": ["main"],
+  "webviews": ["main"],
   "permissions": ["core:default"]
 }

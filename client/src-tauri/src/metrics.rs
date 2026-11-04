@@ -520,7 +520,6 @@ pub mod macos {
 pub mod ps {
     use super::{descendants, ProcSample, TreeSample};
     use std::collections::BTreeMap;
-    use std::process::Command;
 
     /// "[[dd-]hh:]mm:ss[.cc]" to seconds.
     pub fn parse_time(text: &str) -> Option<f64> {
@@ -536,7 +535,7 @@ pub mod ps {
     }
 
     pub fn sample_tree(root: u32) -> Result<TreeSample, String> {
-        let output = Command::new("/bin/ps")
+        let output = crate::child_environment::command("/bin/ps")
             .args(["-A", "-o", "pid=,ppid=,rss=,time=,comm="])
             .output()
             .map_err(|error| error.to_string())?;
@@ -753,7 +752,7 @@ mod tests {
         let _tree = crate::PROCESS_TREE
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut child = std::process::Command::new("sleep")
+        let mut child = crate::child_environment::command("sleep")
             .arg("5")
             .spawn()
             .expect("spawn sleep");

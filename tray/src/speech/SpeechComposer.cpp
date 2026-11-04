@@ -67,7 +67,7 @@ SpeechComposer::SpeechComposer(const QString &executable, MessageComposer *compo
     m_preview=new QWidget(composer);m_preview->setObjectName("voicePreview");
     auto *row=new QHBoxLayout(m_preview);row->setContentsMargins(0,4,0,4);
     m_previewLabel=new QLabel;m_previewLabel->setTextFormat(Qt::PlainText);row->addWidget(m_previewLabel);
-    m_play=new QPushButton(tr("Play"));m_play->setObjectName("voicePreviewPlay");row->addWidget(m_play);
+    m_play=new QPushButton(tr("Play","media playback"));m_play->setObjectName("voicePreviewPlay");row->addWidget(m_play);
     m_provider=new QComboBox;m_provider->setObjectName("voiceProvider");m_provider->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);m_provider->setMinimumContentsLength(12);row->addWidget(m_provider,1);
     m_refresh=new QPushButton(tr("Refresh"));m_refresh->setObjectName("voiceRefreshProviders");m_refresh->setToolTip(tr("Refresh available voice providers without recording again"));row->addWidget(m_refresh);
     m_discard=new QPushButton(tr("Discard"));m_discard->setObjectName("voiceDiscard");row->addWidget(m_discard);
@@ -480,7 +480,7 @@ void SpeechComposer::update() {
     m_mode->setAccessibleName(modeLabel);m_mode->setDetail(modeLabel);
     m_cancel->setActive(m_state==State::Starting || recording);
     const bool preview=!m_pcm.isEmpty();m_preview->setVisible(preview);m_previewLabel->setText(tr("Voice %1").arg(duration(m_seconds)));
-    m_play->setText(m_player && m_player->playbackState()==QMediaPlayer::PlayingState?tr("Pause"):tr("Play"));
+    m_play->setText(m_player && m_player->playbackState()==QMediaPlayer::PlayingState?tr("Pause","media playback"):tr("Play","media playback"));
     m_play->setEnabled(preview && m_state!=State::Submitting);m_discard->setEnabled(m_state==State::Preview || m_state==State::Uncertain);m_provider->setEnabled(m_state==State::Preview && m_rejection.isEmpty() && m_profilesValidated && !m_profilesLoading);
     m_refresh->setEnabled(m_state==State::Preview && !m_profilesLoading);m_refresh->setText(m_profilesLoading?tr("Checking…"):tr("Refresh"));
     m_provider->setPlaceholderText(m_profilesLoading?tr("Checking providers…"):tr("Choose a voice provider"));m_provider->setToolTip(m_profileError);

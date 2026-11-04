@@ -684,6 +684,15 @@ pub struct InstallReport {
     pub enabled: bool,
 }
 
+/// Install just the maintained CLI for another hgs service. Use the same lock
+/// and image-safe replacement as session-host installation, without enabling
+/// local sessions or changing their existing enablement choice.
+pub fn install_cli(layout: &Layout, source: &Path) -> Result<CliReport, StageError> {
+    fs::create_dir_all(&layout.images).map_err(at(&layout.images))?;
+    let _lock = lock(&layout.images)?;
+    stage_cli(source, &layout.cli)
+}
+
 /// Enable local sessions (D2): stage `source`, the running hgs of version
 /// `version`, as the stable CLI and as a host image, then write the marker.
 /// Idempotent; installs of one user run one at a time.
@@ -959,6 +968,27 @@ mod tests {
         stage_image(&two, &images, "1.1.0").unwrap();
         assert_eq!(current_image_in(&images), Some(images.join(&second)));
         assert_eq!(names(&images), sorted([POINTER, &second, "unrelated"]));
+    }
+
+    #[test]
+    fn service_cli_install_does_not_enable_or_disable_local_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout::new(
+            &dir.path().join("home").to_string_lossy(),
+            &dir.path().join("config"),
+        );
+        let one = source(dir.path(), "one", b"build one", &[]);
+        assert!(install_cli(&layout, &one).unwrap().changed);
+        assert_eq!(fs::read(&layout.cli).unwrap(), b"build one");
+        assert!(!layout.enabled());
+        assert!(current_image_in(&layout.images).is_none());
+        assert!(!install_cli(&layout, &one).unwrap().changed);
+        enable(&layout.marker).unwrap();
+        let marker = fs::read(&layout.marker).unwrap();
+        let two = source(dir.path(), "two", b"build two", &[]);
+        assert!(install_cli(&layout, &two).unwrap().changed);
+        assert_eq!(fs::read(&layout.marker).unwrap(), marker);
+        assert!(layout.enabled());
     }
 
     #[test]

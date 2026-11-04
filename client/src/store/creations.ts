@@ -1,4 +1,5 @@
 import { batch, createEffect, createMemo, createRoot, createSignal, on, untrack } from "solid-js";
+import { tr } from "../i18n";
 import { createStore, produce, reconcile } from "solid-js/store";
 import * as bridge from "../bridge";
 import { catalog, computerFresh } from "./catalog";
@@ -190,7 +191,7 @@ export function createCreations(deps: CreationsDeps) {
   /** The status menu's choice (473-477). */
   function choose(id: string) {
     const c = cards[id];
-    if (!c || c.state === "bound") { deps.notify("info", RESOLVED); return; }
+    if (!c || c.state === "bound") { deps.notify("info", tr(RESOLVED)); return; }
     batch(() => {
       setRevealed(id);
       setAdopted(undefined);

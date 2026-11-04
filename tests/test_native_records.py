@@ -8,10 +8,23 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from test_claude_questions_native import records
+from test_claude_questions_native import failure_evidence, records
+from types import SimpleNamespace
 
 
 class Records(unittest.TestCase):
+    def test_failure_evidence_retains_native_tool_errors_and_bounds_output(self):
+        result=dict(type='tool_result',tool_use_id='toolu_fixture',is_error=True,content='shell error '+('x'*10000))
+        request=dict(messages=[dict(content='prompt'),dict(content=[result])])
+        for name in ('native_requests','requests'):
+            fixture=SimpleNamespace(root=Path('/fixture'),**{name:[request]*20})
+            evidence=json.loads(failure_evidence(fixture))
+            self.assertEqual(evidence['work'],'/fixture/work')
+            self.assertEqual(len(evidence['tool_results']),1)
+            self.assertTrue(evidence['tool_results'][0]['is_error'])
+            self.assertTrue(evidence['tool_results'][0]['content'].startswith('shell error '))
+            self.assertEqual(len(evidence['tool_results'][0]['content']),4096)
+
     def test_only_complete_records_are_read_and_malformed_ones_still_fail(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / 'transcript.jsonl'

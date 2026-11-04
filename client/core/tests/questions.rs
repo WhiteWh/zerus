@@ -111,7 +111,7 @@ fn a_card_without_items_that_cannot_be_answered_still_shows() {
     assert_eq!(selection.pending, 1);
     assert_eq!(shown.unavailable_reason, "Answer this form in OpenCode");
     let view = card(&shown, &AnswerDraft::default(), &ctx());
-    assert_eq!(view.status, "Answer this form in OpenCode");
+    assert_eq!(view.status.english(), "Answer this form in OpenCode");
     assert!(!view.submit.visible);
 }
 
@@ -265,7 +265,7 @@ fn a_sending_draft_loads_uncertain() {
     let view = card(&question(ask("a", false, 1.0)), &draft, &ctx());
     assert!(view.retry && !view.submit.enabled);
     assert_eq!(
-        view.status,
+        view.status.english(),
         "Delivery was interrupted. Check Activity or Terminal before sending again."
     );
 }
@@ -418,7 +418,14 @@ fn a_submitted_codex_answer_is_restored_and_hidden() {
     assert!(!AnswerDraft::default().restore_submitted(&question(raw)));
     let view = card(&shown, &draft, &ctx());
     assert_eq!(
-        (view.submit.label.as_str(), view.progress.as_str()),
+        (
+            view.submit.label.english().as_str(),
+            view.progress
+                .as_ref()
+                .map(|t| t.english())
+                .unwrap_or_default()
+                .as_str()
+        ),
         ("Submitted", "Awaiting agent")
     );
 }
@@ -557,21 +564,28 @@ fn a_broader_option_needs_a_second_confirm() {
     );
     assert!(draft.confirm_step(&form), "the first Submit only asks");
     let view = card(&form, &draft, &ctx());
-    assert_eq!(view.submit.label, "Confirm");
-    assert_eq!(view.submit.review_label.as_deref(), Some("Submit answer"));
+    assert_eq!(view.submit.label.english(), "Confirm");
     assert_eq!(
-        view.status,
+        view.submit
+            .review_label
+            .as_ref()
+            .map(|t| t.english())
+            .as_deref(),
+        Some("Submit answer")
+    );
+    assert_eq!(
+        view.status.english(),
         "\u{201C}Yes, and don't ask again\u{201D} changes the agent's permissions beyond this request. Select Confirm to send it."
     );
     assert!(!draft.confirm_step(&form), "the second sends");
     let option = &view.forms[0].options[1];
     assert_eq!(
-        option.description,
+        option.description.english(),
         "Applies beyond this request. Asks for confirmation."
     );
     assert!(!option.markdown);
     assert_eq!(
-        view.forms[0].options[2].description,
+        view.forms[0].options[2].description.english(),
         "Tell Claude what to do"
     );
     assert!(view.review && view.forms[0].monospace_body);
@@ -615,25 +629,42 @@ fn card_labels_and_status_priority() {
     let shown = question(ask("a", false, 1.0));
     let mut draft = AnswerDraft::default();
     let view = card(&shown, &draft, &ctx());
-    assert_eq!(view.heading, "Agent needs your answer");
-    assert_eq!(view.status, "Answer each question to continue.");
+    assert_eq!(view.heading.english(), "Agent needs your answer");
+    assert_eq!(view.status.english(), "Answer each question to continue.");
     assert_eq!(
-        (view.progress.as_str(), view.pending.as_str()),
+        (
+            view.progress
+                .as_ref()
+                .map(|t| t.english())
+                .unwrap_or_default()
+                .as_str(),
+            view.pending
+                .as_ref()
+                .map(|t| t.english())
+                .unwrap_or_default()
+                .as_str()
+        ),
         ("0 of 1 answered", "1 pending")
     );
-    assert_eq!(view.submit.label, "Submit answer");
+    assert_eq!(view.submit.label.english(), "Submit answer");
     assert!(view.submit.visible && !view.submit.enabled);
-    assert_eq!(view.forms[0].tab, "1: Database");
-    assert_eq!(view.forms[0].mode, "Select one");
+    assert_eq!(view.forms[0].tab.english(), "1: Database");
+    assert_eq!(view.forms[0].mode.english(), "Select one");
     let other = view.forms[0].other.as_ref().unwrap();
     assert_eq!(
-        (other.label.as_str(), other.description.as_str()),
+        (
+            other.label.english().as_str(),
+            other.description.english().as_str()
+        ),
         ("Other", "Write your own answer")
     );
     let field = view.forms[0].text.as_ref().unwrap();
     assert!(!field.visible);
-    assert_eq!(field.accessible_name, "Your answer to Which database?");
-    assert_eq!(field.placeholder, "Write your answer\u{2026}");
+    assert_eq!(
+        field.accessible_name.english(),
+        "Your answer to Which database?"
+    );
+    assert_eq!(field.placeholder.english(), "Write your answer\u{2026}");
     draft.apply(
         &shown,
         Edit::Option {
@@ -643,9 +674,16 @@ fn card_labels_and_status_priority() {
         },
     );
     let ready = card(&shown, &draft, &ctx());
-    assert_eq!(ready.status, "Your choices are ready to send.");
-    assert_eq!(ready.forms[0].tab, "\u{2713} 1: Database");
-    assert_eq!(ready.progress, "1 of 1 answered");
+    assert_eq!(ready.status.english(), "Your choices are ready to send.");
+    assert_eq!(ready.forms[0].tab.english(), "\u{2713} 1: Database");
+    assert_eq!(
+        ready
+            .progress
+            .as_ref()
+            .map(|t| t.english())
+            .unwrap_or_default(),
+        "1 of 1 answered"
+    );
     assert!(ready.submit.enabled);
     // A custom answer's problem comes before the generic texts.
     draft.apply(
@@ -663,7 +701,7 @@ fn card_labels_and_status_priority() {
         },
     );
     assert_eq!(
-        card(&shown, &draft, &ctx()).status,
+        card(&shown, &draft, &ctx()).status.english(),
         "Use Terminal for answers starting with / or !."
     );
     // Unavailable, then loading.
@@ -673,7 +711,9 @@ fn card_labels_and_status_priority() {
         ..CardContext::default()
     };
     assert_eq!(
-        card(&shown, &AnswerDraft::default(), &unavailable).status,
+        card(&shown, &AnswerDraft::default(), &unavailable)
+            .status
+            .english(),
         "This session is not running."
     );
     let loading = CardContext {
@@ -681,18 +721,18 @@ fn card_labels_and_status_priority() {
         ..ctx()
     };
     let view = card(&shown, &AnswerDraft::default(), &loading);
-    assert_eq!(view.status, "Loading your saved answer\u{2026}");
+    assert_eq!(view.status.english(), "Loading your saved answer\u{2026}");
     assert!(view.locked);
     // The draft's notice, then a storage error over it.
     let mut failing = AnswerDraft::default();
     failing.set_error("Answer transfer failed (exit 1).", false);
     assert_eq!(
-        card(&shown, &failing, &ctx()).status,
+        card(&shown, &failing, &ctx()).status.english(),
         "Answer transfer failed (exit 1)."
     );
     failing.storage_error = "Your draft could not be saved.".into();
     let view = card(&shown, &failing, &ctx());
-    assert_eq!(view.status, "Your draft could not be saved.");
+    assert_eq!(view.status.english(), "Your draft could not be saved.");
     assert!(view.status_error);
     // An uncertain answer locks Submit until Allow retry.
     let mut uncertain = AnswerDraft::default();
@@ -706,7 +746,7 @@ fn card_labels_and_status_priority() {
     );
     uncertain.begin_sending();
     assert_eq!(
-        card(&shown, &uncertain, &ctx()).submit.label,
+        card(&shown, &uncertain, &ctx()).submit.label.english(),
         "Submitting\u{2026}"
     );
     uncertain.set_error(
@@ -715,7 +755,7 @@ fn card_labels_and_status_priority() {
     );
     let view = card(&shown, &uncertain, &ctx());
     assert_eq!(
-        view.status,
+        view.status.english(),
         "Delivery is not confirmed. Check Terminal before retrying. Answer delivery timed out. Check Terminal before retrying."
     );
     assert!(view.retry && !view.submit.enabled);
@@ -725,9 +765,9 @@ fn card_labels_and_status_priority() {
     // Optional and approval headings.
     let optional = question(ask("o", true, 1.0));
     let view = card(&optional, &AnswerDraft::default(), &ctx());
-    assert_eq!(view.heading, "Optional question");
+    assert_eq!(view.heading.english(), "Optional question");
     assert_eq!(
-        view.status,
+        view.status.english(),
         "The agent can continue. Answer when ready or skip this question."
     );
     assert!(view.skip.visible && view.skip.enabled);
@@ -737,17 +777,17 @@ fn card_labels_and_status_priority() {
         ..ctx()
     };
     let view = card(&optional, &AnswerDraft::default(), &queued);
-    assert_eq!(view.heading, "Optional question #2/3");
+    assert_eq!(view.heading.english(), "Optional question #2/3");
     let nav = view.nav.unwrap();
     assert!(nav.previous && nav.next);
     assert_eq!(
-        nav.next_tip,
+        nav.next_tip.english(),
         "Next queued question (older)\nRequest 2 of 3, newest first. Draft answers are kept when switching."
     );
     // The status is cut to 600 units.
     let mut long = AnswerDraft::default();
     long.set_error(&"x".repeat(700), false);
-    assert_eq!(card(&shown, &long, &ctx()).status.len(), 600);
+    assert_eq!(card(&shown, &long, &ctx()).status.english().len(), 600);
 }
 
 #[test]
@@ -758,20 +798,33 @@ fn approvals_without_choices_use_approve_and_deny() {
         "questions": [{"id": "q_0", "question": "Allow?", "options": [{"id": "allow", "label": "Allow"}, {"id": "deny", "label": "Deny"}]}]}),
     );
     let view = card(&form, &AnswerDraft::default(), &ctx());
-    assert_eq!(view.heading, "Agent needs your approval");
+    assert_eq!(view.heading.english(), "Agent needs your approval");
     assert!(!view.submit.visible);
     assert!(view.approve.visible && view.approve.enabled && view.deny.enabled);
-    assert_eq!(view.approve.review_label.as_deref(), Some("Approve once"));
+    assert_eq!(
+        view.approve
+            .review_label
+            .as_ref()
+            .map(|t| t.english())
+            .as_deref(),
+        Some("Approve once")
+    );
     assert_eq!(view.deny.review_label, None);
     assert!(
         !view.forms[0].options[0].visible,
         "the pair has its own buttons"
     );
     assert_eq!(
-        view.status,
+        view.status.english(),
         "Approval applies only to this command. Review it before continuing."
     );
-    assert_eq!(view.progress, "");
+    assert_eq!(
+        view.progress
+            .as_ref()
+            .map(|t| t.english())
+            .unwrap_or_default(),
+        ""
+    );
     assert_eq!(
         serde_json::to_value(decision(&form, true).unwrap()).unwrap(),
         json!([{"question_id": "q_0", "selected_option_ids": ["allow"], "text": ""}])
@@ -787,7 +840,7 @@ fn read_only_cards_disable_their_options() {
     let view = card(&form, &AnswerDraft::default(), &ctx());
     assert!(view.forms[0].options.iter().all(|option| !option.enabled));
     assert!(!view.submit.visible);
-    assert_eq!(view.status, "Answer this request in Terminal.");
+    assert_eq!(view.status.english(), "Answer this request in Terminal.");
     assert!(!AnswerDraft::default().apply(
         &form,
         Edit::Option {
@@ -796,6 +849,21 @@ fn read_only_cards_disable_their_options() {
             checked: true
         }
     ));
+}
+
+#[test]
+fn changed_codex_rate_limit_card_opens_terminal_without_answer_options() {
+    let form = question(
+        json!({"question_id":"codex-rate-limit:fixture","question_hash":"fixture",
+        "source":"codex_rate_limit","can_answer":false,
+        "answer_unavailable_reason":"This Codex chooser changed or is incomplete. Open Terminal to answer it.",
+        "questions":[{"id":"codex_rate_limit","question":"Approaching rate limits",
+            "body":"Future native chooser text","options":[]}]}),
+    );
+    let view = card(&form, &AnswerDraft::default(), &ctx());
+    assert!(!view.submit.visible);
+    assert!(view.status.english().contains("Open Terminal"));
+    assert!(view.forms.iter().all(|form| form.options.is_empty()));
 }
 
 #[test]

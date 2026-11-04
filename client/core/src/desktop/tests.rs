@@ -90,7 +90,10 @@ mod sockets {
         io::{Read, Write},
         os::unix::net::UnixListener,
         path::PathBuf,
-        sync::atomic::{AtomicUsize, Ordering},
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        },
         thread,
         time::Instant,
     };
@@ -113,11 +116,34 @@ mod sockets {
         }
     }
     fn peer(reply: Vec<u8>, silent: bool, slow: bool) -> Observation {
+        measured_peer(reply, silent, slow, Duration::ZERO).0
+    }
+    fn measured_peer(
+        reply: Vec<u8>,
+        silent: bool,
+        slow: bool,
+        cleanup_delay: Duration,
+    ) -> (Observation, Duration) {
+        const FIXTURE_WAIT: Duration = Duration::from_secs(10);
         let root = Scratch::new();
         let path = root.0.join("s");
         let listener = UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let (done, completed) = mpsc::sync_channel(1);
         let task = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            let until = Instant::now() + FIXTURE_WAIT;
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < until, "fixture was not connected");
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("fixture accept: {error}"),
+                }
+            };
+            stream.set_read_timeout(Some(FIXTURE_WAIT)).unwrap();
+            stream.set_write_timeout(Some(FIXTURE_WAIT)).unwrap();
             assert!(same_user(&stream));
             let mut bytes = Vec::new();
             let mut b = [0];
@@ -140,10 +166,18 @@ mod sockets {
             } else {
                 let _ = stream.write_all(&reply);
             }
+            // Fixture scheduling/cleanup is independent of the product probe.
+            thread::sleep(cleanup_delay);
+            done.send(()).unwrap();
         });
+        let start = Instant::now();
         let result = probe_at(&path, NONCE, &"a".repeat(64));
+        let elapsed = start.elapsed();
+        completed
+            .recv_timeout(FIXTURE_WAIT)
+            .expect("socket fixture did not finish");
         task.join().unwrap();
-        result
+        (result, elapsed)
     }
 
     #[test]
@@ -225,10 +259,15 @@ mod sockets {
     }
     #[test]
     fn total_deadline_is_not_extended_by_slow_reply_bytes() {
-        let start = Instant::now();
-        let result = peer(vec![b'x'; 64], false, true);
+        // This exceeds the elapsed assertion by itself, reproducing a delayed
+        // fixture exit after a correct probe. Only probe_at is under test.
+        let (result, elapsed) =
+            measured_peer(vec![b'x'; 64], false, true, Duration::from_millis(1800));
         assert_eq!(result, Observation::LiveLegacyOrUnknown);
-        assert!(start.elapsed() < Duration::from_millis(1600));
+        assert!(
+            elapsed < Duration::from_millis(1600),
+            "probe took {elapsed:?}"
+        );
     }
     #[test]
     fn only_a_missing_path_is_absent_and_existing_entries_are_untouched() {
@@ -243,9 +282,16 @@ mod sockets {
         assert_eq!(fs::read(&path).unwrap(), b"existing");
         fs::remove_file(&path).unwrap();
         drop(UnixListener::bind(&path).unwrap());
-        assert_eq!(
-            probe_at(&path, NONCE, &"a".repeat(64)),
-            Observation::Unknown
+        // The closed endpoint can fail at connect or at the subsequent exchange
+        // (observed on XNU under the parallel harness). Both remain passive:
+        // neither absence nor an authenticated live Next identity is acceptable.
+        let observed = probe_at(&path, NONCE, &"a".repeat(64));
+        assert!(
+            matches!(
+                observed,
+                Observation::Unknown | Observation::LiveLegacyOrUnknown
+            ),
+            "{observed:?}"
         );
         assert!(path.exists());
     }

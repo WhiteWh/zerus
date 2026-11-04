@@ -36,6 +36,26 @@ export interface Screen {
   paste?(text: string): void;
   reset(): void;
   size(): { cols: number; rows: number };
+  /** Scrolled to the bottom with text on the screen (Qt's checkViewedReply reads the screen's scroll bar and text). */
+  latest?(): boolean;
+}
+
+/** What `screenShowsLatest` reads of xterm: the active buffer's scroll position and lines. */
+export interface ScreenBuffer {
+  rows: number;
+  buffer: { active: { viewportY: number; baseY: number; getLine(y: number): { translateToString(trimRight?: boolean): string } | undefined } };
+}
+
+/**
+ * Scrolled to the bottom and the screen is not blank (Qt's checkViewedReply:
+ * the scroll bar at its maximum and the screen's text not empty). Reads
+ * xterm's buffer only, no layout.
+ */
+export function screenShowsLatest(term: ScreenBuffer): boolean {
+  const buffer = term.buffer.active;
+  if (buffer.viewportY < buffer.baseY) return false;
+  for (let y = 0; y < term.rows; y++) if (buffer.getLine(buffer.viewportY + y)?.translateToString(true).trim()) return true;
+  return false;
 }
 
 export interface Timers { now(): number; later(fn: () => void, ms: number): () => void }
@@ -232,6 +252,8 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
   return {
     phase, status, ready,
     connected: () => phase() === "connected",
+    /** The tab shows a connected attach at its bottom and not blank: the person sees the latest output. */
+    showsLatest: () => phase() === "connected" && !!screen?.latest?.(),
     /** The current attach's generation, 0 without one (Qt's connectionGeneration). */
     generation: () => generation,
     /** The selected session's target and texts (on every change of either). */

@@ -90,6 +90,43 @@ fn merge_and_request_replay_preserve_exact_identity() {
 }
 
 #[test]
+fn import_transaction_rolls_back_all_marks_on_a_later_identity_mismatch() {
+    let mut db = db();
+    let original = mark("mac", "original");
+    let receipt = put(&mut db, 10, &original);
+    {
+        let tx = db.transaction().unwrap();
+        enqueue_in(&tx, &id(11), &mark("mac", "new"), 0).unwrap();
+        let mut changed = original.clone();
+        changed.reply_id = Some("different-reply".into());
+        assert!(enqueue_in(&tx, &id(10), &changed, 0).is_err());
+        // No page receipt or intent may survive the failed original transaction.
+    }
+    assert_eq!(status(&db).unwrap()["pending"], 1);
+    assert_eq!(put(&mut db, 10, &original), receipt);
+    assert!(!db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM desktop_read_requests WHERE request_id=?1)",
+            [id(11)],
+            |r| r.get::<_, bool>(0)
+        )
+        .unwrap());
+}
+
+#[test]
+fn import_transaction_commits_exact_receipts_without_authorizing_delivery() {
+    let mut db = db();
+    let mark = mark("mac", "original");
+    let tx = db.transaction().unwrap();
+    let first = enqueue_in(&tx, &id(10), &mark, 0).unwrap();
+    assert_eq!(enqueue_in(&tx, &id(10), &mark, 1).unwrap(), first);
+    tx.commit().unwrap();
+    assert_eq!(put(&mut db, 10, &mark), first);
+    assert_eq!(status(&db).unwrap()["pending"], 1);
+    assert!(reserve(&mut db, &id(2), &id(1), &id(11), 0).is_err());
+}
+
+#[test]
 fn admission_is_four_global_with_fair_host_choice() {
     let mut db = db();
     for (n, host, name) in [
@@ -413,4 +450,45 @@ fn invalid_marks_refuse_without_durable_admission() {
     assert_eq!(status(&db).unwrap()["pending"], 0);
     let mut retry = Retry::default();
     assert_eq!(retry.finished(false, false, i64::MAX), i64::MAX);
+}
+
+#[test]
+fn native_source_filter_does_not_reserve_offline_hosts_or_break_fairness() {
+    let mut db = db();
+    active(&mut db);
+    for (n, host, name) in [
+        (10, "offline", "a"),
+        (11, "a", "a"),
+        (12, "a", "b"),
+        (13, "b", "a"),
+    ] {
+        put(&mut db, n, &mark(host, name));
+    }
+    assert!(reserve_for(&mut db, &id(2), &id(1), &id(20), 0, &[])
+        .unwrap()
+        .is_none());
+    let hosts = vec!["a".into(), "b".into()];
+    let chosen: Vec<_> = (21..24)
+        .map(|n| {
+            reserve_for(&mut db, &id(2), &id(1), &id(n), 0, &hosts)
+                .unwrap()
+                .unwrap()
+                .pending
+                .mark
+                .computer
+        })
+        .collect();
+    assert_eq!(chosen, ["a", "b", "a"]);
+    assert!(reserve_for(&mut db, &id(2), &id(1), &id(24), 0, &hosts)
+        .unwrap()
+        .is_none());
+    assert!(reserve_for(
+        &mut db,
+        &id(2),
+        &id(1),
+        &id(25),
+        0,
+        &["a".into(), "a".into()]
+    )
+    .is_err());
 }

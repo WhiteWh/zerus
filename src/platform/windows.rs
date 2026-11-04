@@ -1596,6 +1596,10 @@ mod process {
     pub fn verify_private_file(file: &fs::File) -> io::Result<bool> {
         private_entry(file, Private::File)
     }
+    /// Owner-only existing directory, checked through its pinned handle.
+    pub fn verify_private_directory(file: &fs::File) -> io::Result<bool> {
+        private_entry(file, Private::Directory)
+    }
     fn private_entry(file: &fs::File, kind: Private) -> io::Result<bool> {
         let info = file_information(file)?;
         let attributes = info.dwFileAttributes;

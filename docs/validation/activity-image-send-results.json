@@ -1,0 +1,249 @@
+{
+  "bead": "zerus-5wmh.88",
+  "fixture": "Normal embedded-assets Tauri app with a measurement-only observer; real PNG/JPEG bytes attached and sent through the native composer. Client workstation, selected session on peer studio; fake hgs watch/send/attachment with 150ms journal, 350ms receipt, 1200ms acknowledgement and 800ms peer file read. Fresh private D-Bus/Xvfb/HOME/XDG/TMPDIR/TMUX_TMPDIR. No agents, owner display or production peer used. Native video at 60fps plus every requestAnimationFrame rectangle and DOM identity. Observer removed for the final normal build and full Phase 4.",
+  "reference": "Approved mockup Sessions Activity attachments (design/webui/src/screens/sessions/Activity.tsx:313-321). As webui-ac ruled, retain the existing Qt-style attachment card with its 96x64 fitted thumbnail cell; no larger preview. Composer 30x22 thumbnail CSS is scoped under its own popover.",
+  "baseline": {
+    "journal_before_ack": "Each send briefly rendered two rows; 14 rows after seven sends. Local previews stayed empty until the receipt card replaced them.",
+    "separate_non_racing_control": "Receipt changed the attachment wrapper from span to button and replaced the image node.",
+    "capture": "activity-image-before-peer-race.png"
+  },
+  "cases": [
+    {
+      "send": "wide.png",
+      "samples": 300,
+      "row_nodes": 1,
+      "row_height": 207.78125,
+      "cards": [
+        {
+          "card_rectangle": [
+            319,
+            82
+          ],
+          "image_rectangle": [
+            96,
+            27
+          ],
+          "card_nodes": 1,
+          "image_nodes": 1,
+          "source_variants": 1
+        }
+      ],
+      "relative_text_rectangles": 1,
+      "overlap_frames": 0,
+      "rows_after_receipt": 1,
+      "local_rows_after_receipt": 0
+    },
+    {
+      "send": "tall.png",
+      "samples": 301,
+      "row_nodes": 1,
+      "row_height": 207.78125,
+      "cards": [
+        {
+          "card_rectangle": [
+            312,
+            82
+          ],
+          "image_rectangle": [
+            18,
+            64
+          ],
+          "card_nodes": 1,
+          "image_nodes": 1,
+          "source_variants": 1
+        }
+      ],
+      "relative_text_rectangles": 1,
+      "overlap_frames": 0,
+      "rows_after_receipt": 2,
+      "local_rows_after_receipt": 0
+    },
+    {
+      "send": "small.png",
+      "samples": 461,
+      "row_nodes": 1,
+      "row_height": 207.78125,
+      "cards": [
+        {
+          "card_rectangle": [
+            310,
+            82
+          ],
+          "image_rectangle": [
+            80,
+            50
+          ],
+          "card_nodes": 1,
+          "image_nodes": 1,
+          "source_variants": 1
+        }
+      ],
+      "relative_text_rectangles": 1,
+      "overlap_frames": 0,
+      "rows_after_receipt": 3,
+      "local_rows_after_receipt": 0
+    },
+    {
+      "send": "large.png",
+      "samples": 406,
+      "row_nodes": 1,
+      "row_height": 207.78125,
+      "cards": [
+        {
+          "card_rectangle": [
+            320.90625,
+            82
+          ],
+          "image_rectangle": [
+            96,
+            48
+          ],
+          "card_nodes": 1,
+          "image_nodes": 1,
+          "source_variants": 1
+        }
+      ],
+      "relative_text_rectangles": 1,
+      "overlap_frames": 0,
+      "rows_after_receipt": 4,
+      "local_rows_after_receipt": 0
+    },
+    {
+      "send": "oriented.jpg",
+      "samples": 399,
+      "row_nodes": 1,
+      "row_height": 207.78125,
+      "cards": [
+        {
+          "card_rectangle": [
+            328,
+            82
+          ],
+          "image_rectangle": [
+            42.65625,
+            64
+          ],
+          "card_nodes": 1,
+          "image_nodes": 1,
+          "source_variants": 1
+        }
+      ],
+      "relative_text_rectangles": 1,
+      "overlap_frames": 0,
+      "rows_after_receipt": 5,
+      "local_rows_after_receipt": 0
+    },
+    {
+      "send": "wide.png+tall.png",
+      "samples": 399,
+      "row_nodes": 1,
+      "row_height": 317.28125,
+      "cards": [
+        {
+          "card_rectangle": [
+            319,
+            82
+          ],
+          "image_rectangle": [
+            96,
+            27
+          ],
+          "card_nodes": 1,
+          "image_nodes": 1,
+          "source_variants": 1
+        },
+        {
+          "card_rectangle": [
+            312,
+            82
+          ],
+          "image_rectangle": [
+            18,
+            64
+          ],
+          "card_nodes": 1,
+          "image_nodes": 1,
+          "source_variants": 1
+        }
+      ],
+      "relative_text_rectangles": 1,
+      "overlap_frames": 0,
+      "rows_after_receipt": 6,
+      "local_rows_after_receipt": 0
+    },
+    {
+      "send": "small.png+large.png+oriented.jpg",
+      "samples": 399,
+      "row_nodes": 1,
+      "row_height": 426.78125,
+      "cards": [
+        {
+          "card_rectangle": [
+            310,
+            82
+          ],
+          "image_rectangle": [
+            80,
+            50
+          ],
+          "card_nodes": 1,
+          "image_nodes": 1,
+          "source_variants": 1
+        },
+        {
+          "card_rectangle": [
+            320.90625,
+            82
+          ],
+          "image_rectangle": [
+            96,
+            48
+          ],
+          "card_nodes": 1,
+          "image_nodes": 1,
+          "source_variants": 1
+        },
+        {
+          "card_rectangle": [
+            328,
+            82
+          ],
+          "image_rectangle": [
+            42.65625,
+            64
+          ],
+          "card_nodes": 1,
+          "image_nodes": 1,
+          "source_variants": 1
+        }
+      ],
+      "relative_text_rectangles": 1,
+      "overlap_frames": 0,
+      "rows_after_receipt": 7,
+      "local_rows_after_receipt": 0
+    }
+  ],
+  "geometry_note": "Row and image sizes, relative paragraph positions and node identities are constant from the first sample. The ordinary initial end-pin placement may scroll a newly appended row into view; it is not a receipt/decode correction. Every later receipt and decode retains geometry. Content-addressed peer copies resolve to the same source URL in this campaign; distinct-source delayed, failed, stale and unmounted decodes are covered by unit tests.",
+  "checks": {
+    "frontend": "Type check; 2094 Vitest tests passed, 1 skipped after final integration rebase; normal production build; bundle budget 493158 / 500000 bytes",
+    "core": "All-target Clippy; 7 attachments integration tests; 3 image header and 6 local-message units passed",
+    "tauri": "All-target Clippy default/media/video/no-default-features; 19 fetch tests; Windows MSVC media cross-Clippy",
+    "phase4": "16/16 normal built-app steps passed; exit 0",
+    "privacy": "0 findings",
+    "separators": "pass"
+  },
+  "scope": {
+    "root_src_changed": false,
+    "public_attachment_envelope_changed": false,
+    "new_poller": false,
+    "csp_or_protocol_permission_change": false,
+    "header_bound": 262144,
+    "pixel_bound": 64000000
+  },
+  "captures": [
+    "activity-image-before-peer-race.png",
+    "activity-image-after-two.png",
+    "activity-image-after-three.png"
+  ],
+  "bundle": "Final integration rebase exceeded the 500k entry gate at 504661 bytes. Loading the existing Tasks board on demand while retaining its eager badge and CSS reduces the entry to 493158 bytes; panel appearance and data path are unchanged."
+}

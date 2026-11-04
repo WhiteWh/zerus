@@ -5,10 +5,15 @@ use zerus_client_core::desktop;
 #[cfg(not(unix))]
 use zerus_client_core::desktop::Observation;
 
+#[cfg(unix)]
+pub(super) fn instance_path() -> std::path::PathBuf {
+    desktop::temporary_dir_from(std::env::var_os("TMPDIR")).join("hgs-tray")
+}
+
 pub fn status(location: &Location) -> Value {
     #[cfg(unix)]
     let observation = {
-        let path = desktop::temporary_dir_from(std::env::var_os("TMPDIR")).join("hgs-tray");
+        let path = instance_path();
         desktop::probe_at(
             &path,
             &uuid::Uuid::new_v4().to_string(),

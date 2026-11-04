@@ -56,7 +56,10 @@ pub struct QuestionView {
     pub epoch: u64,
     pub asked: String,
     pub asked_tip: String,
-    pub terminal_label: String,
+    /// "Open Terminal", or "Open native UI" for DeepSeek's native UI.
+    pub terminal_label: zerus_client_core::text::Text,
+    /// The terminal button opens the agent's native UI instead of Terminal.
+    pub native_ui: bool,
     pub view: CardView,
 }
 
@@ -520,6 +523,9 @@ impl Composers {
         let Some(ctx) = self.context(hub) else {
             return (None, true);
         };
+        if ctx.session.subagent.is_some() {
+            return (None, true);
+        }
         let Some(details) = ctx.details.as_deref() else {
             return (None, true);
         };
@@ -559,11 +565,11 @@ impl Composers {
             asked,
             asked_tip,
             terminal_label: if ctx.facts.cmd == "dsh" {
-                "Open native UI"
+                zerus_client_core::text!("Open native UI")
             } else {
-                "Open Terminal"
-            }
-            .to_owned(),
+                zerus_client_core::text!("Open Terminal")
+            },
+            native_ui: ctx.facts.cmd == "dsh",
             view: rules::card(question, &draft, &card),
         };
         (Some(view), input_visible)
@@ -1169,7 +1175,7 @@ pub(crate) mod tests {
     pub(crate) fn with_card(c: &Composers) -> ComposerView {
         until(c, |v| {
             v.question.as_ref().is_some_and(|q| {
-                q.view.status != "Loading your saved answer…" && !q.view.forms.is_empty()
+                q.view.status.english() != "Loading your saved answer…" && !q.view.forms.is_empty()
             })
         })
     }
@@ -1232,17 +1238,18 @@ pub(crate) mod tests {
         );
         let q = view.question.unwrap();
         assert_eq!(q.card, store_key("tool:t1"));
-        assert_eq!(q.view.heading, "Agent needs your answer");
+        assert_eq!(q.view.heading.english(), "Agent needs your answer");
         assert_eq!(
             q.view.forms[0]
                 .options
                 .iter()
-                .map(|o| o.label.as_str())
+                .map(|o| o.label.english())
                 .collect::<Vec<_>>(),
             ["Unit", "UI"]
         );
-        assert_eq!(q.view.status, "Answer each question to continue.");
-        assert_eq!(q.terminal_label, "Open Terminal");
+        assert_eq!(q.view.status.english(), "Answer each question to continue.");
+        assert_eq!(q.terminal_label.english(), "Open Terminal");
+        assert!(!q.native_ui);
         assert!(q.asked.starts_with("Asked "));
     }
 
@@ -1264,7 +1271,7 @@ pub(crate) mod tests {
         );
         let view = until(&c, |v| checked(v) == [false, true]);
         assert_eq!(
-            view.question.unwrap().view.status,
+            view.question.unwrap().view.status.english(),
             "Your choices are ready to send."
         );
         store.flush();
@@ -1338,7 +1345,7 @@ pub(crate) mod tests {
         assert!(view.input_visible, "an optional card keeps the composer");
         let q = view.question.unwrap();
         assert_eq!(q.card, store_key("codex:new"));
-        assert_eq!(q.view.heading, "Optional question #1/2");
+        assert_eq!(q.view.heading.english(), "Optional question #1/2");
         c.question_navigate(1);
         let q = until(&c, |v| {
             v.question
@@ -1347,7 +1354,7 @@ pub(crate) mod tests {
         })
         .question
         .unwrap();
-        assert_eq!(q.view.heading, "Optional question #2/2");
+        assert_eq!(q.view.heading.english(), "Optional question #2/2");
         assert!(q
             .view
             .nav
@@ -1372,7 +1379,8 @@ pub(crate) mod tests {
         c.observe(&state(asking(vec![card_json("tool:t2")])));
         let next = until(&c, |v| {
             v.question.as_ref().is_some_and(|q| {
-                q.card == store_key("tool:t2") && q.view.status != "Loading your saved answer…"
+                q.card == store_key("tool:t2")
+                    && q.view.status.english() != "Loading your saved answer…"
             })
         })
         .question
@@ -1385,7 +1393,7 @@ pub(crate) mod tests {
         let rebuilt = until(&c, |v| {
             v.question
                 .as_ref()
-                .is_some_and(|q| q.view.forms[0].options[1].label == "Browser")
+                .is_some_and(|q| q.view.forms[0].options[1].label.english() == "Browser")
         })
         .question
         .unwrap();
@@ -1413,7 +1421,7 @@ pub(crate) mod tests {
         let loading = until(&c, |v| {
             v.question
                 .as_ref()
-                .is_some_and(|q| q.view.status == "Loading your saved answer…")
+                .is_some_and(|q| q.view.status.english() == "Loading your saved answer…")
         })
         .question
         .unwrap();
@@ -1519,7 +1527,7 @@ pub(crate) mod tests {
         opened(&c, details);
         let q = with_card(&c).question.unwrap();
         assert!(!q.view.available && !q.view.submit.enabled);
-        assert_eq!(q.view.status, "The agent is no longer running.");
+        assert_eq!(q.view.status.english(), "The agent is no longer running.");
     }
 
     #[test]
@@ -1542,7 +1550,7 @@ pub(crate) mod tests {
             .question
             .unwrap();
         assert_eq!(
-            q.view.status,
+            q.view.status.english(),
             "Delivery was interrupted. Check Activity or Terminal before sending again."
         );
         assert!(q.view.status_error && !q.view.submit.enabled);
@@ -1613,7 +1621,7 @@ pub(crate) mod tests {
         let q = until(&c, |v| {
             v.question
                 .as_ref()
-                .is_some_and(|q| q.view.status.starts_with("Draft not saved"))
+                .is_some_and(|q| q.view.status.english().starts_with("Draft not saved"))
         })
         .question
         .unwrap();
@@ -1740,7 +1748,7 @@ pub(crate) mod tests {
         let loading = until(&c, |v| {
             v.question
                 .as_ref()
-                .is_some_and(|q| q.view.status == "Loading your saved answer…")
+                .is_some_and(|q| q.view.status.english() == "Loading your saved answer…")
         })
         .question
         .unwrap();
@@ -1968,7 +1976,9 @@ pub(crate) mod tests {
 
     fn status_is(c: &Composers, status: &str) -> QuestionView {
         until(c, |v| {
-            v.question.as_ref().is_some_and(|q| q.view.status == status)
+            v.question
+                .as_ref()
+                .is_some_and(|q| q.view.status.english() == status)
         })
         .question
         .unwrap()
@@ -2071,7 +2081,7 @@ pub(crate) mod tests {
         let q = until(&c, |v| v.question.as_ref().is_some_and(|q| q.view.retry))
             .question
             .unwrap();
-        assert_eq!(q.view.status, "Delivery is not confirmed. Check Terminal before retrying. Answer delivery timed out. Check Terminal before retrying.");
+        assert_eq!(q.view.status.english(), "Delivery is not confirmed. Check Terminal before retrying. Answer delivery timed out. Check Terminal before retrying.");
         assert!(q.view.status_error && !q.view.submit.enabled);
         assert_eq!(c.question_submit(&card), QuestionReply::Busy);
         c.observe(&state(asking(vec![card_json("tool:t1")])));
@@ -2128,6 +2138,7 @@ pub(crate) mod tests {
         assert!(q
             .view
             .status
+            .english()
             .starts_with("Delivery is not confirmed. Check Terminal before retrying."));
         assert_eq!(c.question_submit(&card), QuestionReply::Busy);
         assert_eq!(tries.load(Ordering::SeqCst), 1, "one call, no replay");
@@ -2252,7 +2263,7 @@ pub(crate) mod tests {
             "the first click only arms Confirm"
         );
         let q = status_is(&c, "“Yes, and don't ask again” changes the agent's permissions beyond this request. Select Confirm to send it.");
-        assert_eq!(q.view.submit.label, "Confirm");
+        assert_eq!(q.view.submit.label.english(), "Confirm");
         assert!(sent(&fake).is_empty());
         assert_eq!(c.question_submit(&key), QuestionReply::Sending);
         status_is(&c, "Answer sent. Waiting for the agent…");
@@ -2276,7 +2287,15 @@ pub(crate) mod tests {
         opened(&c, asking(vec![card]));
         let q = with_card(&c).question.unwrap();
         assert!(q.view.approve.visible && q.view.deny.visible && !q.view.submit.visible);
-        assert_eq!(q.view.approve.review_label.as_deref(), Some("Approve once"));
+        assert_eq!(
+            q.view
+                .approve
+                .review_label
+                .as_ref()
+                .map(|t| t.english())
+                .as_deref(),
+            Some("Approve once")
+        );
         assert_eq!(c.question_decide(&q.card, false), QuestionReply::Sending);
         status_is(&c, "Answer sent. Waiting for the agent…");
         assert_eq!(
@@ -2408,7 +2427,7 @@ pub(crate) mod tests {
             v.question.as_ref().is_some_and(|q| {
                 q.card.contains("codex-update:")
                     && !q.view.forms.is_empty()
-                    && q.view.status != "Loading your saved answer…"
+                    && q.view.status.english() != "Loading your saved answer…"
             })
         })
         .question

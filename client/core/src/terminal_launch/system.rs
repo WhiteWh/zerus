@@ -80,7 +80,7 @@ fn executable(path: &Path) -> bool {
 #[cfg(unix)]
 fn start_detached(start: &Start) -> Result<(), String> {
     use std::os::unix::process::CommandExt;
-    let mut command = std::process::Command::new(&start.program);
+    let mut command = crate::child_environment::command(&start.program);
     command.args(&start.arguments).current_dir(&start.directory);
     // SAFETY: the hook runs between fork and exec and only makes
     // async-signal-safe system calls.

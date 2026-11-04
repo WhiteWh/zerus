@@ -1173,7 +1173,15 @@ fn step(store: &Store, config: &crate::config::Config, mut job: Value) -> Result
     Ok(())
 }
 fn native_refusal(error: &str) -> (&'static str, &'static str) {
-    if error.contains("previous input has not been confirmed") {
+    const NOT_READY: (&str, &str) = (
+        "agent_not_ready",
+        "The original agent could not accept this message yet. Check Activity or Terminal; the recording is preserved.",
+    );
+    // The guarded busy refusal is a readiness wait even when its detail
+    // mentions a draft, input mode or a choice. Receipts govern replay elsewhere.
+    if error.starts_with("agent busy:") {
+        NOT_READY
+    } else if error.contains("previous input has not been confirmed") {
         ("previous_input_pending","Waiting for the agent to confirm its previous input. Check the conversation or Terminal.")
     } else if error.contains("draft, dialog")
         || error.contains("input mode")
@@ -1191,7 +1199,7 @@ fn native_refusal(error: &str) -> (&'static str, &'static str) {
             "The original agent is stopped. Voice delivery does not resume agents automatically.",
         )
     } else {
-        ("agent_not_ready","The original agent could not accept this message yet. Check Activity or Terminal; the recording is preserved.")
+        NOT_READY
     }
 }
 /// The installed service runs `hgs voice worker` under this unit or label.
@@ -1540,6 +1548,29 @@ mod tests {
         assert_eq!(store.get(ID).unwrap().unwrap()["state"], "cancelled");
         assert!(!cancel_job(&mut cancelled));
         assert_eq!(store.audio(ID).unwrap(), wav(&[0, 0]));
+    }
+    #[test]
+    fn native_busy_diagnostics_keep_the_readiness_code_and_message() {
+        let expected = (
+            "agent_not_ready",
+            "The original agent could not accept this message yet. Check Activity or Terminal; the recording is preserved.",
+        );
+        for error in [
+            "agent busy: terminal queue prompt is unrecognized or contains a draft; wait for the agent or open Terminal; nothing was submitted",
+            "agent busy: terminal has a draft, dialog, or unrecognized prompt",
+            "agent busy: terminal is not in the expected agent input mode; waiting for a choice",
+        ] {
+            assert_eq!(native_refusal(error), expected, "{error}");
+        }
+        for (error, code) in [
+            ("terminal has a draft, dialog, or unrecognized prompt", "native_input_blocked"),
+            ("terminal is not in the expected agent input mode", "native_input_blocked"),
+            ("the previous input has not been confirmed", "previous_input_pending"),
+            ("agent is waiting for approval", "native_choice_pending"),
+            ("the original agent is not running; resume it", "agent_stopped"),
+        ] {
+            assert_eq!(native_refusal(error).0, code, "{error}");
+        }
     }
     #[test]
     fn native_crash_boundary_never_replays() {

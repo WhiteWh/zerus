@@ -8,6 +8,7 @@
 // JavaScript strings do.
 
 import { array, object, string, type Json } from "../lib/json";
+import { tr, trNoop } from "../../i18n";
 
 export interface Model {
   value: string; label: string; provider: string; providerLabel: string;
@@ -126,25 +127,25 @@ export function filter(models: Model[], query: string): Model[] {
 }
 
 const KINDS: Record<string, string> = {
-  free: "Free, no key", key: "API key", oauth: "Signed in", env: "Environment variable", config: "Configuration",
-  command: "Command", external: "External credentials", local: "Detected locally",
+  free: trNoop("Free, no key"), key: trNoop("API key"), oauth: trNoop("Signed in"), env: trNoop("Environment variable"), config: trNoop("Configuration"),
+  command: trNoop("Command"), external: trNoop("External credentials"), local: trNoop("Detected locally"),
 };
 /** "other" and kinds a newer hgs may report read "Connected". */
-export const kindText = (kind: string) => KINDS[kind] ?? "Connected";
+export const kindText = (kind: string) => (kind in KINDS ? tr(KINDS[kind]) : tr("Connected"));
 
 /** "Default", "Favorite", "Free" in that order, joined by commas (ruling D4; Qt joins them with a dot). */
 export function marks(model: Pick<Model, "isDefault" | "favorite" | "free">): string {
   const parts: string[] = [];
-  if (model.isDefault) parts.push("Default");
-  if (model.favorite) parts.push("Favorite");
-  if (model.free) parts.push("Free");
+  if (model.isDefault) parts.push(tr("Default"));
+  if (model.favorite) parts.push(tr("Favorite"));
+  if (model.free) parts.push(tr("Free"));
   return parts.join(", ");
 }
 
 /** An OpenCode row or session details from an hgs that has `account models` and `account favorite`. */
 export const catalogSupported = (rowOrDetails: unknown) => "model_options_truncated" in object(rowOrDetails);
 
-export const updateText = (computer: string) => `Update Zerus on ${computer} to search all models and star favorites.`;
+export const updateText = (computer: string) => tr("Update Zerus on %1 to search all models and star favorites.", computer);
 
 // The dialog's model rows (NewSessionDialog.cpp 51-105).
 
@@ -265,7 +266,7 @@ export interface PickerView {
 
 interface Rendered { provider: string; label: string; folder: boolean; rows: { model: Model; unavailable: boolean; favorite: boolean }[] }
 
-const ALL_TOOLTIP = "Search every model OpenCode offers";
+const allTooltip = () => tr("Search every model OpenCode offers");
 
 /**
  * The grouped OpenCode model list with search, marks, a star per model and
@@ -304,7 +305,7 @@ export class ModelPicker {
   private offList = false;
   private all = false;
   private allEnabled = true;
-  private allTooltip = ALL_TOOLTIP;
+  private allTooltip = allTooltip();
   private query = "";
   private groups: Rendered[] = [];
   private noticeLine = "";
@@ -402,7 +403,7 @@ export class ModelPicker {
   /** Off: All models is disabled, with `reason` as its tooltip. */
   setAllModelsAvailable(available: boolean, reason = "") {
     this.allEnabled = available;
-    this.allTooltip = available ? ALL_TOOLTIP : noticeText(reason);
+    this.allTooltip = available ? allTooltip() : noticeText(reason);
     if (!available && this.all) { this.all = false; this.render(); }
   }
 
@@ -455,10 +456,10 @@ export class ModelPicker {
       label: g.folder ? `${g.label} (this folder)` : g.label,
       models: g.rows.map(({ model, unavailable, favorite }) => ({
         value: model.value, label: model.label,
-        marks: unavailable ? "Unavailable" : marks({ isDefault: model.isDefault, favorite, free: model.free }),
+        marks: unavailable ? tr("Unavailable") : marks({ isDefault: model.isDefault, favorite, free: model.free }),
         unavailable, favorite, pending: this.pending.has(model.value), free: model.free, isDefault: model.isDefault,
-        tooltip: unavailable ? `OpenCode does not offer ${model.value} here. Its star removes the favorite.` : model.value,
-        starTooltip: this.favoritesAvailable ? (favorite ? "Remove from favorites" : "Add to favorites") : this.favoritesReason,
+        tooltip: unavailable ? tr("OpenCode does not offer %1 here. Its star removes the favorite.", model.value) : model.value,
+        starTooltip: this.favoritesAvailable ? (favorite ? tr("Remove from favorites") : tr("Add to favorites")) : this.favoritesReason,
       })),
     }));
     const current = this.row(this.currentValue);
@@ -524,16 +525,16 @@ export class ModelPicker {
     // The current model is listed first, in its own group, even when this list does not offer it.
     if (current.length) add(current[0].provider, current[0].providerLabel, false, current, false);
     for (const g of group(matches, this.known)) add(g.provider, g.label, g.folder, g.models, false);
-    if (gone.length) add("", "Unavailable favorites", false, gone, true);
+    if (gone.length) add("", tr("Unavailable favorites"), false, gone, true);
     this.groups = groups;
     const reason = this.hasCatalog && !this.catalogReady() && this.catalogReason !== "";
     let notice = "";
-    if (this.showingAll() && this.loading) notice = "Loading all models…";
+    if (this.showingAll() && this.loading) notice = tr("Loading all models…");
     else if (!this.showingAll() && this.failure) notice = this.failure;
     else if (reason) notice = this.catalogReason;
-    else if (hidden) notice = `Showing the first ${MAX_ROWS} matches. Search to narrow the list.`;
-    else if (all && this.modelsTruncated) notice = `Showing the first ${this.models.length} models. Search to narrow the list.`;
-    else if (!all && this.shortTruncated) notice = "Some models are not in this short list. Use All models to search every model.";
+    else if (hidden) notice = tr("Showing the first %1 matches. Search to narrow the list.", MAX_ROWS);
+    else if (all && this.modelsTruncated) notice = tr("Showing the first %1 models. Search to narrow the list.", this.models.length);
+    else if (!all && this.shortTruncated) notice = tr("Some models are not in this short list. Use All models to search every model.");
     this.noticeLine = notice;
   }
 }

@@ -3,6 +3,7 @@ import type { Action, Details, Outcome } from "../types";
 import type { Session } from "../ui/sessions/types";
 import { snapshotOf, type ActionRow } from "../ui/sessions/actions-ui";
 import { FORK_CHANGED, forkAvailable, forkName, forkProblem, forkTag, sameForkSource } from "../ui/sessions/fork-ui";
+import { tr } from "../i18n";
 
 type Neighbor = Pick<Session, "key" | "computer" | "name">;
 interface Pending { name: string; source: ActionRow; group: string; before?: Neighbor; succeeded: boolean }
@@ -59,24 +60,24 @@ export function createForks(deps: ForkDeps) {
         const row = deps.current(source.key);
         return row && sameForkSource(source, row) && deps.online(row.computer) && !deps.busy(row) && !signal.aborted && !problem(source, tag);
       };
-      if (!valid()) { if (!signal.aborted) deps.notify("error", FORK_CHANGED, true); return; }
+      if (!valid()) { if (!signal.aborted) deps.notify("error", tr(FORK_CHANGED), true); return; }
       // Confirm against a fresh inspection of the source named when the dialog
       // opened. A new run/conversation or a capability change never forks it.
       const details = await deps.inspect(source);
       if (signal.aborted) return;
       if (!valid() || !forkAvailable(source, details, true, false) || details?.run_id !== shown.run_id || details.conversation_id !== shown.conversation_id) {
-        deps.notify("error", FORK_CHANGED, true); return;
+        deps.notify("error", tr(FORK_CHANGED), true); return;
       }
       const warning = await deps.warning(source.computer);
       if (signal.aborted || (warning && !(await confirm(warning)))) return;
-      if (!valid()) { if (!signal.aborted) deps.notify("error", FORK_CHANGED, true); return; }
+      if (!valid()) { if (!signal.aborted) deps.notify("error", tr(FORK_CHANGED), true); return; }
       const group = deps.groupOf(source.key), before = deps.next(source, group);
       const wait: Pending = { source: snapshotOf(source), name: forkName(source, tag), group,
         before: before && { key: before.key, computer: before.computer, name: before.name }, succeeded: false };
       setPending(wait);
       delivered = true;
       dispatched();
-      deps.notify("info", `Forking session on ${source.machine}…`);
+      deps.notify("info", tr("Forking session on %1…", source.machine));
       const out = await deps.perform({ ...source, runId: details.run_id || source.runId, conversationId: details.conversation_id },
         { kind: "fork", tag, archive_id: source.archiveId ?? null });
       if (out.outcome === "done") setPending({ ...wait, succeeded: true });

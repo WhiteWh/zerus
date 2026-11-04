@@ -60,9 +60,15 @@ elif a[1]=='show':
  pid=q['pid'];alive=False
  try:alive=Path('/proc/'+str(pid)+'/stat').read_text().rsplit(') ',1)[1].split()[0]!='Z'
  except FileNotFoundError:pass
+ cg=r/'cgroup';cg.mkdir(exist_ok=True)
+ group=q.get('group','/fixture/zerus-mobile-connector.service')
+ (cg/'proc-cgroup').write_text('0::'+group+'\n')
+ directory=cg/'fixture/zerus-mobile-connector.service';directory.mkdir(parents=True,exist_ok=True)
+ (directory/'cgroup.procs').write_text(str(pid)+'\n'+('999999\n' if q.get('extra_process') else ''))
+ if q.get('extra_scope'):(directory/'native.scope').mkdir(exist_ok=True)
  command=q.get('override') or q['loaded'];argv=command+' --config '+str(r/'connector.json')
  drop=r/'systemd/zerus-mobile-connector.service.d/70-zerus-workspace-connector.conf'
- values={'LoadState':'loaded','ActiveState':'active' if alive else 'inactive','SubState':'running' if alive else 'dead','MainPID':str(pid) if alive else '0','InvocationID':q['invocation'] if alive else '', 'KillMode':'process','Restart':'on-failure','Type':'simple','RemainAfterExit':'no','ExitType':'main','FailureAction':'none','SuccessAction':'none','WatchdogUSec':'0','RuntimeMaxUSec':'infinity','Result':'success','ExecMainStatus':'0','StopWhenUnneeded':'no','MemoryMax':'268435456','MemoryHigh':'infinity','CPUQuotaPerSecUSec':'infinity','TasksMax':'64','FragmentPath':str(r/'base.service'),'DropInPaths':str(drop) if drop.exists() else '', 'ExecStart':'{ path='+command+' ; argv[]='+argv+' ; ignore_errors=no ; }'}
+ values={'ControlGroup':group,'LoadState':'loaded','ActiveState':'active' if alive else 'inactive','SubState':'running' if alive else 'dead','MainPID':str(pid) if alive else '0','InvocationID':q['invocation'] if alive else '', 'KillMode':'process','Restart':'on-failure','Type':'simple','RemainAfterExit':'no','ExitType':'main','FailureAction':'none','SuccessAction':'none','WatchdogUSec':'0','RuntimeMaxUSec':'infinity','Result':'success','ExecMainStatus':'0','StopWhenUnneeded':'no','MemoryMax':'268435456','MemoryHigh':'infinity','CPUQuotaPerSecUSec':'infinity','TasksMax':'64','FragmentPath':str(r/'base.service'),'DropInPaths':str(drop) if drop.exists() else '', 'ExecStart':'{ path='+command+' ; argv[]='+argv+' ; ignore_errors=no ; }'}
  values.update(q.get('properties',{}))
  for k in a[a.index('--property')+1].split(','):
   v=values.get(k,'')
@@ -200,6 +206,7 @@ impl Fixture {
             manager: self.path("manager"),
             binary: self.new.clone(),
             dropin: self.dropin.clone(),
+            cgroup: self.path("cgroup"),
         }
     }
     async fn drain(&self) -> Option<Value> {
@@ -393,11 +400,14 @@ impl Fixture {
         status
     }
     async fn cooperative_stop(&self, revision: &str, generation: &str) {
-        let result = zerus_mobile_connector::workspace::manage(
-            "stop",
-            &self.config,
-            json!({"expected_revision":revision,"generation":generation}),
-            false,
+        let result = service::test_scope(
+            self.paths(),
+            zerus_mobile_connector::workspace::manage(
+                "stop",
+                &self.config,
+                json!({"expected_revision":revision,"generation":generation}),
+                false,
+            ),
         )
         .await
         .unwrap();
@@ -772,6 +782,122 @@ async fn exact_pending_destination_survives_repeated_draining_checks() {
     }
     assert_eq!(f.signals(), 1);
     f.finish().await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn stop_preflight_refuses_unsafe_or_changed_service_before_any_marker() {
+    let mut f = Fixture::new().await;
+    assert_eq!(f.drain().await.unwrap()["phase"], "draining");
+    f.finish().await;
+    assert!(f.drain().await.is_none());
+    let revision = f.activate();
+    let current = f.start(NODE, &revision).await;
+    let state = PathBuf::from(value(&f.config)["state_dir"].as_str().unwrap());
+    let control = value(&state.join("workspace-control.json"));
+    let manager = value(&f.path("manager.json"));
+    let record_path = f.private.join("legacy-service-handover.json");
+    let record = value(&record_path);
+    let input = json!({"expected_revision":revision,"generation":current["generation"]});
+    // Every case retains the exact running fixture and must fail before the
+    // cooperative Stop marker exists. The fake manager refuses all Stop jobs.
+    for fault in [
+        "kill-mode",
+        "scope",
+        "extra-process",
+        "extra-subgroup",
+        "pid",
+        "invocation",
+        "missing-record",
+        "record-node",
+        "control-pid",
+        "control-generation",
+        "second-read",
+        "unreadable-unit",
+        "foreign-definition",
+    ] {
+        save(&f.path("manager.json"), &manager);
+        f.replace_private("legacy-service-handover.json", &record);
+        save(&state.join("workspace-control.json"), &control);
+        let drop_bytes = std::fs::read(&f.dropin).unwrap();
+        match fault {
+            "kill-mode" => f.mutate(|q| q["properties"]["KillMode"] = json!("control-group")),
+            "scope" => f.mutate(|q| q["properties"]["ConsistsOf"] = json!("native.scope")),
+            "extra-process" => f.mutate(|q| q["extra_process"] = json!(true)),
+            "extra-subgroup" => f.mutate(|q| q["extra_scope"] = json!(true)),
+            "pid" => f.mutate(|q| q["properties"]["MainPID"] = json!(f.child.id().to_string())),
+            "invocation" => f.mutate(|q| q["invocation"] = json!("replacement")),
+            "missing-record" => std::fs::remove_file(&record_path).unwrap(),
+            "record-node" => {
+                let mut q = record.clone();
+                q["managed_node_id"] = json!("replacement");
+                f.replace_private("legacy-service-handover.json", &q);
+            }
+            "control-pid" => {
+                let mut q = control.clone();
+                q["pid"] = json!(f.child.id());
+                save(&state.join("workspace-control.json"), &q);
+            }
+            "control-generation" => {
+                let mut q = control.clone();
+                q["generation"] = json!("f".repeat(32));
+                save(&state.join("workspace-control.json"), &q);
+            }
+            "second-read" => {
+                f.mutate(|q| q["refuse_on_show"] = json!(q["shows"].as_u64().unwrap() + 2))
+            }
+            "unreadable-unit" => f.mutate(|q| q["properties"]["LoadState"] = json!("error")),
+            "foreign-definition" => {
+                std::fs::write(&f.dropin, "[Service]\nKillMode=control-group\n").unwrap()
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            service::test_scope(
+                f.paths(),
+                zerus_mobile_connector::workspace::manage("stop", &f.config, input.clone(), false)
+            )
+            .await
+            .is_err(),
+            "{fault}"
+        );
+        assert!(!state.join("workspace-stop.json").exists(), "{fault}");
+        assert!(
+            owned_start(control["pid"].as_i64().unwrap() as i32).is_some(),
+            "{fault}"
+        );
+        std::fs::write(&f.dropin, drop_bytes).unwrap();
+        let subgroup = f.path("cgroup/fixture/zerus-mobile-connector.service/native.scope");
+        if subgroup.exists() {
+            std::fs::remove_dir(subgroup).unwrap();
+        }
+    }
+    save(&f.path("manager.json"), &manager);
+    f.replace_private("legacy-service-handover.json", &record);
+    save(&state.join("workspace-control.json"), &control);
+    f.cooperative_stop(&revision, current["generation"].as_str().unwrap())
+        .await;
+    let calls = std::fs::read_to_string(f.path("manager.calls")).unwrap();
+    assert!(calls.lines().all(|line| {
+        let args: Vec<String> = serde_json::from_str(line).unwrap();
+        matches!(args[1].as_str(), "show" | "daemon-reload" | "start")
+    }));
+}
+#[tokio::test(flavor = "current_thread")]
+async fn foreground_stop_needs_exact_lock_owner_generation_and_no_active_service() {
+    let mut f = Fixture::new().await;
+    f.drain().await;
+    f.finish().await;
+    assert!(f.drain().await.is_none());
+    let revision = f.activate();
+    let current = f.start(NODE, &revision).await;
+    std::fs::remove_file(f.private.join("legacy-service-handover.json")).unwrap();
+    f.mutate(|q| {
+        q["group"] = json!("/fixture/session.scope");
+        q["properties"] = json!({"LoadState":"not-found","ActiveState":"inactive","MainPID":"0"});
+    });
+    // Same fixture process, generation and held journal; only the fake
+    // supervisor is now known absent. No service job is issued by Stop.
+    f.cooperative_stop(&revision, current["generation"].as_str().unwrap())
+        .await;
 }
 #[tokio::test(flavor = "current_thread")]
 async fn managed_start_stop_start_admits_only_the_observed_clean_generation() {

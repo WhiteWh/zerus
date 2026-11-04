@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 use zerus_client_core::{
-    run::{run_owned, OwnedError},
+    run::{run_owned, run_owned_observed, OwnedError},
     Invocation,
 };
 
@@ -29,7 +29,9 @@ fn guard() -> (Arc<dyn Send + Sync>, Arc<AtomicBool>) {
     (Arc::new(Guard(dropped.clone())), dropped)
 }
 fn wait_for_release(dropped: &AtomicBool) {
-    let until = Instant::now() + Duration::from_secs(4);
+    // Inherited-pipe grandchildren sleep 4 s so a slow runner cannot release
+    // them before the "still owns admission" check; allow for that here.
+    let until = Instant::now() + Duration::from_secs(10);
     while !dropped.load(Ordering::Acquire) && Instant::now() < until {
         thread::sleep(Duration::from_millis(10));
     }
@@ -61,6 +63,27 @@ fn run(code: &str, input: Vec<u8>) -> Result<Vec<u8>, OwnedError> {
     );
     wait_for_release(&dropped);
     result
+}
+
+#[test]
+fn diagnostic_observation_preserves_failure_and_original_resource_accounting() {
+    let (resources, dropped) = guard();
+    let mut observed = None;
+    let result = run_owned_observed(
+        Path::new("python3"),
+        &invocation("import sys;sys.stdin.buffer.read();sys.stderr.write('hgs: frontend process image unavailable\\n');sys.exit(1)", vec![], Duration::from_secs(5)),
+        &[], &AtomicBool::new(false), spawn, resources,
+        |error, stderr| observed = Some((format!("{error:?}"), stderr.unwrap_or("").to_owned())),
+    );
+    assert_eq!(result, Err(OwnedError::ChildFailed));
+    assert_eq!(
+        observed,
+        Some((
+            "ChildFailed".into(),
+            "hgs: frontend process image unavailable\n".into()
+        ))
+    );
+    wait_for_release(&dropped);
 }
 
 #[test]
@@ -261,7 +284,7 @@ fn inherited_stdout_keeps_admission_after_bounded_return_without_partial_success
     let result = run_owned(
         Path::new("python3"),
         &invocation(
-            "import subprocess,sys;sys.stdin.buffer.read();print('{}',flush=True);subprocess.Popen([sys.executable,'-c','import time;time.sleep(1.5)'],stdin=subprocess.DEVNULL,stderr=subprocess.DEVNULL)",
+            "import subprocess,sys;sys.stdin.buffer.read();print('{}',flush=True);subprocess.Popen([sys.executable,'-c','import time;time.sleep(4)'],stdin=subprocess.DEVNULL,stderr=subprocess.DEVNULL)",
             vec![],
             Duration::from_millis(200),
         ),
@@ -284,7 +307,7 @@ fn inherited_stdin_keeps_admission_after_child_and_both_outputs_end() {
     let result = run_owned(
         Path::new("python3"),
         &invocation(
-            "import subprocess,sys;subprocess.Popen([sys.executable,'-c','import time;time.sleep(1.5)'],stdin=sys.stdin,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);print('{}',flush=True)",
+            "import subprocess,sys;subprocess.Popen([sys.executable,'-c','import time;time.sleep(4)'],stdin=sys.stdin,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);print('{}',flush=True)",
             vec![b'x'; 1 << 20],
             Duration::from_millis(200),
         ),

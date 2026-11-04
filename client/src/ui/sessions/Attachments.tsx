@@ -5,6 +5,7 @@ import { composer } from "../../store/composer";
 import { inTauri } from "../../bridge";
 import type { AttachmentView } from "../../types";
 import { keptItem } from "./composer-ui";
+import { tr } from "../../i18n";
 
 // The composer's attachments (MessageComposer::rebuildAttachments, 1008-1044;
 // removeAttachment, 1046-1065), after the mockup's AttachmentsChip: the chip
@@ -14,13 +15,13 @@ import { keptItem } from "./composer-ui";
 // removal while Rust keeps it. A click, Enter or Space opens a row's file
 // (MessageComposer.cpp:1104-1117), closing the list first.
 
-const kib = (bytes: number) => `${Math.max(1, Math.ceil(bytes / 1024))} KiB`;
+const kib = (bytes: number) => tr("%1 KiB", Math.max(1, Math.ceil(bytes / 1024)));
 /** The draft file's `zerus-file` URL (Task 3b); outside the app there is none. */
 const src = (a: AttachmentView) => (inTauri() ? convertFileSrc(a.path, "zerus-file") : "");
 const image = (a: AttachmentView) => a.mime.startsWith("image/");
 
 /** The chip's label: "{n} attached", or "{n}" in a narrow toolbar (Qt's short label). */
-export const attachedLabel = (n: number, compact: boolean) => (compact ? String(n) : `${n} attached`);
+export const attachedLabel = (n: number, compact: boolean) => (compact ? String(n) : tr("%1 attached", n));
 
 export function AttachmentsChip(props: { compact?: boolean }) {
   const items = () => composer.view()?.attachments ?? [];
@@ -77,7 +78,7 @@ export function AttachmentsChip(props: { compact?: boolean }) {
   return (
     <span class="att-anchor">
       <button ref={chip} type="button" class="tchip" classList={{ on: open() }} hidden={!items().length && !open()} aria-haspopup="dialog" aria-expanded={open()}
-        aria-label={`${items().length} attached`} title={items().map((a) => `${a.reference} ${a.name}`).join("\n")}
+        aria-label={tr("%1 attached", items().length)} title={items().map((a) => `${a.reference} ${a.name}`).join("\n")}
         onClick={(e) => {
           setPreview(undefined);
           arrowed = false;
@@ -88,14 +89,14 @@ export function AttachmentsChip(props: { compact?: boolean }) {
         <Icon name="paperclip" size={13} />{attachedLabel(items().length, !!props.compact)}
       </button>
       <Show when={open()}>
-        <div class={`att-pop pv-${pos().side}`} ref={list} tabindex="-1" role="dialog" aria-label="Attachments" data-shortcut-context="none" onKeyDown={onKey}
+        <div class={`att-pop pv-${pos().side}`} ref={list} tabindex="-1" role="dialog" aria-label={tr("Attachments")} data-shortcut-context="none" onKeyDown={onKey}
           style={{ left: `${pos().left}px`, bottom: `${pos().bottom}px` }}>
-          <div class="att-head"><b>Attachments</b><span class="dim">{items().length} of 8, up to 10 MiB each</span></div>
+          <div class="att-head"><b>{tr("Attachments")}</b><span class="dim">{tr("%1 of 8, up to 10 MiB each", items().length)}</span></div>
           {/* Rows are keyed by their reference, so a new view (a minute tick) keeps them and their focus. */}
           <For each={references()}>{(reference, i) => {
             const a = keptItem(items, reference);
             return (
-              <div class="att-row" tabindex="0" aria-label={a().name} title={`Open ${a().name}`}
+              <div class="att-row" tabindex="0" aria-label={a().name} title={tr("Open %1", a().name)}
                 onMouseEnter={() => setPreview(i())} onMouseLeave={() => setPreview(undefined)} onFocus={() => { if (arrowed) setPreview(i()); }}
                 onClick={(e) => { if (e.button === 0) openFile(i()); }}
                 onKeyDown={(e) => {
@@ -107,16 +108,16 @@ export function AttachmentsChip(props: { compact?: boolean }) {
                   <Show when={image(a())} fallback={<Icon name="file-text" size={16} />}><img src={src(a())} alt="" /></Show>
                 </span>
                 <span class="att-text"><span class="ell"><span class="att-ref">{reference}</span> {a().name}</span><span class="dim tabular">{kib(a().bytes)}</span></span>
-                <button type="button" class="icon-btn small att-remove" aria-label={`Remove attachment ${a().name}`} title="Remove" disabled={composer.locked()}
+                <button type="button" class="icon-btn small att-remove" aria-label={tr("Remove attachment %1", a().name)} title={tr("Remove")} disabled={composer.locked()}
                   onClick={(e) => { e.stopPropagation(); remove(i()); }}><Icon name="x" size={13} /></button>
               </div>
             );
           }}</For>
           <Show when={composer.view()?.removed}>{(name) => (
-            <div class="att-removed"><span class="ell">Removed {name()}</span><span class="grow" />
-              <button type="button" class="btn small ghost att-undo" disabled={composer.locked()} onClick={() => { refocus = 0; void composer.undo(); }}>Undo</button></div>
+            <div class="att-removed"><span class="ell">{tr("Removed %1", name())}</span><span class="grow" />
+              <button type="button" class="btn small ghost att-undo" disabled={composer.locked()} onClick={() => { refocus = 0; void composer.undo(); }}>{tr("Undo")}</button></div>
           )}</Show>
-          <Show when={!items().length && !composer.view()?.removed}><div class="dim att-empty">No attachments.</div></Show>
+          <Show when={!items().length && !composer.view()?.removed}><div class="dim att-empty">{tr("No attachments.")}</div></Show>
           <Show when={current()}>{(a) => (
             <div class="att-preview" aria-hidden="true">
               <Show when={image(a())} fallback={<pre class="mono">{a().excerpt ?? ""}</pre>}><img src={src(a())} alt="" /></Show>

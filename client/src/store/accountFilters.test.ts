@@ -9,7 +9,7 @@ import { accountBinding } from "../ui/sessions/scope-filters";
 import { emptyAccounts, emptyUsage, type Account, type Profile } from "../types";
 
 const account = (id: string, bindings: string[]): Account => ({ key: id, label: id, provider: "claude", installed: true, machines: [],
-  members: bindings.map((id) => ({ id, host: "", home: "" } as Profile)), usage: emptyUsage(), permission: "", identity_lines: [], identity_note: "" });
+  members: bindings.map((id) => ({ id, host: "", home: "" } as Profile)), usage: emptyUsage(), permission: { source: "" }, identity_lines: [], identity_note: null });
 beforeEach(() => { cancelFilterAccountReads(); chooseFilterAccounts([]); setAccountsPage(emptyAccounts()); vi.clearAllMocks(); });
 
 describe("account selection keeps exact presented bindings", () => {

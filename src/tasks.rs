@@ -202,6 +202,9 @@ fn store(config: &Config, project_id: &str) -> Result<ProjectStore> {
 /// This computer and the swarm members it verified itself, by SSH alias.
 struct Machines {
     here: String,
+    /// This computer's own names (`HGS_SELF`, else its hostname), which
+    /// `hgs machine ls` reports as local and never lists as a peer.
+    selves: Vec<String>,
     peers: BTreeMap<String, String>,
     bindings: Vec<Value>,
 }
@@ -212,16 +215,18 @@ fn machines(config: &Config) -> Result<Machines> {
     let peers = crate::swarm::verified_bindings(config, &here);
     #[cfg(not(unix))]
     let peers = BTreeMap::new();
-    Ok(Machines { here, peers, bindings: crate::state::task_bindings().map_err(fail)? })
+    Ok(Machines { here, selves: config.selves.clone(), peers, bindings: crate::state::task_bindings().map_err(fail)? })
 }
 
 impl Machines {
-    /// The computer `--host ALIAS` names, or this one without it.
+    /// The computer `--host ALIAS` names, or this one without it or by one
+    /// of its own names.
     fn node(&self, host: Option<&str>) -> Result<String> {
         match host.filter(|h| !h.is_empty()) {
             None => Ok(self.here.clone()),
+            Some(alias) if self.selves.iter().any(|name| name == alias) => Ok(self.here.clone()),
             Some(alias) => self.peers.get(alias).cloned().ok_or_else(|| {
-                fail(format!("{alias} is not a verified computer of this swarm"))
+                fail(format!("{alias} is not a verified computer of this swarm; omit --host for this computer"))
             }),
         }
     }
@@ -1051,13 +1056,77 @@ mod tests {
             now: 1,
         })
         .unwrap();
-        let machines = Machines { here: "node-here".into(), peers: BTreeMap::from([("mac".to_owned(), "node-mac".to_owned())]), bindings: vec![] };
+        let machines = Machines { here: "node-here".into(), selves: vec![], peers: BTreeMap::from([("mac".to_owned(), "node-mac".to_owned())]), bindings: vec![] };
         let args = ["--session".to_owned(), "codex/api".to_owned()];
         let error = send_session(&task, &args, &Actor::Person, &machines).unwrap_err().message;
         assert!(error.contains("pinned to codex/api on mac"), "{error}");
-        let unknown = Machines { here: "node-here".into(), peers: BTreeMap::new(), bindings: vec![] };
+        let unknown = Machines { here: "node-here".into(), selves: vec![], peers: BTreeMap::new(), bindings: vec![] };
         let error = send_session(&task, &args, &Actor::Person, &unknown).unwrap_err().message;
         assert!(error.contains("pinned to codex/api on another computer"), "{error}");
+    }
+
+    #[test]
+    fn host_names_this_computer_by_its_own_name() {
+        let machines = Machines {
+            here: "node-here".into(),
+            selves: vec!["arch".into(), "arch-lan".into()],
+            peers: BTreeMap::from([("mac".to_owned(), "node-mac".to_owned())]),
+            bindings: vec![],
+        };
+        for host in [None, Some(""), Some("arch"), Some("arch-lan")] {
+            assert_eq!(machines.node(host).unwrap(), "node-here", "{host:?}");
+        }
+        assert_eq!(machines.node(Some("mac")).unwrap(), "node-mac");
+        let error = machines.node(Some("orchard")).unwrap_err().message;
+        assert!(error.contains("orchard is not a verified computer of this swarm; omit --host for this computer"), "{error}");
+    }
+
+    /// A saved record, as JSON, at `file` below the state directory `root`.
+    fn saved(root: &std::path::Path, file: &str, record: Value) {
+        let path = root.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, serde_json::to_vec(&record).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_large_saved_record_still_routes_by_name_and_identity() {
+        let state = tempfile::tempdir().unwrap();
+        let root = state.path();
+        let file = |n: u8| format!("{n:064x}.json");
+        // A live run keeps up to 128 shell jobs with their full heredoc commands.
+        let jobs: serde_json::Map<String, Value> = (0..128)
+            .map(|i| (format!("main:call-{i}"), json!({"command": format!("python3 - <<'PY'\n{}\nPY", "x".repeat(12_000)), "status": "completed"})))
+            .collect();
+        saved(root, &file(1), json!({"version":1,"name":"codex/big","run_id":"run-big","launch_id":"launch-big","journal_name":"codex/first","shell_jobs":jobs}));
+        assert!(std::fs::metadata(root.join(file(1))).unwrap().len() > 1024 * 1024);
+        // A renamed run and the shadow its old name leaves, which never routes.
+        saved(root, &format!("bindings/{}", file(2)), json!({"name":"codex/renamed","run_id":"run-renamed","legacy_shadow":{"name":"codex/older","run_id":"run-renamed"}}));
+        saved(root, &file(3), json!({"name":"codex/older","run_id":"run-renamed","rename_shadow":true}));
+        saved(root, &file(4), json!({"name":"codex/twice","run_id":"run-a"}));
+        saved(root, &format!("bindings/{}", file(5)), json!({"name":"codex/twice","run_id":"run-b"}));
+        saved(root, &file(6), json!({"name":"codex/stopped"}));
+        let machines = Machines {
+            here: "node-here".into(),
+            selves: vec![],
+            peers: BTreeMap::new(),
+            bindings: crate::state::task_bindings_in(root).unwrap(),
+        };
+        let routed = |session: &str, session_id: &str| {
+            let key = SessionKey { machine: "node-here".into(), session: session.into(), session_id: session_id.into() };
+            machines.resolve(&key).map(|key| (key.session, key.session_id))
+        };
+        let big = Some(("codex/big".to_owned(), "launch_id:launch-big".to_owned()));
+        assert_eq!(routed("codex/big", ""), big);
+        assert_eq!(routed("codex/earlier-label", "launch_id:launch-big"), big);
+        assert_eq!(routed("codex/first", ""), big);
+        let target = machines.target("node-here".into(), "codex/big", &[]).unwrap();
+        assert_eq!((target.session.as_str(), target.session_id.as_str()), ("codex/big", "launch_id:launch-big"));
+        assert_eq!(routed("codex/big", "launch_id:gone"), None);
+        // The shadow neither routes nor makes its old name ambiguous.
+        assert_eq!(routed("codex/older", ""), Some(("codex/renamed".to_owned(), "run_id:run-renamed".to_owned())));
+        assert_eq!(routed("codex/twice", ""), None);
+        // Without a routable binding, a name stays a name-only legacy hint.
+        assert_eq!(routed("codex/stopped", ""), Some(("codex/stopped".to_owned(), String::new())));
     }
 
     #[test]

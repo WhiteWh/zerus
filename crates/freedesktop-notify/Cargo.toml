@@ -1,0 +1,18 @@
+[package]
+name = "zerus-freedesktop-notify"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.99"
+license = "MIT"
+description = "Freedesktop notification wire calls and signal decoding for Zerus"
+publish = false
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.19", features = ["blocking-api"] }
+
+[dev-dependencies]
+async-io = "2.6"
+futures-lite = "2.6"
+libc = "0.2"
+uuid = { version = "1", features = ["v4"] }
+serde = { version = "1", features = ["derive"] }

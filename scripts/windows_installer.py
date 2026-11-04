@@ -64,8 +64,11 @@ def release_version(manifest, version=None):
 def installation_record(manifest, version):
     """installation.json for the build that build-info.json describes, released as
     `version` (release_version): the same version the installer itself carries."""
-    return {"schema": 1, "kind": "installer", "product": "Zerus", "version": version,
-            "product_version": manifest["version"], "source_commit": manifest["source_commit"]}
+    record = {"schema": 1, "kind": "installer", "product": "Zerus", "version": version,
+              "product_version": manifest["version"], "source_commit": manifest["source_commit"]}
+    if manifest.get("desktop") == "tauri":
+        record["desktop"] = "tauri"
+    return record
 
 
 def sha256(path):

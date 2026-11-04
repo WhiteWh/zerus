@@ -72,19 +72,27 @@ struct Worker {
     slots: slots::Pool,
 }
 
-/// The future frontend handoff controller can stop this loop without blocking
-/// the GUI thread. Normal GUI execution does not close it yet. This covers delivery
-/// resources only; mark-store admission and flush need their own later barrier.
-/// Dropping a handle does not claim stop or drain, and never reopens its gate.
+/// Shared by Actions' direct MarkRead path and the one background worker.
+/// Stop covers native calls only; Actions owns the ordered mark-store barrier.
 #[derive(Clone)]
 pub struct ReadDelivery {
     gate: Gate,
     cancel: Arc<AtomicBool>,
     wake: Wake,
     slots: slots::Pool,
+    started: Arc<AtomicBool>,
 }
 
 impl ReadDelivery {
+    pub(crate) fn new(wake: Wake) -> Self {
+        Self {
+            gate: Gate::new(5).expect("one loop plus four native read calls"),
+            cancel: Arc::new(AtomicBool::new(false)),
+            wake,
+            slots: slots::Pool::new(),
+            started: Arc::new(AtomicBool::new(false)),
+        }
+    }
     pub fn stop(&self) -> Closed {
         let closed = self.gate.close();
         self.cancel.store(true, Ordering::Release);
@@ -92,31 +100,92 @@ impl ReadDelivery {
         self.wake.notify();
         closed
     }
+    pub(crate) fn admit(&self) -> Option<Call> {
+        let charge = self.gate.admit(Role::ReadDelivery).ok()?;
+        let resource = self.slots.take(charge)?;
+        Some(Call {
+            resource: Some(resource),
+            control: self.clone(),
+            wake_on_drop: false,
+        })
+    }
+}
+
+/// The callback's copy lives through result handling. Every actual pipe and
+/// the owned child retain the same resource through run_accounted.
+pub(crate) struct Call {
+    resource: Option<Arc<slots::Resource>>,
+    control: ReadDelivery,
+    wake_on_drop: bool,
+}
+impl Call {
+    fn resource(&self) -> Arc<slots::Resource> {
+        self.resource.as_ref().unwrap().clone()
+    }
+    pub(crate) fn native(&mut self) -> NativeRead {
+        self.wake_on_drop = true;
+        NativeRead {
+            resource: self.resource(),
+            cancel: self.control.cancel.clone(),
+        }
+    }
+}
+pub(crate) struct NativeRead {
+    resource: Arc<slots::Resource>,
+    cancel: Arc<AtomicBool>,
+}
+impl NativeRead {
+    pub(crate) fn run(&self, hgs: &std::path::Path, inv: &Invocation) -> Exit {
+        run_accounted(hgs, inv, self.resource.clone(), &self.cancel)
+    }
+}
+impl Drop for Call {
+    fn drop(&mut self) {
+        let resource = self.resource.take().unwrap();
+        if self.control.slots.finished(&resource) {
+            eprintln!(
+                "zerus-client: resource pinned role=read_delivery slot={}",
+                resource.slot
+            );
+        }
+        drop(resource);
+        if self.wake_on_drop {
+            self.control.wake.notify();
+        }
+    }
+}
+
+fn run_accounted(
+    hgs: &std::path::Path,
+    inv: &Invocation,
+    resource: Arc<slots::Resource>,
+    cancel: &AtomicBool,
+) -> Exit {
+    match zerus_client_core::run::run_accounted(hgs, inv, &[], 1 << 20, cancel, resource) {
+        Ok(exit) => exit,
+        Err(_) => Exit::Abnormal {
+            stderr: String::new(),
+        },
+    }
 }
 
 impl Worker {
     fn new(actions: Actions, run: Runner, clock: Clock, deliver: bool) -> Self {
+        let control = actions.read_delivery.clone();
         Self {
             actions,
             sync: Arc::new(Mutex::new(ReadSync::new())),
             run,
             clock,
             deliver,
-            // One loop plus the existing four in-flight read slots. Orphan
-            // pipes retain capacity even after ReadSync receives an outcome.
-            gate: Gate::new(5).expect("fixed read delivery capacity"),
-            cancel: Arc::new(AtomicBool::new(false)),
-            slots: slots::Pool::new(Arc::new(|_, _| {})),
+            gate: control.gate,
+            cancel: control.cancel,
+            slots: control.slots,
         }
     }
 
     fn control(&self) -> ReadDelivery {
-        ReadDelivery {
-            gate: self.gate.clone(),
-            cancel: self.cancel.clone(),
-            wake: self.actions.wake.clone(),
-            slots: self.slots.clone(),
-        }
+        self.actions.read_delivery.clone()
     }
 
     /// One wake (`ReadMarkSync::setPending` and `pump`): each due mark whose
@@ -139,14 +208,6 @@ impl Worker {
         };
         let mut threads = Vec::new();
         for mark in due {
-            let Ok(charge) = self.gate.admit(Role::ReadDelivery) else {
-                lock(&self.sync).not_sent(&mark);
-                continue;
-            };
-            let Some(resource) = self.slots.take(charge) else {
-                lock(&self.sync).not_sent(&mark);
-                continue;
-            };
             let Some(claim) = self
                 .actions
                 .claim_lane(&mark.computer, &mark.name, Lane::Read)
@@ -154,11 +215,15 @@ impl Worker {
                 lock(&self.sync).not_sent(&mark);
                 continue;
             };
+            let Some(call) = self.control().admit() else {
+                lock(&self.sync).not_sent(&mark);
+                continue;
+            };
             let worker = self.clone();
             let sent = mark.clone();
             let spawned = std::thread::Builder::new()
                 .name("zerus-read-mark".into())
-                .spawn(move || worker.deliver(&sent, claim, resource));
+                .spawn(move || worker.deliver(&sent, claim, call));
             match spawned {
                 Ok(thread) => threads.push(thread),
                 // The claim went with the closure.
@@ -170,7 +235,8 @@ impl Worker {
 
     /// Runs `hgs [@host] read` for the mark and reports how it ended. An
     /// unset part is sent as null, which hosts never apply (`ReadMark::payload`).
-    fn deliver(&self, mark: &ReadMark, claim: Claim, resource: Arc<slots::Resource>) {
+    fn deliver(&self, mark: &ReadMark, claim: Claim, mut call: Call) {
+        call.wake_on_drop = true;
         let target = Target {
             computer: mark.computer.clone(),
             name: mark.name.clone(),
@@ -190,7 +256,7 @@ impl Worker {
                     &target,
                     &action,
                     &inv,
-                    (self.run)(&inv, resource.clone(), &self.cancel),
+                    (self.run)(&inv, call.resource(), &self.cancel),
                 )
             })
         }));
@@ -200,20 +266,14 @@ impl Worker {
             _ => (false, false),
         };
         lock(&self.sync).finished(mark, delivered, all, (self.clock)());
-        if self.slots.finished(&resource) {
-            eprintln!(
-                "zerus-client: resource pinned role=read_delivery slot={}",
-                resource.slot
-            );
-        }
-        drop(resource);
-        // Publish callback completion before waking the next ordinary delivery.
-        // Retained I/O still owns its original slot and charge.
-        self.actions.wake.notify();
+        drop(call);
     }
 
     fn start(self) -> ReadDelivery {
         let control = self.control();
+        if control.started.swap(true, Ordering::AcqRel) {
+            return control;
+        }
         let wake = self.actions.wake.clone();
         let charged = self.gate.admit(Role::ReadDelivery);
         let spawned = charged.ok().and_then(|charge| {
@@ -252,25 +312,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub fn start(actions: Actions, observe: slots::Observe) -> ReadDelivery {
     let deliver = !crate::actions::blocked();
     let started = Instant::now();
-    let run: Runner = Arc::new(|inv: &Invocation, charge, cancel| {
-        match zerus_client_core::run::run_accounted(
-            &default_hgs(),
-            inv,
-            &[],
-            1 << 20,
-            cancel,
-            charge,
-        ) {
-            Ok(exit) => exit,
-            Err(_) => Exit::Abnormal {
-                stderr: String::new(),
-            },
-        }
-    });
+    let run: Runner =
+        Arc::new(|inv, charge, cancel| run_accounted(&default_hgs(), inv, charge, cancel));
     let clock: Clock =
         Arc::new(move || i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX));
-    let mut worker = Worker::new(actions, run, clock, deliver);
-    worker.slots = slots::Pool::new(observe);
+    let worker = Worker::new(actions, run, clock, deliver);
+    worker.slots.observe(observe);
     worker.start()
 }
 
@@ -386,12 +433,14 @@ mod tests {
     #[test]
     fn a_queued_mark_is_sent_with_its_parts_and_resent_after_120_s() {
         let f = Fixture::new("send", |_| exit(0, applied(true, false)));
-        f.actions.queue_marks(vec![mark(
-            "mac",
-            "claude/sample-project/review",
-            Some("r1"),
-            None,
-        )]);
+        f.actions
+            .queue_marks(vec![mark(
+                "mac",
+                "claude/sample-project/review",
+                Some("r1"),
+                None,
+            )])
+            .unwrap();
         assert_eq!(f.pump(), 1);
         let calls = f.calls();
         assert_eq!(calls.len(), 1);
@@ -425,7 +474,7 @@ mod tests {
             "conversation_id": "conv-1", "reply_id": "r1", "attention_signature": null
         }]))
         .unwrap();
-        assert_eq!(f.actions.queue_marks(marks).len(), 1);
+        assert_eq!(f.actions.queue_marks(marks).unwrap().len(), 1);
         assert_eq!(f.pump(), 1);
         let calls = f.calls();
         assert_eq!(
@@ -468,7 +517,8 @@ mod tests {
     fn a_part_the_host_did_not_apply_waits_longer() {
         let f = Fixture::new("partial", |_| exit(0, applied(true, false)));
         f.actions
-            .queue_marks(vec![mark("mac", "s", Some("r1"), Some("s1"))]);
+            .queue_marks(vec![mark("mac", "s", Some("r1"), Some("s1"))])
+            .unwrap();
         assert_eq!(f.pump(), 1);
         f.at(120_000);
         assert_eq!(f.pump(), 1);
@@ -483,7 +533,8 @@ mod tests {
     fn a_failed_call_backs_off() {
         let f = Fixture::new("failed", |_| Exit::TimedOut);
         f.actions
-            .queue_marks(vec![mark("mac", "s", Some("r1"), None)]);
+            .queue_marks(vec![mark("mac", "s", Some("r1"), None)])
+            .unwrap();
         assert_eq!(f.pump(), 1);
         f.at(9_999);
         assert_eq!(f.pump(), 0);
@@ -501,7 +552,8 @@ mod tests {
             exit(1, json!({"ok": false, "error": "not_found"}))
         });
         f.actions
-            .queue_marks(vec![mark("mac", "s", Some("r1"), None)]);
+            .queue_marks(vec![mark("mac", "s", Some("r1"), None)])
+            .unwrap();
         assert_eq!(f.pump(), 1);
         // Delivered, nothing applied: 120 s, not a 10 s failure.
         f.at(119_999);
@@ -514,7 +566,8 @@ mod tests {
     fn a_busy_read_lane_leaves_the_mark_for_the_next_wake() {
         let f = Fixture::new("lane", |_| exit(0, applied(true, true)));
         f.actions
-            .queue_marks(vec![mark("mac", "s", Some("r1"), None)]);
+            .queue_marks(vec![mark("mac", "s", Some("r1"), None)])
+            .unwrap();
         let read = f.actions.claim_lane("mac", "s", Lane::Read).unwrap();
         assert_eq!(f.pump(), 0);
         assert!(f.calls().is_empty());
@@ -529,7 +582,8 @@ mod tests {
     fn a_running_write_or_stop_does_not_hold_up_a_read() {
         let f = Fixture::new("lanes", |_| exit(0, applied(true, true)));
         f.actions
-            .queue_marks(vec![mark("mac", "s", Some("r1"), None)]);
+            .queue_marks(vec![mark("mac", "s", Some("r1"), None)])
+            .unwrap();
         let _write = f.actions.claim_lane("mac", "s", Lane::Write).unwrap();
         let _stop = f.actions.claim_lane("mac", "s", Lane::Interrupt).unwrap();
         assert_eq!(f.pump(), 1);
@@ -552,11 +606,13 @@ mod tests {
             assert!(state.1, "the test opened the gate");
             exit(0, applied(true, true))
         });
-        f.actions.queue_marks(
-            (0..6)
-                .map(|i| mark(&format!("host-{i}"), "s", Some("r1"), None))
-                .collect(),
-        );
+        f.actions
+            .queue_marks(
+                (0..6)
+                    .map(|i| mark(&format!("host-{i}"), "s", Some("r1"), None))
+                    .collect(),
+            )
+            .unwrap();
         let first = f.worker.pump();
         assert_eq!(first.len(), 4);
         let (state, signal) = &*gate;
@@ -595,7 +651,7 @@ mod tests {
         });
         *path.lock().unwrap() = Some(f._temp.0.clone());
         let m = mark("mac", "s", Some("r1"), None);
-        f.actions.queue_marks(vec![m.clone()]);
+        f.actions.queue_marks(vec![m.clone()]).unwrap();
         // Queueing does no file I/O.
         assert!(!f._temp.0.exists());
         assert_eq!(f.pump(), 1);
@@ -606,7 +662,7 @@ mod tests {
     fn a_replay_without_hgs_saves_marks_but_sends_none() {
         let f = Fixture::with("replay", false, |_| exit(0, applied(true, true)));
         let m = mark("mac", "s", Some("r1"), None);
-        f.actions.queue_marks(vec![m.clone()]);
+        f.actions.queue_marks(vec![m.clone()]).unwrap();
         assert_eq!(f.pump(), 0);
         f.at(600_000);
         assert_eq!(f.pump(), 0);
@@ -622,7 +678,8 @@ mod tests {
         use zerus_client_core::{Batch, ComputerId, RowOut, ViewRow};
         let f = Fixture::new("settled", |_| exit(0, applied(true, true)));
         f.actions
-            .queue_marks(vec![mark("mac", "s", Some("r1"), None)]);
+            .queue_marks(vec![mark("mac", "s", Some("r1"), None)])
+            .unwrap();
         f.actions.observe(&Batch {
             upserts: vec![RowOut {
                 computer: ComputerId::from("mac"),
@@ -658,11 +715,42 @@ mod tests {
     }
 
     #[test]
+    fn shared_worker_start_is_one_use_and_native_stop_preserves_the_store_queue() {
+        use zerus_client_core::desktop::drain::Observation;
+        let f = Fixture::with("single-worker", false, |_| panic!("replay delivered"));
+        let first = f.worker.clone().start();
+        let second = f.worker.clone().start();
+        assert_eq!(
+            first.gate.snapshot().unwrap().admitted,
+            1,
+            "one existing loop"
+        );
+        let closed = second.stop();
+        assert_eq!(
+            closed.wait_until(Instant::now() + Duration::from_secs(2)),
+            Observation::Idle
+        );
+        f.actions
+            .queue_marks(vec![mark("", "waiting", Some("reply"), None)])
+            .unwrap();
+        f.actions.flush_marks();
+        assert_eq!(
+            f.actions.pending_marks().len(),
+            1,
+            "native stop alone never discards queued intent"
+        );
+        f.worker.clone().start();
+        assert!(first.gate.snapshot().unwrap().closed);
+        assert_eq!(first.gate.snapshot().unwrap().admitted, 0);
+    }
+
+    #[test]
     fn explicit_stop_keeps_pending_marks_and_never_starts_another_delivery() {
         use zerus_client_core::desktop::drain::Observation;
         let f = Fixture::new("drain-before-pump", |_| exit(0, serde_json::json!({})));
         f.actions
-            .queue_marks(vec![mark("", "waiting", Some("reply"), None)]);
+            .queue_marks(vec![mark("", "waiting", Some("reply"), None)])
+            .unwrap();
         let closed = f.worker.control().stop();
         assert_eq!(f.pump(), 0);
         assert_eq!(closed.wait_until(Instant::now()), Observation::Idle);
@@ -685,7 +773,8 @@ mod tests {
             exit(1, serde_json::json!({}))
         });
         f.actions
-            .queue_marks(vec![mark("", "waiting", Some("reply"), None)]);
+            .queue_marks(vec![mark("", "waiting", Some("reply"), None)])
+            .unwrap();
         let control = f.worker.clone().start();
         begun.recv_timeout(Duration::from_secs(2)).unwrap();
         let closed = control.stop();

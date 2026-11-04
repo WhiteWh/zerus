@@ -13,6 +13,8 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::time::Duration;
 
+mod diagnostic;
+
 const MAX_TEXT: usize = 64 * 1024;
 const MAX_FILE: usize = 10 * 1024 * 1024;
 const MAX_TOTAL: usize = 20 * 1024 * 1024;
@@ -60,8 +62,12 @@ fn validate(request: &Request) -> Result<Vec<Vec<u8>>> {
     {
         return Err("message contains terminal control characters".into());
     }
-    // The composer sends messages, not provider slash commands or shell mode.
-    if request.text.trim_start().starts_with(['/', '!']) {
+    // A slash command's first token is /name. Absolute paths have another
+    // slash in that token and are ordinary message text, even /help/file.png.
+    let text = request.text.trim_start();
+    let first = text.split_whitespace().next().unwrap_or("");
+    let slash_command = first.strip_prefix('/').is_some_and(|name| !name.contains('/'));
+    if slash_command || text.starts_with('!') {
         return Err("use Terminal for slash commands and shell commands".into());
     }
     if request.attachments.len() > 8 {
@@ -179,7 +185,7 @@ pub(super) fn launch_ready(name: &str, run_id: &str, conversation_id: &str) -> R
 /// A resume before its deferred SessionStart, verified as for its first message.
 pub(super) fn checked_resumed(name: &str, run_id: &str, conversation_id: &str) -> Result<Value> {
     let record = checked_input(name, run_id, conversation_id, true)?;
-    if !resume_input::clearable(&record) {
+    if !clear_context::resume_clearable(&record) {
         return Err("The agent is no longer waiting for its resumed conversation; refresh".into());
     }
     Ok(record)
@@ -306,6 +312,9 @@ fn checked_input(
     if codex_update::current(&record).is_some() {
         return Err("Codex is waiting for an update choice. Choose an option in Activity or Terminal before sending a message.".into());
     }
+    if codex_rate_limit::current(&record).is_some() {
+        return Err(codex_rate_limit::WAIT.into());
+    }
     if codex_goal_resume::current(&record).is_some() {
         return Err(codex_goal_resume::WAIT.into());
     }
@@ -406,13 +415,15 @@ const SETTINGS_UNCONFIRMED: &str = "the agent did not react to the last model se
 
 /// Capture ANSI attributes so a faint Codex placeholder is distinguishable from
 /// a user's existing draft. Never clear/edit the terminal's current draft.
-#[derive(Default)]
+/// Reverse video marks the caret Claude draws itself (`claude_caret_placeholder`).
+#[derive(Clone, Copy, Default)]
 struct TerminalStyle {
     dim: bool,
     background: bool,
+    inverse: bool,
 }
 
-fn styled_cells(row: &str, style: &mut TerminalStyle) -> Vec<(char, bool, bool)> {
+fn styled_cells(row: &str, style: &mut TerminalStyle) -> Vec<(char, TerminalStyle)> {
     let mut chars = row.chars().peekable();
     let mut result = Vec::new();
     while let Some(ch) = chars.next() {
@@ -427,12 +438,11 @@ fn styled_cells(row: &str, style: &mut TerminalStyle) -> Vec<(char, bool, bool)>
                         let mut i = 0;
                         while i < parameters.len() {
                             match parameters[i] {
-                                "" | "0" => {
-                                    style.dim = false;
-                                    style.background = false;
-                                }
+                                "" | "0" => *style = TerminalStyle::default(),
                                 "22" => style.dim = false,
                                 "2" => style.dim = true,
+                                "7" => style.inverse = true,
+                                "27" => style.inverse = false,
                                 "49" => style.background = false,
                                 "38" | "48" | "58" => {
                                     if parameters[i] == "48" {
@@ -460,7 +470,7 @@ fn styled_cells(row: &str, style: &mut TerminalStyle) -> Vec<(char, bool, bool)>
                 code.push(ch);
             }
         } else {
-            result.push((ch, style.dim, style.background));
+            result.push((ch, *style));
         }
     }
     result
@@ -469,8 +479,31 @@ fn styled_cells(row: &str, style: &mut TerminalStyle) -> Vec<(char, bool, bool)>
 fn styled_row(row: &str) -> Vec<(char, bool)> {
     styled_cells(row, &mut TerminalStyle::default())
         .into_iter()
-        .map(|(ch, dim, _)| (ch, dim))
+        .map(|(ch, style)| (ch, style.dim))
         .collect()
+}
+
+/// Claude paints its own caret in reverse video over the first letter of a dim
+/// placeholder in its empty composer, such as "Press up to edit queued
+/// messages" while a message is queued or an idle suggestion. Accept exactly
+/// that shape from the cursor column: one non-blank reverse cell, immediately
+/// followed by dim text (possibly a space after a one-letter word), then only
+/// blank or dim cells without reverse video, with visible dim continuation.
+/// The caret on a draft's first letter is followed by normal text, and a lone
+/// reverse character has no dim continuation; both remain drafts.
+fn claude_caret_placeholder(cells: &[(char, TerminalStyle)]) -> bool {
+    let [(caret, caret_style), rest @ ..] = cells else {
+        return false;
+    };
+    caret_style.inverse
+        && !caret.is_whitespace()
+        && rest.first().is_some_and(|(_, style)| style.dim)
+        && rest
+            .iter()
+            .any(|(ch, style)| style.dim && !ch.is_whitespace())
+        && rest
+            .iter()
+            .all(|(ch, style)| !style.inverse && (style.dim || ch.is_whitespace()))
 }
 
 /// Released Codex uses a double chevron for Ultra's live composer. This is
@@ -499,7 +532,13 @@ fn prompt_empty(agent: &str, row: &str, previous: &str, screen: &str, cursor: us
             cursor == 2
                 && matches!(chars.next(), Some('❯' | '>'))
                 && chars.next().is_none_or(char::is_whitespace)
-                && styled.iter().skip(2).all(|(ch, dim)| ch.is_whitespace() || *dim)
+                && (styled
+                    .iter()
+                    .skip(2)
+                    .all(|(ch, dim)| ch.is_whitespace() || *dim)
+                    || styled_cells(row, &mut TerminalStyle::default())
+                        .get(2..)
+                        .is_some_and(claude_caret_placeholder))
         }
         "kimi" => {
             // kimi-code 2.x uses a boxed > prompt; its shell mode uses !.
@@ -607,6 +646,15 @@ fn codex_status_row(plain: &str, model: Option<&str>) -> bool {
         })
 }
 
+fn codex_warning_footer(row: &str) -> bool {
+    let plain: String = styled_row(row).iter().map(|(ch, _)| ch).collect();
+    let Some(rest) = plain.trim().strip_prefix("⚠ ") else { return false; };
+    let Some((count, tail)) = rest.split_once(' ') else { return false; };
+    !count.is_empty() && count.len() <= 9 && count.bytes().all(|ch| ch.is_ascii_digit())
+        && count.parse::<u32>().is_ok_and(|value| value > 0)
+        && matches!(tail, "warning · f2 to view" | "warnings · f2 to view")
+}
+
 fn codex_footer_model(record: &Value) -> Option<&str> {
     if let Some(model) = record["model"].as_str().filter(|model| !model.is_empty()) {
         return Some(model);
@@ -656,18 +704,15 @@ fn composer_empty_for_model(agent: &str, screen: &str, cursor_x: usize, cursor_y
     for (index, row) in lines.iter().enumerate().take(cursor_y + 1) {
         let cells = styled_cells(row, &mut style);
         if index == cursor_y {
-            input_background = style.background
-                || cells
-                    .iter()
-                    .skip(cursor_x)
-                    .any(|(_, _, background)| *background);
+            input_background =
+                style.background || cells.iter().skip(cursor_x).any(|(_, cell)| cell.background);
         }
     }
     let boxed_kimi = agent == "kimi" && cursor_x == 5;
     let mut previous_blank = false;
     for (index, row) in lines.iter().enumerate().skip(cursor_y + 1) {
         let cells = styled_cells(row, &mut style);
-        let plain: String = cells.iter().map(|(ch, _, _)| ch).collect();
+        let plain: String = cells.iter().map(|(ch, _)| ch).collect();
         if boxed_kimi {
             // Input text always stays inside │…│; the separate bottom border
             // cannot be confused with a continuation beginning with spaces.
@@ -703,8 +748,8 @@ fn composer_empty_for_model(agent: &str, screen: &str, cursor_x: usize, cursor_y
             && previous_blank
             && cells
                 .iter()
-                .filter(|(ch, _, _)| !ch.is_whitespace())
-                .all(|(_, _, bg)| !bg)
+                .filter(|(ch, _)| !ch.is_whitespace())
+                .all(|(_, cell)| !cell.background)
             && index + 2 >= lines.len()
         {
             // Codex's shaded composer ends at its unshaded model/help footer.
@@ -725,7 +770,7 @@ fn composer_empty_for_model(agent: &str, screen: &str, cursor_x: usize, cursor_y
                 // model/path shape; drafts never retain that placeholder.
                 // Windows Codex prints `~\…` or a drive path (`shown_path`).
                 let single_line_footer = placeholder
-                    && lines[index + 1..].iter().all(|line| line.trim().is_empty())
+                    && lines[index + 1..].iter().all(|line| line.trim().is_empty() || codex_warning_footer(line))
                     && codex_status_row(&plain, model);
                 return input_background || single_line_footer
                     || lines.last().is_some_and(|line| {
@@ -740,6 +785,14 @@ fn composer_empty_for_model(agent: &str, screen: &str, cursor_x: usize, cursor_y
 }
 
 pub(super) fn checked_terminal(record: &Value, empty: bool) -> Result<()> {
+    terminal_check(record, empty, false)
+}
+
+fn checked_send_terminal(record: &Value) -> Result<()> {
+    terminal_check(record, true, true)
+}
+
+fn terminal_check(record: &Value, empty: bool, sending: bool) -> Result<()> {
     let pane = string(record, "pane");
     if !pane
         .strip_prefix('%')
@@ -748,13 +801,14 @@ pub(super) fn checked_terminal(record: &Value, empty: bool) -> Result<()> {
         return Err("invalid tracked pane".into());
     }
     let terminal = backend::current();
-    let state = terminal.input_state(&backend::InputClaim {
+    let claim = backend::InputClaim {
         pane,
         name: string(record, "name"),
         run_id: string(record, "run_id"),
         agent: string(record, "agent"),
         pid: record["pid"].as_u64(),
-    })?;
+    };
+    let state = terminal.input_state(&claim)?;
     if empty {
         let screen = terminal.capture(pane, backend::Capture::Styled)?;
         let screen = String::from_utf8_lossy(&screen);
@@ -766,13 +820,28 @@ pub(super) fn checked_terminal(record: &Value, empty: bool) -> Result<()> {
             .cursor_x
             .parse()
             .map_err(|_| "invalid terminal cursor")?;
-        if !composer_empty_for_model(
+        // A native redraw may move the composer between cursor and screen
+        // reads. Never type using coordinates from a different frame.
+        let stable = if sending && matches!(string(record, "agent"), "codex" | "claude") {
+            let after = terminal.input_state(&claim)?;
+            state.cursor_x == after.cursor_x && state.cursor_y == after.cursor_y
+        } else { true };
+        if !stable || !composer_empty_for_model(
             string(record, "agent"),
             &screen,
             cursor_x,
             cursor_y,
             codex_footer_model(record),
         ) {
+            if sending {
+                diagnostic::save(record, &screen, cursor_x, cursor_y, stable);
+                if matches!(string(record, "agent"), "codex" | "claude")
+                    && string(record, "activity") == "busy"
+                    && matches!(string(record, "phase"), "idle" | "working" | "tool" | "compacting")
+                {
+                    return Err("agent busy: terminal queue prompt is unrecognized or contains a draft; wait for the agent or open Terminal; nothing was submitted".into());
+                }
+            }
             // U53 diagnostics: one native run prints which check refused and
             // where the caret and its row are, behind a flag only a test sets.
             if nonempty_env("HGS_INPUT_TRACE").is_some() {
@@ -833,7 +902,7 @@ pub(super) fn claude_draft(screen: &str, cursor_y: usize) -> Option<String> {
     let mut style = TerminalStyle::default();
     let rows: Vec<String> = screen
         .lines()
-        .map(|row| styled_cells(row, &mut style).into_iter().map(|(ch, dim, _)| if dim { ' ' } else { ch }).collect())
+        .map(|row| styled_cells(row, &mut style).into_iter().map(|(ch, cell)| if cell.dim { ' ' } else { ch }).collect())
         .collect();
     let separator = |row: &str| {
         let row = row.trim_end();
@@ -1027,7 +1096,7 @@ fn submit_with(name: &str, input: &[u8], recovery_id: Option<&str>, held: bool) 
     };
     let mut record = effort::apply_pending(name, checked)?;
     if let Some(id) = recovery_id { recovery::check_submission(&record, id)?; }
-    checked_terminal(&record, true)?;
+    checked_send_terminal(&record)?;
     let attachments_root = root.join("attachments");
     private_dir(&attachments_root)?;
     let attachments = tempfile::Builder::new()
@@ -1074,7 +1143,7 @@ fn submit_with(name: &str, input: &[u8], recovery_id: Option<&str>, held: bool) 
     let cleanup = || terminal.discard(&buffer);
     // Recheck immediately before the first input byte. All concurrent hgs writes
     // share this lock; a crash/exit can still race the PTY, so receipts are durable.
-    if let Err(error) = checked_record(name, &request).and_then(|r| checked_terminal(&r, true)) {
+    if let Err(error) = checked_record(name, &request).and_then(|r| checked_send_terminal(&r)) {
         cleanup();
         return Err(error);
     }
@@ -1296,6 +1365,97 @@ mod tests {
         assert!(!composer_empty("claude", screen, 3, 1));
     }
     #[test]
+    fn styled_cells_track_reverse_video_without_reading_color_data() {
+        let cells = styled_cells(
+            "\x1b[38;5;7ma\x1b[7mb\x1b[27mc\x1b[7;2md\x1b[0me\x1b[7mf\x1b[me\x1b[48;2;7;7;7mg",
+            &mut TerminalStyle::default(),
+        );
+        let inverse: String = cells
+            .iter()
+            .map(|(ch, style)| match style.inverse {
+                true => ch.to_ascii_uppercase(),
+                false => *ch,
+            })
+            .collect();
+        assert_eq!(inverse, "aBcDeFeg");
+        assert!(cells[3].1.dim && !cells[4].1.dim && cells[7].1.background);
+    }
+    #[test]
+    fn claude_placeholder_under_its_drawn_caret_is_empty_but_drafts_are_not() {
+        // Claude Code 2.1.314 while a message is queued: an empty composer with
+        // a dim placeholder whose first letter carries Claude's reverse caret.
+        let rule = "─".repeat(40);
+        let queued =
+            "\x1b[38;5;246m❯ \x1b[7m\x1b[39mP\x1b[0;2mress up to edit queued messages\x1b[0m";
+        let screen = |row: &str| {
+            format!(
+                "  ctrl+x ctrl+s to send now\n\n· Bunning… (2m 34s · ↓ 12.2k tokens)\n  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work\n\n{rule}\n{row}\n{rule}\n\n  ⏵⏵ bypass permissions on · 1 shell"
+            )
+        };
+        assert!(composer_empty("claude", &screen(queued), 2, 6));
+        // Any placeholder drawn this way, such as an idle suggestion after NBSP.
+        let suggestion = "\x1b[38;5;246m❯\u{a0}\x1b[7mT\x1b[0;2mry \"fix the failing test\"\x1b[0m";
+        assert!(composer_empty("claude", &screen(suggestion), 2, 6));
+        // The cursor must be on the caret, and a draft continuing under the
+        // placeholder row is still a draft.
+        assert!(!composer_empty("claude", &screen(queued), 3, 6));
+        let continued = screen(&format!("{queued}\n  second line"));
+        assert!(!composer_empty("claude", &continued, 2, 6));
+        for draft in [
+            // The caret on the first letter of normal text.
+            "\x1b[38;5;246m❯ \x1b[7m\x1b[39mP\x1b[0mress up to edit queued messages",
+            // A lone reverse character, also before blank space or later dim text.
+            "\x1b[38;5;246m❯ \x1b[7m\x1b[39mP\x1b[0m",
+            "\x1b[38;5;246m❯ \x1b[7m\x1b[39mP\x1b[0m   ",
+            "\x1b[38;5;246m❯ \x1b[7m\x1b[39mP\x1b[0m \x1b[2mress up\x1b[0m",
+            // Normal text after the dim run, or reverse video beyond one cell.
+            "\x1b[38;5;246m❯ \x1b[7m\x1b[39mP\x1b[0;2mress up\x1b[0m draft",
+            "\x1b[38;5;246m❯ \x1b[7m\x1b[39mP\x1b[2mress up\x1b[0m",
+            "\x1b[38;5;246m❯ \x1b[7m\x1b[39mP\x1b[0;2mress \x1b[7mu\x1b[27mp\x1b[0m",
+            // Reverse video switched off before the letter.
+            "\x1b[38;5;246m❯ \x1b[7m\x1b[27mP\x1b[0;2mress up\x1b[0m",
+            // Text before the caret.
+            "\x1b[38;5;246m❯ x\x1b[7mP\x1b[0;2mress up\x1b[0m",
+        ] {
+            assert!(!composer_empty("claude", &screen(draft), 2, 6), "{draft:?}");
+            assert!(!composer_empty("claude", &screen(draft), 3, 6), "{draft:?}");
+        }
+        // A question's Other editor draws the same caret, but is never a composer.
+        let other = include_str!("../../tests/fixtures/claude-question-other.txt")
+            .replace("Type something.", "\x1b[7mT\x1b[0;2mype something.\x1b[0m");
+        let y = other.lines().position(|row| row.contains("ype ")).unwrap();
+        for x in [2, 5] {
+            assert!(!composer_empty("claude", &other, x, y));
+        }
+        // Codex and Kimi rules are unchanged: a reverse cell is not their placeholder.
+        let codex = "\x1b[1m›\x1b[0m \x1b[7mA\x1b[0;2msk anything\x1b[0m";
+        assert!(!prompt_empty("codex", codex, "", "", 2));
+        let kimi = " │ > \x1b[7mA\x1b[0;2msk\x1b[0m │";
+        assert!(!prompt_empty("kimi", kimi, " ╭──────────╮", "", 5));
+    }
+    #[test]
+    fn claude_one_letter_ghost_suggestion_is_empty_only_with_dim_continuation() {
+        // Synthetic shape: Claude's inverse caret covers the first letter;
+        // the following space and predicted words are faint, not user input.
+        let row = "\x1b[39m❯ \x1b[7mI\x1b[0;2m can add a test\x1b[0m";
+        let screen = |row: &str| format!("Ready\n──────────────\n{row}\n──────────────\nstatus");
+        assert!(composer_empty("claude", &screen(row), 2, 2));
+        assert!(!composer_empty("claude", &screen(row), 3, 2));
+        for changed in [
+            row.replace("0;2m", "0m"),
+            row.replace(" can", " \x1b[22mcan\x1b[2m"),
+            row.replace(" can", " \x1b[7mcan\x1b[27m"),
+            "\x1b[39m❯ \x1b[7mI\x1b[0;2m   \x1b[0m".into(),
+            "\x1b[39m❯ \x1b[7mI\x1b[0m \x1b[2mcan add a test\x1b[0m".into(),
+            format!("{row}\n  multiline draft"),
+        ] {
+            assert!(
+                !composer_empty("claude", &screen(&changed), 2, 2),
+                "{changed:?}"
+            );
+        }
+    }
+    #[test]
     fn claude_2312_effort_line_and_framed_composer_keep_an_empty_input() {
         // Native 2.1.312 layout: header, a blank body, the effort line, then
         // rule, composer, rule, footer. The caret may rest anywhere in that
@@ -1417,6 +1577,20 @@ mod tests {
         ));
     }
     #[test]
+    fn codex_warning_footer_does_not_turn_an_empty_queue_composer_into_a_draft() {
+        // Codex 0.166's separate warning row can occupy the shortcuts row.
+        let screen = "Working\n\n\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m\n\n  GPT-6.1-Sol default · /fixture\n    ⚠ \x1b[33m2 warnings\x1b[0m · \x1b[1mf2\x1b[0m to view";
+        assert!(composer_empty("codex", screen, 2, 2));
+        for row in ["⚠ 2 warnings · enter to approve", "⚠ 0 warnings · f2 to view", "⚠ 2 warnings · f2 to view draft", "unknown footer"] {
+            assert!(!composer_empty("codex", &screen.replace("    ⚠ \x1b[33m2 warnings\x1b[0m · \x1b[1mf2\x1b[0m to view", row), 2, 2));
+        }
+        for draft in ["", "my draft", "\n  another draft line"] {
+            assert!(!composer_empty("codex", &screen.replace("\x1b[2mAsk Codex to do anything\x1b[0m", draft), 2, 2));
+        }
+        assert!(!composer_empty("codex", screen, 3, 2));
+    }
+
+    #[test]
     fn codex_ultra_composer_keeps_cursor_draft_and_footer_guards() {
         let screen = "\x1b[1m\x1b[38;2;186;130;255m»\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m\n\n  GPT-6.1-Sol ultra · /fixture\n  ? for shortcuts";
         assert!(composer_empty("codex", screen, 2, 0));
@@ -1502,7 +1676,10 @@ mod tests {
             queue_when_unconfirmed: false,
         };
         assert!(validate(&r).is_ok());
-        for text in ["hi\x1b[201~", "hello\rbye", " /exit", "!rm test"] {
+        for text in [
+            "hi\x1b[201~", "hello\rbye", " /exit", "/help args", "/help arg/with/slashes",
+            "/clear\n/tmp/file", "/", "/ /tmp/file", "!rm test",
+        ] {
             r.text = text.into();
             assert!(validate(&r).is_err(), "{text:?}");
         }
@@ -1510,5 +1687,15 @@ mod tests {
             safe_filename("../../bad image.png", 0),
             "01-.._.._bad_image.png"
         );
+    }
+
+    #[test]
+    fn absolute_paths_are_messages_including_command_named_directories() {
+        for text in [
+            "/tmp/capture.png What is shown?", " /help/capture.png\nDescribe this.",
+            "/tmp/a b.png", "//server/share/file", "C:\\fixture\\capture.png", "The path is /tmp/file",
+        ] {
+            assert!(validate_launch_prompt(text).is_ok(), "{text:?}");
+        }
     }
 }

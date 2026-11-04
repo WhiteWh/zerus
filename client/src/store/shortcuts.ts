@@ -1,4 +1,5 @@
 import { setSetting, settings } from "./settings";
+import { tr, trNoop } from "../i18n";
 
 // Keyboard commands (tray/src/Shortcuts.h, Shortcuts.cpp): stable ids, default
 // chords per platform, the rules that decide when a chord may leave Terminal
@@ -19,34 +20,34 @@ export type Scope = "window" | "composer";
 export interface Command { id: string; group: string; title: string; scope: Scope }
 
 export const COMMANDS: readonly Command[] = [
-  { id: "go.overview", group: "Go to", title: "Go to Overview", scope: "window" },
-  { id: "go.sessions", group: "Go to", title: "Go to Sessions", scope: "window" },
-  { id: "go.projects", group: "Go to", title: "Go to Projects", scope: "window" },
-  { id: "go.machines", group: "Go to", title: "Go to Machines", scope: "window" },
-  { id: "go.accounts", group: "Go to", title: "Go to Accounts", scope: "window" },
-  { id: "go.settings", group: "Go to", title: "Open Settings", scope: "window" },
-  { id: "go.anywhere", group: "Go to", title: "Go to…", scope: "window" },
-  { id: "help.shortcuts", group: "Go to", title: "Keyboard shortcuts", scope: "window" },
-  { id: "session.next", group: "Sessions", title: "Next session", scope: "window" },
-  { id: "session.previous", group: "Sessions", title: "Previous session", scope: "window" },
-  { id: "session.nextAttention", group: "Sessions", title: "Next session that needs attention", scope: "window" },
-  { id: "session.previousAttention", group: "Sessions", title: "Previous session that needs attention", scope: "window" },
-  { id: "session.new", group: "Sessions", title: "New session", scope: "window" },
-  { id: "session.rename", group: "Sessions", title: "Rename session", scope: "window" },
-  { id: "session.search", group: "Sessions", title: "Search sessions", scope: "window" },
-  { id: "view.refresh", group: "Sessions", title: "Refresh", scope: "window" },
-  { id: "tab.next", group: "Session view", title: "Next tab", scope: "window" },
-  { id: "tab.previous", group: "Session view", title: "Previous tab", scope: "window" },
-  { id: "tab.terminal", group: "Session view", title: "Switch between Activity and Terminal", scope: "window" },
-  { id: "panel.toggle", group: "Session view", title: "Show or hide the side panel", scope: "window" },
-  { id: "focus.next", group: "Session view", title: "Next area", scope: "window" },
-  { id: "focus.previous", group: "Session view", title: "Previous area", scope: "window" },
-  { id: "message.send", group: "Messages", title: "Send message", scope: "composer" },
-  { id: "queue.sendNow", group: "Messages", title: "Send queued messages now", scope: "window" },
-  { id: "message.push", group: "Messages", title: "Send and push now", scope: "composer" },
-  { id: "zoom.in", group: "Content scale", title: "Increase content scale", scope: "window" },
-  { id: "zoom.out", group: "Content scale", title: "Decrease content scale", scope: "window" },
-  { id: "zoom.reset", group: "Content scale", title: "Reset content scale", scope: "window" },
+  { id: "go.overview", group: trNoop("Go to"), title: trNoop("Go to Overview"), scope: "window" },
+  { id: "go.sessions", group: trNoop("Go to"), title: trNoop("Go to Sessions"), scope: "window" },
+  { id: "go.projects", group: trNoop("Go to"), title: trNoop("Go to Projects"), scope: "window" },
+  { id: "go.machines", group: trNoop("Go to"), title: trNoop("Go to Machines"), scope: "window" },
+  { id: "go.accounts", group: trNoop("Go to"), title: trNoop("Go to Accounts"), scope: "window" },
+  { id: "go.settings", group: trNoop("Go to"), title: trNoop("Open Settings"), scope: "window" },
+  { id: "go.anywhere", group: trNoop("Go to"), title: trNoop("Go to…"), scope: "window" },
+  { id: "help.shortcuts", group: trNoop("Go to"), title: trNoop("Keyboard shortcuts"), scope: "window" },
+  { id: "session.next", group: trNoop("Sessions"), title: trNoop("Next session"), scope: "window" },
+  { id: "session.previous", group: trNoop("Sessions"), title: trNoop("Previous session"), scope: "window" },
+  { id: "session.nextAttention", group: trNoop("Sessions"), title: trNoop("Next session that needs attention"), scope: "window" },
+  { id: "session.previousAttention", group: trNoop("Sessions"), title: trNoop("Previous session that needs attention"), scope: "window" },
+  { id: "session.new", group: trNoop("Sessions"), title: trNoop("New session"), scope: "window" },
+  { id: "session.rename", group: trNoop("Sessions"), title: trNoop("Rename session"), scope: "window" },
+  { id: "session.search", group: trNoop("Sessions"), title: trNoop("Search sessions"), scope: "window" },
+  { id: "view.refresh", group: trNoop("Sessions"), title: trNoop("Refresh"), scope: "window" },
+  { id: "tab.next", group: trNoop("Session view"), title: trNoop("Next tab"), scope: "window" },
+  { id: "tab.previous", group: trNoop("Session view"), title: trNoop("Previous tab"), scope: "window" },
+  { id: "tab.terminal", group: trNoop("Session view"), title: trNoop("Switch between Activity and Terminal"), scope: "window" },
+  { id: "panel.toggle", group: trNoop("Session view"), title: trNoop("Show or hide the side panel"), scope: "window" },
+  { id: "focus.next", group: trNoop("Session view"), title: trNoop("Next area"), scope: "window" },
+  { id: "focus.previous", group: trNoop("Session view"), title: trNoop("Previous area"), scope: "window" },
+  { id: "message.send", group: trNoop("Messages"), title: trNoop("Send message"), scope: "composer" },
+  { id: "queue.sendNow", group: trNoop("Messages"), title: trNoop("Send queued messages now"), scope: "window" },
+  { id: "message.push", group: trNoop("Messages"), title: trNoop("Send and push now"), scope: "composer" },
+  { id: "zoom.in", group: trNoop("Content scale"), title: trNoop("Increase content scale"), scope: "window" },
+  { id: "zoom.out", group: trNoop("Content scale"), title: trNoop("Decrease content scale"), scope: "window" },
+  { id: "zoom.reset", group: trNoop("Content scale"), title: trNoop("Reset content scale"), scope: "window" },
 ];
 
 export const command = (id: string) => COMMANDS.find((c) => c.id === id);
@@ -237,17 +238,17 @@ export const selectionKey = (c: Combo) => only(c, { ctrl: true }) && (c.key === 
 
 /** Why a sequence cannot be assigned (Shortcuts::assignable), or undefined. */
 export function assignable(sequence: Sequence, on: Platform = platform): string | undefined {
-  if (!sequence.length) return "Press a key combination.";
-  if (sequence.length > 2) return "Use one key combination or a sequence of two.";
+  if (!sequence.length) return tr("Press a key combination.");
+  if (sequence.length > 2) return tr("Use one key combination or a sequence of two.");
   const mac = on === "macos";
   for (let i = 0; i < sequence.length; i++) {
     const c = sequence[i];
-    if (["Shift", "Ctrl", "Alt", "Meta", "AltGr"].includes(c.key)) return "Press a key together with the modifiers.";
-    if ((c.key === "F10" && only(c, { shift: true })) || c.key === "Menu") return "This key opens context menus.";
+    if (["Shift", "Ctrl", "Alt", "Meta", "AltGr"].includes(c.key)) return tr("Press a key together with the modifiers.");
+    if ((c.key === "F10" && only(c, { shift: true })) || c.key === "Menu") return tr("This key opens context menus.");
     if (!anyChord(c) && !functionKey(c.key))
-      return mac ? "Keys without ⌘, ⌃ or ⌥ are used for typing and navigation." : "Keys without Ctrl or Alt are used for typing and navigation.";
-    if (!mac && only(c, { ctrl: true, shift: true }) && (c.key === "C" || c.key === "V")) return "Terminal uses this key to copy and paste.";
-    if (editingKey(c) && !(i === 0 && sequence.length > 1 && selectionKey(c))) return "Text fields use this key for editing.";
+      return mac ? tr("Keys without ⌘, ⌃ or ⌥ are used for typing and navigation.") : tr("Keys without Ctrl or Alt are used for typing and navigation.");
+    if (!mac && only(c, { ctrl: true, shift: true }) && (c.key === "C" || c.key === "V")) return tr("Terminal uses this key to copy and paste.");
+    if (editingKey(c) && !(i === 0 && sequence.length > 1 && selectionKey(c))) return tr("Text fields use this key for editing.");
   }
   return undefined;
 }
@@ -273,8 +274,8 @@ export function protectedInTextField(c: Combo): boolean {
 /** The Terminal rule in one sentence, for Settings. */
 export function terminalRule(on: Platform = platform): string {
   return on === "macos"
-    ? "In Terminal, a command's chord reaches Zerus only when it uses ⌘ (except ⌘C and ⌘V) or is ⌃Tab, ⌃⇧Tab, ⌃` or ⌃⇧`. Every other ⌃ chord and every ⌥ chord goes to the agent, bound or not."
-    : "In Terminal, a command's chord reaches Zerus only when it is Ctrl or Ctrl+Shift with a digit, Tab, Page Up, Page Down, backtick or comma, or Ctrl+Shift+Enter. Everything else goes to the agent, bound or not.";
+    ? tr("In Terminal, a command's chord reaches Zerus only when it uses ⌘ (except ⌘C and ⌘V) or is ⌃Tab, ⌃⇧Tab, ⌃` or ⌃⇧`. Every other ⌃ chord and every ⌥ chord goes to the agent, bound or not.")
+    : tr("In Terminal, a command's chord reaches Zerus only when it is Ctrl or Ctrl+Shift with a digit, Tab, Page Up, Page Down, backtick or comma, or Ctrl+Shift+Enter. Everything else goes to the agent, bound or not.");
 }
 
 // ---------------------------------------------------------------------------

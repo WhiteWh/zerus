@@ -3,6 +3,8 @@ import unittest
 import gc
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
+import test_windows_host as windows_host
 from windows_gateway_custody import ConnectorCustody, CustodyUnknown, guard_root_cleanup, termination_adapter
 
 
@@ -134,6 +136,55 @@ class Custody(unittest.TestCase):
         guard_root_cleanup(case, temporary, lambda: True)
         self.assertTrue(case.doCleanups())
         self.assertFalse(root.exists())
+
+    def host_fixture(self, retain=False):
+        # Exercise the real inherited setup/cleanup registration without a CLI
+        # call or Windows process. The selected file is checked, never executed.
+        class Fixture(windows_host.HostCase):
+            def stop_host(self):
+                pass
+
+            def cleanup_temp(self):
+                self.cleanup_calls += 1
+                if retain:
+                    self.temp._finalizer.detach()
+                else:
+                    super().cleanup_temp()
+
+        case = Fixture()
+        case.cleanup_calls = 0
+        with patch.object(windows_host, 'HGS', Path(__file__).resolve()):
+            case.setUp()
+        return case
+
+    def test_actual_host_cleanup_is_fenced_until_custody_is_known(self):
+        case = self.host_fixture()
+        root = case.root
+        self.addCleanup(case.temp.cleanup)  # Pure fixture has no child.
+        confirmed = False
+        guard_root_cleanup(case, case.temp, lambda: confirmed,
+                           cleanup_callback=case.cleanup_temp)
+        callback, args, kwargs = case._cleanups[0]
+        with self.assertRaises(CustodyUnknown):
+            callback(*args, **kwargs)
+        self.assertEqual(case.cleanup_calls, 0)
+        gc.collect()
+        self.assertTrue(root.is_dir())
+        confirmed = True
+        self.assertTrue(case.doCleanups())
+        self.assertEqual(case.cleanup_calls, 1)
+        self.assertFalse(root.exists())
+
+    def test_confirmed_custody_preserves_the_registered_cleanup_policy(self):
+        case = self.host_fixture(retain=True)
+        root = case.root
+        self.addCleanup(case.temp.cleanup)  # Dispose only this child-free fixture.
+        guard_root_cleanup(case, case.temp, lambda: True,
+                           cleanup_callback=case.cleanup_temp)
+        self.assertTrue(case.doCleanups())
+        self.assertEqual(case.cleanup_calls, 1)
+        gc.collect()
+        self.assertTrue(root.is_dir())
 
 
 if __name__ == "__main__": unittest.main()

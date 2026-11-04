@@ -1,9 +1,10 @@
 import type { Details } from "../../types";
 import { renameParts, tagProblem, type ActionRow } from "./actions-ui";
+import { trNoop, tr } from "../../i18n";
 
-export const FORK_HINT = "Create an independent conversation with the same context and working folder";
-export const FORK_CHECKING = "Checking whether this session can be forked…";
-export const FORK_CHANGED = "The session changed. Open its actions again.";
+export const FORK_HINT = trNoop("Create an independent conversation with the same context and working folder");
+export const FORK_CHECKING = trNoop("Checking whether this session can be forked…");
+export const FORK_CHANGED = trNoop("The session changed. Open its actions again.");
 
 /** Qt's fork_available, with the same identity gate as the selected inspection. */
 export function forkAvailable(row: ActionRow, details: Details | undefined, online: boolean, busy: boolean): boolean {
@@ -18,7 +19,7 @@ export function sameForkSource(a: ActionRow, b: ActionRow): boolean {
 
 export function forkName(row: ActionRow, tag: string): string { return renameParts(row.name).prefix + tag; }
 export function forkProblem(row: ActionRow, tag: string, rows: readonly ActionRow[]): string | undefined {
-  return tagProblem(tag) ?? (rows.some((r) => r.computer === row.computer && r.name === forkName(row, tag)) ? "This session name is already in use." : undefined);
+  return tagProblem(tag) ?? (rows.some((r) => r.computer === row.computer && r.name === forkName(row, tag)) ? tr("This session name is already in use.") : undefined);
 }
 export function forkTag(row: ActionRow, rows: readonly ActionRow[]): string {
   const tag = renameParts(row.name).tag, base = tag ? `${tag}-fork` : "fork";

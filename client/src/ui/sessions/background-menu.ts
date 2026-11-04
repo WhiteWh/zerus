@@ -2,6 +2,7 @@ import { expandCompactRows, hasCompactRows, type MenuEntry } from "../../store/u
 import { grouping, setProjectCollapsed } from "../../store/organization";
 import { clearArchiveMenuEntry } from "./selection-live";
 import { markAllEntry } from "./mark-entries";
+import { tr } from "../../i18n";
 
 export interface BackgroundDeps {
   headers: () => { id: string }[];
@@ -29,8 +30,8 @@ export function collapseAllProjects(headers: readonly { id: string }[], collapse
 
 export function expandAllCollapsedEntry(expandRows: () => void = defaults.expandRows): MenuEntry {
   return {
-    label: "Expand all collapsed", icon: "expand-row", disabled: !hasCompactRows(),
-    hint: "Restore full session rows, including sessions hidden by filters", action: expandRows,
+    label: tr("Expand all collapsed"), icon: "expand-row", disabled: !hasCompactRows(),
+    hint: tr("Restore full session rows, including sessions hidden by filters"), action: expandRows,
   };
 }
 
@@ -38,11 +39,11 @@ export function expandAllCollapsedEntry(expandRows: () => void = defaults.expand
 export function backgroundEntries(overrides: Partial<BackgroundDeps> = {}): MenuEntry[] {
   const deps = { ...defaults, ...overrides };
   return [
-    { label: "New session…", icon: "add", action: deps.newSession },
-    { label: "New project…", icon: "plus", action: deps.newProject },
+    { label: tr("New session…"), icon: "add", action: deps.newSession },
+    { label: tr("New project…"), icon: "plus", action: deps.newProject },
     { separator: true },
-    { label: "Expand all projects", icon: "expand-row", action: () => collapseAllProjects(deps.headers(), false, deps.collapse) },
-    { label: "Collapse all projects", icon: "collapse-row", action: () => collapseAllProjects(deps.headers(), true, deps.collapse) },
+    { label: tr("Expand all projects"), icon: "expand-row", action: () => collapseAllProjects(deps.headers(), false, deps.collapse) },
+    { label: tr("Collapse all projects"), icon: "collapse-row", action: () => collapseAllProjects(deps.headers(), true, deps.collapse) },
     expandAllCollapsedEntry(deps.expandRows),
     { separator: true },
     deps.markAll(),

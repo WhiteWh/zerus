@@ -55,6 +55,9 @@ class WorktreeLifecycle(test_pause.Harness):
     def test_other_session_keeps_folder_until_last_termination(self):
         first=self.start('claude','first');second=self.start('claude','second')
         result=self.command('terminate',first);self.assertEqual(result['status'],'kept',result);self.assertTrue(self.project.exists());self.assertTrue(self.binding(second))
+        self.assertTrue(result['archive']['launch_owned'])
+        self.assertIn(second,result['review']['sessions'])
+        self.assertEqual(result['review']['path'],result['path'])
         result=self.command('terminate',second);self.assertEqual(result['status'],'removed',result)
         self.assertEqual(len(self.archives()),2)
 
@@ -75,6 +78,14 @@ class WorktreeLifecycle(test_pause.Harness):
         (metadata/'zerus-owner.json').unlink()
         name=self.start('claude');result=self.command('terminate',name)
         self.assertEqual(result['status'],'kept',result);self.assertIn('verified Zerus-created',result['reason']);self.assertTrue(self.project.exists())
+        archive=self.archives()[0]
+        self.assertEqual(result['archive']['version'],1)
+        self.assertEqual(result['archive']['archive_id'],archive['archive_id'])
+        self.assertEqual(result['archive']['name'],name)
+        self.assertEqual(result['archive']['run_id'],archive['run_id'])
+        self.assertEqual(result['archive']['conversation_id'],archive['conversation_id'])
+        self.assertFalse(result['archive']['launch_owned'])
+        self.assertNotIn('review',result, 'the ownership precondition must not start removal or review')
 
     def test_recreated_same_path_and_branch_cannot_reuse_old_ownership(self):
         self.git('-C',str(self.repo),'worktree','remove',str(self.project));self.git('-C',str(self.repo),'worktree','add','-q',str(self.project),'session-work')

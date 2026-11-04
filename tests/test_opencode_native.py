@@ -593,6 +593,18 @@ class OpenCodeNative(unittest.TestCase):
         self.assertEqual(self.registration(), registration)
         self.assertEqual(self.session(binding['conversation_id'])['id'], binding['conversation_id'])
 
+    def test_leading_absolute_path_is_literal_message_text(self):
+        binding = self.create()
+        text = '/help/fixture/capture.png\nWhat is shown in this screenshot?'
+        request = self.payload(binding, text=text)
+        receipt = self.hgs(['send', binding['name'], '--json'], request)
+        self.assertEqual(receipt['status'], 'submitted')
+        done = self.wait(binding['name'], lambda v: v['phase'] == 'idle' and v.get('reply_id'))
+        self.assertEqual([e['detail'] for e in done['events'] if e['type'] == 'UserPromptSubmit'], [text])
+        self.assertEqual([message for _, message in self.user_messages(binding['conversation_id'])], [text])
+        self.assertEqual(self.hgs(['send', binding['name'], '--json'], request), receipt)
+        self.assertEqual([message for _, message in self.user_messages(binding['conversation_id'])], [text])
+
     def test_02_launch_starts_service_with_own_ids_and_history(self):
         self.stop_service()
         # A registration left by a service that is gone does not block the start.

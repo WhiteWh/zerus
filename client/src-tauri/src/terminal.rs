@@ -869,16 +869,19 @@ mod tests {
     #[derive(Default)]
     struct Collect {
         seen: Mutex<(Vec<Vec<u8>>, Vec<Value>)>,
+        changed: Condvar,
     }
 
     impl Sink for Collect {
         fn output(&self, bytes: Vec<u8>) {
             lock(&self.seen).0.push(bytes);
+            self.changed.notify_all();
         }
         fn message(&self, json: String) {
             lock(&self.seen)
                 .1
                 .push(serde_json::from_str(&json).unwrap());
+            self.changed.notify_all();
         }
     }
 
@@ -891,6 +894,18 @@ mod tests {
         }
         fn messages(&self) -> Vec<Value> {
             lock(&self.seen).1.clone()
+        }
+        fn wait_after(&self, observed: usize, timeout: Duration) {
+            let seen = lock(&self.seen);
+            if seen.0.len() == observed {
+                // Check under the same lock as output publication, so an
+                // arriving frame cannot lose its wake before this wait.
+                drop(
+                    self.changed
+                        .wait_timeout(seen, timeout)
+                        .unwrap_or_else(PoisonError::into_inner),
+                );
+            }
         }
     }
 
@@ -926,11 +941,16 @@ mod tests {
         let mut acked = 0;
         while !done(sink) {
             assert!(Instant::now() < deadline, "timed out: {:?}", sink.text());
-            for _ in acked..sink.outputs() {
+            // Acknowledgements can deliver more output immediately. Advance only
+            // through this snapshot; later frames still need their own ACK.
+            let observed = sink.outputs();
+            for _ in acked..observed {
                 t.ack("main", generation);
             }
-            acked = sink.outputs();
-            std::thread::sleep(Duration::from_millis(10));
+            acked = observed;
+            // ACK promptly when another frame arrives. A fixed sleep here
+            // rate-limits small PTY reads before the next ACK can be delivered.
+            sink.wait_after(observed, Duration::from_millis(10));
         }
     }
 

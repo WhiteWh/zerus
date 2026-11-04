@@ -1,4 +1,5 @@
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, onCleanup, type JSX } from "solid-js";
+import { trText } from "../../text";
 import * as bridge from "../../bridge";
 import type { PathStyle } from "../../types";
 import { AgentGlyph, Icon } from "../lib/icons";
@@ -21,6 +22,7 @@ import { ChooseWorktreeDialog } from "./WorktreePicker";
 import { NewWorktreeDialog } from "./NewWorktreeDialog";
 import { sameSessions, type PickerSession } from "./worktree-dialogs";
 import type { Json } from "../lib/json";
+import { tr } from "../../i18n";
 import "../styles/newsession.css";
 
 // New session (tray/src/NewSessionDialog.cpp, constructor 136-475 and
@@ -325,99 +327,99 @@ function NewSessionForm(props: { s: () => NewSessionState; popup: () => string |
   return (
     <form class="ns-form" ref={formEl} onSubmit={start} onKeyDown={formKey}>
       <div class="dlg-head">
-        <h2 id="ns-title">New session</h2>
+        <h2 id="ns-title">{tr("New session")}</h2>
         <span class="grow" />
-        <button type="button" class="icon-btn" aria-label="Close" disabled={!(form()?.cancel_enabled ?? true)} onClick={() => closeNewSession()}><Icon name="x" size={16} /></button>
+        <button type="button" class="icon-btn" aria-label={tr("Close")} disabled={!(form()?.cancel_enabled ?? true)} onClick={() => closeNewSession()}><Icon name="x" size={16} /></button>
       </div>
       <div class="dlg-body ns-body">
         <div class="form-row">
-          <label for="ns-project">Target</label>
+          <label for="ns-project">{tr("Target")}</label>
           <div class="ns-target">
-            <Choice id="ns-project" label="Project" keys={projectKeys()} selected={projectSelected()} disabled={!fields()}
+            <Choice id="ns-project" label={tr("Project")} keys={projectKeys()} selected={projectSelected()} disabled={!fields()}
               open={opened("project")} onOpen={toggle("project")} option={projectOption} class="ns-project" initial
               onPick={(key) => act.chooseProject(s().projects.findIndex((row) => projectKey(row) === key))} />
-            <button type="button" class="icon-btn ns-manage" data-keys="button" data-tip="Manage this project's folders" aria-label="Manage this project's folders" disabled={!fields()}
+            <button type="button" class="icon-btn ns-manage" data-keys="button" data-tip={tr("Manage this project's folders")} aria-label={tr("Manage this project's folders")} disabled={!fields()}
               onClick={() => act.manageFolders()}><Icon name="settings" size={18} /></button>
-            <Choice id="ns-computer" label="Computer" keys={computerKeys()} selected={computerSelected()} disabled={!fields()}
+            <Choice id="ns-computer" label={tr("Computer")} keys={computerKeys()} selected={computerSelected()} disabled={!fields()}
               open={opened("computer")} onOpen={toggle("computer")} option={computerOption} class="ns-computer"
               onPick={(key) => act.chooseComputer(s().computers.findIndex((row) => computerKey(row) === key))} />
           </div>
         </div>
         <Show when={s().newProjectRow}>
           <div class="form-row">
-            <label for="ns-new-project" classList={{ "ns-reserved": !s().newProjectVisible }}>New project</label>
+            <label for="ns-new-project" classList={{ "ns-reserved": !s().newProjectVisible }}>{tr("New project")}</label>
             <Show when={s().newProjectVisible} fallback={<span class="ns-reserved-field" />}>
-              <input id="ns-new-project" class="field" data-keys="text" maxLength={80} placeholder="Project name" value={s().newProjectName} disabled={!fields()}
+              <input id="ns-new-project" class="field" data-keys="text" maxLength={80} placeholder={tr("Project name")} value={s().newProjectName} disabled={!fields()}
                 onInput={(e) => act.setNewProjectName(e.currentTarget.value)} />
             </Show>
           </div>
         </Show>
         <div class="form-row">
-          <label>Source</label>
-          <div class="ns-seg" role="group" aria-label="Source">
+          <label>{tr("Source")}</label>
+          <div class="ns-seg" role="group" aria-label={tr("Source")}>
             <button type="button" class="ns-segbtn" data-keys="button" classList={{ on: !s().repository }} aria-pressed={!s().repository} disabled={!fields()} onClick={() => act.setSource(false)}>
-              <Icon name="folder" size={14} />Working folder
+              <Icon name="folder" size={14} />{tr("Working folder")}
             </button>
             <button type="button" class="ns-segbtn" data-keys="button" classList={{ on: s().repository }} aria-pressed={s().repository} disabled={!fields()} onClick={() => act.setSource(true)}>
-              <Icon name="git-branch" size={14} />Git repository
+              <Icon name="git-branch" size={14} />{tr("Git repository")}
             </button>
           </div>
         </div>
         <Show when={!s().repository} fallback={
           <>
             <div class="form-row">
-              <label for="ns-url">Repository</label>
+              <label for="ns-url">{tr("Repository")}</label>
               <input id="ns-url" ref={url} class="field mono" data-keys="text" maxLength={4096} placeholder="https://github.com/owner/repository.git"
-                title="An SSH or HTTPS repository URL, on GitHub or another Git server." value={s().url} disabled={!fields() || !online()}
+                title={tr("An SSH or HTTPS repository URL, on GitHub or another Git server.")} value={s().url} disabled={!fields() || !online()}
                 onInput={(e) => act.setUrl(e.currentTarget.value)} />
             </div>
             <div class="form-row top">
-              <label for="ns-destination">Clone to</label>
+              <label for="ns-destination">{tr("Clone to")}</label>
               <div class="ns-src-detail">
                 <div class="row">
                   <input id="ns-destination" class="field mono grow" data-keys="text" maxLength={8192} value={s().destination} disabled={!fields() || !online()}
-                    title="The complete new checkout path. Edit its folder name or choose a parent folder with Browse."
+                    title={tr("The complete new checkout path. Edit its folder name or choose a parent folder with Browse.")}
                     onInput={(e) => act.setDestination(e.currentTarget.value)} />
-                  <button type="button" id="ns-browse-repository" class="btn" data-keys="button" disabled={!fields() || !online()} onClick={browseRepository}>Browse…</button>
+                  <button type="button" id="ns-browse-repository" class="btn" data-keys="button" disabled={!fields() || !online()} onClick={browseRepository}>{tr("Browse…")}</button>
                 </div>
               </div>
             </div>
           </>
         }>
           <div class="form-row">
-            <label for="ns-folder">Working folder</label>
+            <label for="ns-folder">{tr("Working folder")}</label>
             <div class="row">
-              <Choice id="ns-folder" label="Working folder" keys={folderKeys()} selected={folderSelected()} placeholder="Choose a folder…"
+              <Choice id="ns-folder" label={tr("Working folder")} keys={folderKeys()} selected={folderSelected()} placeholder={tr("Choose a folder…")}
                 disabled={!fields()} open={opened("folder")} onOpen={toggle("folder")} option={folderOption} tip={(key) => folderOf(key)?.tooltip} class="grow"
                 onPick={(key) => act.chooseFolder(s().folders.findIndex((row) => folderKey(row) === key))} />
-              <button type="button" id="ns-browse" class="btn" data-keys="button" disabled={!(form()?.browse_enabled ?? false)} onClick={browse}>Browse…</button>
+              <button type="button" id="ns-browse" class="btn" data-keys="button" disabled={!(form()?.browse_enabled ?? false)} onClick={browse}>{tr("Browse…")}</button>
             </div>
           </div>
           <div class="form-row top">
             <span />
             <div class="ns-src-detail">
               <div class="mono ns-path ell" title={s().folderPath} style={{ visibility: s().folderPath ? "visible" : "hidden" }}>{s().folderPath || " "}</div>
-              <div class="ns-preview" classList={{ warn: !!form()?.outside_project }} title={form()?.preview || undefined}>{form()?.preview ?? ""}</div>
+              <div class="ns-preview" classList={{ warn: !!form()?.outside_project }} title={form()?.preview ? trText(form()!.preview!) : undefined}>{form()?.preview ? trText(form()!.preview!) : ""}</div>
             </div>
           </div>
         </Show>
 
         <div class="form-row top">
-          <label>Worktree</label>
+          <label>{tr("Worktree")}</label>
           <div class="col ns-wt">
             <div class="row">
-              <div class="ns-seg" role="group" aria-label="Worktree">
+              <div class="ns-seg" role="group" aria-label={tr("Worktree")}>
                 <button type="button" class="ns-segbtn" data-keys="button" classList={{ on: !!form()?.automatic }} aria-pressed={!!form()?.automatic} disabled={!(form()?.auto_enabled ?? false)}
-                  title="Create a generated branch and worktree when you start the session." onClick={() => act.setAuto(true)}>
-                  <Icon name="git-branch" size={14} />Auto
+                  title={tr("Create a generated branch and worktree when you start the session.")} onClick={() => act.setAuto(true)}>
+                  <Icon name="git-branch" size={14} />{tr("Auto")}
                 </button>
                 <button type="button" class="ns-segbtn" data-keys="button" classList={{ on: !form()?.automatic }} aria-pressed={!form()?.automatic} disabled={!(form()?.none_enabled ?? true)}
-                  title="Start directly in the working folder." onClick={() => act.setAuto(false)}>
-                  <Icon name="folder" size={14} />None
+                  title={tr("Start directly in the working folder.")} onClick={() => act.setAuto(false)}>
+                  <Icon name="folder" size={14} />{tr("None")}
                 </button>
               </div>
               <div class="ns-menu-anchor">
-                <button type="button" id="ns-worktree-options" class="icon-btn" data-keys="button" data-tip="Worktree options" aria-label="Worktree options" aria-haspopup="menu" aria-expanded={opened("worktree")}
+                <button type="button" id="ns-worktree-options" class="icon-btn" data-keys="button" data-tip={tr("Worktree options")} aria-label={tr("Worktree options")} aria-haspopup="menu" aria-expanded={opened("worktree")}
                   disabled={!(form()?.worktree_options_enabled ?? false)} onClick={toggleMenu}>
                   <Icon name="more" size={16} />
                 </button>
@@ -425,26 +427,26 @@ function NewSessionForm(props: { s: () => NewSessionState; popup: () => string |
                   <div class="menu ns-menu" role="menu" tabindex="-1" ref={menu} onKeyDown={menuKey}>
                     <Show when={s().worktrees.chooseVisible}>
                       <button type="button" class="menu-item" role="menuitem" aria-disabled={!form()?.choose_existing_enabled} onClick={chooseExisting}>
-                        <Icon name="git-branch" size={14} /><span>Choose existing…</span>
+                        <Icon name="git-branch" size={14} /><span>{tr("Choose existing…")}</span>
                       </button>
                     </Show>
                     <Show when={s().worktrees.createVisible}>
                       <button type="button" class="menu-item" role="menuitem" aria-disabled={!form()?.create_manually_enabled} onClick={createManually}>
-                        <Icon name="add" size={14} /><span>Create manually…</span>
+                        <Icon name="add" size={14} /><span>{tr("Create manually…")}</span>
                       </button>
                     </Show>
                   </div>
                 </Show>
               </div>
             </div>
-            <div class="mono ns-wt-target" title={form()?.worktree_tooltip || undefined}>{form()?.worktree_target ?? ""}</div>
+            <div class="mono ns-wt-target" title={form()?.worktree_tooltip ? trText(form()!.worktree_tooltip!) : undefined}>{form()?.worktree_target ?? ""}</div>
           </div>
         </div>
 
         <div class="form-row top">
-          <label>Account and agent</label>
+          <label>{tr("Account and agent")}</label>
           <div class="col">
-            <ul class="ns-accounts" ref={accountList} role="listbox" aria-label="Account and agent" tabindex={accountsEnabled() ? 0 : -1}
+            <ul class="ns-accounts" ref={accountList} role="listbox" aria-label={tr("Account and agent")} tabindex={accountsEnabled() ? 0 : -1}
               aria-disabled={!accountsEnabled()} aria-activedescendant={s().account >= 0 ? `ns-account-${s().account}` : undefined} onKeyDown={accountKeyDown}>
               <For each={accountKeys()}>{(key) => {
                 const row = rowOf(() => s().accounts.find((r) => accountKey(r) === key));
@@ -460,8 +462,8 @@ function NewSessionForm(props: { s: () => NewSessionState; popup: () => string |
             </ul>
             <div class="row ns-acc-status">
               <span class="grow ns-status">{s().accountStatus}</span>
-              <button type="button" class="btn small" data-keys="button" aria-label="Refresh accounts" disabled={!s().refreshEnabled} onClick={() => act.refreshAccounts()}>
-                <Icon name="refresh" size={12} />Refresh
+              <button type="button" class="btn small" data-keys="button" aria-label={tr("Refresh accounts")} disabled={!s().refreshEnabled} onClick={() => act.refreshAccounts()}>
+                <Icon name="refresh" size={12} />{tr("Refresh")}
               </button>
             </div>
           </div>
@@ -469,9 +471,9 @@ function NewSessionForm(props: { s: () => NewSessionState; popup: () => string |
 
         <Show when={s().modelVisible}>
           <div class="form-row">
-            <label for="ns-model">Model</label>
-            <button type="button" id="ns-model" class="field ns-model-btn" data-keys="button" aria-label="Model" aria-haspopup="dialog" aria-expanded={s().pickerOpen}
-              title="Models OpenCode offers on this computer. Native default uses OpenCode's configuration." disabled={!s().modelEnabled}
+            <label for="ns-model">{tr("Model")}</label>
+            <button type="button" id="ns-model" class="field ns-model-btn" data-keys="button" aria-label={tr("Model")} aria-haspopup="dialog" aria-expanded={s().pickerOpen}
+              title={tr("Models OpenCode offers on this computer. Native default uses OpenCode's configuration.")} disabled={!s().modelEnabled}
               onClick={() => (s().pickerOpen ? act.closeModelPicker() : act.openModelPicker())}>
               <span class="ell">{s().modelButton}</span><Icon name="chevron-down" size={14} class="ns-choice-chevron" />
             </button>
@@ -490,8 +492,8 @@ function NewSessionForm(props: { s: () => NewSessionState; popup: () => string |
         </Show>
         <Show when={s().effortVisible}>
           <div class="form-row">
-            <label for="ns-effort">Effort</label>
-            <select id="ns-effort" class="field ns-effort" data-keys="select" aria-label="Effort" title="Variants of the selected model. Default uses the model's own setting."
+            <label for="ns-effort">{tr("Effort")}</label>
+            <select id="ns-effort" class="field ns-effort" data-keys="select" aria-label={tr("Effort")} title={tr("Variants of the selected model. Default uses the model's own setting.")}
               disabled={!fields()} value={s().effort} onChange={(e) => act.chooseEffort(e.currentTarget.value)}>
               <For each={s().efforts}>{(effort) => <option value={effort.value} selected={effort.value === s().effort}>{effort.label}</option>}</For>
             </select>
@@ -499,18 +501,18 @@ function NewSessionForm(props: { s: () => NewSessionState; popup: () => string |
         </Show>
 
         <div class="form-row">
-          <label for="ns-name">Session name</label>
+          <label for="ns-name">{tr("Session name")}</label>
           <input id="ns-name" class="field mono" data-keys="text" value={s().name} disabled={!fields()} aria-invalid={!!form()?.name_problem}
             aria-describedby={form()?.name_problem ? "ns-name-problem" : undefined} onInput={(e) => act.setName(e.currentTarget.value)} />
         </div>
         <Show when={form()?.name_problem}>
-          <div class="form-row"><span /><span id="ns-name-problem" class="ns-status">{form()?.name_problem}</span></div>
+          <div class="form-row"><span /><span id="ns-name-problem" class="ns-status">{form()?.name_problem ? trText(form()!.name_problem!) : ""}</span></div>
         </Show>
         <div class="form-row">
           <span />
-          <label class="check" title={form()?.open_terminal_tooltip || undefined}>
+          <label class="check" title={form()?.open_terminal_tooltip ? trText(form()!.open_terminal_tooltip) : undefined}>
             <input type="checkbox" data-keys="check" checked={s().openTerminal} disabled={!(form()?.open_terminal_enabled ?? false)} onChange={(e) => act.setOpenTerminal(e.currentTarget.checked)} />
-            Open terminal window
+            {tr("Open terminal window")}
           </label>
         </div>
       </div>
@@ -519,10 +521,10 @@ function NewSessionForm(props: { s: () => NewSessionState; popup: () => string |
       <div class="dlg-foot">
         <span class="spacer" />
         <Show when={s().noMachine}>
-          <button type="button" class="btn" onClick={() => act.openMachines()}>Open Machines</button>
+          <button type="button" class="btn" onClick={() => act.openMachines()}>{tr("Open Machines")}</button>
         </Show>
-        <button type="button" class="btn" disabled={!(form()?.cancel_enabled ?? true)} onClick={() => closeNewSession()}>Cancel</button>
-        <button type="submit" class="btn primary ns-start" disabled={!form()?.start_enabled || s().starting || s().submitted}>{form()?.start_text ?? "Start session"}</button>
+        <button type="button" class="btn" disabled={!(form()?.cancel_enabled ?? true)} onClick={() => closeNewSession()}>{tr("Cancel")}</button>
+        <button type="submit" class="btn primary ns-start" disabled={!form()?.start_enabled || s().starting || s().submitted}>{form() ? trText(form()!.start_text) : tr("Start session")}</button>
       </div>
     </form>
   );

@@ -106,13 +106,24 @@ fn evidence(location: &Location) -> Result<(Handoff, ImportRecord)> {
 /// The actor caches this fixed-size summary; status clients never trigger disk
 /// reads. Pages remain unopened until bounded transactional import consumption.
 pub fn inspect(location: &Location) -> Value {
+    inspect_held(location, None)
+}
+pub(super) fn inspect_held(location: &Location, held: Option<&HandoffLock>) -> Value {
     if fs::symlink_metadata(location.root.join(HANDOFF_FILE))
         .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
     {
         return json!({"reason":"handoff_required"});
     }
-    let Ok(_lock) = location.handoff_lock() else {
-        return json!({"reason":"handoff_unavailable"});
+    let _lock = if let Some(held) = held {
+        if held.verify(location).is_err() {
+            return json!({"reason":"handoff_unavailable"});
+        }
+        None
+    } else {
+        match location.handoff_lock() {
+            Ok(lock) => Some(lock),
+            Err(_) => return json!({"reason":"handoff_unavailable"}),
+        }
     };
     let Ok((marker, record)) = evidence(location) else {
         return json!({"reason":"invalid_import_evidence"});

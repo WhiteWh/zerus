@@ -379,6 +379,31 @@ carries a zip: older mirror code accepts it only in nightlies and fails the whol
 catalog and, in a job that also runs `--dev-platform desktop`, the previous
 desktop Dev catalog.
 
+New Stable and Nightly candidates also carry
+`zerus-<version>-windows-x86_64-setup.exe`, declared by `windows_installer.asset`
+and sealed in the same `SHA256SUMS`. CI compiles and tests this per-user installer
+from the paired ZIP without changing its payload. Its bounded build metadata
+binds installer bytes, ZIP bytes, source commit and installed release version;
+assembly validates that metadata before copying either file. Nightly verification
+passes its computed Nightly version into the installer build and survival test,
+so renaming a Stable installer cannot create a Nightly candidate.
+
+`windows_installer.portable_sha256` must match the declared ZIP's sealed digest.
+An installer without that ZIP, an unexpected name or a changed pair refuses.
+Older ZIP-only candidates remain retryable unchanged. When manually re-preparing
+an older tag whose CI predates installer build metadata, use that tag's assembly
+scripts and omit both `--windows-installer` and `--windows-installer-info` to keep
+its ZIP-only asset family. Installer-aware re-preparation instead requires a new
+Windows verification/build with matching installer metadata for the exact source
+and release version; do not fabricate metadata for an old setup or rename it.
+Retrying an already sealed candidate needs neither re-preparation nor a new build.
+
+Like the ZIP, setup stays on GitHub and outside the v1 feed and mirror downloads.
+After explicit owner approval, deploy the updated `update_feed.py` before the
+first installer-bearing release; an older mirror
+rejects this additional sealed asset and retains its previous catalog. Winget
+continues to consume the portable ZIP and its existing layout.
+
 <a id="winget"></a>
 Stable releases also reach the Windows Package Manager community repository as
 `ufna.Zerus`. After **Publish release** succeeds, its `winget` job runs
@@ -387,8 +412,9 @@ Stable releases also reach the Windows Package Manager community repository as
 (`scripts/winget_manifest.py`, schema 1.12.0) to `microsoft/winget-pkgs` from the
 `winget-pkgs` fork of the token's account. The manifest installs the immutable
 GitHub asset as a portable zip whose `zerus-windows-x86_64` folder winget puts on
-`PATH` (`ArchiveBinariesDependOnPath`), because `hgs-tray.exe` loads Qt and the
-app-local runtime from that folder; keep the zip's top folder and executable names.
+`PATH` (`ArchiveBinariesDependOnPath`), keeping the adjacent CLI, connector and
+app-local runtime together. Zerus Next manifests declare the separately installed
+`Microsoft.EdgeWebView2Runtime` dependency. Keep the zip's top folder and executable names.
 A winget installation has no Start menu entry; start it with `hgs-tray`. Nightly and
 Dev builds are not published to winget. A version already in `winget-pkgs`, or
 already proposed there by anyone, is never proposed again, so rerunning the failed

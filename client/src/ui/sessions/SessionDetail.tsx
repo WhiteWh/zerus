@@ -1,7 +1,12 @@
-import { For, Match, Show, Suspense, Switch, createEffect, createMemo, createRoot, createResource, createSignal, lazy, on, onCleanup } from "solid-js";
+import { For, Match, Show, Suspense, Switch, createEffect, createMemo, createRoot, createResource, createSignal, lazy, on, onCleanup, untrack } from "solid-js";
+import { tr } from "../../i18n";
 import * as bridge from "../../bridge";
 import { terminal } from "../../store/terminal";
 import { TerminalTab } from "./Terminal";
+import { NativeUiTab } from "./NativeUi";
+import { nativeBinding, nativeEntry, nativeRoute } from "./native-entry";
+import { nativeUi } from "../../store/native-ui";
+import { pageHidden } from "../../store/visibility";
 import { ProcessesTab } from "./Processes";
 import { drops } from "../../store/drops";
 import { processes, processesTab } from "../../store/processes";
@@ -9,9 +14,9 @@ import { flag } from "../../store/settings";
 import type { TerminalStatus } from "../../types";
 import { Icon } from "../lib/icons";
 import { ActivityView, columnStyle } from "./Activity";
-import { AgentBadge, MachineBadge, statusOf, folderOf } from "./SessionCard";
+import { AgentBadge, MachineBadge, captionText, statusOf, folderOf } from "./SessionCard";
 import { detailTab, page, selected, setDetailTab, setMenu, subagentOpen, type MenuEntry } from "../../store/ui";
-import { activity } from "../../store/session";
+import { activity, subagentActivity } from "../../store/session";
 import { activityReadOnly, type ActivitySource } from "../../store/activitySource";
 import { archiveActivity } from "../../store/archiveActivity";
 import { computerOffline } from "../../store/catalog";
@@ -20,6 +25,7 @@ import { headerClearSlot, sessionIdentity } from "./actions-ui";
 import { actionEntries, copyEntries, freshActionEntry } from "./ActionDialogs";
 import { snapshotOf } from "./actions-ui";
 import { markEntry } from "./mark-entries";
+import { followViewedReplies } from "./viewed-reply";
 import { Composer } from "./Composer";
 import { ComposerDialogs } from "./ComposerDialogs";
 import { QuestionCard } from "./QuestionCard";
@@ -44,14 +50,14 @@ const TaskView = lazy(() => import("../screens/TaskView"));
 function headerCaption(): string {
   const s = selected();
   if (!s) return "";
-  return statusOf(s) === "offline" ? "Offline" : s.caption;
+  return statusOf(s) === "offline" ? tr("Offline") : captionText(s.caption);
 }
 
 function EmptyDetail() {
   return (
     <div class="detail-empty">
-      <h2>A little more focus.</h2>
-      <p>Select a session to see what your agent is doing.<br />New sessions appear here automatically.</p>
+      <h2>{tr("A little more focus.")}</h2>
+      <p>{tr("Select a session to see what your agent is doing.")}<br />{tr("New sessions appear here automatically.")}</p>
     </div>
   );
 }
@@ -88,7 +94,7 @@ function Header() {
   // Clear session goes through the composer's clear_context (Qt's clearContext): its dialog shows the identity it sends back.
   const clear = () => composer.view()?.clear;
   const clearEntry = (): MenuEntry => ({
-    label: "Clear session…", icon: "clear", disabled: !clear()?.enabled, hint: clear()?.reason || undefined, action: () => composer.openClear(),
+    label: tr("Clear session…"), icon: "clear", disabled: !clear()?.enabled, hint: clear()?.reason || undefined, action: () => composer.openClear(),
   });
   const actions = (): MenuEntry[] => [
     folders().folder,
@@ -99,6 +105,7 @@ function Header() {
     act().fork,
     { separator: true },
     copies().command,
+    ...(nativeEntry(s()) ? [nativeEntry(s())!] : []),
     act().change,
     ...(mark() ? [mark()!] : []),
     { separator: true },
@@ -110,30 +117,30 @@ function Header() {
     <header class="detail-head">
       <div class="dh-row1">
         <h1 class="ell" title={s().name}>{s().project} / {s().title}<Show when={subagentOpen()}> / {s().subagents?.find((k) => k.id === subagentOpen())?.name}</Show></h1>
-        <Show when={s().computer !== "" && statusOf(s()) === "working" && !activity.loaded()}><span class="busy-arc" title="Waiting for the remote read" /></Show>
+        <Show when={s().computer !== "" && statusOf(s()) === "working" && !activity.loaded()}><span class="busy-arc" title={tr("Waiting for the remote read")} /></Show>
         <span class="grow" />
         <span class={`hbadge t-${tone()}`}>{headerCaption()}</span>
-        <button class="icon-btn" data-tip={folders().folder.hint} aria-label="Open session folder in file manager" disabled={folders().folder.disabled} onClick={() => folders().folder.action?.()}><Icon name="folder-open" size={16} /></button>
-        <button class="icon-btn" data-tip="Open shell in session folder" aria-label="Open shell in session folder" disabled={folders().shell.disabled} onClick={() => folders().shell.action?.()}><Icon name="square-terminal" size={16} /></button>
+        <button class="icon-btn" data-tip={folders().folder.hint} aria-label={tr("Open session folder in file manager")} disabled={folders().folder.disabled} onClick={() => folders().folder.action?.()}><Icon name="folder-open" size={16} /></button>
+        <button class="icon-btn" data-tip={tr("Open shell in session folder")} aria-label={tr("Open shell in session folder")} disabled={folders().shell.disabled} onClick={() => folders().shell.action?.()}><Icon name="square-terminal" size={16} /></button>
         <button class="icon-btn" data-tip={identity().caption} aria-label={identity().caption} disabled={!identity().value} onClick={copyId}><Icon name="copy" size={15} /></button>
         <Show when={slot() === "clear"}>
-          <button class="icon-btn" data-tip={clear()?.reason || "Clear session"}
-            aria-label={clear()?.running ? "Clearing…" : "Clear session"} disabled={!clear()?.enabled} onClick={() => composer.openClear()}><Icon name="clear" size={15} /></button>
+          <button class="icon-btn" data-tip={clear()?.reason || tr("Clear session")}
+            aria-label={clear()?.running ? tr("Clearing…") : tr("Clear session")} disabled={!clear()?.enabled} onClick={() => composer.openClear()}><Icon name="clear" size={15} /></button>
         </Show>
-        <Show when={!subagentOpen() && (s().status === "ended" || s().state === "archived")}><button class="btn small primary" title={act().change.hint} disabled={act().change.disabled} onClick={() => act().change.action()}><Icon name="play" size={12} />Restore</button></Show>
-        <button class="icon-btn" data-tip="Session actions" onClick={(e) => setMenu({ x: e.clientX - 200, y: e.clientY + 12, items: actions() })}><Icon name="ellipsis" size={16} /></button>
+        <Show when={!subagentOpen() && (s().status === "ended" || s().state === "archived")}><button class="btn small primary" title={act().change.hint} disabled={act().change.disabled} onClick={() => act().change.action()}><Icon name="play" size={12} />{tr("Restore")}</button></Show>
+        <button class="icon-btn" data-tip={tr("Session actions")} onClick={(e) => setMenu({ x: e.clientX - 200, y: e.clientY + 12, items: actions() })}><Icon name="ellipsis" size={16} /></button>
       </div>
       <div class="dh-row2">
         <AgentBadge agent={s().agent} />
         <MachineBadge alias={s().machine} computer={s().computer} />
         {/* The branch is a label beside the agent and machine badges, with the branch glyph. */}
         <Show when={s().branch}>
-          <span class="dh-branch" title={`Git branch ${s().branch}`}><Icon name="git-branch" size={12} /><span class="ell">{s().branch}</span></span>
+          <span class="dh-branch" title={tr("Git branch %1", s().branch!)}><Icon name="git-branch" size={12} /><span class="ell">{s().branch}</span></span>
         </Show>
         <Show when={s().cwd}>
           <span class="dh-chip ell" title={s().cwd}><Icon name="folder" size={13} />{folderOf(s())}</span>
         </Show>
-        <Show when={s().worktree}><span class="dh-chip ell" title={`Linked worktree ${s().worktree}`}><Icon name="folder-git-2" size={13} />worktree {s().worktree}</span></Show>
+        <Show when={s().worktree}><span class="dh-chip ell" title={tr("Linked worktree %1", s().worktree!)}><Icon name="folder-git-2" size={13} />{tr("worktree %1", s().worktree!)}</span></Show>
         <span class="grow" />
         <span class="dh-model ell">{s().model} {s().effort ?? ""}</span>
       </div>
@@ -144,8 +151,8 @@ function Header() {
 type Tab = { id: string; label: string };
 const TABS: readonly Tab[] = [{ id: "activity", label: "Activity" }, { id: "terminal", label: "Terminal" }];
 
-/** The Activity of a row: an archived row's recorded one, read-only and never streamed, else the live follow. */
-export const activitySourceFor = (key: string): ActivitySource => (activityReadOnly(key) ? archiveActivity : activity);
+/** The selected child's bounded page, an archive's recorded page, or the live parent follow. */
+export const activitySourceFor = (key: string): ActivitySource => (subagentOpen() ? subagentActivity : activityReadOnly(key) ? archiveActivity : activity);
 
 /** The tabs of a row: an archived row has no Terminal (Qt hides only that one; terminal_status answers unsupported). */
 export function detailTabs(key: string): readonly Tab[];
@@ -157,6 +164,14 @@ export function detailTabs(key: string, tabs: readonly Tab[] = TABS): readonly T
 /** The selected session's terminal status (terminal_status), refreshed when its inputs change. */
 const [terminalTexts, setTerminalTexts] = createSignal<TerminalStatus | undefined>();
 createRoot(() => {
+  createEffect(() => {
+    const s = selected(), binding = nativeBinding(s), online = !!s && s.state !== "archived" && !computerOffline(s.computer);
+    untrack(() => nativeUi.select(binding, online));
+  });
+  createEffect(() => {
+    const shown = page() === "sessions" && detailTab() === "native" && !subagentOpen() && !pageHidden();
+    untrack(() => nativeUi.opened(shown));
+  });
   // The inputs of terminal_status as one string: a row change that leaves them alone calls nothing.
   const inputs = createMemo(() => {
     const s = selected();
@@ -190,10 +205,11 @@ createRoot(() => {
 const tabs = () => {
   const count = processes.view()?.count ?? 0;
   const all = [
-    { id: "activity" as const, label: "Activity", show: true },
-    { id: "terminal" as const, label: "Terminal", show: !!terminalTexts()?.supported && !subagentOpen() },
+    { id: "activity" as const, label: tr("Activity"), show: true },
+    { id: "terminal" as const, label: tr("Terminal"), show: !!terminalTexts()?.supported && !subagentOpen() },
+    { id: "native" as const, label: tr("Native UI"), show: selected()?.agent === "deepseek" && !subagentOpen() },
     processesTab(flag("processes/enabled"), count),
-    { id: "taskview" as const, label: "Task View", show: detailTab() === "taskview" && !!selectedTask() },
+    { id: "taskview" as const, label: tr("Task View"), show: detailTab() === "taskview" && !!selectedTask() },
   ];
   const s = selected();
   return s ? detailTabs(s.key, all) : all;
@@ -204,12 +220,19 @@ createRoot(() => createEffect(() => { if (!tabs().find((t) => t.id === detailTab
 
 export function SessionDetail() {
   followProjectTasks();
+  // A reply shown in Activity or Terminal for a second is read (Qt's checkViewedReply).
+  followViewedReplies();
   const [available, setAvailable] = createSignal(900);
   const measure = (el: HTMLDivElement) => {
     const observer = new ResizeObserver(() => setAvailable(el.clientWidth)); observer.observe(el);
     onCleanup(() => observer.disconnect());
   };
   const goal = createMemo(() => sessionGoal(selected() ? followedFor(selected()!.key).value : undefined));
+  const signIn = createMemo(() => {
+    const s = selected();
+    return s?.agent === "deepseek" && s.state === "running" && !computerOffline(s.computer)
+      && detailsFor(s, true, followedFor(s.key))?.auth_required;
+  });
   const toggle = onCommand("panel.toggle", () => { if (page() === "sessions" && selected()) setInspectorOpen(!inspectorOpen()); });
   onCleanup(toggle);
   createEffect(() => {
@@ -219,7 +242,7 @@ export function SessionDetail() {
     onCleanup(stop);
   });
   return (
-    <section class="detail" aria-label="Session">
+    <section class="detail" aria-label={tr("Session")}>
       {/* Qt's drop overlay (SessionFileDrop): what a drop on this panel does. */}
       <Show when={drops.hint()}>{(text) => <div class="drop-overlay" aria-hidden="true"><span>{text()}</span></div>}</Show>
       <Show when={selected()}><Header /></Show>
@@ -231,22 +254,28 @@ export function SessionDetail() {
                 <button class="tab" role="tab" classList={{ on: detailTab() === t.id }} aria-selected={detailTab() === t.id} onClick={() => { if (t.id === "terminal") terminal.opened(); setDetailTab(t.id); }}>{t.label}</button>
               )}</For>
               <span class="grow" />
-              <Show when={!inspectorOpen()}><button class="icon-btn small" aria-label="Show side panel" data-tip={inspectorHint("Show tasks, plan, agents, details and worktrees")} data-tip-pos="left" onClick={() => setInspectorOpen(true)}><Icon name="panel-right" size={15} /></button></Show>
+              <Show when={!inspectorOpen()}><button class="icon-btn small" data-cmd="show-side-panel" aria-label={tr("Show side panel")} data-tip={inspectorHint(tr("Show tasks, plan, agents, details and worktrees"))} data-tip-pos="left" onClick={() => setInspectorOpen(true)}><Icon name="panel-right" size={15} /></button></Show>
             </div>
             <div class="tab-body">
               <Switch>
                 <Match when={detailTab() === "activity"}>
                   <div class="activity-wrap" classList={{ "has-goal": !!goal().objective }} style={columnStyle()}>
-                    <Show when={goal().objective}><button class="goal-pill" onClick={() => openInspector("plan")}><Icon name="circle-dot" size={13} /><b>Pursuing goal</b><span class="ell">{goal().objective}</span><span class="grow" /><span>Details</span><Icon name="chevron-right" size={12} /></button></Show>
+                    <Show when={goal().objective}><button class="goal-pill" onClick={() => openInspector("plan")}><Icon name="circle-dot" size={13} /><b>{tr("Pursuing goal")}</b><span class="ell">{goal().objective}</span><span class="grow" /><span>{tr("Details")}</span><Icon name="chevron-right" size={12} /></button></Show>
                     <ActivityView source={activitySourceFor(selected()!.key)} />
-                    {/* Only the subagent view stays read-only; archives keep their editable draft (Qt 3454). */}
+                    {/* Child Activity stays read-only; its own composer opens only when the inspection supports send. */}
                     <Show when={!subagentOpen()}>
-                      <QueuePanel /><div class="cmp-col"><QuestionCard /><Composer /></div>
+                      <Show when={signIn()}><div class="cmp-col"><div class="qcard">
+                        <p class="qcard-body">{tr("Sign in to DeepSeek to start using this session. Complete sign-in in the official DeepSeek UI, then return here.")}</p>
+                        <div class="qcard-actions"><button class="btn small" onClick={() => nativeRoute(selected())()}>{tr("Sign in to DeepSeek…")}</button></div>
+                      </div></div></Show>
+                      <QueuePanel /><QuestionCard />
                     </Show>
+                    <div class="cmp-col"><Composer /></div>
                   </div>
                 </Match>
                 <Match when={detailTab() === "taskview"}><Suspense><TaskView /></Suspense></Match>
                 <Match when={detailTab() === "terminal"}><TerminalTab /></Match>
+                <Match when={detailTab() === "native"}><NativeUiTab /></Match>
                 <Match when={detailTab() === "processes"}><ProcessesTab /></Match>
               </Switch>
             </div>

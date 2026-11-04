@@ -1,9 +1,12 @@
 {
+  "automaticApprovals/enabled": false,
+  "automaticApprovals/error": "",
   "automaticApprovals/qtEnabledAtSwitch": false,
   "client/darkSkin": "zerus-dark",
   "client/lightSkin": "zerus-light",
   "client/overviewFullWidth": false,
   "client/overviewWidth": 1200,
+  "client/windowGeometry": "",
   "downloads/cacheBytes": 0,
   "downloads/folder": "",
   "notifications/optionalQuestions": false,
@@ -43,8 +46,10 @@
   "workspace/launchAccounts": "",
   "workspace/launchAgent": "",
   "workspace/launchOpenTerminal": false,
+  "workspace/projectFolderSplit": 230,
   "workspace/reduceMotion": false,
   "workspace/removeWorktreeAfterTermination": false,
+  "workspace/sessionsWidth": 310,
   "workspace/showCompletedSubagents": false,
   "workspace/theme": "system",
   "workspace/usageIndicator": "rails"

@@ -1,4 +1,5 @@
 import { For, Show, createEffect, on } from "solid-js";
+import { tr } from "../../i18n";
 import { Icon } from "../lib/icons";
 import { createConfirm, WARNING_BUTTONS, WARNING_TITLE } from "./newsession-view";
 
@@ -15,13 +16,13 @@ export function LaunchWarning(props: { confirm: ReturnType<typeof createConfirm>
       onCancel={(e) => { e.preventDefault(); props.confirm.cancel(); }} onClose={() => props.confirm.cancel()}>
       <Show when={props.confirm.text()}>{(text) => (
         <>
-          <div class="dlg-head"><Icon name="triangle-alert" size={18} class="warn" /><h2 id="ns-warning-title">{WARNING_TITLE}</h2></div>
+          <div class="dlg-head"><Icon name="triangle-alert" size={18} class="warn" /><h2 id="ns-warning-title">{tr(WARNING_TITLE)}</h2></div>
           <div class="dlg-body"><p class="confirm-body" id="ns-warning-text">{text()}</p></div>
           <div class="dlg-foot">
             <span class="spacer" />
             <For each={WARNING_BUTTONS}>{(button) => (
               <button type="button" class={button.initial ? "btn primary" : "btn"} data-initial={button.initial || undefined} autofocus={button.initial}
-                onClick={() => props.confirm.answer(button.answer)}>{button.label}</button>
+                onClick={() => props.confirm.answer(button.answer)}>{tr(button.label)}</button>
             )}</For>
           </div>
         </>

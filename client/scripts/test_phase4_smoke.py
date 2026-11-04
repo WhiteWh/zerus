@@ -39,6 +39,11 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual(resumed["runtime_state"], "live")
         self.assertTrue(resumed["run_id"].endswith("-resumed"))
         self.assertEqual(base64.b64decode(config["attachments"]["req-fixture-image"]["data_base64"]), base64.b64decode(PNG))
+        writable = config["subagent_inspect"]["claude/sample-project/api-refactor\nagent-writable"]
+        readonly = config["subagent_inspect"]["claude/sample-project/api-refactor\nagent-readonly"]
+        self.assertTrue(writable["send_supported"])
+        self.assertFalse(readonly["send_supported"])
+        self.assertEqual(writable["parent_conversation_id"], writable["conversation_id"].rsplit("/", 1)[0])
 
     def test_catalog_rows_keep_hgs_tracking(self):
         rows = []
@@ -54,6 +59,13 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual(len(states), 28)
         self.assertTrue(all(state["tracked"] is True and state["run_id"] and state["conversation_id"] for state in states))
         self.assertNotIn("claude/sample-project/review", [state["name"] for state in states])
+
+    def test_launch_uses_private_display_bus_and_scratch_environment(self):
+        source = (CLIENT / "scripts/phase4-smoke.py").read_text(encoding="utf-8")
+        self.assertIn('"dbus-run-session", "--", "xvfb-run"', source)
+        self.assertIn('"XDG_RUNTIME_DIR": str(scratch / "runtime")', source)
+        self.assertIn('"TMPDIR": str(scratch / "tmp")', source)
+        self.assertNotIn("os.environ.copy()", source)
 
     def test_regenerating_is_deterministic(self):
         paths = [CLIENT / "fixtures/replay.ndjson", CLIENT / "fixtures/replay-mac.ndjson", CLIENT / "fixtures/replay-batches.json"]
@@ -110,6 +122,10 @@ class FakeTests(unittest.TestCase):
         inspected = self.call("inspect", "claude/sample-project/review", "--after", "0", "--skip-processes")
         self.assertEqual(inspected["runtime_state"], "live")
         self.assertTrue(inspected["run_id"].endswith("-resumed"))
+        child = self.call("inspect", "claude/sample-project/api-refactor", "--after", "0", "--skip-processes", "--subagent", "agent-writable")
+        self.assertTrue(child["send_supported"])
+        receipt = self.call("send", "claude/sample-project/api-refactor", "--json", stdin=json.dumps(dict(request, agent_id="agent-writable")))
+        self.assertEqual(receipt["agent_id"], "agent-writable")
 
 
 if __name__ == "__main__":

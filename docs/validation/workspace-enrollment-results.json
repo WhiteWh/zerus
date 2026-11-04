@@ -1,0 +1,65 @@
+{
+  "bead": "zerus-5wmh.24.7",
+  "environment": {
+    "built_app": true,
+    "private_xvfb": true,
+    "private_bus": true,
+    "child_environment_from_scratch": true,
+    "private_home_xdg_tmp_tmux": true,
+    "fake_hgs_and_connector_only": true,
+    "live_units_or_relays_accessed": false
+  },
+  "mockup": [
+    "settings/Mobile.tsx",
+    "SettingsDialogs.tsx: settings-workspace-change and settings-workspace-legacy"
+  ],
+  "assertions": [
+    "Create dispatches once; no Stop for an unconfigured workspace.",
+    "The exact service-preflight-v1 marker gates a running Change; an older connector gets no Stop or change.",
+    "Cancel is initially focused; Return cancels without an effect and returns focus to the submitter.",
+    "A confirmed Stop of the shown generation can drain without sending enrollment; the original join input remains only in the form.",
+    "The exact stopped identity permits a later explicit confirmation, without another Stop.",
+    "A saved pending result uses Check, not create or join; reopening the app reads that saved state without a credential.",
+    "An uncertain join clears its input, forces one status read despite a stale busy view, and exposes Check; no automatic enrollment replay.",
+    "Legacy local disconnect has its own confirmation.",
+    "Only saved migration-draining replies authorize bounded Check continuations; migration-blocked stops them."
+  ],
+  "effects": {
+    "create": 1,
+    "stop": 1,
+    "switch-join": 4,
+    "check": 8
+  },
+  "credential_checks": {
+    "ephemeral_join_inputs": 4,
+    "scan_findings": 0,
+    "codes_in_argv_logs_notices_or_captures": false,
+    "captured_code_fields": "password masked"
+  },
+  "tests": {
+    "core_enrollment": 9,
+    "core_computer_codes": 6,
+    "core_phone_actions": 6,
+    "native_mobile": 17,
+    "frontend_passed": 2231,
+    "frontend_existing_skipped": 1,
+    "phase4_passed": 18,
+    "entry_bytes": 458887,
+    "entry_limit": 500000
+  },
+  "clippy": [
+    "core all-targets",
+    "Tauri default/media/video/no-default-features",
+    "Windows MSVC Tauri media"
+  ],
+  "captures": [
+    "workspace-enrollment-empty.png",
+    "workspace-enrollment-change.png",
+    "workspace-enrollment-legacy.png",
+    "workspace-enrollment-draining.png",
+    "workspace-enrollment-unknown.png",
+    "workspace-enrollment-connected.png",
+    "workspace-enrollment-blocked.png",
+    "workspace-enrollment-unsupported.png"
+  ]
+}

@@ -1,4 +1,5 @@
 import type * as bridge from "../bridge";
+import { tr } from "../i18n";
 import { array, object, string, type Json } from "../ui/lib/json";
 import {
   addModelOptions, catalogSupported, markCatalogFavorite, ModelPicker, updateText, type ModelOption, type PickerView,
@@ -57,8 +58,8 @@ export interface OpenCodeView {
 }
 
 const EMPTY: Json = Object.freeze({}) as Json;
-const NATIVE_MODEL: ModelOption = { value: "", text: "Native default model", label: "", efforts: [], effortLabels: [] };
-const DEFAULT_EFFORT: EffortOption = { value: "", label: "Default" };
+const nativeModel = (): ModelOption => ({ value: "", text: tr("Native default model"), label: "", efforts: [], effortLabels: [] });
+const defaultEffort = (): EffortOption => ({ value: "", label: tr("Default") });
 /** Folder catalogs one dialog keeps: a catalog can be large (1286-1294). */
 const FOLDERS = 4;
 
@@ -73,9 +74,9 @@ export function createOpenCode(h: OpenCodeHost) {
   const next = () => ++ticket;
 
   const picker = new ModelPicker();
-  let models: ModelOption[] = [NATIVE_MODEL];
+  let models: ModelOption[] = [nativeModel()];
   let modelValue = "";
-  let efforts: EffortOption[] = [DEFAULT_EFFORT];
+  let efforts: EffortOption[] = [defaultEffort()];
   let effortValue = "";
   let effortVisible = false;
   let pickerOpen = false;
@@ -132,7 +133,7 @@ export function createOpenCode(h: OpenCodeHost) {
     const kept = { value: selectedModel, label: current?.label ?? "", effort_options: current?.efforts ?? [], effort_labels: current?.effortLabels ?? [] };
     const catalog = folderCatalogs.get(key) ?? EMPTY;
     const isReady = enabled && ready(catalog);
-    let options = [NATIVE_MODEL];
+    let options = [nativeModel()];
     if (enabled) {
       options = addModelOptions(options, row.model_options);
       if (isReady) options = addModelOptions(options, catalog.model_options);
@@ -153,7 +154,7 @@ export function createOpenCode(h: OpenCodeHost) {
       if (changed || availability !== pickerAvailability) {
         pickerAvailability = availability;
         picker.setAllModelsAvailable(supported, updateText(machine));
-        picker.setFavoritesAvailable(supported && on, supported ? `${machine} is offline.` : updateText(machine));
+        picker.setFavoritesAvailable(supported && on, supported ? tr("%1 is offline.", machine) : updateText(machine));
       }
     }
     models = options;
@@ -168,7 +169,7 @@ export function createOpenCode(h: OpenCodeHost) {
     const current = currentOption();
     const offered = current?.efforts ?? [];
     const enabled = opencode() && modelValue !== "" && offered.length > 0;
-    efforts = [DEFAULT_EFFORT, ...(enabled ? offered.map((value, i) => ({ value, label: current?.effortLabels[i] ?? value })) : [])];
+    efforts = [defaultEffort(), ...(enabled ? offered.map((value, i) => ({ value, label: current?.effortLabels[i] ?? value })) : [])];
     effortValue = efforts.some((e) => e.value === selectedEffort) ? selectedEffort : "";
     effortVisible = enabled;
   }
@@ -271,7 +272,7 @@ export function createOpenCode(h: OpenCodeHost) {
   function catalogRequested() {
     const machine = h.machineName();
     const stored = folderCatalogs.get(modelKey());
-    if (!h.path()) picker.setCatalogFailed("Choose a working folder to list all of its models.");
+    if (!h.path()) picker.setCatalogFailed(tr("Choose a working folder to list all of its models."));
     else if (!h.online(h.host())) picker.setCatalogFailed(`${machine} is offline.`);
     else if (ready(stored)) picker.setCatalog(stored as Json);
     else if (!pendingFor(modelKey())) requestFolderCatalog(true);
@@ -315,7 +316,7 @@ export function createOpenCode(h: OpenCodeHost) {
     favoriteRequests.delete(request);
     if (change.machine !== h.host() || change.key !== modelKey() || !opencode()) return;
     picker.setFavoritePending(change.value, false);
-    favoriteError = `Could not change the favorite on ${change.machine || h.machineName()}: ${failure}`;
+    favoriteError = tr("Could not change the favorite on %1: %2", change.machine || h.machineName(), String(failure));
     h.showError(favoriteError);
     h.emit();
   }
@@ -340,9 +341,9 @@ export function createOpenCode(h: OpenCodeHost) {
     const machine = h.machineName();
     return {
       visible: offer || reason !== "", reason, offer,
-      text: starting ? "Starting OpenCode…" : `Start OpenCode on ${machine}`,
+      text: starting ? tr("Starting OpenCode…") : tr("Start OpenCode on %1", machine),
       enabled: serviceEnabled(),
-      tooltip: h.online(h.host()) ? "Start the shared OpenCode service on this computer. Zerus never stops it." : `${machine} is offline.`,
+      tooltip: h.online(h.host()) ? tr("Start the shared OpenCode service on this computer. Zerus never stops it.") : tr("%1 is offline.", machine),
     };
   }
 
@@ -363,7 +364,7 @@ export function createOpenCode(h: OpenCodeHost) {
     }, (failure) => {
       if (closed || serviceStart !== request) return;
       serviceStart = 0;
-      if (computer === h.host()) h.setAccountStatus(`Could not start OpenCode: ${errorText(failure)}`);
+      if (computer === h.host()) h.setAccountStatus(tr("Could not start OpenCode: %1", errorText(failure)));
       h.emit();
     });
     h.emit();
@@ -388,7 +389,7 @@ export function createOpenCode(h: OpenCodeHost) {
     view(): OpenCodeView {
       return {
         models, model: modelValue, modelVisible: opencode(),
-        modelButton: modelValue === "" ? "Native default model" : currentOption()?.label || modelValue,
+        modelButton: modelValue === "" ? tr("Native default model") : currentOption()?.label || modelValue,
         modelEnabled: modelEnabled(), pickerOpen, picker: picker.view(),
         efforts, effort: effortValue, effortVisible, service: service(),
       };

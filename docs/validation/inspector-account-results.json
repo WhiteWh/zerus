@@ -1,0 +1,189 @@
+{
+ "build": "release zerus-client, private Xvfb/dbus/HOME, replay fixture with synthetic profiles",
+ "cases": {
+  "claude-dup": {
+   "en": [
+    {
+     "text": "dev@example.com (max) 6a1f3c account",
+     "title": "Profile claude-6a1f3c9e20",
+     "tag": "6a1f3c"
+    },
+    {
+     "text": "~/.config/hgs/accounts/claude-6a1f3c9e20 agent home",
+     "title": "/home/example/.config/hgs/accounts/claude-6a1f3c9e20",
+     "tag": null
+    },
+    {
+     "text": "opus high model",
+     "title": null,
+     "tag": null
+    }
+   ],
+   "ru": [
+    {
+     "text": "dev@example.com (max) 6a1f3c учётная запись",
+     "title": "Профиль claude-6a1f3c9e20",
+     "tag": "6a1f3c"
+    },
+    {
+     "text": "~/.config/hgs/accounts/claude-6a1f3c9e20 домашняя папка агента",
+     "title": "/home/example/.config/hgs/accounts/claude-6a1f3c9e20",
+     "tag": null
+    },
+    {
+     "text": "opus high модель",
+     "title": null,
+     "tag": null
+    }
+   ]
+  },
+  "codex": {
+   "en": [
+    {
+     "text": "review@example.org (pro) account",
+     "title": "Profile codex-5c2e8f0a17",
+     "tag": null
+    },
+    {
+     "text": "~/.config/hgs/accounts/codex-5c2e8f0a17 agent home",
+     "title": "/home/example/.config/hgs/accounts/codex-5c2e8f0a17",
+     "tag": null
+    },
+    {
+     "text": "gpt-5.5-codex medium model",
+     "title": null,
+     "tag": null
+    }
+   ],
+   "ru": [
+    {
+     "text": "review@example.org (pro) учётная запись",
+     "title": "Профиль codex-5c2e8f0a17",
+     "tag": null
+    },
+    {
+     "text": "~/.config/hgs/accounts/codex-5c2e8f0a17 домашняя папка агента",
+     "title": "/home/example/.config/hgs/accounts/codex-5c2e8f0a17",
+     "tag": null
+    },
+    {
+     "text": "gpt-5.5-codex medium модель",
+     "title": null,
+     "tag": null
+    }
+   ]
+  },
+  "kimi-native": {
+   "en": [
+    {
+     "text": "Kimi on workstation (plus) account",
+     "title": "Profile native-kimi",
+     "tag": null
+    },
+    {
+     "text": "~/.config/hgs/accounts/native-kimi agent home",
+     "title": "/home/example/.config/hgs/accounts/native-kimi",
+     "tag": null
+    },
+    {
+     "text": "kimi-k3 model",
+     "title": null,
+     "tag": null
+    }
+   ],
+   "ru": [
+    {
+     "text": "Kimi on workstation (plus) учётная запись",
+     "title": "Профиль native-kimi",
+     "tag": null
+    },
+    {
+     "text": "~/.config/hgs/accounts/native-kimi домашняя папка агента",
+     "title": "/home/example/.config/hgs/accounts/native-kimi",
+     "tag": null
+    },
+    {
+     "text": "kimi-k3 модель",
+     "title": null,
+     "tag": null
+    }
+   ]
+  },
+  "home-only": {
+   "en": [
+    {
+     "text": "dev@example.com (max) d47b0e account",
+     "title": null,
+     "tag": "d47b0e"
+    },
+    {
+     "text": "~/.config/hgs/accounts/claude-d47b0e5a18 agent home",
+     "title": "/home/example/.config/hgs/accounts/claude-d47b0e5a18",
+     "tag": null
+    },
+    {
+     "text": "opus high model",
+     "title": null,
+     "tag": null
+    }
+   ],
+   "ru": [
+    {
+     "text": "dev@example.com (max) d47b0e учётная запись",
+     "title": null,
+     "tag": "d47b0e"
+    },
+    {
+     "text": "~/.config/hgs/accounts/claude-d47b0e5a18 домашняя папка агента",
+     "title": "/home/example/.config/hgs/accounts/claude-d47b0e5a18",
+     "tag": null
+    },
+    {
+     "text": "opus high модель",
+     "title": null,
+     "tag": null
+    }
+   ]
+  },
+  "unknown": {
+   "en": [
+    {
+     "text": "codex-f970ef234e account",
+     "title": "Profile codex-f970ef234e",
+     "tag": null
+    },
+    {
+     "text": "~/.config/hgs/accounts/codex-f970ef234e agent home",
+     "title": "/home/example/.config/hgs/accounts/codex-f970ef234e",
+     "tag": null
+    },
+    {
+     "text": "gpt-5.5-codex medium model",
+     "title": null,
+     "tag": null
+    }
+   ],
+   "ru": [
+    {
+     "text": "codex-f970ef234e учётная запись",
+     "title": "Профиль codex-f970ef234e",
+     "tag": null
+    },
+    {
+     "text": "~/.config/hgs/accounts/codex-f970ef234e домашняя папка агента",
+     "title": "/home/example/.config/hgs/accounts/codex-f970ef234e",
+     "tag": null
+    },
+    {
+     "text": "gpt-5.5-codex medium модель",
+     "title": null,
+     "tag": null
+    }
+   ]
+  }
+ },
+ "log_sha256": {
+  "en": "d474154c42181dacb4bb91a5d433028866f27ba9af17525ccbeb6990262fa47f",
+  "ru": "6eafb86b7055c6aecb740ce82d2e8c792a42c5e26d80e61cf0dee76f5a9270a9"
+ }
+}

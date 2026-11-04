@@ -4,6 +4,16 @@ fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, Store) {
     source_fixture(true)
 }
 fn source_fixture(archive: bool) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, Store) {
+    let (temp, state, path, transcript, mut store) = cold_source_fixture(archive);
+    prepare_discovery(&store, &state, DiscoveryBudget::interactive);
+    prepare_consumption(&mut store, &state, budget);
+    // Check the first completed preparation, even if its contents are wrong.
+    let coverage = store.index.status().unwrap();
+    assert_eq!(coverage.messages, 6);
+    assert_eq!(coverage.pending_sources, 0);
+    (temp, state, path, transcript, store)
+}
+fn cold_source_fixture(archive: bool) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, Store) {
     let temp = tempfile::tempdir().unwrap();
     let state = temp.path().join("state");
     fs::create_dir_all(state.join("archives")).unwrap();
@@ -39,29 +49,50 @@ fn source_fixture(archive: bool) -> (tempfile::TempDir, PathBuf, PathBuf, PathBu
         .to_string(),
     )
     .unwrap();
-    let mut store = Store::open(&state.join("content-search-v1")).unwrap();
-    // Page tests start with a warm source. A slow disk may need more than one
-    // bounded catch-up; this does not grant a larger per-call work budget.
-    for _ in 0..8 {
-        store
-            .discover(
-                &state,
-                &DiscoveryBudget::interactive(),
-                &AtomicBool::new(false),
-            )
+    let store = Store::open(&state.join("content-search-v1")).unwrap();
+    (temp, state, path, transcript, store)
+}
+fn prepare_discovery(
+    store: &Store,
+    state: &Path,
+    mut next_budget: impl FnMut() -> DiscoveryBudget,
+) {
+    // Keep discovery separate from ingestion: a consume pass cannot make an
+    // unfinished directory walk complete. Retry only a bounded yielded phase,
+    // without polling for expected message counts or query hits.
+    for _ in 0..32 {
+        let budget = next_budget();
+        let progress = store
+            .discover(state, &budget, &AtomicBool::new(false))
             .unwrap();
-        store
-            .consume(&state, &budget(), &AtomicBool::new(false))
+        assert!(progress.entries <= budget.entries);
+        assert!(progress.path_bytes <= budget.path_bytes);
+        assert!(!progress.changed, "private fixture catalog changed");
+        if progress.complete {
+            return;
+        }
+        assert!(
+            Instant::now() >= budget.deadline,
+            "fixture discovery did not finish or yield at its deadline"
+        );
+    }
+    panic!("fixture discovery did not finish within 32 bounded slices");
+}
+fn prepare_consumption(store: &mut Store, state: &Path, mut next_budget: impl FnMut() -> Budget) {
+    for _ in 0..32 {
+        let budget = next_budget();
+        let progress = store
+            .consume(state, &budget, &AtomicBool::new(false))
             .unwrap();
-        let coverage = store.index.status().unwrap();
-        if coverage.messages == 6 && coverage.pending_sources == 0 {
-            break;
+        let read = progress.ingestion;
+        assert!(read.errors.is_empty(), "{:?}", read.errors);
+        assert!(read.files <= budget.files && read.records <= budget.records);
+        assert!(read.bytes <= budget.bytes);
+        if !read.stopped {
+            return;
         }
     }
-    let coverage = store.index.status().unwrap();
-    assert_eq!(coverage.messages, 6);
-    assert_eq!(coverage.pending_sources, 0);
-    (temp, state, path, transcript, store)
+    panic!("fixture consumption did not finish within 32 bounded slices");
 }
 fn budget() -> Budget {
     Budget {
@@ -73,9 +104,192 @@ fn budget() -> Budget {
     }
 }
 fn page(store: &mut Store, state: &Path, cursor: Option<&str>, budget: &Budget) -> Value {
-    store
-        .publish(state, "needle", 2, cursor, budget, &AtomicBool::new(false))
+    let mut first = true;
+    page_with_slices(store, state, cursor, || {
+        let deadline = if first {
+            budget.deadline
+        } else {
+            Instant::now() + Duration::from_secs(1)
+        };
+        first = false;
+        Budget {
+            files: budget.files,
+            directory_entries: budget.directory_entries,
+            records: budget.records,
+            bytes: budget.bytes,
+            deadline,
+        }
+    })
+}
+fn page_with_slices(
+    store: &mut Store,
+    state: &Path,
+    cursor: Option<&str>,
+    mut next_budget: impl FnMut() -> Budget,
+) -> Value {
+    let mut next = cursor.map(str::to_owned);
+    for _ in 0..32 {
+        let slice = next_budget();
+        let reply = store
+            .publish(
+                state,
+                "needle",
+                2,
+                next.as_deref(),
+                &slice,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        // Publication can yield before even reading the first candidate.
+        // Resume that exact cursor only; a completed wrong/empty reply or a
+        // proof/output budget stop must reach the original assertions.
+        if Instant::now() < slice.deadline
+            || reply["candidates"] != 0
+            || reply["proof"]["files"] != 0
+            || !reply["results"].as_array().unwrap().is_empty()
+            || reply["next_cursor"].is_null()
+        {
+            return reply;
+        }
+        next = Some(reply["next_cursor"].as_str().unwrap().to_owned());
+    }
+    panic!("fixture publication did not finish within 32 bounded slices");
+}
+
+#[test]
+fn query_preparation_resumes_expired_phases_without_extending_a_slice() {
+    let (_temp, state, _path, transcript, mut store) = cold_source_fixture(true);
+    let mut discovery_slices = 0;
+    prepare_discovery(&store, &state, || {
+        discovery_slices += 1;
+        let mut budget = DiscoveryBudget::interactive();
+        if discovery_slices <= 2 {
+            budget.deadline = Instant::now();
+        }
+        budget
+    });
+    assert!(discovery_slices >= 3);
+    let mut consume_slices = 0;
+    prepare_consumption(&mut store, &state, || {
+        consume_slices += 1;
+        let mut budget = budget();
+        if consume_slices <= 2 {
+            budget.deadline = Instant::now();
+        }
+        budget
+    });
+    assert!(consume_slices >= 3);
+    let coverage = store.index.status().unwrap();
+    assert_eq!(coverage.messages, 6);
+    assert_eq!(coverage.pending_sources, 0);
+    let encoded: String = store
+        .index
+        .connection()
+        .query_row("SELECT cursor FROM input_cursors", [], |row| row.get(0))
+        .unwrap();
+    let cursor: Cursor = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(cursor.offset, fs::metadata(transcript).unwrap().len());
+    assert_eq!(
+        page(&mut store, &state, None, &budget())["results"][0]["message_id"],
+        "m6"
+    );
+}
+
+#[test]
+fn query_preparation_returns_the_first_completed_empty_consumption() {
+    let (_temp, state, _path, _transcript, mut store) = cold_source_fixture(true);
+    // No discovery has run yet. This is a completed empty queue, not a yield.
+    // Return it immediately; retrying until six expected messages would hide it.
+    let mut slices = 0;
+    prepare_consumption(&mut store, &state, || {
+        slices += 1;
+        budget()
+    });
+    assert_eq!(slices, 1);
+    assert_eq!(store.index.status().unwrap().messages, 0);
+    assert!(store
+        .index
+        .query("needle", 100, None)
         .unwrap()
+        .hits
+        .is_empty());
+}
+
+#[test]
+fn query_page_resumes_a_zero_candidate_yield_without_skipping_the_first_hit() {
+    let (_temp, state, _path, _transcript, mut store) = fixture();
+    let key: String = store
+        .index
+        .connection()
+        .query_row("SELECT id FROM sources", [], |row| row.get(0))
+        .unwrap();
+    let mut writer = Index::new(
+        Connection::open(store.directory.join("index.sqlite3")).unwrap(),
+        DEFAULT_FILE_BYTES,
+    )
+    .unwrap();
+    let mut slices = 0;
+    let first = page_with_slices(&mut store, &state, None, || {
+        slices += 1;
+        let mut budget = budget();
+        if slices == 1 {
+            budget.deadline = Instant::now();
+        } else if slices == 2 {
+            // A new insertion must not replace the original cursor snapshot.
+            writer
+                .ingest(
+                    &key,
+                    &[Message {
+                        id: "newer".into(),
+                        at: 7.0,
+                        role: Role::Assistant,
+                        kind: "AgentMessage".into(),
+                        source: "codex_transcript".into(),
+                        seq: 0,
+                        text: "needle newer".into(),
+                    }],
+                )
+                .unwrap();
+        }
+        budget
+    });
+    assert!(slices >= 2);
+    assert_eq!(first["results"][0]["message_id"], "m6");
+    let next = page(&mut store, &state, first["next_cursor"].as_str(), &budget());
+    assert_eq!(next["results"][0]["message_id"], "m4");
+}
+
+#[test]
+#[should_panic(expected = "fixture publication did not finish within 32 bounded slices")]
+fn query_page_does_not_retry_publication_without_a_bound() {
+    let (_temp, state, _path, _transcript, mut store) = cold_source_fixture(true);
+    page_with_slices(&mut store, &state, None, || {
+        let mut budget = budget();
+        budget.deadline = Instant::now();
+        budget
+    });
+}
+
+#[test]
+#[should_panic(expected = "fixture discovery did not finish within 32 bounded slices")]
+fn query_preparation_does_not_retry_discovery_without_a_bound() {
+    let (_temp, state, _path, _transcript, store) = cold_source_fixture(true);
+    prepare_discovery(&store, &state, || {
+        let mut budget = DiscoveryBudget::interactive();
+        budget.deadline = Instant::now();
+        budget
+    });
+}
+
+#[test]
+#[should_panic(expected = "fixture consumption did not finish within 32 bounded slices")]
+fn query_preparation_does_not_retry_consumption_without_a_bound() {
+    let (_temp, state, _path, _transcript, mut store) = cold_source_fixture(true);
+    prepare_consumption(&mut store, &state, || {
+        let mut budget = budget();
+        budget.deadline = Instant::now();
+        budget
+    });
 }
 
 #[test]
@@ -258,9 +472,17 @@ fn an_appended_live_prefix_is_pending_then_resumes_without_permanent_retirement(
     assert_eq!(pending["unavailable_sessions"], 1);
     assert_eq!(pending["catalog"]["pending_paths"], 1);
     assert_eq!(store.index.status().unwrap().sources, 1);
-    store
-        .consume(&state, &budget(), &AtomicBool::new(false))
-        .unwrap();
+    let mut consume_slices = 0;
+    prepare_consumption(&mut store, &state, || {
+        consume_slices += 1;
+        let mut budget = budget();
+        if consume_slices == 1 {
+            // A legal zero-record yield used to reach the m7 assertion below.
+            budget.deadline = Instant::now();
+        }
+        budget
+    });
+    assert!(consume_slices >= 2);
     let current = page(&mut store, &state, None, &budget());
     assert_eq!(current["results"][0]["message_id"], "m7");
     assert_eq!(current["unavailable_sessions"], 0);

@@ -1,0 +1,27 @@
+/* Approved Projects WorktreePanel, loaded with the pane. */
+@layer components {
+  .wtp { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+  .wtp-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .wtp-head b { font-weight: 600; }
+  .wtp-status { font-size: var(--fs-xs); color: var(--z-color-muted); }
+  .wtp-status.warn { color: var(--z-color-warn); }
+  .wtp-status.danger { color: var(--z-color-danger); }
+  .wtp-tree { display: flex; flex-direction: column; gap: 2px; overflow: auto; min-height: 0; padding: 4px; border: 1px solid var(--z-color-card-border); border-radius: var(--z-radius-lg); background: var(--z-color-card); }
+  .wtp-root { border-radius: var(--z-radius-md); padding: 4px 6px 5px; border: 1px solid transparent; }
+  .wtp-root.on { background: var(--z-color-row-selected); border-color: var(--z-color-row-selected-border); }
+  .wtp-root.gone { opacity: .75; }
+  .wtp-row { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; text-align: left; font-size: var(--fs-sm); }
+  .wtp-ico { flex: none; color: var(--z-color-muted); }
+  .wtp-title { flex: 0 1 auto; }
+  .wtp-title b { font-weight: 600; }
+  .wtp-tag { flex: none; font-size: var(--fs-xs); color: var(--z-color-dim); }
+  .wtp-tag.warn { color: var(--z-color-warn); }
+  .wtp-tag.danger { color: var(--z-color-danger); }
+  .wtp-path { padding-left: 20px; font-size: var(--fs-2xs); color: var(--z-color-dim); }
+  .wtp-kids { padding-left: 18px; margin-top: 2px; }
+  .wtp-kid { display: flex; align-items: center; gap: 5px; font-size: var(--fs-xs); color: var(--z-color-text-3); padding: 1px 4px; border-radius: var(--z-radius-sm); }
+  .wtp-kid:hover:not(:disabled) { color: var(--z-color-accent); background: var(--z-color-hover); }
+  .wtp-kid:disabled { cursor: default; }
+  .wtp.picker .wtp-tree { max-height: none; flex: 1; }
+  .proj-right > .wtp { flex: 1 1 200px; }
+}

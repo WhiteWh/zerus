@@ -1,10 +1,11 @@
 import { createSignal } from "solid-js";
 import { readTaskSettings, saveTaskSettings } from "../bridge";
 import { notify } from "./actions";
+import { trNoop } from "../i18n";
 
 export interface TaskSettings { task_template: string; cancel_template: string; agents_other: boolean; agent_limit: number }
 export interface TaskSettingsDialog { project: string; name: string; base: TaskSettings; origin?: HTMLElement }
-export const SETTINGS_LIMIT_ERROR = "Limit tasks started by agents: use 0 to 1000 per hour.";
+export const SETTINGS_LIMIT_ERROR = trNoop("Limit tasks started by agents: use 0 to 1000 per hour.");
 const keys = ["task_template", "cancel_template", "agents_other", "agent_limit"] as const;
 export function settingsChanges(base: TaskSettings, next: TaskSettings): Partial<TaskSettings> {
   return Object.fromEntries(keys.filter((key) => base[key] !== next[key]).map((key) => [key, next[key]]));

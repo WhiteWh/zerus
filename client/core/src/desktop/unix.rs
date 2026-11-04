@@ -185,7 +185,7 @@ pub fn probe_at(path: &Path, nonce: &str, configuration: &str) -> Observation {
     match probe_request(path, &request) {
         Raw::Absent => Observation::Absent,
         Raw::Unknown => Observation::Unknown,
-        Raw::Live(bytes) => match bytes.and_then(|b| serde_json::from_slice::<Hello>(&b).ok()) {
+        Raw::Live(bytes, _) => match bytes.and_then(|b| serde_json::from_slice::<Hello>(&b).ok()) {
             Some(hello) if hello.identity_matches(nonce, configuration) => Observation::LiveNext {
                 hello: Box::new(hello),
             },
@@ -208,7 +208,7 @@ pub fn probe_producer_at(
     match probe_request(path, &request) {
         Raw::Absent => Observation::Absent,
         Raw::Unknown => Observation::Unknown,
-        Raw::Live(bytes) => match bytes
+        Raw::Live(bytes, _) => match bytes
             .and_then(|b| serde_json::from_slice::<producer::Reply>(&b).ok())
         {
             Some(reply) if reply.identity_matches(nonce, configuration) => Observation::LiveNext {
@@ -218,10 +218,69 @@ pub fn probe_producer_at(
         },
     }
 }
+
+/// The evidence is still untrusted data. A service must match the returned
+/// canonical frontend PID and the original child PID/birth/fingerprint against
+/// its own socket peer, and check agent ancestry before accepting an intent.
+pub fn probe_ui_request_at(
+    path: &Path,
+    attempt: &str,
+    configuration: &str,
+) -> Option<(u32, super::ui_requests::Reply)> {
+    let request = super::ui_requests::query(attempt)?;
+    let Raw::Live(Some(bytes), Some(pid)) = probe_request(path, &request) else {
+        return None;
+    };
+    let reply: super::ui_requests::Reply = serde_json::from_slice(&bytes).ok()?;
+    (reply.hello.identity_matches(attempt, configuration) && reply.request.attempt == attempt)
+        .then_some((pid, reply))
+}
+
+fn peer_pid(stream: &UnixStream) -> Option<u32> {
+    if !same_user(stream) {
+        return None;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mut value: libc::ucred = unsafe { std::mem::zeroed() };
+        let mut size = std::mem::size_of_val(&value) as libc::socklen_t;
+        // SAFETY: live socket and exactly sized output credentials.
+        let result = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&mut value as *mut libc::ucred).cast(),
+                &mut size,
+            )
+        };
+        (result == 0 && size as usize == std::mem::size_of_val(&value) && value.pid > 0)
+            .then_some(value.pid as u32)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut value: libc::pid_t = 0;
+        let mut size = std::mem::size_of_val(&value) as libc::socklen_t;
+        // SAFETY: live socket and one writable native PID.
+        let result = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_LOCAL,
+                libc::LOCAL_PEERPID,
+                (&mut value as *mut libc::pid_t).cast(),
+                &mut size,
+            )
+        };
+        (result == 0 && size as usize == std::mem::size_of_val(&value) && value > 0)
+            .then_some(value as u32)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    None
+}
 enum Raw {
     Absent,
     Unknown,
-    Live(Option<Vec<u8>>),
+    Live(Option<Vec<u8>>, Option<u32>),
 }
 fn probe_request(path: &Path, request: &[u8]) -> Raw {
     let until = Instant::now() + PROBE_WAIT;
@@ -262,5 +321,6 @@ fn probe_request(path: &Path, request: &[u8]) -> Raw {
     let Ok(stream) = stream else {
         return Raw::Unknown;
     };
-    Raw::Live(exchange(stream, request, until))
+    let pid = peer_pid(&stream);
+    Raw::Live(exchange(stream, request, until), pid)
 }

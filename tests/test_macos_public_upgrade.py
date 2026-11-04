@@ -22,9 +22,14 @@ spec.loader.exec_module(upgrade)
 
 
 class PublicCaskBoundaries(unittest.TestCase):
-    def cask(self, channel="stable", legacy=False):
+    def cask(self, channel="stable", legacy=False, previous=False):
         version = "0.44.0" if channel == "stable" else "0.44.0.r1558.gacbbee6.n19"
-        text = upgrade.render_cask(version, "a" * 64, channel, "nightly-39002487144" if channel == "nightly" else None)
+        tag = "nightly-39002487144" if channel == "nightly" else None
+        if previous:
+            text = (ROOT / "packaging/homebrew/previous" / f"{upgrade.cask_for(channel)}.rb.in").read_text().replace(
+                "@VERSION@", version).replace("@SHA256@", "a" * 64).replace("@RELEASE_TAG@", tag or "")
+        else:
+            text = upgrade.render_cask(version, "a" * 64, channel, tag)
         if legacy:
             text = text.replace('        "com.hgdev.zerus-mobile-connector",\n', "").replace(
                 '        "~/Library/LaunchAgents/com.hgdev.zerus-mobile-connector.plist",\n', "")
@@ -277,13 +282,14 @@ class PublicCaskBoundaries(unittest.TestCase):
 
     def test_only_literal_current_or_retained_casks_are_accepted(self):
         for channel in ("stable", "nightly"):
-            for legacy in (False, True):
-                text = self.cask(channel, legacy)
+            self.assertNotEqual(self.cask(channel), self.cask(channel, previous=True))
+            for previous, legacy in ((False, False), (True, False), (True, True)):
+                text = self.cask(channel, legacy=legacy, previous=previous)
                 self.assertEqual(upgrade.accepted_cask(text, channel)["channel"], channel)
                 for injected in [text + "system 'touch /tmp/unreviewed'\n",
                                  text.replace('  app "Zerus.app"', '  uninstall quit: "com.hgdev.hgs-tray"'),
                                  text.replace("https://github.com/ufna/zerus/", "https://example.org/")]:
-                    with self.subTest(channel=channel, legacy=legacy), self.assertRaises(ValueError):
+                    with self.subTest(channel=channel, previous=previous, legacy=legacy), self.assertRaises(ValueError):
                         upgrade.accepted_cask(injected, channel)
 
     def test_release_metadata_seal_source_and_asset_identity(self):

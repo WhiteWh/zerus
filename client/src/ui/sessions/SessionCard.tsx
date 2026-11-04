@@ -1,7 +1,9 @@
 import { For, Show } from "solid-js";
+import { tr, trNoop } from "../../i18n";
 import { AGENT_LABEL, Icon } from "../lib/icons";
 import { computerFresh, computerOffline } from "../../store/catalog";
 import { visibleUnreadReply } from "../../store/attention";
+import { optionalQuestionCount, optionalQuestionCountText } from "./optional-questions";
 import { now } from "../../store/ui";
 import { settings } from "../../store/settings";
 import { machineAppearance } from "../../store/machineAppearance";
@@ -26,14 +28,25 @@ function elapsed(s: Session): number | undefined {
   return Math.max(0, Math.floor(now() - s.turnStarted));
 }
 
+// The core's closed status vocabulary (SessionPresentation::status). Only these
+// exact captions are translated: a composite caption keeps its English text.
+const CAPTIONS = new Set<string>([
+  trNoop("Agent exited"), trNoop("Archived"), trNoop("Background"), trNoop("Compacting"), trNoop("Connecting"), trNoop("Error"),
+  trNoop("Interrupted"), trNoop("Model unavailable"), trNoop("Needs approval"), trNoop("Needs attention"), trNoop("Needs input"),
+  trNoop("Not tracked"), trNoop("Paused"), trNoop("Provider error"), trNoop("Ready"), trNoop("Retrying"), trNoop("Scheduled"),
+  trNoop("Sign in"), trNoop("Sign in required"), trNoop("Starting"), trNoop("Status unknown"), trNoop("Stopped"),
+  trNoop("Using a tool"), trNoop("Waiting for acceptance"), trNoop("Waiting for result"), trNoop("Waiting to retry"), trNoop("Working"),
+]);
+export const captionText = (caption: string) => (CAPTIONS.has(caption) ? tr(caption) : caption);
+
 /** The Qt caption (SessionPresentation::status) with the Working clock, as Qt shows it. */
 export function statusCaption(s: Session): string {
-  if (statusOf(s) === "offline") return "Offline";
-  if (s.status === "ready" && s.draft) return "Draft";
+  if (statusOf(s) === "offline") return tr("Offline");
+  if (s.status === "ready" && s.draft) return tr("Draft");
   const seconds = elapsed(s);
-  if (seconds === undefined) return s.caption;
+  if (seconds === undefined) return captionText(s.caption);
   const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60), sec = seconds % 60;
-  return `${s.caption} (${h ? `${h}h ${m}m` : `${m}m ${String(sec).padStart(2, "0")}s`})`;
+  return `${captionText(s.caption)} (${h ? `${h}h ${m}m` : `${m}m ${String(sec).padStart(2, "0")}s`})`;
 }
 
 /** Short state for strip tiles: elapsed time while working, otherwise the caption. */
@@ -130,8 +143,8 @@ export function MachineBadge(props: { alias: string; computer: string; vivid?: b
   const appearance = () => machineAppearance(settings, props.alias, `var(--z-entity-palette-${paletteIndex(props.alias)})`);
   return (
     <span class="entity mbadge" classList={{ vivid: props.vivid ?? appearance().vivid, offline: computerOffline(props.computer) }}
-      style={{ "--entity": appearance().color }} title={props.computer === "" ? `${props.alias} (this computer)` : props.alias}>
-      {props.alias}{props.offline ? " (offline)" : ""}
+      style={{ "--entity": appearance().color }} title={props.computer === "" ? tr("%1 (this computer)", props.alias) : props.alias}>
+      {props.alias}{props.offline ? tr(" (offline)") : ""}
     </span>
   );
 }
@@ -155,17 +168,17 @@ export function gitMarks(g: Git): GitMark[] {
 export function gitTooltip(s: Session): string {
   const g = s.git!;
   const verified = g.state !== "unknown";
-  const ref = verified ? "verified upstream" : "last known upstream; remote unverified";
+  const ref = verified ? tr("verified upstream") : tr("last known upstream; remote unverified");
   return [
-    "Git status (current checkout)",
+    tr("Git status (current checkout)"),
     s.cwd,
-    s.branch ? `Branch: ${s.branch}` : "",
-    s.branch ? `Upstream: origin/${s.branch}` : "",
-    `${g.changed} changed or new files (including staged and untracked files)`,
-    g.conflicts ? `${g.conflicts} files with merge conflicts` : "",
-    `${g.ahead} outgoing commits (${ref})`,
-    `${g.behind} incoming commits (${ref})`,
-    !verified ? "Remote publication has not been verified recently." : !g.changed && !g.ahead && !g.behind ? "Clean checkout. Branch matches the verified remote." : "",
+    s.branch ? tr("Branch: %1", s.branch) : "",
+    s.branch ? tr("Upstream: %1", `origin/${s.branch}`) : "",
+    tr("%1 changed or new files (including staged and untracked files)", g.changed),
+    g.conflicts ? tr("%1 files with merge conflicts", g.conflicts) : "",
+    tr("%1 outgoing commits (%2)", g.ahead, ref),
+    tr("%1 incoming commits (%2)", g.behind, ref),
+    !verified ? tr("Remote publication has not been verified recently.") : !g.changed && !g.ahead && !g.behind ? tr("Clean checkout. Branch matches the verified remote.") : "",
   ].filter(Boolean).join("\n");
 }
 
@@ -193,7 +206,7 @@ export function AgentsCounter(props: { label: string; expandable: boolean; expan
   return (
     <Show when={props.expandable} fallback={<span class="sc-kids static">{glyph}<span>{props.label}</span></span>}>
       <button class="sc-kids" classList={{ open: props.expanded }} aria-expanded={props.expanded}
-        title={props.expanded ? "Hide subagents" : "Show subagents"}
+        title={props.expanded ? tr("Hide subagents") : tr("Show subagents")}
         onClick={(e) => { e.stopPropagation(); props.onToggle?.(); }} onDblClick={(e) => e.stopPropagation()}>
         {glyph}
         <span>{props.label}</span>
@@ -210,9 +223,9 @@ const titleReserve = (name: string, max: number) => ({ "min-width": `${Math.min(
 
 function detailText(s: Session): string {
   if (s.summary) return s.summary;
-  if (visibleUnreadReply(s, computerFresh(s.computer))) return "Response ready to read";
-  if (s.status === "ready") return "Waiting for your next message";
-  if (s.status === "paused") return "Resume to continue";
+  if (visibleUnreadReply(s, computerFresh(s.computer))) return tr("Response ready to read");
+  if (s.status === "ready") return tr("Waiting for your next message");
+  if (s.status === "paused") return tr("Resume to continue");
   return "";
 }
 
@@ -235,6 +248,7 @@ export function SessionCard(props: {
 }) {
   const s = () => props.session;
   const kind = () => badgeKind(s());
+  const optionalCount = () => optionalQuestionCount(s(), computerFresh(s().computer));
   return (
     <div class="scard" classList={{ selected: props.selected, offline: statusOf(s()) === "offline", muted: !!s().muted }} data-emphasis={emphasis(s())}>
       <div class="sc-l1">
@@ -244,9 +258,9 @@ export function SessionCard(props: {
         <Show when={visibleUnreadReply(s(), computerFresh(s().computer)) && (s().status === "working" || s().status === "attention" || s().draft)}>
           <span class="sc-extra"><StatusBadge kind={s().muted ? "muted-unread" : "unread"} caption="" iconOnly /></span>
         </Show>
-        <Show when={s().optionalQuestions}>
-          <span class="qchip" classList={{ muted: !!s().muted }} title={`${s().optionalQuestions} optional question${s().optionalQuestions === 1 ? "" : "s"} waiting\nThe agent can continue without an answer. Answer or skip it in Activity.\nClick to open.`}>
-            <Icon name="question" size={16} />{s().optionalQuestions! > 99 ? "99+" : s().optionalQuestions}
+        <Show when={optionalCount()}>
+          <span class="qchip" classList={{ muted: !!s().muted }} title={tr(optionalCount() === 1 ? "%1 optional question waiting\nThe agent can continue without an answer. Answer or skip it in Activity.\nClick to open." : "%1 optional questions waiting\nThe agent can continue without an answer. Answer or skip it in Activity.\nClick to open.", optionalCount())}>
+            <Icon name="question" size={16} />{optionalQuestionCountText(optionalCount())}
           </span>
         </Show>
         <span class="grow" />
@@ -276,11 +290,13 @@ export function SessionCard(props: {
 }
 
 const CHILD_STATUS: Record<Subagent["state"], { kind: BadgeKind; caption: string }> = {
-  working: { kind: "working", caption: "Working" },
-  ready: { kind: "neutral", caption: "Ready" },
-  attention: { kind: "attention", caption: "Needs input" },
+  working: { kind: "working", caption: trNoop("Working") },
+  ready: { kind: "neutral", caption: trNoop("Ready") },
+  attention: { kind: "attention", caption: trNoop("Needs input") },
+  error: { kind: "error", caption: trNoop("Error") },
+  paused: { kind: "paused", caption: trNoop("Paused") },
 };
-export const childStatus = (c: Subagent) => CHILD_STATUS[c.state];
+export const childStatus = (c: Subagent) => ({ ...CHILD_STATUS[c.state], caption: tr(CHILD_STATUS[c.state].caption) });
 
 /** Native subagent row (64 px): card indented 24 px, one muted detail line. */
 export function ChildCard(props: { parent: Session; child: Subagent; last: boolean; first: boolean; selected: boolean }) {
@@ -308,12 +324,12 @@ export function CompactCard(props: { session: Session; selected: boolean; onExpa
   const s = () => props.session;
   return (
     <div class="scard compact" classList={{ selected: props.selected }} data-emphasis={emphasis(s())}
-      aria-description="Collapsed session row. Press Right to expand.">
+      aria-description={tr("Collapsed session row. Press Right to expand.")}>
       <span class="sc-title ell" style={titleReserve(s().title, 60)} title={s().name}>{s().title}</span>
       <StatusBadge kind={badgeKind(s())} caption={statusCaption(s())} />
       <AgentBadge agent={s().agent} />
       <Show when={s().muted}><Icon name="mute" size={14} class="sc-mute" /></Show>
-      <button class="cc-expand" title={`Expand session row`} onClick={(e) => { e.stopPropagation(); props.onExpand(); }} onDblClick={(e) => e.stopPropagation()}>
+      <button class="cc-expand" title={tr("Expand session row")} onClick={(e) => { e.stopPropagation(); props.onExpand(); }} onDblClick={(e) => e.stopPropagation()}>
         <Icon name="expand-row" size={16} />
       </button>
     </div>

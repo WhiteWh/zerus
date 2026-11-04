@@ -24,7 +24,7 @@ import { createStore } from "solid-js/store";
 import * as bridge from "../bridge";
 import { createCatalog, toSession } from "./catalog";
 import { createActions } from "./actions";
-import { createBatch, type ArchiveCalls } from "./batch";
+import { createBatch, type BatchDeps, type ArchiveCalls } from "./batch";
 import { needsAttention } from "./ui";
 import { snapshotOf } from "../ui/sessions/actions-ui";
 import type { BatchConfirmation, SelectionRow } from "../ui/sessions/selection";
@@ -49,7 +49,7 @@ function deferredCalls() {
   return { answer: async (o: Outcome) => { pending.shift()!(o); await flush(); }, waiting: () => pending.length };
 }
 
-function setup(rows: RowOut[], options: { online?: (computer: string) => boolean; confirm?: boolean; archive?: ArchiveCalls; scans?: { n: number } } = {}) {
+function setup(rows: RowOut[], options: { online?: (computer: string) => boolean; confirm?: boolean; archive?: ArchiveCalls; scans?: { n: number }; delay?: BatchDeps["delay"] } = {}) {
   const online = options.online ?? (() => true);
   const catalog = createCatalog();
   catalog.applyBatch(batchOf({ upserts: rows }));
@@ -65,7 +65,8 @@ function setup(rows: RowOut[], options: { online?: (computer: string) => boolean
     catalog: { rows: listedRows },
     online,
     updating: actions.updating,
-    perform: (row, action) => actions.perform(row, action, { quiet: true }),
+    perform: (row, action, delay) => actions.perform(row, action, { quiet: true, delay }),
+    delay: options.delay,
     notify: actions.notify,
     dismiss: actions.dismiss,
     compact: { get: (key) => !!compact[key], set: (key, value) => setCompact(key, value) },
@@ -190,7 +191,7 @@ describe("the queue", () => {
       await a.run("archive", a.listed("a", "b"));
       expect(mocked.runAction.mock.calls.map((c) => c[1])).toEqual([{ kind: "archive" }, { kind: "archive" }]);
       expect(a.texts()).toEqual([
-        "Worktree kept for review: uncommitted changes",
+        "Working folder kept for review.",
         "Worktree removed automatically. The branch and archived conversation are kept.",
         "Move to archive: 2 of 2 completed.",
       ]);
@@ -608,5 +609,37 @@ describe("applies", () => {
       expect(a.applies(rb, "pause", true, true)).toBe(false);
       dispose();
     });
+  });
+});
+
+
+describe("one grace period per selection", () => {
+  it("does not write before release and refuses only a changed member afterwards", async () => {
+    await createRoot(async (dispose) => {
+      let release!: () => Promise<void>;
+      const delay: BatchDeps["delay"] = (rows, _action, execute) => new Promise((resolve) => {
+        expect(rows).toHaveLength(3);
+        release = async () => { await execute(rows.map((_, index) => ({ id: "batch-window", index })), "batch-key"); resolve(); };
+      });
+      const a = setup([rowOut("a", { state: "paused" }), rowOut("b", { state: "paused" }), rowOut("c", { state: "paused" })], { delay });
+      mocked.runAction.mockResolvedValue(done());
+      const job = a.run("archive", a.listed("a", "b", "c"));
+      await flush(); expect(mocked.runAction).not.toHaveBeenCalled();
+      a.applyBatch(batchOf({ upserts: [rowOut("b", { state: "paused", run_id: "replacement" })] }));
+      await release(); await job;
+      expect(mocked.runAction.mock.calls.map((c) => [c[0].name, c[2]])).toEqual([
+        ["claude/p/a", { id: "batch-window", index: 0 }], ["claude/p/c", { id: "batch-window", index: 2 }],
+      ]);
+      expect(a.texts().at(-1)).toContain("2 of 3 completed. 1 failed or changed;"); dispose();
+    });
+  });
+  it("Clear archive bypasses Undo", async () => {
+    const delay = vi.fn();
+    const one = toSession("", "archive:one", view("a", { state: "archived", archive_id: "archive-one" }));
+    const forget = vi.fn(async () => done());
+    const calls: ArchiveCalls = { current: () => one, restore: async () => done(), forget, refresh: () => {}, taken: () => false };
+    const a = setup([], { archive: calls, delay });
+    await a.run("forget", [one], { clearArchive: true });
+    expect(delay).not.toHaveBeenCalled(); expect(forget).toHaveBeenCalledTimes(1);
   });
 });

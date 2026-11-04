@@ -180,6 +180,10 @@ pub fn verify_private(path: &Path, kind: Private) -> io::Result<bool> {
 pub fn verify_private_file(file: &fs::File) -> io::Result<bool> {
     Ok(private_metadata(&file.metadata()?, Private::File))
 }
+/// Owner-only existing directory, checked through its pinned handle.
+pub fn verify_private_directory(file: &fs::File) -> io::Result<bool> {
+    Ok(private_metadata(&file.metadata()?, Private::Directory))
+}
 fn private_metadata(metadata: &fs::Metadata, kind: Private) -> bool {
     (match kind {
         Private::Directory => metadata.is_dir(),
@@ -227,14 +231,17 @@ pub fn private_open(options: &mut fs::OpenOptions) -> &mut fs::OpenOptions {
     options.mode(0o600)
 }
 /// Refuse a symbolic link as the final component and never block on a FIFO.
+/// Sets both custom flags together; separate setters replace, rather than add flags.
 pub fn no_follow(options: &mut fs::OpenOptions) -> &mut fs::OpenOptions {
     options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
 }
 /// Refuse a symbolic link as the final component.
+/// Replaces custom flags. Use `no_follow` when nonblocking mode is also required.
 pub fn refuse_link(options: &mut fs::OpenOptions) -> &mut fs::OpenOptions {
     options.custom_flags(libc::O_NOFOLLOW)
 }
 /// Never block on a FIFO.
+/// Replaces custom flags. Use `no_follow` when final links must also be refused.
 pub fn never_block(options: &mut fs::OpenOptions) -> &mut fs::OpenOptions {
     options.custom_flags(libc::O_NONBLOCK)
 }
@@ -287,6 +294,23 @@ pub fn spawn_turn() -> MutexGuard<'static, ()> {
 pub fn spawn_in_turn(command: &mut Command) -> io::Result<Child> {
     let _turn = spawn_turn();
     command.spawn()
+}
+/// Descriptor creation and spawn share the same turn on macOS, where setting
+/// close-on-exec after socket/pipe creation would otherwise race another spawn.
+/// Preserve the original deadline across turn contention and preparation.
+pub fn spawn_prepared_in_turn_before<T>(
+    until: std::time::Instant,
+    prepare: impl FnOnce() -> io::Result<(Command, T)>,
+) -> io::Result<(Child, T)> {
+    let _turn = spawn_turn();
+    if std::time::Instant::now() >= until {
+        return Err(io::ErrorKind::TimedOut.into());
+    }
+    let (mut command, resources) = prepare()?;
+    if std::time::Instant::now() >= until {
+        return Err(io::ErrorKind::TimedOut.into());
+    }
+    Ok((command.spawn()?, resources))
 }
 /// `Command::status` through `spawn`.
 pub fn status(command: &mut Command) -> io::Result<ExitStatus> {

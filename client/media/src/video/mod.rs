@@ -66,6 +66,17 @@ pub(crate) fn finish_refused(error: &str, duration_ms: u64, width: u32, height: 
         error.to_owned()
     }
 }
+/// A fresh name for a recording's private folder. The per-process sequence keeps
+/// two recordings started in the same clock tick apart.
+#[cfg(feature = "video")]
+pub(crate) fn folder_name() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |time| time.as_nanos());
+    let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("zerus-video-{}-{nanos}-{sequence}", std::process::id())
+}
 pub const AUDIO_UNPREPARED: &str = "The video audio could not be prepared.";
 pub const NO_STORAGE: &str = "Private recording storage is unavailable.";
 /// Why video is unavailable in a build without a recorder for its platform.

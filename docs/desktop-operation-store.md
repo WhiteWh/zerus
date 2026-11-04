@@ -88,6 +88,35 @@ that belongs to the executing actor/worker integration in G1 .66.3.22.
 See [G2 policy](desktop-operations.md) and
 [read-only delegation identity](desktop-delegation-hello.md).
 
+## Dormant root policy bridge
+
+The internal `desktop::operations` module connects the existing G2 verifier to
+ledger data without adding an executing actor. `VerifiedOriginal` owns bounded
+exact raw record and retained-input bytes, with no Debug, Serialize or Clone.
+Closed Key, Binding and Executor translations retain every field; preparation
+produces only the existing `Admission` data. It does not call `admit` or
+`reserve`, manufacture a current guard, or infer Operations admission from a
+Complete marker or the background profile.
+
+Reload reads exactly one existing `Frozen`, checks the expected complete
+Admitted identity, binding digest and revision, then repeats G2 validation before
+returning a pure original recover-only proposal. Input/plan hashes use the exact
+retained bytes and consent uses the existing ledger derivation. `Frozen` does
+not expose the stored plan/consent columns: real SQLite tests assert those
+columns separately; reload does not claim to have independently read them.
+The proposal supplies no current state, reservation or dispatch authority.
+
+Result settlement binds that reloaded original to the complete existing Ticket
+and uses G2's bounded receipt allowlist before the existing ledger `finish`.
+An unchanged old-epoch ticket may finish its own still-reserved attempt after
+revoke. Forged tickets and terminal Unknown attempts refuse; no fresh-epoch check
+discards an otherwise exact late receipt. Finish does not release the undrained
+slot, reserve another attempt or invoke resource-drain APIs. Errors contain no
+source, reply, provenance or SQL diagnostic bodies. There is no production
+caller, CLI/IPC command, worker or current producer/drain export. Tests combine
+G2 and real SQLite fixtures only, without claiming native process/pipe/custody
+or production admission qualification. G1 .22 and .23 remain unfinished.
+
 ## Prepared custody and resource recovery
 
 Schema 8 adds `desktop_operation_custody`, keyed by the exact attempt UUID and

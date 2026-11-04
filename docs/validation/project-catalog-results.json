@@ -1,0 +1,46 @@
+{
+  "bead": "zerus-5wmh.25.1",
+  "mockup": [
+    "screens/Projects.tsx",
+    "dialogs/setup/ProjectDialogs.tsx"
+  ],
+  "native": {
+    "environment": "fresh private HOME/XDG/TMPDIR/TMUX_TMPDIR, private D-Bus and Xvfb; normal built app with embedded assets",
+    "fixture": "synthetic local workstation and peer studio, real organization watch/apply path; no native agent action",
+    "create_selects_reserved_id": true,
+    "inline_rename": true,
+    "two_consecutive_keyboard_moves": true,
+    "drag_to_end": true,
+    "confirm_delete": true,
+    "apply_calls": 6,
+    "cancel_escape_and_default_enter_emit_no_apply": true,
+    "focus_return_reopens_new_project": true,
+    "final_catalog_preserved": true
+  },
+  "gates": {
+    "typescript": "pass",
+    "vitest": {
+      "passed": 2050,
+      "skipped": 1
+    },
+    "tauri_clippy": [
+      "default",
+      "media",
+      "video",
+      "no-default-features",
+      "Windows MSVC media cross-check"
+    ],
+    "native_response_test": "pass",
+    "phase4": {
+      "steps": 16,
+      "result": "pass"
+    },
+    "entry_bytes": 488553,
+    "entry_budget": 500000
+  },
+  "captures": [
+    "project-catalog-new.png",
+    "project-catalog-delete.png",
+    "project-catalog-keyboard.png"
+  ]
+}

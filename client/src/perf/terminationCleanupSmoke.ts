@@ -58,7 +58,7 @@ export async function terminationCleanupSmoke(allowed: boolean) {
     button(".worktree-cleanup", "Keep folders")!.click(); await until(() => !cleanupDialog() && !cleanup().rows.length, "Keep folders did not dismiss recorded results");
     await confirm("unknown-only"); await until(() => cleanup().unknown === 1 && !cleanup().busy, "standalone unknown absent");
     await log("UNKNOWN"); await sleep(600);
-    await confirm("changed"); await until(() => notices().some((n) => n.text.includes("session state changed")), "changed source did not refuse termination");
+    await confirm("changed"); await until(() => notices().some((n) => (n.text.includes("session state changed") || n.text === "Terminate cancelled: the session changed.")), "changed source did not refuse termination");
     require(cleanup().rows.length === 1 && cleanup().unknown === 1, "source change started cleanup");
     await log("PASS"); await sleep(200); await invoke("exit_app", { code: 0 });
   } catch (error) { await log("FAIL " + String(error) + (error instanceof Error ? "\n" + error.stack : "")); await log("STATE " + JSON.stringify({ cleanup: cleanup(), notices: notices() })); await invoke("exit_app", { code: 1 }); }

@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as bridge from "../bridge";
 import * as ui from "./ui";
 import * as organization from "./organization";
 import * as settingsSections from "../ui/screens/settings/sections";
 import { openSession, startDesk } from "./desk";
+import { catalog } from "./catalog";
 import { listedSessionIgnoringCollapse } from "../ui/sessions/model";
 
 vi.mock("../ui/screens/settings/sections", () => ({ openSettings: vi.fn() }));
@@ -38,6 +39,8 @@ vi.mock("./ui", async (importOriginal) => ({
   machineFilter: vi.fn(() => []),
   projectFilter: vi.fn(() => ["folded-project"]),
   search: vi.fn(() => ""),
+  page: vi.fn(() => "sessions"),
+  selectedKey: vi.fn(() => undefined),
   setPage: vi.fn(),
   setSelectedKey: vi.fn(),
   setSubagentOpen: vi.fn(),
@@ -68,8 +71,79 @@ async function opener(): Promise<(target: bridge.OpenSession) => void> {
 describe("desk wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(ui.page).mockReturnValue("sessions");
+    vi.mocked(ui.selectedKey).mockReturnValue(undefined);
+    delete catalog.rows["peer\nrun:exact"];
     vi.mocked(ui.search).mockReturnValue("");
     vi.mocked(ui.projectFilter).mockReturnValue(["folded-project"]);
+  });
+
+  afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+
+  it.each([false, true])("keeps an exact cold-view open until its original identity arrives (stale row: %s)", (stale) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    if (stale) Object.assign(catalog.rows, { "peer\nrun:exact": { runId: "older", conversationId: "older", state: "running" } });
+    openSession({ computer: "peer", key: "run:exact", attention: true, expected: { run: "r", conversation: "c" } });
+    expect(shown.setSelectedKey).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(1);
+    Object.assign(catalog.rows, { "peer\nrun:exact": { runId: "r", conversationId: "c", state: "running" } });
+    vi.advanceTimersByTime(50);
+    expect(shown.setSelectedKey).toHaveBeenCalledWith("peer\nrun:exact");
+    expect(shown.setDetailTab).toHaveBeenCalledWith("activity");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    { runId: "different", conversationId: "c", state: "running" },
+    { runId: "r", conversationId: "different", state: "running" },
+    { runId: "r", conversationId: "c", state: "archived" },
+  ])("refuses a key now bound to another or archived session: %j", (row) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    Object.assign(catalog.rows, { "peer\nrun:exact": row });
+    openSession({ computer: "peer", key: "run:exact", attention: true, expected: { run: "r", conversation: "c" } });
+    expect(shown.setSelectedKey).not.toHaveBeenCalled();
+    expect(shown.setDetailTab).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(16_000);
+    expect(shown.setSelectedKey).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("bounds a missing exact open and supersedes it with explicit user navigation", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    const target = { computer: "peer", key: "run:exact", expected: { run: "r", conversation: "c" } };
+    openSession(target);
+    vi.advanceTimersByTime(16_000);
+    expect(shown.setSelectedKey).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    openSession(target);
+    openSession({ computer: "mac", key: "manual" });
+    Object.assign(catalog.rows, { "peer\nrun:exact": { runId: "r", conversationId: "c", state: "running" } });
+    vi.advanceTimersByTime(100);
+    expect(shown.setSelectedKey).toHaveBeenCalledTimes(1);
+    expect(shown.setSelectedKey).toHaveBeenCalledWith("mac\nmanual");
+  });
+
+  it("refuses an exact row delivered by a timer that ran after its original deadline", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+    try {
+      openSession({ computer: "peer", key: "run:exact", expected: { run: "r", conversation: "c" } });
+      Object.assign(catalog.rows, { "peer\nrun:exact": { runId: "r", conversationId: "c", state: "running" } });
+      clock.mockReturnValue(20_000);
+      vi.advanceTimersByTime(50);
+      expect(shown.setSelectedKey).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { clock.mockRestore(); }
+  });
+
+  it("does not snap back after the user changes the page while the exact row loads", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    openSession({ computer: "peer", key: "run:exact", expected: { run: "r", conversation: "c" } });
+    vi.mocked(ui.page).mockReturnValue("settings");
+    Object.assign(catalog.rows, { "peer\nrun:exact": { runId: "r", conversationId: "c", state: "running" } });
+    vi.advanceTimersByTime(100);
+    expect(shown.setSelectedKey).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("opens the session the menu bar or a notification names", async () => {
@@ -174,6 +248,22 @@ describe("desk wiring", () => {
     expect(mocked.deskTakePending).toHaveBeenCalledWith(3);
     expect(shown.setSelectedKey).toHaveBeenCalledWith("\nk1");
     expect(shown.toast).toHaveBeenCalledWith("Zerus", "This session is no longer available: claude/sample-project/x", "info", false);
+  });
+
+  it("ignores an original pending reply or queued activation after the desk stops", async () => {
+    let reply!: (pending: bridge.DeskPending) => void;
+    let clicked!: (target: bridge.OpenSession) => void;
+    mocked.deskTakePending.mockImplementationOnce(() => new Promise((resolve) => { reply = resolve; }));
+    mocked.onOpenSession.mockImplementationOnce(async (listener) => { clicked = listener; return () => {}; });
+    const stop = await startDesk();
+    await settle();
+    stop();
+    Object.assign(catalog.rows, { "peer\nrun:exact": { runId: "r", conversationId: "c", state: "running" } });
+    const target = { computer: "peer", key: "run:exact", expected: { run: "r", conversation: "c" } };
+    clicked(target);
+    reply({ open: target, notices: [] });
+    await settle();
+    expect(shown.setSelectedKey).not.toHaveBeenCalled();
   });
 
   it("shows notices as toasts", async () => {

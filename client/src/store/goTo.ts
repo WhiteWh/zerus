@@ -1,4 +1,6 @@
 import { createSignal } from "solid-js";
+import { tr, trNoop } from "../i18n";
+import { nativeOverlayBarrier } from "./ui";
 import { COMMANDS, chord, handlerFor, popupOpen } from "./shortcuts";
 import { openSession } from "./desk";
 import { accountsPage, setAccountMachine, setRequestedProfile } from "./accounts";
@@ -10,8 +12,8 @@ import { statusCaption } from "../ui/sessions/SessionCard";
 import { GoToKind, recentSessionIds, type GoToItem } from "../ui/sessions/goTo";
 
 const SECTIONS: readonly [string, string][] = [
-  ["go.overview", "Overview"], ["go.sessions", "Sessions"], ["go.projects", "Projects"],
-  ["go.machines", "Machines"], ["go.accounts", "Accounts"], ["go.settings", "Settings"],
+  ["go.overview", trNoop("Overview")], ["go.sessions", trNoop("Sessions")], ["go.projects", trNoop("Projects")],
+  ["go.machines", trNoop("Machines")], ["go.accounts", trNoop("Accounts")], ["go.settings", trNoop("Settings")],
 ];
 
 export function goToItems(): GoToItem[] {
@@ -33,24 +35,24 @@ export function goToItems(): GoToItem[] {
   });
   for (const header of groupHeaders()) {
     if (!header.name) continue;
-    items.push({ kind: GoToKind.Project, id: header.id, host: "", title: header.name, detail: ["Project", `${counts.get(header.id) ?? 0} session(s)`], recency: -1 });
+    items.push({ kind: GoToKind.Project, id: header.id, host: "", title: header.name, detail: [tr("Project"), tr("%n session(s)", counts.get(header.id) ?? 0)], recency: -1 });
   }
   for (const account of accountsPage().accounts) {
     for (const profile of account.members) {
       items.push({ kind: GoToKind.Account, id: profile.id, host: profile.host, title: profile.label || profile.id,
-        detail: ["Account", profile.provider, profile.machine].filter((part): part is string => !!part), recency: -1 });
+        detail: [tr("Account"), profile.provider, profile.machine].filter((part): part is string => !!part), recency: -1 });
     }
   }
   for (const machine of machineChoices()) {
     items.push({ kind: GoToKind.Machine, id: machine.computer, host: machine.computer, title: machine.label,
-      detail: machine.computer ? "Machine" : ["Machine", "this computer"], recency: -1 });
+      detail: machine.computer ? tr("Machine") : [tr("Machine"), tr("this computer")], recency: -1 });
   }
   for (const [id, title] of SECTIONS) {
-    items.push({ kind: GoToKind.Section, id, host: "", title, detail: "Section", chord: chord(id), recency: -1 });
+    items.push({ kind: GoToKind.Section, id, host: "", title: tr(title), detail: tr("Section"), chord: chord(id), recency: -1 });
   }
   for (const command of COMMANDS) {
     if (command.scope !== "window" || command.id.startsWith("go.")) continue;
-    items.push({ kind: GoToKind.Command, id: command.id, host: "", title: command.title, detail: command.group, chord: chord(command.id), recency: -1 });
+    items.push({ kind: GoToKind.Command, id: command.id, host: "", title: tr(command.title), detail: tr(command.group), chord: chord(command.id), recency: -1 });
   }
   return items;
 }
@@ -64,23 +66,31 @@ export const [shortcutHelpOrigin, setShortcutHelpOrigin] = createSignal<HTMLElem
 
 export function openGoTo() {
   if (popupOpen()) return;
-  setGoToOrigin(document.activeElement as HTMLElement | null);
+  const origin = document.activeElement as HTMLElement | null;
+  const wait = nativeOverlayBarrier("goTo", true);
+  if (wait) { void wait.then(() => setGoToOrigin(origin)).catch(() => {}); }
+  else setGoToOrigin(origin);
 }
 
 export function closeGoTo(restore = true) {
   const origin = goToOrigin();
   setGoToOrigin(null);
+  void nativeOverlayBarrier("goTo", false);
   if (restore && origin?.isConnected) origin.focus();
 }
 
 export function openShortcutHelp() {
   if (popupOpen()) return;
-  setShortcutHelpOrigin(document.activeElement as HTMLElement | null);
+  const origin = document.activeElement as HTMLElement | null;
+  const wait = nativeOverlayBarrier("shortcutHelp", true);
+  if (wait) { void wait.then(() => setShortcutHelpOrigin(origin)).catch(() => {}); }
+  else setShortcutHelpOrigin(origin);
 }
 
 export function closeShortcutHelp(restore = true) {
   const origin = shortcutHelpOrigin();
   setShortcutHelpOrigin(null);
+  void nativeOverlayBarrier("shortcutHelp", false);
   if (restore && origin?.isConnected) origin.focus();
 }
 

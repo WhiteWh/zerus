@@ -2,6 +2,7 @@ import { createSignal } from "solid-js";
 import { followTasks } from "../bridge";
 import type { TasksOut } from "../types";
 import { TASK_LIMIT, object, taskItem, text, type Task } from "../ui/screens/tasks-ui";
+import { tr } from "../i18n";
 
 /** One project list, replaced atomically by the existing event stream. */
 export function createTasks(follow: (project: string | null) => Promise<void>) {
@@ -35,8 +36,8 @@ export function createTasks(follow: (project: string | null) => Promise<void>) {
           setTasks(rows); setError(""); setLoaded(true);
           setTruncated(p.truncated === true || p.tasks.length > TASK_LIMIT);
           setDamaged(Array.isArray(p.damaged) ? p.damaged.length : 0);
-        } else if (update.kind === "failed") { setError(text(p.message) || "Tasks could not be read."); setLoaded(true); }
-        else if (update.kind === "ended") { setError("The task subscription ended. Reopen Tasks to reconnect."); setLoaded(true); }
+        } else if (update.kind === "failed") { setError(text(p.message) || tr("Tasks could not be read.")); setLoaded(true); }
+        else if (update.kind === "ended") { setError(tr("The task subscription ended. Reopen Tasks to reconnect.")); setLoaded(true); }
       }
     },
   };

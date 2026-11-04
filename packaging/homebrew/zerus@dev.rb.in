@@ -16,24 +16,6 @@ cask "zerus@dev" do
   binary "#{appdir}/Zerus.app/Contents/MacOS/hgs"
   binary "#{appdir}/Zerus.app/Contents/Resources/bin/zerus-setup"
 
-  zap launchctl: [
-        "com.hgdev.hgs-recovery",
-        "com.hgdev.hgs-swarm",
-        "com.hgdev.hgs-tray",
-        "com.hgdev.hgs.user-session",
-        "com.hgdev.zerus-mobile-connector",
-      ],
-      trash:     [
-        "~/Library/LaunchAgents/com.hgdev.hgs-recovery.plist",
-        "~/Library/LaunchAgents/com.hgdev.hgs-swarm.plist",
-        "~/Library/LaunchAgents/com.hgdev.hgs-tray.plist",
-        "~/Library/LaunchAgents/com.hgdev.hgs.user-session.plist",
-        "~/Library/LaunchAgents/com.hgdev.zerus-mobile-connector.plist",
-        "~/Library/Logs/hgs",
-        "~/Library/Logs/hgs-tray.log",
-        "~/Library/Saved Application State/com.hgdev.hgs-tray.savedState",
-      ]
-
   caveats <<~EOS
     Run this once as your user, without sudo:
       zerus-setup

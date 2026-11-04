@@ -53,3 +53,14 @@ class NativeClaudeInput(unittest.TestCase):
         text = 'Literal paths:\nfixture\\\\'
         self.send(self.payload(text=text))
         self.wait_for(lambda: self.accepted(text))
+
+    def test_leading_absolute_path_is_literal_message_text(self):
+        # A command-named directory must not invoke /help or file completion.
+        text = '/help/fixture/capture.png\nWhat is shown in this screenshot?'
+        payload = self.payload(text=text)
+        receipt = self.send(payload)
+        self.assertEqual(receipt['text'], text)
+        self.wait_for(lambda: self.accepted(text))
+        self.assertEqual(self.accepted(text), 1)
+        self.assertEqual(self.send(payload), receipt)
+        self.assertEqual(self.accepted(text), 1)

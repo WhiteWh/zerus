@@ -1,5 +1,6 @@
 import { array, object, string, type Json } from "../lib/json";
 import { composing } from "../lib/keys";
+import { trNoop, tr } from "../../i18n";
 
 // The folder browser of another computer: a port of the peer branch of
 // tray/src/DirectoryDialog.cpp (46-326). This computer's folders use the
@@ -54,15 +55,15 @@ export interface FolderBrowserView {
   creating: boolean;
 }
 
-export const USE_THIS = "Use this folder";
-export const USE_SELECTED = "Use selected folder";
-export const LOADING = "Loading folders…";
-export const TYPED = "Press Go to open this path, or New folder to create it.";
-export const AVAILABLE = "The folder is available. Press Use this folder to select it.";
-export const CREATED = "Folder created. Press Use this folder to select it.";
-export const TRUNCATED = "Showing the first 2,000 folders. You can also enter an exact path above.";
+export const USE_THIS: string = trNoop("Use this folder");
+export const USE_SELECTED: string = trNoop("Use selected folder");
+export const LOADING = trNoop("Loading folders…");
+export const TYPED = trNoop("Press Go to open this path, or New folder to create it.");
+export const AVAILABLE = trNoop("The folder is available. Press Use this folder to select it.");
+export const CREATED = trNoop("Folder created. Press Use this folder to select it.");
+export const TRUNCATED = trNoop("Showing the first 2,000 folders. You can also enter an exact path above.");
 export const LISTED = "Double-click to open a folder, or select it and press Use selected folder.";
-export const EMPTY = "No subfolders. You can use this folder.";
+export const EMPTY = trNoop("No subfolders. You can use this folder.");
 /** `hgs dirs` lists at most this many folders; a longer reply keeps its first ones. */
 export const MAX_ENTRIES = 2000;
 
@@ -116,7 +117,7 @@ export interface MenuEntry { label: string; enabled: boolean; action: "new" | "d
  */
 export function listMenu(view: Pick<FolderBrowserView, "listEnabled" | "newFolderEnabled">): MenuEntry[] | undefined {
   if (!view.listEnabled) return undefined;
-  return [{ label: "New folder", enabled: view.newFolderEnabled, action: "new" }, { label: "New folder dialog…", enabled: true, action: "dialog" }];
+  return [{ label: tr("New folder"), enabled: view.newFolderEnabled, action: "new" }, { label: tr("New folder dialog…"), enabled: true, action: "dialog" }];
 }
 
 /** Enter in the browser; `chooseEnabled` is the default button's state. */
@@ -184,7 +185,7 @@ export class FolderBrowser {
   private creationError = "";
   private listEnabled = false;
   private chooseEnabled = false;
-  private chooseText = USE_THIS;
+  private chooseText = tr(USE_THIS);
   private newFolderEnabled = false;
   private dialogEnabled = false;
   private closed = false;
@@ -196,13 +197,13 @@ export class FolderBrowser {
   view(): FolderBrowserView {
     const prompt = this.promptState;
     return {
-      title: `Choose folder — ${this.computer}`,
-      machine: `Folders on ${this.computer}`,
+      title: tr("Choose folder — %1", this.computer),
+      machine: tr("Folders on %1", this.computer),
       path: this.field, current: this.current, entries: this.visible(), filter: this.filterText, hidden: this.hiddenShown,
       status: this.statusText, selected: this.selection,
       inline: this.inlineName === undefined ? undefined : { name: this.inlineName, createEnabled: validFolderName(this.inlineName, this.current) },
       prompt: prompt && {
-        title: `New folder — ${this.computer}`, text: `Create a folder in ${prompt.parent} on ${this.computer}.`,
+        title: tr("New folder — %1", this.computer), text: tr("Create a folder in %1 on %2.", prompt.parent, this.computer),
         name: prompt.name, createEnabled: validFolderName(prompt.name, prompt.parent),
       },
       controlsEnabled: !this.creatingNow, listEnabled: this.listEnabled, newFolderEnabled: this.newFolderEnabled,
@@ -226,7 +227,7 @@ export class FolderBrowser {
     this.cancelInline(false);
     this.creationError = "";
     this.field = path;
-    this.statusText = LOADING;
+    this.statusText = tr(LOADING);
     this.chooseEnabled = false;
     this.listEnabled = false;
     this.newFolderEnabled = false;
@@ -252,7 +253,7 @@ export class FolderBrowser {
     this.dialogEnabled = true;
     this.listEnabled = false;
     this.chooseEnabled = false;
-    this.statusText = TYPED;
+    this.statusText = tr(TYPED);
     this.changed();
   }
 
@@ -273,7 +274,7 @@ export class FolderBrowser {
   /** The list's current folder (104-107). */
   select(path: string | undefined) {
     this.selection = path;
-    if (this.current !== "") this.chooseText = path !== undefined ? USE_SELECTED : USE_THIS;
+    if (this.current !== "") this.chooseText = tr(path !== undefined ? USE_SELECTED : USE_THIS);
     this.changed();
   }
 
@@ -292,7 +293,7 @@ export class FolderBrowser {
     this.filterText = "";
     // The new row is the list's current one.
     this.selection = undefined;
-    this.chooseText = USE_THIS;
+    this.chooseText = tr(USE_THIS);
     this.inlineName = "";
     this.chooseEnabled = false;
     this.changed();
@@ -315,7 +316,7 @@ export class FolderBrowser {
     if (this.inlineName === undefined) return;
     this.inlineName = undefined;
     this.selection = undefined;
-    this.chooseText = USE_THIS;
+    this.chooseText = tr(USE_THIS);
     this.chooseEnabled = !this.creatingNow && !this.request && this.current !== "" && this.field === this.current;
     if (notify) this.changed();
   }
@@ -377,10 +378,10 @@ export class FolderBrowser {
     this.chooseEnabled = true;
     this.newFolderEnabled = true;
     this.dialogEnabled = true;
-    this.chooseText = USE_THIS;
-    this.statusText = this.creationError !== "" ? AVAILABLE
-      : this.current === this.createdPath ? CREATED
-        : data.truncated === true ? TRUNCATED
+    this.chooseText = tr(USE_THIS);
+    this.statusText = this.creationError !== "" ? tr(AVAILABLE)
+      : this.current === this.createdPath ? tr(CREATED)
+        : data.truncated === true ? tr(TRUNCATED)
           : this.listed.length ? LISTED : EMPTY;
     this.changed();
   }
@@ -414,7 +415,7 @@ export class FolderBrowser {
     this.createdPath = "";
     this.creationError = "";
     this.field = path;
-    this.statusText = `Creating folder on ${this.computer}…`;
+    this.statusText = tr("Creating folder on %1…", this.computer);
     this.setCreating(true);
     const request = ++this.ticket;
     this.createRequest = request;

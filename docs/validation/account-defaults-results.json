@@ -1,0 +1,95 @@
+{
+  "fixture": "Synthetic shared Codex account on local workstation and peer studio; normal embedded-assets app, private D-Bus/Xvfb, isolated HOME/XDG/TMPDIR/TMUX_TMPDIR. No real credentials or SSH.",
+  "mockup": "Served app.html Accounts; design/webui/src/dialogs/SettingsDialogs.tsx PermissionsDialog and ModelDialog. 480 px standard dialogs, full-width selects and paragraph spacing.",
+  "effects": [
+    {
+      "host": "studio",
+      "args": [
+        "account",
+        "permissions",
+        "codex-example",
+        "--revision",
+        "r1",
+        "--mode",
+        "bypass"
+      ],
+      "effect": "permissions",
+      "revision": "r1",
+      "profile": "codex-example"
+    },
+    {
+      "host": "studio",
+      "args": [
+        "account",
+        "model-defaults",
+        "codex-example",
+        "--revision",
+        "r2",
+        "--model",
+        "model-a",
+        "--effort",
+        "high"
+      ],
+      "effect": "model-defaults",
+      "revision": "r2",
+      "profile": "codex-example"
+    },
+    {
+      "host": "studio",
+      "args": [
+        "account",
+        "model-defaults",
+        "codex-example",
+        "--revision",
+        "r3",
+        "--model",
+        "",
+        "--effort",
+        ""
+      ],
+      "effect": "model-defaults",
+      "revision": "r3",
+      "profile": "codex-example"
+    },
+    {
+      "host": "studio",
+      "args": [
+        "account",
+        "permissions",
+        "codex-example",
+        "--revision",
+        "r4",
+        "--mode",
+        "provider"
+      ],
+      "effect": "permissions",
+      "revision": "r4",
+      "profile": "codex-example"
+    }
+  ],
+  "model_reads_on_explicit_open": 5,
+  "assertions": [
+    "Cancel sends nothing.",
+    "Bypass changes only the selected studio profile.",
+    "Model and high effort survive reopening.",
+    "An unchanged Save sends nothing.",
+    "Provider settings clears both model and effort.",
+    "Provider permission mode restores inheritance.",
+    "Stale catalog revision refuses before mutation.",
+    "Unavailable saved model remains visible, Save disabled.",
+    "Local workstation catalog is unchanged.",
+    "Dialogs return focus to the opening control."
+  ],
+  "phase4_steps_passed": 18,
+  "scope": "client/core, client/src-tauri and frontend; root src/ unchanged.",
+  "checks": {
+    "frontend": "npm run check; full Vitest 2128 passed, 1 existing skip; npm run build",
+    "entry_bytes": 450533,
+    "entry_budget": 500000,
+    "core": "all-target Clippy; 5 account action units, 4 CLI integrations, 1 permission source test",
+    "tauri": "44 screens tests; all-target Clippy default/media/video/no-default-features; embedded-assets build",
+    "windows": "MSVC media cross-Clippy",
+    "phase4": "18 of 18 steps, private D-Bus/Xvfb and child environment from scratch",
+    "guards": "separator check; 3707 source files, 0 privacy findings"
+  }
+}

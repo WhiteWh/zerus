@@ -9,7 +9,7 @@ on:
         type: string
         required: true
       run_tests:
-        description: Run full Qt regression tests (only Dev may opt out)
+        description: Run Zerus Next regression tests (only Dev may opt out)
         type: boolean
         default: true
     outputs:
@@ -67,17 +67,21 @@ jobs:
               output.write(f'release={release}\n')
           print(f'Building the {channel} macOS bundle {release}.')
           PY
-      - run: brew install cmake ninja tmux
+      - run: brew install tmux
       - run: rustup toolchain install stable --profile minimal && rustup default stable
-      - name: Install the pinned official Qt
-        run: python3 scripts/install-qt-macos.py --output "$RUNNER_TEMP/qt"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Install the locked frontend toolchain
+        working-directory: client
+        run: npm ci --no-audit --no-fund
       - name: Build and assemble the unsigned bundle
         env:
           ZERUS_RELEASE_CHANNEL: ${{ inputs.channel }}
           ZERUS_RUN_TESTS: ${{ inputs.run_tests }}
           ZERUS_RELEASE_VERSION: ${{ steps.release.outputs.release }}
           ZERUS_DEV_BUILD_NUMBER: ${{ inputs.channel == 'dev' && github.run_number || '' }}
-        run: ZERUS_QT_PREFIX="$RUNNER_TEMP/qt" bash scripts/ci/macos-bundle.sh
+        run: bash scripts/ci/macos-bundle.sh
       - name: Retain macOS bundle test logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

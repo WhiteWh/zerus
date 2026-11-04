@@ -33,7 +33,7 @@ fn item(output: &mut Vec<u8>, header: Value, body: &[u8]) {
     output.extend(body);
     output.push(b'\n');
 }
-fn bundle(change: &str) -> Vec<u8> {
+pub(super) fn bundle(change: &str) -> Vec<u8> {
     let mut output = serde_json::to_vec(&start()).unwrap();
     output.push(b'\n');
     let snapshot: &[u8] = if change == "json" {
@@ -195,7 +195,10 @@ fn slow_input_holds_no_handoff_lock_and_partial_uuid_is_never_reused() {
     let lock = f.location.handoff_lock().unwrap();
     let bytes = bundle("");
     let mut reader = io::Cursor::new(&bytes);
-    assert!(publish(&f.location, &mut reader).is_err());
+    let refused = publish(&f.location, &mut reader).unwrap();
+    assert_eq!(refused["published"], false);
+    assert_eq!(refused["code"], "handoff_busy");
+    assert_eq!(refused["this_attempt_not_committed"], true);
     assert_eq!(reader.position(), bytes.len() as u64);
     assert!(!f.target().exists());
     drop(lock);
@@ -205,6 +208,53 @@ fn slow_input_holds_no_handoff_lock_and_partial_uuid_is_never_reused() {
     assert_eq!(status(&f.location, id()).unwrap()["record_present"], false);
     assert!(publish(&f.location, &mut &bundle("")[..]).is_err());
     assert_eq!(fs::read(saved).unwrap(), b"preserved");
+}
+
+#[test]
+fn only_actual_pre_reservation_contention_allows_a_fresh_same_record_attempt() {
+    let f = Fixture::new();
+    f.location.prepare().unwrap();
+    let held = f.location.handoff_lock().unwrap();
+    let original_error = f.location.handoff_lock().err().unwrap();
+    assert!(
+        original_error
+            .downcast_ref::<io::Error>()
+            .is_some_and(platform::lock_contended),
+        "existing handoff callers retain the original OS contention error"
+    );
+    let refused = publish(&f.location, &mut &bundle("")[..]).unwrap();
+    assert_eq!(refused["configuration"], f.location.configuration);
+    assert_eq!(refused["import_id"], id());
+    assert!(!f.target().exists());
+    drop(held);
+    let committed = publish(&f.location, &mut &bundle("")[..]).unwrap();
+    assert_eq!(committed["published"], true);
+    assert_eq!(committed["import_record"], refused["import_record"]);
+    assert!(publish(&f.location, &mut &bundle("")[..]).is_err());
+}
+
+#[test]
+fn any_failure_after_uuid_reservation_stays_unknown_even_when_status_is_absent() {
+    let f = Fixture::new();
+    assert!(publish_with(&f.location, &mut &bundle("")[..], |_| {
+        anyhow::bail!("synthetic post-reservation failure")
+    })
+    .is_err());
+    assert!(f.target().is_dir());
+    assert_eq!(status(&f.location, id()).unwrap()["record_present"], false);
+    let held = f.location.handoff_lock().unwrap();
+    assert!(publish(&f.location, &mut &bundle("")[..]).is_err());
+    drop(held);
+    assert!(publish(&f.location, &mut &bundle("")[..]).is_err());
+}
+
+#[test]
+fn path_or_open_failure_is_not_a_typed_lock_contention() {
+    let f = Fixture::new();
+    f.location.prepare().unwrap();
+    fs::create_dir(f.location.root.join(zerus_desktop_migration::HANDOFF_LOCK)).unwrap();
+    assert!(publish(&f.location, &mut &bundle("")[..]).is_err());
+    assert!(!f.target().exists());
 }
 #[test]
 #[cfg(unix)]

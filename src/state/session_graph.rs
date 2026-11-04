@@ -20,7 +20,7 @@ use std::{
 
 const MAX_SOURCES: usize = 10_000;
 const SLICE_BYTES: u64 = 2 * 1024 * 1024;
-const MAX_RECORD: u64 = 16 * 1024 * 1024;
+pub(super) const MAX_RECORD: u64 = 16 * 1024 * 1024;
 const SLICE_RECORDS: usize = 32;
 const SLICE_STAMPS: usize = 512;
 

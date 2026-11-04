@@ -125,6 +125,34 @@ pub fn parse_subagent_identity(
     })
 }
 
+/// One bounded read-only child Activity page, with the same exact identity
+/// checks as the header's identity read. The caller retains no other pages.
+pub fn parse_subagent_activity(target: &Target, agent_id: &str, exit: Exit) -> Option<Value> {
+    let Exit::Code {
+        code: 0,
+        stdout,
+        stderr,
+    } = exit
+    else {
+        return None;
+    };
+    parse_subagent_identity(
+        target,
+        agent_id,
+        Exit::Code {
+            code: 0,
+            stdout: stdout.clone(),
+            stderr,
+        },
+    )?;
+    let value: Value = serde_json::from_slice(&stdout).ok()?;
+    let events = value.get("events")?.as_array()?;
+    if events.len() > 200 || !events.iter().all(Value::is_object) {
+        return None;
+    }
+    Some(value)
+}
+
 fn text(value: &Value, key: &str) -> String {
     value
         .get(key)
@@ -283,6 +311,38 @@ mod tests {
         let mut empty = receipt;
         empty["conversation_id"] = serde_json::json!("");
         assert!(parse_subagent_identity(&t, "child", exit(&empty)).is_none());
+    }
+
+    #[test]
+    fn child_activity_keeps_one_bounded_page_of_the_exact_child() {
+        let t = Target {
+            computer: String::new(),
+            name: "dsh/sample-project/review".into(),
+            run_id: "r1".into(),
+            conversation_id: "parent".into(),
+        };
+        let exit = |value: &Value| Exit::Code {
+            code: 0,
+            stdout: serde_json::to_vec(value).unwrap(),
+            stderr: String::new(),
+        };
+        let page = serde_json::json!({"name":t.name,"run_id":"r1","parent_conversation_id":"parent","agent_id":"child","conversation_id":"parent/child","send_supported":true,"events":[{"seq":1,"type":"Stop"}]});
+        assert_eq!(
+            parse_subagent_activity(&t, "child", exit(&page)),
+            Some(page.clone())
+        );
+        let mut wrong = page.clone();
+        wrong["parent_conversation_id"] = serde_json::json!("other");
+        assert!(parse_subagent_activity(&t, "child", exit(&wrong)).is_none());
+        let mut missing = page.clone();
+        missing.as_object_mut().unwrap().remove("events");
+        assert!(parse_subagent_activity(&t, "child", exit(&missing)).is_none());
+        let mut scalar = page.clone();
+        scalar["events"] = serde_json::json!([1]);
+        assert!(parse_subagent_activity(&t, "child", exit(&scalar)).is_none());
+        let mut oversized = page;
+        oversized["events"] = serde_json::json!(vec![serde_json::json!({}); 201]);
+        assert!(parse_subagent_activity(&t, "child", exit(&oversized)).is_none());
     }
 
     #[test]

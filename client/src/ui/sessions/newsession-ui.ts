@@ -1,6 +1,7 @@
 import type { Account, FolderOut, HeaderOut, MachineMeta, PathStyle, Profile, Usage } from "../../types";
 import { current, fromProjected, period, providerName, severest, windowsAt, type Tone, type UsageWindow } from "../lib/usage";
 import { clean, leaf, native, same } from "./paths";
+import { trNoop, tr } from "../../i18n";
 
 // The New session dialog's rows, as Qt keeps them in its views
 // (tray/src/NewSessionDialog.cpp): computers (loadMachines 487-510),
@@ -70,12 +71,12 @@ export function computerChoice(rows: ComputerRow[], previous: string): number {
 
 export interface ProjectRow { id: string; name: string; color: string | null; palette: number; newProject: boolean }
 
-export const NEW_PROJECT = "New project…";
+export const NEW_PROJECT = trNoop("New project…");
 
 /** The accessible projects in the organization's order, plus "New project…" for a repository source. */
 export function projectRows(projects: readonly ListedProject[], repository: boolean): ProjectRow[] {
   const rows: ProjectRow[] = projects.filter((p) => p.accessible).map((p) => ({ id: p.id, name: p.name, color: p.color, palette: p.palette, newProject: false }));
-  if (repository) rows.push({ id: "", name: NEW_PROJECT, color: null, palette: 0, newProject: true });
+  if (repository) rows.push({ id: "", name: tr(NEW_PROJECT), color: null, palette: 0, newProject: true });
   return rows;
 }
 
@@ -168,6 +169,7 @@ export interface AccountRow {
   accessible: string;
 }
 
+// Core names compared in their source form, never shown.
 const UNNAMED = new Set(["", "Default account", "Native account"]);
 
 /**
@@ -188,12 +190,12 @@ export function launchWindows(usage: Usage | undefined, now: number): UsageWindo
 /** AccountUsage::launchSummary: each current window "{period} {n}% used", then balances, joined by two spaces; else "limits n/a". */
 export function launchSummary(usage: Usage, now: number): string {
   const limits: string[] = [];
-  for (const window of launchWindows(usage, now)) limits.push(`${period(window)} ${Math.round(window.used)}% used`);
+  for (const window of launchWindows(usage, now)) limits.push(period(window) + tr(" %1% used", Math.round(window.used)));
   for (const balance of usage.balances) {
     const amount = balance.balance;
-    if (/^\s*[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?\s*$/.test(amount) && Number.isFinite(Number(amount))) limits.push(`Balance: ${amount} ${balance.currency}`.trim());
+    if (/^\s*[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?\s*$/.test(amount) && Number.isFinite(Number(amount))) limits.push(tr("Balance: %1 %2", amount, balance.currency).trim());
   }
-  return limits.length ? limits.join("  ") : "limits n/a";
+  return limits.length ? limits.join("  ") : tr("limits n/a");
 }
 
 /** The row's texts (updateUsage 1002-1023). */
@@ -201,8 +203,8 @@ function texts(profile: Profile, usage: Usage | undefined, choice: AccountChoice
   let name = usage?.identity.email ?? "";
   if (!name) name = choice.cachedEmail?.(profile.provider, profile.id) ?? "";
   if (!name) name = profile.label;
-  if (UNNAMED.has(name)) name = "Account n/a";
-  const summary = usage ? launchSummary(usage, choice.now) : "limits n/a";
+  if (UNNAMED.has(name)) name = tr("Account n/a");
+  const summary = usage ? launchSummary(usage, choice.now) : tr("limits n/a");
   const historical = !!usage && (usage.offline || usage.refresh_error);
   const tone = usage ? severest(windowsAt(usage.windows, choice.now).filter((w) => Number.isFinite(w.used))) : undefined;
   return {
@@ -213,10 +215,10 @@ function texts(profile: Profile, usage: Usage | undefined, choice: AccountChoice
 
 /** The shell's row: "Run shell", or "Run PowerShell" on a Windows computer. */
 function shellRow(choice: AccountChoice): AccountRow {
-  const name = choice.style === "windows" ? "Run PowerShell" : "Run shell";
+  const name = choice.style === "windows" ? tr("Run PowerShell") : tr("Run shell");
   return {
     key: "sh\n", id: "", provider: "sh", host: choice.host, shell: true, profile: undefined, members: [], usage: undefined,
-    name, summary: "Interactive terminal session", tone: undefined, tooltip: "", accessible: name,
+    name, summary: tr("Interactive terminal session"), tone: undefined, tooltip: "", accessible: name,
   };
 }
 

@@ -92,17 +92,14 @@ void settingsReady.then(async () => {
   if (stored) try { localStorage.removeItem(LEGACY_SKIN); } catch { /* storage may be unavailable */ }
 });
 
-/** Register a validated, resolved user skin and its compiled CSS rule. */
-export function registerSkin(resolved: ResolvedSkin) {
+/** Replace the bounded user library and its rules; reimports never grow the style sheet. */
+export function replaceUserSkins(resolved: ResolvedSkin[]) {
   let imported = document.getElementById("zerus-imported-skins");
   if (!imported) {
-    imported = document.createElement("style");
-    imported.id = "zerus-imported-skins";
-    document.head.append(imported);
+    imported = document.createElement("style"); imported.id = "zerus-imported-skins"; document.head.append(imported);
   }
-  imported.textContent += `\n${compileSkin(resolved)}`;
-  const list = skinListSignal().filter((s) => s.id !== resolved.id);
-  setSkinList([...list, resolved]);
+  imported.textContent = resolved.map(compileSkin).join("\n");
+  setSkinList([...skins, ...resolved]);
 }
 
 /** Reflect the active skin's tokens and L1 variants onto the root element. */

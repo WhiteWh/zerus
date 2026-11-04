@@ -263,6 +263,8 @@
   .strip-tile { position: absolute; left: 4px; top: 4px; width: 84px; height: 84px; border-radius: 8px; color: var(--z-list-text); background: var(--z-list-tile-surface); border: 1px solid var(--z-list-tile-border); }
   .strip-tile:hover { background: var(--z-color-row-hover); }
   .strip-tile.selected { background: var(--z-color-row-selected); }
+  .rowhit.context-target .scard:not(.selected), .strip-tile.context-target:not(.selected) { background: var(--z-color-row-hover); }
+  .rowhit.context-target .scard, .strip-tile.context-target { outline: 1px solid var(--z-color-row-selected-border); outline-offset: -1px; }
   .strip-tile.selected:not([data-frame]), .strip-tile.selected[data-frame="neutral"] { border-color: var(--z-color-row-selected-border); }
   .strip-tile[data-frame]:not([data-frame="neutral"]) { border: 1.5px solid var(--frame); box-shadow: inset 0 0 7px 0 color-mix(in srgb, var(--frame) 34%, transparent); }
   .strip-tile[data-frame="working"] { --frame: var(--z-list-frame-working); }

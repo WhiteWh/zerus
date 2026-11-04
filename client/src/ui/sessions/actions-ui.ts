@@ -1,6 +1,7 @@
 import type { Details } from "../../types";
 import type { BatchConfirmation } from "./selection";
 import type { Session } from "./types";
+import { tr, trNoop } from "../../i18n";
 
 // Which session actions are offered and with which words, after the Qt
 // SessionsWindow: the header actions (3884-3912), the context menu
@@ -35,13 +36,13 @@ export function snapshotOf(s: ActionRow): ActionRow {
 
 /** Pending shared notification changes allowed in all. */
 export const MAX_PENDING_NOTIFICATIONS = 16;
-export const MUTE_OFFLINE = "Connect to this session's host to change shared notifications.";
-export const MUTE_HOST = "Update hgs on this session's host to support shared notification preferences.";
-export const MUTE_IDENTITY = "Refresh this session's identity before changing shared notifications.";
-export const MUTE_CONFLICT = "Conflicting shared notification preferences. Refresh the session.";
-export const MUTE_PENDING = "A shared notification change is pending. Wait for its result.";
-export const MUTE_ALLOW = "Allow future notifications for this session on all devices";
-export const MUTE_SILENCE = "Mute notifications for this session on all devices";
+export const MUTE_OFFLINE = trNoop("Connect to this session's host to change shared notifications.");
+export const MUTE_HOST = trNoop("Update hgs on this session's host to support shared notification preferences.");
+export const MUTE_IDENTITY = trNoop("Refresh this session's identity before changing shared notifications.");
+export const MUTE_CONFLICT = trNoop("Conflicting shared notification preferences. Refresh the session.");
+export const MUTE_PENDING = trNoop("A shared notification change is pending. Wait for its result.");
+export const MUTE_ALLOW = trNoop("Allow future notifications for this session on all devices");
+export const MUTE_SILENCE = trNoop("Mute notifications for this session on all devices");
 
 /** SessionNotifications::identity: non-empty, at most `maximum` UTF-8 bytes, no control character. */
 export function identityOk(value: string | undefined, maximum: number): boolean {
@@ -72,7 +73,7 @@ export function notificationsState(s: ActionRow, online: boolean, pending: Pendi
     : s.notificationConflict ? MUTE_CONFLICT
     : full ? MUTE_PENDING
     : s.muted ? MUTE_ALLOW : MUTE_SILENCE;
-  return { label: s.muted ? "Unmute" : "Mute", enabled, hint };
+  return { label: s.muted ? trNoop("Unmute") : trNoop("Mute"), enabled, hint };
 }
 
 /**
@@ -107,7 +108,7 @@ export interface MenuOptions {
   occupied?: boolean;
 }
 
-const NO_REASON = "This native adapter does not support this action in the current session state.";
+const NO_REASON = trNoop("This native adapter does not support this action in the current session state.");
 const WORKING = ["working", "tool", "compacting"];
 
 /** NativeSessionCapabilities::action: details win, then reported actions, then the agent. */
@@ -144,10 +145,10 @@ export function menuState(s: ActionRow, online: boolean, updating: boolean, deta
   const [agent, project] = s.name.split("/", 2);
 
   const end: MenuState["end"] = terminates(s, details)
-    ? { label: "Terminate session…", enabled: available && allowedOp(s, "terminate", details), reason: allowedOp(s, "terminate", details) ? undefined : reasonFor(s, "terminate", details) }
+    ? { label: trNoop("Terminate session…"), enabled: available && allowedOp(s, "terminate", details), reason: allowedOp(s, "terminate", details) ? undefined : reasonFor(s, "terminate", details) }
     : archived
-      ? { label: "Forget archived session…", enabled: available && allowedOp(s, "forget", details) && !!s.archiveId, reason: allowedOp(s, "forget", details) ? undefined : reasonFor(s, "forget", details) }
-      : { label: "Forget saved session…", enabled: available && allowedOp(s, "forget", details), reason: allowedOp(s, "forget", details) ? undefined : reasonFor(s, "forget", details) };
+      ? { label: trNoop("Forget archived session…"), enabled: available && allowedOp(s, "forget", details) && !!s.archiveId, reason: allowedOp(s, "forget", details) ? undefined : reasonFor(s, "forget", details) }
+      : { label: trNoop("Forget saved session…"), enabled: available && allowedOp(s, "forget", details), reason: allowedOp(s, "forget", details) ? undefined : reasonFor(s, "forget", details) };
 
   // Stop follows the inspected turn (Qt's m_details); without details it stays off.
   const phase = details?.phase || s.phase || "";
@@ -156,13 +157,13 @@ export function menuState(s: ActionRow, online: boolean, updating: boolean, deta
   const stop: MenuState["stop"] = {
     visible: working,
     enabled: working && online && interruptible && !options.interrupting,
-    reason: options.interrupting ? "Interrupt is being sent…" : !online ? "Machine is offline"
-      : !interruptible ? "Interrupt is unavailable. Open Terminal to stop this turn." : undefined,
+    reason: options.interrupting ? trNoop("Interrupt is being sent…") : !online ? trNoop("Machine is offline")
+      : !interruptible ? trNoop("Interrupt is unavailable. Open Terminal to stop this turn.") : undefined,
   };
 
   return {
     change: {
-      label: updating || (options.batchRunning && !options.context) ? "Updating…" : archived ? "Restore session" : running ? "Pause session" : "Resume session",
+      label: updating || (options.batchRunning && !options.context) ? trNoop("Updating…") : archived ? trNoop("Restore session") : running ? trNoop("Pause session") : trNoop("Resume session"),
       enabled: change,
       reason: undefined,
     },
@@ -185,12 +186,12 @@ export function menuState(s: ActionRow, online: boolean, updating: boolean, deta
 export function terminateCopy(s: Pick<ActionRow, "tracked" | "cmd" | "name" | "machine">): { title: string; text: string; detail: string; confirm: string; action: "terminate" | "kill" } {
   const archives = s.tracked && ["codex", "claude", "kimi"].includes(s.cmd);
   return {
-    title: "Terminate session?",
+    title: tr("Terminate session?"),
     text: archives
-      ? `Stop ${s.name} and move its recorded conversation to Archive? Running processes will stop; the conversation history is kept.`
-      : `Terminate ${s.name}? Its running processes will stop. No HGS archive is available for this session; any native conversation history is kept.`,
-    detail: `Computer: ${s.machine}`,
-    confirm: archives ? "Stop and archive" : "Terminate session",
+      ? tr("Stop %1 and move its recorded conversation to Archive? Running processes will stop; the conversation history is kept.", s.name)
+      : tr("Terminate %1? Its running processes will stop. No HGS archive is available for this session; any native conversation history is kept.", s.name),
+    detail: tr("Computer: %1", s.machine),
+    confirm: archives ? tr("Stop and archive") : tr("Terminate session"),
     action: archives ? "terminate" : "kill",
   };
 }
@@ -201,22 +202,22 @@ export function terminateCopy(s: Pick<ActionRow, "tracked" | "cmd" | "name" | "m
  */
 export function forgetCopy(s: Pick<ActionRow, "name" | "machine">, binding: boolean): { title: string; text: string; detail: string; confirm: string } {
   return {
-    title: "Forget saved session?",
+    title: tr("Forget saved session?"),
     text: binding
-      ? `Forget ${s.name} in Zerus? The conversation stays in OpenCode; only Zerus forgets it.`
-      : `Remove ${s.name} from HGS? The agent’s native conversation history is kept.`,
-    detail: `Computer: ${s.machine}`,
-    confirm: "Forget saved session",
+      ? tr("Forget %1 in Zerus? The conversation stays in OpenCode; only Zerus forgets it.", s.name)
+      : tr("Remove %1 from HGS? The agent’s native conversation history is kept.", s.name),
+    detail: tr("Computer: %1", s.machine),
+    confirm: tr("Forget saved session"),
   };
 }
 
 /** The Forget archived session confirmation (terminateSession, 5771-5774 and 5788-5789): one archived instance only. */
 export function forgetArchivedCopy(s: Pick<ActionRow, "name" | "machine">): { title: string; text: string; detail: string; confirm: string } {
   return {
-    title: "Forget archived session?",
-    text: `Remove this archived instance of ${s.name} from HGS? Other sessions with this name and the agent\u2019s native conversation history are kept.`,
-    detail: `Computer: ${s.machine}`,
-    confirm: "Forget archived session",
+    title: tr("Forget archived session?"),
+    text: tr("Remove this archived instance of %1 from HGS? Other sessions with this name and the agent’s native conversation history are kept.", s.name),
+    detail: tr("Computer: %1", s.machine),
+    confirm: tr("Forget archived session"),
   };
 }
 
@@ -258,9 +259,9 @@ export function renameParts(name: string): { prefix: string; tag: string } {
 
 /** SessionTag::problem: why a tag is not accepted, undefined when it is. */
 export function tagProblem(tag: string): string | undefined {
-  if (!tag) return "Enter a session name.";
-  if (tag !== tag.trim()) return "Remove spaces at the beginning or end.";
-  if (/[/:.\p{Cc}]/u.test(tag)) return "Names cannot contain /, : or . or control characters.";
+  if (!tag) return tr("Enter a session name.");
+  if (tag !== tag.trim()) return tr("Remove spaces at the beginning or end.");
+  if (/[/:.\p{Cc}]/u.test(tag)) return tr("Names cannot contain /, : or . or control characters.");
   return undefined;
 }
 
@@ -273,7 +274,7 @@ export function renameProblem(tag: string, s: Pick<ActionRow, "key" | "computer"
   const name = renameParts(s.name).prefix + tag;
   for (const other of rows) {
     if (other.computer === s.computer && other.key !== s.key && other.state !== "archived" && other.name === name) {
-      return `This name is already in use on ${s.machine}.`;
+      return tr("This name is already in use on %1.", s.machine);
     }
   }
   return undefined;
@@ -328,8 +329,8 @@ export function sessionIdentity(s: Pick<ActionRow, "runId" | "conversationId">, 
   const conversation = child ? child.conversationId ?? "" : details?.conversation_id ?? s.conversationId ?? "";
   const fallback = child ? child.id : details?.run_id ?? s.runId ?? "";
   const value = conversation || fallback;
-  const title = conversation || !fallback ? "Session ID" : child ? "Agent ID" : "Run ID";
-  const caption = title === "Session ID" ? "Copy session ID" : title === "Agent ID" ? "Copy agent ID" : "Copy run ID";
+  const title = conversation || !fallback ? trNoop("Session ID") : child ? trNoop("Agent ID") : trNoop("Run ID");
+  const caption = title === "Session ID" ? trNoop("Copy session ID") : title === "Agent ID" ? trNoop("Copy agent ID") : trNoop("Copy run ID");
   return { value, title, caption };
 }
 
@@ -345,7 +346,7 @@ export function copyState(s: ActionRow, online: boolean, details?: Details): Cop
   const archived = s.state === "archived";
   const path = details?.cwd ?? s.cwdPath;
   return {
-    command: { label: archived ? "Copy restore command" : "Copy connect command", enabled: (archived || terminal(s)) && (!archived || !!s.archiveId) },
+    command: { label: archived ? trNoop("Copy restore command") : trNoop("Copy connect command"), enabled: (archived || terminal(s)) && (!archived || !!s.archiveId) },
     reference: online && !!s.runId,
     folder: { enabled: path !== "", path },
   };
@@ -353,11 +354,11 @@ export function copyState(s: ActionRow, online: boolean, details?: Details): Cop
 
 // Start fresh (SessionsWindow.cpp 4672-4704, 5333-5340).
 
-export const FRESH_HINT = "Start with a new conversation and the same folder, account and model";
-export const FRESH_TIP = "Start this stopped session with a new conversation and the same folder, account and model.";
+export const FRESH_HINT = trNoop("Start with a new conversation and the same folder, account and model");
+export const FRESH_TIP = trNoop("Start this stopped session with a new conversation and the same folder, account and model.");
 /** Qt's refusal when running-ness changed since the menu opened (shared with the store). */
-export const STATE_CHANGED = "The session state changed. Open its actions again.";
-export const FRESH_CHANGED = "The session changed. Open its actions again.";
+export const STATE_CHANGED = trNoop("The session state changed. Open its actions again.");
+export const FRESH_CHANGED = trNoop("The session changed. Open its actions again.");
 
 /** The header's Start fresh or Clear session slot (Qt 3808-3809): only in the main context, never with a subagent open. */
 export function headerClearSlot(mainContext: boolean, state: ActionRow["state"]): "fresh" | "clear" | undefined {
@@ -384,9 +385,9 @@ export function freshEntry(s: ActionRow, online: boolean, updating: boolean, bat
 
 export function freshCopy(s: Pick<ActionRow, "name" | "machine">): { title: string; text: string; confirm: string } {
   return {
-    title: "Start fresh?",
-    text: `Start ${s.name} on ${s.machine} with a new conversation?\n\nThe agent starts in the same folder with the same account and model, without the current conversation context. Earlier messages stay readable in Activity and in the agent\u2019s native history, but Resume will no longer continue them.`,
-    confirm: "Start fresh",
+    title: tr("Start fresh?"),
+    text: tr("Start %1 on %2 with a new conversation?\n\nThe agent starts in the same folder with the same account and model, without the current conversation context. Earlier messages stay readable in Activity and in the agent’s native history, but Resume will no longer continue them.", s.name, s.machine),
+    confirm: tr("Start fresh"),
   };
 }
 

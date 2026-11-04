@@ -83,6 +83,29 @@ impl ReadMarks {
     pub fn pending(&self) -> Vec<ReadMark> {
         self.marks.values().cloned().collect()
     }
+    /// Indexed, read-only display lookup. Never saves, settles or delivers a
+    /// mark; the exact run/conversation and current parts must still match.
+    pub fn local_overlay(&self, computer: &str, row: &ViewRow) -> (bool, bool) {
+        let Some(mark) = self.marks.get(&(computer.to_owned(), row.name.clone())) else {
+            return (false, false);
+        };
+        if !row.shared_read
+            || mark.run_id.is_empty()
+            || mark.conversation_id.is_empty()
+            || row.run_id.as_deref() != Some(&mark.run_id)
+            || row.conversation_id.as_deref() != Some(&mark.conversation_id)
+        {
+            return (false, false);
+        }
+        let matches = |mine: &Option<String>, current: &Option<String>| {
+            mine.as_ref()
+                .is_some_and(|value| !value.is_empty() && current.as_ref() == Some(value))
+        };
+        (
+            matches(&mark.reply_id, &row.reply_id),
+            matches(&mark.attention_signature, &row.attention_signature),
+        )
+    }
 
     /// No mark waits; a batch then has nothing to settle.
     pub fn is_empty(&self) -> bool {
@@ -220,6 +243,31 @@ mod tests {
             read_attention_signature: read_signature.map(Into::into),
             ..ViewRow::default()
         }
+    }
+    #[test]
+    fn indexed_local_overlay_matches_current_identity_and_never_mutates_the_queue() {
+        let file = Temp::new("local-overlay");
+        let mut marks = ReadMarks::load(file.0.clone());
+        marks.add(mark("run-1", Some("r1"), Some("s1")));
+        let before = std::fs::read(&file.0).unwrap();
+        let mut current = row("run-1", None, None);
+        current.shared_read = true;
+        assert_eq!(marks.local_overlay("mac", &current), (true, true));
+        assert_eq!(marks.local_overlay("other", &current), (false, false));
+        let mut changed = current.clone();
+        changed.run_id = Some("new-run".into());
+        assert_eq!(marks.local_overlay("mac", &changed), (false, false));
+        changed = current.clone();
+        changed.conversation_id = Some("different".into());
+        assert_eq!(marks.local_overlay("mac", &changed), (false, false));
+        changed = current.clone();
+        changed.reply_id = Some("new-reply".into());
+        assert_eq!(marks.local_overlay("mac", &changed), (false, true));
+        changed.attention_signature = Some("new-attention".into());
+        assert_eq!(marks.local_overlay("mac", &changed), (false, false));
+        assert_eq!(current.read_reply_id, None);
+        assert_eq!(std::fs::read(&file.0).unwrap(), before);
+        assert_eq!(marks.pending(), vec![mark("run-1", Some("r1"), Some("s1"))]);
     }
 
     #[test]

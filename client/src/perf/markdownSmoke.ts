@@ -5,6 +5,12 @@ import { notices } from "../store/notices";
 import { setDetailTab, setPage, setSearch, setSelectedKey, setStateFilter } from "../store/ui";
 import { INLINE_TABLE, SCREENSHOT_TABLE, WIDE_TABLE } from "./fixtures/markdownTables";
 
+const COMMONMARK_REPLY = [
+  "My proposal:", "- keep the [plan](docs/plan.md) short", "- ship it *carefully*", "  - with a nested check", "- ~~old step~~ dropped",
+  "", "## Plan", "", "2. second", "3. third", "", "### Done so far", "", "- [x] parser", "- [ ] typography",
+  "", "> Read it *carefully*.", "", "---", "", "Raw <img src=x onerror=alert(1)> stays text.",
+].join("\n");
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(test: () => boolean, reason: string) {
   const deadline = performance.now() + 15_000;
@@ -17,11 +23,11 @@ export async function markdownSmoke(allowed: boolean) {
   if (!allowed) return;
   const log = (line: string) => invoke("perf_log", { line: "markdown-smoke: " + line });
   try {
-    const key = "\nrun:run-review-1";
+    const key = "\nrun:000000-run";
     await until(() => !!catalog.rows[key], "replay catalog did not arrive");
     setPage("sessions"); setStateFilter("all"); setSearch(""); setSelectedKey(key); setDetailTab("activity");
     await until(() => activity.target()?.id === key && activity.loaded(), "initial replay Activity did not arrive");
-    activity.applyActivity([{ computer: "", key: "run:run-review-1", kind: "replace", payload: { events: [{
+    activity.applyActivity([{ computer: "", key: "run:000000-run", kind: "replace", payload: { events: [{
       seq: 1, type: "AgentMessage", at: 42,
       detail: ["Before the table.", SCREENSHOT_TABLE, "After the table.", INLINE_TABLE, WIDE_TABLE, "```md\n" + SCREENSHOT_TABLE + "\n```"].join("\n\n"),
     }] } }]);
@@ -49,8 +55,36 @@ export async function markdownSmoke(allowed: boolean) {
     const headerStyle = getComputedStyle(tables[0].querySelector("th")!), cellStyle = getComputedStyle(last);
     await log("STYLE " + JSON.stringify({ headerColor: headerStyle.color, headerFont: headerStyle.fontSize,
       divider: headerStyle.borderBottomColor, bodyFont: cellStyle.fontSize }));
+    // CommonMark blocks (zerus-5wmh.66.2.35): the owner's list after a colon,
+    // ordered, nested and task lists, headings, a quote, a rule, strikethrough.
+    activity.applyActivity([{ computer: "", key: "run:000000-run", kind: "replace", payload: { events: [
+      { seq: 3, type: "UserPromptSubmit", at: 41, detail: "What do you propose?" },
+      { seq: 4, type: "AgentMessage", at: 42, detail: COMMONMARK_REPLY },
+      { seq: 5, type: "UserPromptSubmit", at: 43, detail: "Thanks." },
+    ] } }]);
+    await until(() => !!document.querySelector(".act-body ol.md-list"), "CommonMark reply did not render");
+    await sleep(150);
+    const body = [...document.querySelectorAll<HTMLElement>(".act-body")].find((b) => b.querySelector("ol.md-list"))!;
+    const first = body.firstElementChild!;
+    require(first.tagName === "P" && first.textContent === "My proposal:" && !!first.nextElementSibling?.matches("ul.md-list"), "a list after a paragraph was glued into it");
+    require(first.nextElementSibling!.querySelectorAll(":scope > li").length === 3, "the proposal list lost items");
+    require(body.querySelector("ol.md-list")?.getAttribute("start") === "2", "an ordered list lost its start");
+    require(!!body.querySelector("ul.md-list li ul.md-list"), "a nested list was flattened");
+    require(body.querySelectorAll("li.md-task input[type=checkbox][disabled]").length === 2 && !!body.querySelector("li.md-task input:checked"), "task items lost their boxes");
+    require(body.querySelector("h2.md-heading")?.textContent === "Plan" && !!body.querySelector("h3.md-heading"), "headings were not recognized");
+    require(body.querySelector("blockquote.md-quote em")?.textContent === "carefully", "a quote or its emphasis was lost");
+    require(body.querySelector("del")?.textContent === "old step" && !!body.querySelector("hr.md-rule"), "strikethrough or a rule was lost");
+    require(!body.querySelector("img,script,b[onclick]") && body.textContent!.includes("<img src=x onerror=alert(1)>"), "raw HTML became live markup");
+    require(body.querySelector("a")?.getAttribute("href") === "docs/plan.md", "a file reference was lost");
+    // Rows and the reply's blocks never overlap: each starts below the one before.
+    const rows = [...document.querySelectorAll<HTMLElement>(".act-col > [id^='item-']")];
+    for (let i = 1; i < rows.length; i++) require(rows[i].getBoundingClientRect().top >= rows[i - 1].getBoundingClientRect().bottom - 0.5, "Activity rows overlap");
+    const parts = [...body.children] as HTMLElement[];
+    for (let i = 1; i < parts.length; i++) require(parts[i].getBoundingClientRect().top >= parts[i - 1].getBoundingClientRect().bottom - 0.5, "message blocks overlap");
+    await log("COMMONMARK_SHOWN " + JSON.stringify({ blocks: parts.map((part) => part.tagName.toLowerCase()), rows: rows.length }));
+    await sleep(2500);
     // Leave the owner's reported table on screen for the built-app capture.
-    activity.applyActivity([{ computer: "", key: "run:run-review-1", kind: "replace", payload: { events: [{
+    activity.applyActivity([{ computer: "", key: "run:000000-run", kind: "replace", payload: { events: [{
       seq: 2, type: "AgentMessage", at: 42, detail: SCREENSHOT_TABLE,
     }] } }]);
     await until(() => document.querySelectorAll(".act-table").length === 1, "reported table capture did not settle");
@@ -64,7 +98,7 @@ export async function markdownSmoke(allowed: boolean) {
     await until(() => notices().some((n) => n.id > beforeCopy), "copy did not report its result");
     require(notices().some((n) => n.id > beforeCopy && n.title === "Copied" && n.tone !== "error"), "Copy as Markdown was refused");
     await log("COPIED (exact multiline table through the native clipboard bridge)");
-    await log("PASS (Russian rows, wrapping, wide scrolling, alignment, bold/code/guarded links, escaped pipes, literal HTML and fences)");
+    await log("PASS (CommonMark lists after text, ordered/nested/task lists, headings, quote, rule, strikethrough, no overlap; Russian rows, wrapping, wide scrolling, alignment, bold/code/guarded links, escaped pipes, literal HTML and fences)");
     await sleep(500);
     await invoke("exit_app", { code: 0 });
   } catch (error) { await log("FAIL " + String(error) + (error instanceof Error ? "\n" + (error.stack ?? "") : "")); await invoke("exit_app", { code: 1 }); }

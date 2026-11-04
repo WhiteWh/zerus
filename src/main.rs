@@ -17,7 +17,6 @@ mod mobile_peers;
 mod native_ui;
 mod phones;
 mod path_ref;
-mod session_reference;
 mod extensions;
 mod windows_peer;
 mod wsl;
@@ -27,9 +26,10 @@ mod platform;
 mod presence;
 mod private_stores;
 mod screen;
+mod session_reference;
 mod speech;
-mod status;
 mod state;
+mod status;
 mod swarm;
 mod tasks;
 mod test_discipline;
@@ -43,6 +43,19 @@ fn json_file_position(argv: &[String]) -> Option<usize> {
 }
 
 fn main() {
+    // COM cold activation cannot load config, create jobs or acquire ownership.
+    #[cfg(windows)]
+    if let Some(code) = desktop::windows_notification_activation(std::env::args().nth(1).as_deref())
+    {
+        std::process::exit(code);
+    }
+    // Fixed native implementation worker: bounded frame, no config/owner load.
+    #[cfg(windows)]
+    if let Some(code) =
+        desktop::windows_registration_entry(&std::env::args().skip(1).collect::<Vec<_>>())
+    {
+        std::process::exit(code);
+    }
     if std::env::args().nth(1).as_deref() == Some("--macos-session-service") {
         std::process::exit(macos_session::serve());
     }

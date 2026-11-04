@@ -1,6 +1,7 @@
+import { desktopService } from "./store/desktopService";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { emptyAccounts, emptyBatch, emptyMachines, emptyProjects, isEmptyBatch, type AccountsView, type MachinesView, type ProjectsView, type Screen, type Action, type Batch, type ComputerId, type Details, type EditOutcome, type Outcome, type ReadMark, type Target, type TerminalConnected, type TerminalFacts, type TerminalEvent, type TerminalStatus, type TerminalTarget, type ArchivePage, type ArchivedActivity, type ProcessTarget, type Answer, type ComposerTab, type ComposerView, type Inspect, type SendReply, type SessionRef, type AttachmentRef, type Fetched, type ConflictsPage, type DraftSource, type SavedDraftDetail, type SavedDraftsPage, type QuestionEdit, type QuestionReply, type ClearControl, emptyUsage, type TerminalFinished, type SessionUsageRef, type Usage } from "./types";
+import { emptyAccounts, emptyBatch, emptyMachines, emptyProjects, isEmptyBatch, type AccountsView, type MachinesView, type ProjectsView, type Screen, type Action, type ActivityEvent, type Batch, type ComputerId, type Details, type EditOutcome, type Outcome, type ReadMark, type Target, type TerminalConnected, type TerminalFacts, type TerminalEvent, type TerminalStatus, type TerminalTarget, type ArchivePage, type ArchivedActivity, type ProcessTarget, type Answer, type ComposerTab, type ComposerView, type Inspect, type SendReply, type SessionRef, type AttachmentRef, type Fetched, type ConflictsPage, type DraftSource, type SavedDraftDetail, type SavedDraftsPage, type QuestionEdit, type QuestionReply, type ClearControl, emptyUsage, type TerminalFinished, type SessionUsageRef, type Usage } from "./types";
 import type { CreatedWorktree, CreationAction, CreationAdmission, CreationCard, CreationEvent, FolderOut, LaunchAccounts, LaunchChoices, LaunchPlan, LaunchStart, MachineMeta, NewSessionContext, NewSessionFormInput, NewSessionFormView, PathStyle, RepositoryFields } from "./types";
 import type { ActivityPort, FollowRequest } from "./store/activity";
 import { documentVisibility, type PageVisibility } from "./store/visibility";
@@ -22,6 +23,13 @@ export interface Source extends ActivityPort {
 let source: Source | undefined;
 
 export const inTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+export const nativeUiOpen = (request: import("./store/native-ui-model").NativeRequest, reload: boolean, embedded: boolean) => desktop<import("./store/native-ui-model").NativeStatus>("native_ui_open", { request, reload, embedded });
+export const nativeUiRetire = () => inTauri() ? invoke<void>("native_ui_retire") : Promise.resolve();
+export const nativeUiVisible = (nonce: string, visible: boolean) => inTauri() ? invoke<void>("native_ui_visible", { nonce, visible }) : Promise.resolve();
+export const nativeUiBounds = (bounds: import("./store/native-ui-model").NativeBounds) => inTauri() ? invoke<void>("native_ui_bounds", { bounds }) : Promise.resolve();
+export const nativeUiBrowser = (request: import("./store/native-ui-model").NativeRequest) => desktop<void>("native_ui_browser", { request });
+export const onNativeUi = (listener: (status: import("./store/native-ui-model").NativeStatus) => void) => onEvent("native-ui", listener);
 
 export async function followTasks(project: string | null): Promise<void> {
   if (!inTauri()) { if (project) throw new Error("Tasks need a live hgs event stream."); return; }
@@ -76,8 +84,18 @@ export async function startBridge(onBatch: (b: Batch) => void): Promise<BridgeMo
       source = tauriSource;
       mode = "tauri";
     } catch (error) {
-      // A build without the live feature has no data source of its own.
-      console.warn("Zerus Next: no live data in this build, using the built-in replay.", error);
+      // An enabled service source remains unavailable even when startup
+      // rejects. Never hide that failure behind synthetic rows or a writer.
+      const service = await invoke<boolean>("desktop_service_mode").catch(() => false);
+      if (service) {
+        desktopService.apply({ connected: false, epoch: null, generation: null, background: {}, attention_counts: null,
+          automatic_approvals: null, details_available: false, code: "service_unavailable" });
+        source = tauriSource;
+        mode = "tauri";
+      } else {
+        // A build without the live feature has no data source of its own.
+        console.warn("Zerus Next: no live data in this build, using the built-in replay.", error);
+      }
     }
   }
   if (!source) {
@@ -177,6 +195,7 @@ export function normalize(b: Partial<Batch>): Batch {
   return {
     upserts: b.upserts ?? e.upserts, removes: b.removes ?? e.removes, replaces: b.replaces ?? e.replaces, computers: b.computers ?? e.computers,
     machines: b.machines ?? [], activity: b.activity ?? e.activity, tasks: b.tasks ?? [], groups: b.groups ?? [], grouping: b.grouping ?? undefined,
+    desktop_service: b.desktop_service ?? undefined,
     processes_view: b.processes_view ?? undefined,
     composer: b.composer ?? undefined, draft_keys: b.draft_keys ?? undefined, composer_events: b.composer_events ?? undefined,
   };
@@ -195,9 +214,9 @@ export async function metrics(windowMs?: number): Promise<Record<string, unknown
 }
 
 /** One guarded session action; an Err (a rejected promise) is an unknown outcome. */
-export async function runAction(target: Target, action: Action): Promise<Outcome> {
+export async function runAction(target: Target, action: Action, delay?: import("./store/endActionBusy").EndReference): Promise<Outcome> {
   if (!inTauri()) return { outcome: "failed", detail: "Actions need the desktop app." };
-  return invoke<Outcome>("run_action", { target, action });
+  return invoke<Outcome>("run_action", { target, action, delay });
 }
 
 /**
@@ -219,6 +238,23 @@ export async function inspectSession(target: Target, archiveId: string | null): 
 export async function inspectSubagentIdentity(target: Target, archiveId: string | null, agentId: string): Promise<{ agent_id: string; conversation_id: string; cwd?: string | null } | null> {
   if (!inTauri()) return null;
   return (await invoke<{ agent_id: string; conversation_id: string; cwd?: string | null } | null>("inspect_subagent_identity", { target, archiveId, agentId })) ?? null;
+}
+
+export type SubagentInspection = Record<string, unknown> & {
+  agent_id: string;
+  conversation_id: string;
+  parent_conversation_id: string;
+  run_id: string;
+  events: ActivityEvent[];
+  send_supported?: boolean;
+  history_scope?: string;
+  history_truncated?: boolean;
+};
+
+/** One bounded read-only Activity page of the requested child. */
+export async function inspectSubagentActivity(target: Target, archiveId: string | null, agentId: string): Promise<SubagentInspection | null> {
+  if (!inTauri()) return null;
+  return (await invoke<SubagentInspection | null>("inspect_subagent_activity", { target, archiveId, agentId })) ?? null;
 }
 
 /** Read marks whose delivery has not been confirmed yet; undefined outside the app, which keeps no list. */
@@ -260,7 +296,7 @@ export async function updateAttentionMarks(marks: Record<string, Mark | null>, r
 /** Merges read marks into the pending ones and wakes the Rust delivery worker; answers every pending mark (undefined outside the app). */
 export async function queueReadMarks(marks: ReadMark[]): Promise<ReadMark[] | undefined> {
   if (!inTauri()) return undefined;
-  return invoke<ReadMark[]>("queue_read_marks", { marks });
+  return invoke<ReadMark[]>(desktopService.enabled() ? "desktop_service_read_marks" : "queue_read_marks", { marks });
 }
 
 /** `hgs reference` for a session: its `zerus://session?...` URI. */
@@ -432,6 +468,55 @@ export async function accountsView(force = false): Promise<AccountsView> {
   if (!inTauri()) return emptyAccounts([DESKTOP_ONLY]);
   return invoke<AccountsView>("accounts_view", { force });
 }
+export type AccountEditKind = "rename" | "default" | "remove" | "permissions" | "model";
+export interface AccountModelCatalog {
+  models: {id:string;label:string;effort_options:string[]}[];
+  defaults: {model:string;effort:string}; provider_defaults: {model:string;effort:string}; effort_supported:boolean;
+}
+export interface AccountEditValues {label?:string;mode?:string;model?:string;effort?:string}
+export interface AccountEditView { handle: string; kind: AccountEditKind; label: string; machine: string; provider: string; permission_mode?:string; permission_detail?:string; models?:AccountModelCatalog|null }
+export interface AccountEditResult { notices: string[]; errors: string[] }
+export async function accountEditOpen(account: string, profile: string, kind: AccountEditKind): Promise<AccountEditView> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke("account_edit_open", { account, profile, kind });
+}
+export async function accountEditApply(handle: string, values: AccountEditValues): Promise<AccountEditResult> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke("account_edit_apply", { request: { handle, ...values } });
+}
+export async function accountEditClose(handle: string): Promise<void> {
+  if (inTauri()) await invoke("account_edit_close", { handle });
+}
+export type AccountSetupKind="add"|"login"|"install"|"start"|"key";
+export interface AccountSetupHost {key:string;machine:string;label:string;online:boolean;providers:string[];saved:{id:string;provider:string;label:string;installed:boolean}[];listed:string[];deepseek_installed:boolean}
+export interface AccountSetupView {handle:string;kind:AccountSetupKind;hosts:AccountSetupHost[];host:string;provider:string;label:string}
+export interface AccountSetupValues {host?:string;provider?:string;saved?:string;label?:string;api_key?:string}
+export interface AccountSetupResult {notices:string[];errors:string[];profile:string|null}
+export async function accountSetupOpen(kind:AccountSetupKind,account="",profile=""):Promise<AccountSetupView> {
+  if(!inTauri())throw new Error(DESKTOP_ONLY);
+  return invoke("account_setup_open",{kind,account,profile});
+}
+export async function accountSetupApply(handle:string,values:AccountSetupValues):Promise<AccountSetupResult> {
+  if(!inTauri())throw new Error(DESKTOP_ONLY);
+  return invoke("account_setup_apply",{request:{handle,...values}});
+}
+export async function accountSetupClose(handle:string) {if(inTauri())await invoke("account_setup_close",{handle});}
+export interface AccountDistributionMachine {key:string;machine:string;platform:string;version:string;blocked:string|null;present:boolean;saved:boolean}
+export interface AccountDistributionForm {handle:string;label:string;provider:string;machines:AccountDistributionMachine[];sources:{key:string;label:string}[]}
+export type AccountDistributionState="pending"|"working"|"added"|"needs-signin"|"failed"|"unknown";
+export interface AccountDistributionProgress {handle:string;host:string;machine:string;state:AccountDistributionState;text:string;saved:boolean;profile:string|null}
+export interface AccountDistributionValues {hosts:string[];method:"copy"|"signin"|"apikey";use_saved:boolean;source:string;label:string;profile_id:string;api_key:string}
+export async function accountDistributionOpen(account:string,profile:string):Promise<AccountDistributionForm> {
+  if(!inTauri())throw new Error(DESKTOP_ONLY);return invoke("account_distribution_open",{account,profile});
+}
+export async function accountDistributionApply(handle:string,values:AccountDistributionValues):Promise<AccountDistributionProgress[]> {
+  if(!inTauri())throw new Error(DESKTOP_ONLY);return invoke("account_distribution_apply",{request:{handle,...values}});
+}
+export async function accountDistributionClose(handle:string){if(inTauri())await invoke("account_distribution_close",{handle});}
+export async function accountDistributionProgress(handle:string,receive:(row:AccountDistributionProgress)=>void) {
+  if(!inTauri())return ()=>{};
+  return listen<AccountDistributionProgress>("account-distribution-progress",event=>{if(event.payload.handle===handle)receive(event.payload);});
+}
 /** Sessions' explicit account chooser reads catalogs, without profile inspects. */
 export async function accountFiltersView(force = false): Promise<AccountsView> {
   if (!inTauri()) return emptyAccounts([DESKTOP_ONLY]);
@@ -448,6 +533,32 @@ export async function machinesView(force = false): Promise<MachinesView> {
 export async function machineResolve(alias: string): Promise<MachinesView> {
   if (!inTauri()) return emptyMachines(DESKTOP_ONLY);
   return invoke<MachinesView>("machine_resolve", { alias });
+}
+
+/** Explicit connection change; no retry after an unknown result. */
+export async function machineChange(request: import("./types").MachineChangeRequest): Promise<void> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke<void>("machine_change", { request });
+}
+
+/** Uses the configured terminal and existing hgs machine ssh route. */
+export async function machineSsh(reference: import("./types").MachineReference): Promise<string | null> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke<string | null>("machine_ssh", { reference });
+}
+
+export async function machinePickKey(): Promise<string | null> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke<string | null>("machine_pick_key");
+}
+
+export async function machineSetup(request: import("./types").MachineSetupRequest): Promise<import("./types").MachineSetupOutcome> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke("machine_setup", { request });
+}
+export async function machinePickSource(): Promise<string | null> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke("machine_pick_source");
 }
 
 /** "Test connection": `machine check`, up to 25 s. */
@@ -522,6 +633,8 @@ export const repositoryFields = (url: string, destination: string, style: PathSt
 export const worktreeSnapshot = (computer: ComputerId, path: string) => desktopNewSession<Record<string, unknown>>("worktree_snapshot", { computer, path });
 /** The folder's catalog: a fresh snapshot, or `hgs worktrees --path`; a rejection is its error. */
 export const worktreeCatalog = (computer: ComputerId, path: string, refresh: boolean) => desktopNewSession<Record<string, unknown>>("worktree_catalog", { computer, path, refresh });
+/** Advisory count only; the explicit review still repeats every removal check. */
+export const worktreeCleanupReminder = (input: import("./ui/screens/worktree-reminder").ReminderTarget) => desktop<import("./ui/screens/worktree-reminder").Reminder>("worktree_cleanup_reminder", { input: { computer: input.computer, expected_machine: input.machine, path: input.path, common: input.common } });
 export const worktreeCleanupOpen = (computer: string, path: string, focus: string) => desktop<import("./store/worktreeCleanup").WorktreeReview>("worktree_cleanup_open", { computer, path, focus });
 export const worktreeCleanupView = (id: string) => desktop<import("./store/worktreeCleanup").WorktreeReview>("worktree_cleanup_view", { id });
 export const worktreeCleanupRefresh = (id: string) => desktop<import("./store/worktreeCleanup").WorktreeReview>("worktree_cleanup_refresh", { id });
@@ -645,7 +758,7 @@ export const windowVisibility: PageVisibility = {
 
 /** A session the menu bar or a notification opens: its computer and catalog key. */
 /** `attention`: a clicked notification's session, shown on its Activity tab (Qt's `showAttentionSession`). */
-export type OpenSession = { computer: ComputerId; key: string; attention?: boolean; preserveFilters?: boolean };
+export type OpenSession = { computer: ComputerId; key: string; attention?: boolean; preserveFilters?: boolean; expected?: { run: string; conversation: string } };
 /** A notice for the window. */
 export type DeskNotice = { title: string; text: string };
 export type DeskPending = { open: OpenSession | null; notices: DeskNotice[]; updates?: boolean };
@@ -767,8 +880,8 @@ export const sendAnswer = (token: number, answer: Answer) => desktop<SendReply>(
 export const sendCancel = (handle: number) => desktop<void>("send_cancel", { handle });
 export const sendInterrupted = (handle: number) => desktop<void>("send_interrupted", { handle });
 /** Answers once the clear ended (up to 45 s). */
-export const clearContext = (handle: number, run: string, conversation: string, dismiss: boolean) =>
-  desktop<SendReply>("clear_context", { handle, run, conversation, dismiss });
+export const clearContext = (handle: number, run: string, conversation: string, dismiss: boolean, delay?: import("./store/endActionBusy").EndReference) =>
+  desktop<SendReply>("clear_context", { handle, run, conversation, dismiss, delay });
 export const localRetry = (handle: number, id: string) => desktop<SendReply>("local_retry", { handle, id });
 export const localDelete = (handle: number, id: string) => desktop<void>("local_delete", { handle, id });
 export const localInspect = (handle: number, id: string) => desktop<Inspect | null>("local_inspect", { handle, id });
@@ -848,13 +961,14 @@ export const draftRestore = (handle: number, source: DraftSource, key: string) =
 export const sessionFolderStatus = (computer: string, directory: string) => desktop<import("./store/sessionFolders").FolderStatus>("session_folder_status", { computer, directory });
 export const sessionFolderOpen = (input: import("./store/sessionFolders").FolderRequest, kind: "folder" | "shell") => desktop<string | null>("session_folder_open", { input, kind });
 
-export const terminationCleanupConfirm = (id: string) => desktop<Outcome>("termination_cleanup_confirm", { id });
+export const terminationCleanupConfirm = (id: string, delay?: import("./store/endActionBusy").EndReference) => desktop<Outcome>("termination_cleanup_confirm", { id, delay });
 export const terminationCleanupOffer = (target: Target) => desktop<{ id: string; checked: boolean } | null>("termination_cleanup_offer", { target });
 export const terminationCleanupCancel = (id: string) => desktop<void>("termination_cleanup_cancel", { id });
 export const terminationCleanupView = () => desktop<import("./store/terminationCleanup").CleanupView>("termination_cleanup_view", {});
 export const terminationCleanupCheck = (id: string) => desktop<import("./store/terminationCleanup").CleanupView>("termination_cleanup_check", { id });
 export const terminationCleanupRemove = (revision: number, consents: import("./store/terminationCleanup").Consents) => desktop<import("./store/terminationCleanup").CleanupView>("termination_cleanup_remove", { revision, consents });
 export const terminationCleanupKeep = (revision: number) => desktop<import("./store/terminationCleanup").CleanupView>("termination_cleanup_keep", { revision });
+export const terminationCleanupRestore = (source: import("./store/terminationCleanup").RestoreSource) => desktop<Outcome>("termination_cleanup_restore", { source });
 export const terminationCleanupInspect = (id: string, file = "", offset = 0) => desktop<import("./store/terminationCleanup").Inspection>("termination_cleanup_inspect", { id, file, offset });
 export const onTerminationCleanupChanged = (changed: () => void) => inTauri() ? listen("termination-cleanup-changed", changed) : Promise.resolve(() => {});
 export const onTerminationFolderRemoved = (changed: (label: string) => void) => inTauri() ? listen<string>("termination-folder-removed", (e) => changed(e.payload)) : Promise.resolve(() => {});
@@ -885,3 +999,20 @@ export async function attachmentMedia(computer: string, file: AttachmentRef, vid
   const reply = await desktop<ArrayBuffer | number[]>("attachment_media", { computer, file, video });
   return reply instanceof ArrayBuffer ? reply : Uint8Array.from(reply).buffer;
 }
+
+/** Timing/reservations only: every effect still uses its original native writer. */
+export const actionDelayBegin = (id: string, captures: import("./store/endActionBusy").EndCapture[]) => desktop<void>("action_delay_begin", { id, captures });
+export const untrackedShellIdentity = (target: Target) => desktop<import("./types").UntrackedShellIdentity>("untracked_shell_identity", { target });
+export const actionDelayWait = (id: string) => desktop<boolean>("action_delay_wait", { id });
+export const actionDelayCancel = (id: string) => desktop<void>("action_delay_cancel", { id });
+
+export const setDefaultProject = (project: string) => desktop<void>("set_default_project", { project });
+
+export const projectFolderChange = (project: string, change: import("./ui/screens/project-folders").FolderChange) => desktop<EditOutcome>("project_folder_change", { project, change: "place" in change ? { ...change, place: { computer: change.place.computer, host: change.place.host, machine_id: change.place.machine_id } } : change });
+export const projectFolderOpen = (project: string, original: FolderOut) => desktop<void>("project_folder_open", { project, original });
+
+export const projectCloneOpen = (place: import("./ui/screens/project-folders").Place) => desktop<import("./ui/screens/ProjectCloneDialog").CloneView>("project_clone_open", {place: {computer: place.computer, host: place.host, machine_id: place.machine_id}});
+export const projectCloneStatus = (id: string) => desktop<import("./ui/screens/ProjectCloneDialog").CloneView>("project_clone_status", {id});
+export const projectCloneClose = (id: string) => desktop<void>("project_clone_close", {id});
+export const projectCloneStep = (id: string, step: "begin" | "check" | "retire", source: {url: string; parent: string; name: string}) => desktop<import("./ui/screens/ProjectCloneDialog").CloneView>("project_clone_step", {id, step, source});
+export const projectCloneUse = (id: string, project: string | null, name: string) => desktop<{outcome: EditOutcome; project: string; folder: string}>("project_clone_use", {id, project, name});

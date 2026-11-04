@@ -10,6 +10,7 @@
 
 use crate::cache;
 use crate::drafts::{Loaded, StoredDraft};
+use crate::text::{Arg, Text};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,11 +26,12 @@ pub const CONSENT_CHANGED: &str =
     "The question or your answers changed. Your draft was kept; review it before submitting again.";
 /// The pending count's tooltip.
 pub const PENDING_TIP: &str =
-    "Questions waiting for an answer, including the questions shown in this card.";
-pub const SKIP_TIP: &str =
-    "Dismiss this optional question without sending an answer. The agent can continue.";
+    crate::source!("Questions waiting for an answer, including the questions shown in this card.");
+pub const SKIP_TIP: &str = crate::source!(
+    "Dismiss this optional question without sending an answer. The agent can continue."
+);
 pub const RETRY_TIP: &str =
-    "Check the agent in Terminal before retrying to avoid submitting twice.";
+    crate::source!("Check the agent in Terminal before retrying to avoid submitting twice.");
 
 const SAVING: &str = "Saving before submitting\u{2026}";
 const RECORDED: &str = "Response recorded.";
@@ -38,7 +40,7 @@ const SUBMITTED_CODEX: &str =
     "Answer submitted. Waiting for Codex to record it. You can check the queue above or open Terminal.";
 const SUBMITTED_RESTORED: &str =
     "Answer submitted. Waiting for the agent to record it. Check Activity or Terminal.";
-const BROADER_NOTE: &str = "Applies beyond this request. Asks for confirmation.";
+const BROADER_NOTE: &str = crate::source!("Applies beyond this request. Asks for confirmation.");
 const COLD_TEXT: &str = "Submitting this answer may resume the agent with the entire conversation, increasing token usage, cost or subscription usage. Compaction or clearing can invalidate the pending question. Cancel keeps your answers.";
 
 /// Sources whose questions the agent wrote: their texts are Markdown. Other
@@ -53,7 +55,7 @@ const AUTHORED: [&str; 7] = [
     "claude_native_question",
 ];
 /// Sources only Terminal can answer while the host cannot.
-const TERMINAL_ONLY: [&str; 7] = [
+const TERMINAL_ONLY: [&str; 8] = [
     "claude_tool_approval",
     "kimi_tool_approval",
     "claude_terminal_choice",
@@ -61,6 +63,7 @@ const TERMINAL_ONLY: [&str; 7] = [
     "claude_terminal_safety",
     "claude_usage_limit",
     "startup_terminal_choice",
+    "codex_rate_limit",
 ];
 /// Native cards whose body refreshes in place (`refreshNativeBody`).
 const REFRESHED: [&str; 3] = [
@@ -916,21 +919,27 @@ pub fn all_skips(answers: &[AnswerItem]) -> bool {
 /// Why a custom answer cannot be sent (`customAnswerProblem`).
 pub fn custom_answer_problem(text: &str, form_reply: bool) -> Option<&'static str> {
     if text.len() > 4096 {
-        return Some("Keep your custom answer under 4 KiB.");
+        return Some(crate::source!("Keep your custom answer under 4 KiB."));
     }
     if text.contains(['\n', '\r']) {
-        return Some("Use one line for a custom answer. Multiline input is available in Terminal.");
+        return Some(crate::source!(
+            "Use one line for a custom answer. Multiline input is available in Terminal."
+        ));
     }
     // Qt checks UTF-16 units; control characters are all in the BMP.
     if text
         .chars()
         .any(|c| (c as u32) < 0x20 || (0x7f..=0x9f).contains(&(c as u32)))
     {
-        return Some("Remove control characters from your custom answer.");
+        return Some(crate::source!(
+            "Remove control characters from your custom answer."
+        ));
     }
     let trimmed = text.trim();
     if !form_reply && (trimmed.starts_with('/') || trimmed.starts_with('!')) {
-        return Some("Use Terminal for answers starting with / or !.");
+        return Some(crate::source!(
+            "Use Terminal for answers starting with / or !."
+        ));
     }
     None
 }
@@ -1083,17 +1092,18 @@ pub struct CardContext {
 pub struct ButtonView {
     pub visible: bool,
     pub enabled: bool,
-    pub label: String,
+    pub label: Text,
     /// While the review delay runs the button shows "{review_label} (N)" and
     /// cannot be clicked.
-    pub review_label: Option<String>,
+    pub review_label: Option<Text>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct OptionView {
     pub id: String,
-    pub label: String,
-    pub description: String,
+    /// The agent's label as it is, or the card's own "Other".
+    pub label: Text,
+    pub description: Text,
     /// The description is Markdown.
     pub markdown: bool,
     pub checked: bool,
@@ -1106,8 +1116,8 @@ pub struct TextView {
     pub visible: bool,
     pub enabled: bool,
     pub value: String,
-    pub placeholder: String,
-    pub accessible_name: String,
+    pub placeholder: Text,
+    pub accessible_name: Text,
     /// The field's limit in UTF-16 units.
     pub max_units: usize,
     /// OpenCode's limit in characters; 0 is none.
@@ -1118,7 +1128,7 @@ pub struct TextView {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct FormView {
     pub id: String,
-    pub tab: String,
+    pub tab: Text,
     pub prompt: String,
     /// Empty when it repeats the prompt.
     pub body: String,
@@ -1126,7 +1136,7 @@ pub struct FormView {
     pub markdown: bool,
     pub monospace_body: bool,
     pub multi: bool,
-    pub mode: String,
+    pub mode: Text,
     pub mode_visible: bool,
     pub options: Vec<OptionView>,
     pub other: Option<OptionView>,
@@ -1137,24 +1147,25 @@ pub struct FormView {
 pub struct QueueNav {
     pub previous: bool,
     pub next: bool,
-    pub previous_tip: String,
-    pub next_tip: String,
+    pub previous_tip: Text,
+    pub next_tip: Text,
 }
 
 /// The question card.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct CardView {
-    pub heading: String,
-    /// "N of M answered", "Awaiting agent", or empty when hidden.
-    pub progress: String,
-    /// "N pending", or empty.
-    pub pending: String,
-    pub pending_tip: String,
+    pub heading: Text,
+    /// "N of M answered", "Awaiting agent", or None when hidden.
+    pub progress: Option<Text>,
+    /// "N pending", or None.
+    pub pending: Option<Text>,
+    pub pending_tip: Text,
     pub nav: Option<QueueNav>,
     pub tabs_visible: bool,
     pub page: usize,
     pub forms: Vec<FormView>,
-    pub status: String,
+    /// The card's notice: its own prose, or a stored/remote message verbatim.
+    pub status: Text,
     pub status_error: bool,
     pub available: bool,
     pub locked: bool,
@@ -1169,16 +1180,16 @@ pub struct CardView {
     pub next: ButtonView,
     /// Allow retry shows.
     pub retry: bool,
-    pub skip_tip: String,
-    pub retry_tip: String,
+    pub skip_tip: Text,
+    pub retry_tip: Text,
 }
 
-fn multi_mode(item: &Item) -> String {
+fn multi_mode(item: &Item) -> Text {
     match (item.min_items, item.max_items) {
-        (min, max) if min > 0 && max > 0 => format!("Select {min} to {max}"),
-        (min, _) if min > 0 => format!("Select at least {min}"),
-        (_, max) if max > 0 => format!("Select up to {max}"),
-        _ => "Select one or more".to_owned(),
+        (min, max) if min > 0 && max > 0 => crate::text!("Select %1 to %2", min, max),
+        (min, _) if min > 0 => crate::text!("Select at least %1", min),
+        (_, max) if max > 0 => crate::text!("Select up to %1", max),
+        _ => crate::text!("Select one or more"),
     }
 }
 
@@ -1213,25 +1224,29 @@ pub fn card(question: &Question, draft: &AnswerDraft, ctx: &CardContext) -> Card
             answered += usize::from(filled);
             let header = simplified(&item.header);
             let title = if header.is_empty() {
-                format!("Question {}", index + 1)
+                crate::text!("Question %1", index + 1)
             } else {
-                format!("{}: {}", index + 1, left_units(&header, 32))
+                crate::text!("%1: %2", index + 1, left_units(&header, 32))
             };
             let options = item
                 .options
                 .iter()
                 .map(|option| {
                     let description = if !option.broader {
-                        option.description.clone()
+                        Text::verbatim(option.description.clone())
                     } else if option.description.is_empty() {
-                        BROADER_NOTE.to_owned()
+                        Text::new(BROADER_NOTE)
                     } else {
-                        format!("{}\n{BROADER_NOTE}", option.description)
+                        crate::text!(
+                            "%1\n%2",
+                            Arg::Verbatim(option.description.clone()),
+                            Text::new(BROADER_NOTE)
+                        )
                     };
                     OptionView {
                         id: option.id.clone(),
-                        label: option.label.clone(),
-                        markdown: !literal && !option.broader && !description.is_empty(),
+                        label: Text::verbatim(option.label.clone()),
+                        markdown: !literal && !option.broader && !option.description.is_empty(),
                         description,
                         checked: answer.options.contains(&option.id),
                         enabled: !locked && !read_only,
@@ -1242,14 +1257,14 @@ pub fn card(question: &Question, draft: &AnswerDraft, ctx: &CardContext) -> Card
             let other = (item.allow_other && !item.options.is_empty()).then(|| OptionView {
                 id: String::new(),
                 label: if item.other_label.is_empty() {
-                    "Other".to_owned()
+                    crate::text!("Other")
                 } else {
-                    item.other_label.clone()
+                    Text::verbatim(item.other_label.clone())
                 },
                 description: if item.other_description.is_empty() {
-                    "Write your own answer".to_owned()
+                    crate::text!("Write your own answer")
                 } else {
-                    item.other_description.clone()
+                    Text::verbatim(item.other_description.clone())
                 },
                 markdown: false,
                 checked: answer.other,
@@ -1261,8 +1276,8 @@ pub fn card(question: &Question, draft: &AnswerDraft, ctx: &CardContext) -> Card
                 visible: custom,
                 enabled: custom && !locked && !read_only,
                 value: answer.text.clone(),
-                placeholder: "Write your answer\u{2026}".to_owned(),
-                accessible_name: format!("Your answer to {}", item.question),
+                placeholder: crate::text!("Write your answer…"),
+                accessible_name: crate::text!("Your answer to %1", item.question.clone()),
                 max_units: if item.max_length > 0 {
                     2 * item.max_length
                 } else {
@@ -1273,7 +1288,7 @@ pub fn card(question: &Question, draft: &AnswerDraft, ctx: &CardContext) -> Card
             FormView {
                 id: item.id.clone(),
                 tab: if filled {
-                    format!("\u{2713} {title}")
+                    crate::text!("✓ %1", title)
                 } else {
                     title
                 },
@@ -1289,7 +1304,7 @@ pub fn card(question: &Question, draft: &AnswerDraft, ctx: &CardContext) -> Card
                 mode: if item.multi {
                     multi_mode(item)
                 } else {
-                    "Select one".to_owned()
+                    crate::text!("Select one")
                 },
                 mode_visible: !item.options.is_empty() && listed && !question.plan_review,
                 options,
@@ -1301,62 +1316,72 @@ pub fn card(question: &Question, draft: &AnswerDraft, ctx: &CardContext) -> Card
 
     let nav = (question.optional && ctx.queue_count > 1 && ctx.queue_index < ctx.queue_count).then(
         || {
-            let position = format!(
-                "Request {} of {}, newest first. Draft answers are kept when switching.",
+            let position = crate::text!(
+                "Request %1 of %2, newest first. Draft answers are kept when switching.",
                 ctx.queue_index + 1,
                 ctx.queue_count
             );
             QueueNav {
                 previous: ctx.queue_index > 0,
                 next: ctx.queue_index + 1 < ctx.queue_count,
-                previous_tip: format!("Previous queued question (newer)\n{position}"),
-                next_tip: format!("Next queued question (older)\n{position}"),
+                previous_tip: crate::text!(
+                    "%1\n%2",
+                    crate::text!("Previous queued question (newer)"),
+                    position.clone()
+                ),
+                next_tip: crate::text!(
+                    "%1\n%2",
+                    crate::text!("Next queued question (older)"),
+                    position
+                ),
             }
         },
     );
     let heading = if question.approval || question.trust_request || question.plan_review {
-        "Agent needs your approval".to_owned()
+        crate::text!("Agent needs your approval")
     } else if question.optional && nav.is_some() {
-        format!(
-            "Optional question #{}/{}",
+        crate::text!(
+            "Optional question #%1/%2",
             ctx.queue_index + 1,
             ctx.queue_count
         )
     } else if question.optional {
-        "Optional question".to_owned()
+        crate::text!("Optional question")
     } else {
-        "Agent needs your answer".to_owned()
+        crate::text!("Agent needs your answer")
     };
     let awaiting = draft.submitted && !draft.answered;
     let progress = if question.approval || (question.plan_review && !awaiting) {
-        String::new()
+        None
     } else if awaiting {
-        "Awaiting agent".to_owned()
+        Some(crate::text!("Awaiting agent"))
     } else if forms.is_empty() {
-        String::new()
+        None
     } else {
-        format!("{answered} of {} answered", forms.len())
+        Some(crate::text!("%1 of %2 answered", answered, forms.len()))
     };
     let pending = ctx.pending.max(question.items.len());
 
+    // Stored notices and remote reasons stay as written; the rest is the card's own prose.
+    let stored = |value: &str| (!value.is_empty()).then(|| Text::verbatim(left_units(value, 600)));
     let mut notice = if draft.storage_error.is_empty() {
-        draft.notice.clone()
+        stored(&draft.notice)
     } else {
-        draft.storage_error.clone()
+        stored(&draft.storage_error)
     };
-    if notice.is_empty() && !ctx.available {
-        notice = ctx.unavailable_reason.clone();
+    if notice.is_none() && !ctx.available {
+        notice = stored(&ctx.unavailable_reason);
     }
-    if notice.is_empty() && !supported {
-        notice = question.unavailable_reason.clone();
+    if notice.is_none() && !supported {
+        notice = stored(&question.unavailable_reason);
     }
-    if notice.is_empty() && !supported {
-        notice = "Answer this request in Terminal.".to_owned();
+    if notice.is_none() && !supported {
+        notice = Some(crate::text!("Answer this request in Terminal."));
     }
-    if notice.is_empty() && ctx.loading {
-        notice = "Loading your saved answer\u{2026}".to_owned();
+    if notice.is_none() && ctx.loading {
+        notice = Some(crate::text!("Loading your saved answer…"));
     }
-    if notice.is_empty() {
+    if notice.is_none() {
         for item in &question.items {
             let answer = draft.answers.get(&item.id).cloned().unwrap_or_default();
             if !item.allow_other || (!item.options.is_empty() && !answer.other) {
@@ -1364,47 +1389,50 @@ pub fn card(question: &Question, draft: &AnswerDraft, ctx: &CardContext) -> Card
             }
             if let Some(problem) = custom_answer_problem(answer.text.trim(), question.form_reply())
             {
-                notice = problem.to_owned();
+                notice = Some(Text::new(problem));
                 break;
             }
         }
     }
-    if notice.is_empty() && confirming {
-        notice = format!(
-            "\u{201C}{}\u{201D} changes the agent's permissions beyond this request. Select Confirm to send it.",
-            broader.as_deref().unwrap_or_default()
-        );
+    if notice.is_none() && confirming {
+        notice = Some(crate::text!(
+            "“%1” changes the agent's permissions beyond this request. Select Confirm to send it.",
+            left_units(broader.as_deref().unwrap_or_default(), 500)
+        ));
     }
-    if notice.is_empty() && choices {
-        notice = "Review the request, then choose one of the agent's options.".to_owned();
+    if notice.is_none() && choices {
+        notice = Some(crate::text!(
+            "Review the request, then choose one of the agent's options."
+        ));
     }
-    if notice.is_empty() && question.plan_review && !complete {
-        notice = "Review the plan, then choose how the agent continues.".to_owned();
+    if notice.is_none() && question.plan_review && !complete {
+        notice = Some(crate::text!(
+            "Review the plan, then choose how the agent continues."
+        ));
     }
-    if notice.is_empty() {
-        notice = if question.approval {
-            "Approval applies only to this command. Review it before continuing."
+    let notice = notice.unwrap_or_else(|| {
+        if question.approval {
+            crate::text!("Approval applies only to this command. Review it before continuing.")
         } else if question.optional {
-            "The agent can continue. Answer when ready or skip this question."
+            crate::text!("The agent can continue. Answer when ready or skip this question.")
         } else if complete {
-            "Your choices are ready to send."
+            crate::text!("Your choices are ready to send.")
         } else {
-            "Answer each question to continue."
+            crate::text!("Answer each question to continue.")
         }
-        .to_owned();
-    }
+    });
 
     let sending = draft.sending || ctx.in_flight;
     let submit_label = if awaiting {
-        "Submitted"
+        crate::text!("Submitted")
     } else if sending {
-        "Submitting\u{2026}"
+        crate::text!("Submitting…")
     } else if confirming {
-        "Confirm"
+        crate::text!("Confirm")
     } else if forms.len() == 1 {
-        "Submit answer"
+        crate::text!("Submit answer")
     } else {
-        "Submit answers"
+        crate::text!("Submit answers")
     };
     let buttons = question.approval
         && !choices
@@ -1417,16 +1445,12 @@ pub fn card(question: &Question, draft: &AnswerDraft, ctx: &CardContext) -> Card
     CardView {
         heading,
         progress,
-        pending: if pending > 0 {
-            format!("{pending} pending")
-        } else {
-            String::new()
-        },
-        pending_tip: PENDING_TIP.to_owned(),
+        pending: (pending > 0).then(|| crate::text!("%1 pending", pending)),
+        pending_tip: Text::new(PENDING_TIP),
         nav,
         tabs_visible: forms.len() > 1,
         page,
-        status: left_units(&notice, 600),
+        status: notice,
         status_error: draft.error || !draft.storage_error.is_empty(),
         available: ctx.available,
         locked,
@@ -1438,19 +1462,19 @@ pub fn card(question: &Question, draft: &AnswerDraft, ctx: &CardContext) -> Card
                 && (!question.approval || (choices && supported))
                 && page == last,
             enabled: ctx.available && supported && complete && !locked && !draft.uncertain,
-            label: submit_label.to_owned(),
-            review_label: (choices && !awaiting && !sending).then(|| "Submit answer".to_owned()),
+            label: submit_label,
+            review_label: (choices && !awaiting && !sending).then(|| crate::text!("Submit answer")),
         },
         approve: ButtonView {
             visible: buttons,
             enabled: can_approve,
-            label: "Approve once".to_owned(),
-            review_label: Some("Approve once".to_owned()),
+            label: crate::text!("Approve once"),
+            review_label: Some(crate::text!("Approve once")),
         },
         deny: ButtonView {
             visible: buttons,
             enabled: can_approve,
-            label: "Deny".to_owned(),
+            label: crate::text!("Deny"),
             review_label: None,
         },
         skip: ButtonView {
@@ -1460,24 +1484,24 @@ pub fn card(question: &Question, draft: &AnswerDraft, ctx: &CardContext) -> Card
                 && question.can_skip
                 && !locked
                 && !draft.uncertain,
-            label: "Skip".to_owned(),
+            label: crate::text!("Skip"),
             review_label: None,
         },
         previous: ButtonView {
             visible: forms.len() > 1,
             enabled: page > 0 && !locked,
-            label: "\u{2190} Back".to_owned(),
+            label: crate::text!("← Back"),
             review_label: None,
         },
         next: ButtonView {
             visible: page < last,
             enabled: !locked,
-            label: "Next \u{2192}".to_owned(),
+            label: crate::text!("Next →"),
             review_label: None,
         },
         retry: draft.uncertain && !locked,
-        skip_tip: SKIP_TIP.to_owned(),
-        retry_tip: RETRY_TIP.to_owned(),
+        skip_tip: Text::new(SKIP_TIP),
+        retry_tip: Text::new(RETRY_TIP),
         forms,
     }
 }

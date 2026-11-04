@@ -1126,8 +1126,8 @@ mod tests {
         assert_eq!(view.automatic_path, "/srv/repo-work-1a2b3c4d");
         assert_eq!(view.shown.worktree_target, "/srv/repo-work-1a2b3c4d");
         assert_eq!(
-            view.shown.worktree_tooltip,
-            "New branch: work-1a2b3c4d\nStart from: HEAD"
+            view.shown.worktree_tooltip.as_ref().map(|t| t.english()),
+            Some("New branch: work-1a2b3c4d\nStart from: HEAD".to_owned())
         );
         assert!(view.project_worktree, "the project's own checkout");
         assert!(view.shown.start_enabled);
@@ -1178,18 +1178,30 @@ mod tests {
         let mut with_card = none.clone();
         with_card.local = Some(console.clone());
         assert_eq!(
-            form_view(with_card).shown.notice.as_deref(),
+            form_view(with_card)
+                .shown
+                .notice
+                .as_ref()
+                .map(|t| t.source.as_ref()),
             Some(launch::ENABLE_OR_REMOTE)
         );
         assert_eq!(
-            form_view(none.clone()).shown.notice.as_deref(),
+            form_view(none.clone())
+                .shown
+                .notice
+                .as_ref()
+                .map(|t| t.source.as_ref()),
             Some(launch::REMOTE_ONLY)
         );
         console.platform = Some("linux".into());
         let mut linux = none;
         linux.local = Some(console);
         assert_eq!(
-            form_view(linux).shown.notice.as_deref(),
+            form_view(linux)
+                .shown
+                .notice
+                .as_ref()
+                .map(|t| t.source.as_ref()),
             Some(launch::REMOTE_ONLY)
         );
     }

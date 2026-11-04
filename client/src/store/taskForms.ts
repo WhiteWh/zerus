@@ -5,6 +5,7 @@ import { notify } from "./actions";
 import { groupOf } from "./organization";
 import { sessionIdentity } from "../ui/screens/tasks-ui";
 import type { Session } from "../ui/sessions/types";
+import { tr } from "../i18n";
 export type FormKind = "title" | "new_card";
 export interface FormSubmit {
   kind: FormKind; handle: number; rev: number; recover: boolean; backlog: boolean;
@@ -26,7 +27,7 @@ function makeForm(kind: FormKind) {
 export const taskTitle = makeForm("title"), newCard = makeForm("new_card");
 export async function createCard(project: string, backlog: boolean, session?: Session) {
   if (newCard.locked() || newCard.view()?.project !== project) return false;
-  if (session && groupOf(session.key) !== project) { notify("error", "The selected project changed. The new task draft was kept."); return false; }
+  if (session && groupOf(session.key) !== project) { notify("error", tr("The selected project changed. The new task draft was kept.")); return false; }
   const id = session && session.tracked && session.state !== "archived" ? sessionIdentity(session) : "";
   creation = { backlog, target: id && session ? { computer: session.computer, name: session.name, run_id: session.runId ?? "", conversation_id: session.conversationId ?? "" } : null,
     catalog_key: id ? session!.catalogKey : null, session_id: id || null };

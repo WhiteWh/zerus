@@ -34,9 +34,9 @@ describe("where a drop goes (SessionsWindow.cpp:1595-1601, 2618-2622)", () => {
     expect(routeDrop(state({ composer: { key: undefined, canAttach: false } }))).toEqual({ kind: "none" });
   });
 
-  it("takes nothing on a subagent's Activity or without a selected session", () => {
-    expect(routeDrop(state({ subagent: true }))).toEqual({ kind: "none" });
-    expect(routeDrop(state({ subagent: true, tab: "processes" })).kind).toBe("composer");
+  it("uses the current child composer or takes nothing without a selected session", () => {
+    expect(routeDrop(state({ subagent: true }))).toEqual({ kind: "composer", key: "\nclaude/sample-project/review" });
+    expect(routeDrop(state({ subagent: true, composer: { key: "\nclaude/sample-project/review", canAttach: false } }))).toEqual({ kind: "none" });
     expect(routeDrop(state({ selected: undefined }))).toEqual({ kind: "none" });
   });
 });
@@ -162,6 +162,6 @@ describe("the drop texts are Qt's", () => {
   });
   it("fills in Qt's transfer notice", () => {
     expect(read("tray/src/SessionsWindow.cpp")).toContain('tr("Transferring files to %1…")');
-    expect(read("client/src/store/drops.ts")).toContain("`Transferring files to ${peer}…`");
+    expect(read("client/src/store/drops.ts")).toContain('tr("Transferring files to %1…", peer)');
   });
 });

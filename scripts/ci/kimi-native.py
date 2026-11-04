@@ -332,7 +332,10 @@ def suite_child(result_path, custody_path):
     result = unittest.TextTestRunner(verbosity=2, failfast=True, resultclass=Result).run(suite)
     value = dict(tests=result.testsRun, started=started, completed=completed,
                  failures=len(result.failures), errors=len(result.errors), skipped=len(result.skipped),
-                 expected_failures=len(result.expectedFailures), unexpected_successes=len(result.unexpectedSuccesses))
+                 expected_failures=len(result.expectedFailures), unexpected_successes=len(result.unexpectedSuccesses),
+                 failed_cases=[case.id() for case, _ in result.failures],
+                 error_cases=[case.id() for case, _ in result.errors],
+                 skipped_cases=[case.id() for case, _ in result.skipped])
     write(result_path, value)
     return 0 if outcome(value, 0) else 1
 
@@ -342,6 +345,14 @@ def outcome(result, code):
             and result.get('completed') == list(METHODS)
             and all(type(result.get(key)) is int and result[key] == 0 for key in
                     ('failures', 'errors', 'skipped', 'expected_failures', 'unexpected_successes')))
+
+
+def failure_summary(result):
+    details = {key: result.get(key) for key in ('tests', 'failures', 'errors', 'skipped')}
+    for key in ('failed_cases', 'error_cases', 'skipped_cases'):
+        details[key] = result.get(key, [])
+    return ('native result did not qualify all %d exact cases without skips/errors: %s'
+            % (len(METHODS), json.dumps(details, sort_keys=True)))
 
 
 def await_child(child, log, seconds=CASE_SECONDS):
@@ -487,7 +498,7 @@ def main():
             code = await_child(child, log)
         value = strict(result.read_bytes())
         if not outcome(value, code):
-            raise ValueError('native result did not qualify all eight exact cases without skips/errors')
+            raise ValueError(failure_summary(value))
         records.append(value)
         if source_map() != source or digest(hgs) != hgs_sha or any(digest(path) != sha for path, sha in tools.items()):
             raise ValueError('source/binary/tool post-seal changed')

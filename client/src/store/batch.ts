@@ -1,3 +1,4 @@
+import { captureEnd, type EndReference } from "./endActionBusy";
 import { batch as together, createSignal } from "solid-js";
 import { catalog as appCatalog, computerFresh, computerOffline, type CatalogState } from "./catalog";
 import { dismiss as appDismiss, notify as appNotify, perform as appPerform, performComputer as appPerformComputer, updating as appUpdating, type Notice } from "./actions";
@@ -38,7 +39,7 @@ export interface ArchiveCalls {
   current(row: ActionRow): SelectionRow | undefined;
   /** "limit" when earlier restores still need a refresh: nothing runs. */
   restore(row: ActionRow): Promise<Outcome> | "limit";
-  forget(row: ActionRow): Promise<Outcome>;
+  forget(row: ActionRow, delay?: EndReference): Promise<Outcome>;
   /** Reloads the archive pages, once a write batch has ended (Qt SessionsWindow.cpp 1916). */
   refresh(): void;
   /**
@@ -54,8 +55,9 @@ export interface BatchDeps {
   online(computer: string): boolean;
   updating(computer: string, name: string): boolean;
   /** One guarded call that leaves the wording to the batch (the worktree lines still show). */
-  perform(row: ActionRow, action: Action): Promise<Outcome>;
-  notify(tone: Notice["tone"], text: string, sticky?: boolean): number;
+  perform(row: ActionRow, action: Action, delay?: EndReference): Promise<Outcome>;
+  delay?(rows: SelectionRow[], action: WriteAction, execute: (refs: EndReference[], key: string) => Promise<void>): Promise<void>;
+  notify(tone: Notice["tone"], text: string, sticky?: boolean, key?: string): number;
   dismiss(id: number): void;
   compact: { get(key: string): boolean; set(key: string, compact: boolean): void };
   attention(s: SelectionRow): boolean;
@@ -97,12 +99,12 @@ export function createBatch(deps: BatchDeps) {
     s.state === "archived" ? deps.archive()?.current(s) : deps.catalog.rows[s.key];
 
   /** One item's call; an archived row needs the archive calls. */
-  async function call(row: ActionRow, a: WriteAction): Promise<Outcome | "limit"> {
+  async function call(row: ActionRow, a: WriteAction, delay?: EndReference): Promise<Outcome | "limit"> {
     const step = selectionCall(row, a);
-    if ("call" in step) return deps.perform(row, step.call);
+    if ("call" in step) return delay ? deps.perform(row, step.call, delay) : deps.perform(row, step.call);
     const archive = deps.archive();
     if (!archive) return { outcome: "failed", detail: "session changed or is unavailable" };
-    return step.archive === "restore" ? archive.restore(row) : archive.forget(row);
+    return step.archive === "restore" ? archive.restore(row) : (delay ? archive.forget(row, delay) : archive.forget(row));
   }
 
   /**
@@ -144,38 +146,45 @@ export function createBatch(deps: BatchDeps) {
       return;
     }
 
-    setRunning(true);
-    let done = 0;
-    let failed = 0;
-    const errors: string[] = [];
-    const fail = (line: string) => { failed++; if (errors.length < SHOWN_ERRORS) errors.push(line); };
-    let progress: number | undefined;
-    try {
-      for (const original of targets) {
-        // Each item on its own: a hook or call that throws fails this item only, and is never retried.
-        try {
-          const live = current(original);
-          if (!live || !sameInstance(live, original) || !appliesNow(live)) { fail(changedText(original)); continue; }
-          // One progress line at a time, as Qt's single notice.
-          if (progress !== undefined) deps.dismiss(progress);
-          progress = deps.notify("info", progressText(a, done + failed + 1, targets.length));
-          const row = snapshotOf(live);
-          const out = await call(row, a);
-          if (out === "limit") fail(restoreLimitText(row));
-          else if (out.outcome === "done") done++;
-          else fail(`${selectionCall(row, a).operation}: ${out.detail}`);
-        } catch (error) {
-          fail(`${selectionCall(original, a).operation}: ${errorText(error)}`);
+    const execute = async (refs?: EndReference[], noticeKey?: string) => {
+      setRunning(true);
+      let done = 0;
+      let failed = 0;
+      let unknown = 0;
+      const errors: string[] = [];
+      const fail = (line: string, uncertain = false) => { if (uncertain) unknown++; else failed++; if (errors.length < SHOWN_ERRORS) errors.push(line); };
+      let progress: number | undefined;
+      try {
+        for (const [at, original] of targets.entries()) {
+          if (at > 0 && at % 64 === 0) await new Promise((r) => setTimeout(r, 0));
+          // Each item on its own: a hook or call that throws fails this item only, and is never retried.
+          try {
+            const live = current(original);
+            if (!live || !sameInstance(live, original) || !appliesNow(live)) { fail(changedText(original)); continue; }
+            // One progress line at a time, as Qt's single notice.
+            if (progress !== undefined) deps.dismiss(progress);
+            progress = deps.notify("info", progressText(a, done + failed + unknown + 1, targets.length), false, noticeKey);
+            const row = snapshotOf(live);
+            const out = await call(row, a, refs?.[at]);
+            if (out === "limit") fail(restoreLimitText(row));
+            else if (out.outcome === "done") done++;
+            else fail(`${selectionCall(row, a).operation}: ${out.detail}`, out.outcome === "uncertain");
+          } catch (error) {
+            fail(`${selectionCall(original, a).operation}: ${errorText(error)}`);
+          }
         }
+      } finally {
+        setRunning(false);
       }
-    } finally {
-      setRunning(false);
-    }
-    if (progress !== undefined) deps.dismiss(progress);
-    const summary = summaryText(a, done, targets.length, failed, errors);
-    deps.notify(summary.failed ? "error" : "info", summary.text, summary.failed);
-    // Qt refreshes the archive when the batch is over (SessionsWindow.cpp 1916).
-    try { deps.archive()?.refresh(); } catch { /* the summary stands; a refresh is only a read */ }
+      if (progress !== undefined) deps.dismiss(progress);
+      const summary = summaryText(a, done, targets.length, failed, errors, unknown);
+      deps.notify(summary.failed ? "error" : "info", summary.text, summary.failed, noticeKey);
+      // Qt refreshes the archive when the batch is over (SessionsWindow.cpp 1916).
+      try { deps.archive()?.refresh(); } catch { /* the summary stands; a refresh is only a read */ }
+    };
+    if (deps.delay && !options.clearArchive && ["archive", "terminate", "forget"].includes(a)) {
+      await deps.delay(targets, a, (refs, key) => execute(refs, key));
+    } else await execute();
   }
 
   /**
@@ -204,7 +213,15 @@ const app = createBatch({
   catalog: appCatalog,
   online: (computer) => !computerOffline(computer),
   updating: appUpdating,
-  perform: (row, action) => appPerform(row, action, { quiet: true }),
+  perform: (row, action, delay) => appPerform(row, action, { quiet: true, delay, skipDelay: !delay }),
+  delay: async (rows, action, execute) => {
+    const captures = rows.map((row) => {
+      const step = selectionCall(row, action);
+      return captureEnd(row, "call" in step ? step.call : { kind: "forget_archive", archive_id: row.archiveId ?? "" });
+    });
+    const { endActions } = await import("./endActions");
+    await endActions.schedule(captures, execute);
+  },
   notify: appNotify,
   dismiss: appDismiss,
   compact: { get: (key) => !!compactRows[key], set: (key, compact) => setCompactRows(key, compact) },

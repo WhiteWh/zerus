@@ -1,5 +1,6 @@
 //! Four fixed resource slots. A returned call cannot release retained I/O.
 use super::{lock, Arc, Charge, Mutex};
+use std::sync::OnceLock;
 use zerus_client_core::desktop::producer::ReadDelivery;
 
 pub(super) type Observe = Arc<dyn Fn(ReadDelivery, bool) + Send + Sync>;
@@ -8,7 +9,7 @@ pub(super) struct Pool(Arc<Inner>);
 struct Inner {
     state: Mutex<State>,
     published: Mutex<u64>,
-    observe: Observe,
+    observe: OnceLock<Observe>,
 }
 struct State {
     slots: [Option<(u64, bool)>; 4],
@@ -24,7 +25,7 @@ pub(super) struct Resource {
     _charge: Charge,
 }
 impl State {
-    fn health(&mut self) -> (ReadDelivery, bool) {
+    fn health(&mut self, observed: bool) -> (ReadDelivery, bool) {
         self.revision = self.revision.saturating_add(1);
         let pinned = self
             .slots
@@ -32,7 +33,7 @@ impl State {
             .flatten()
             .filter(|(_, pinned)| *pinned)
             .count() as u8;
-        let notify = pinned == 4 && !self.notified;
+        let notify = observed && pinned == 4 && !self.notified;
         self.notified |= notify;
         (
             ReadDelivery {
@@ -47,8 +48,8 @@ impl State {
     }
 }
 impl Pool {
-    pub fn new(observe: Observe) -> Self {
-        let pool = Self(Arc::new(Inner {
+    pub fn new() -> Self {
+        Self(Arc::new(Inner {
             state: Mutex::new(State {
                 slots: [None; 4],
                 next: 0,
@@ -57,23 +58,36 @@ impl Pool {
                 notified: false,
             }),
             published: Mutex::new(0),
-            observe,
-        }));
-        let health = lock(&pool.0.state).health();
-        pool.publish(health);
-        pool
+            observe: OnceLock::new(),
+        }))
+    }
+    /// The shared owner exists before app setup. Install its observer once,
+    /// publishing current counts (including any calls admitted before setup).
+    pub fn observe(&self, observe: Observe) {
+        let mut revision = lock(&self.0.published);
+        if self.0.observe.set(observe).is_ok() {
+            let (health, notify) = lock(&self.0.state).health(true);
+            *revision = health.revision;
+            (self.0.observe.get().unwrap())(health, notify);
+        }
+    }
+    fn health(&self, state: &mut State) -> (ReadDelivery, bool) {
+        state.health(self.0.observe.get().is_some())
     }
     fn publish(&self, (health, notify): (ReadDelivery, bool)) {
         // Serialize callbacks and discard out-of-order snapshots. The observer
         // updates only cached health and the existing queued notice bus.
         let mut revision = lock(&self.0.published);
+        let Some(observe) = self.0.observe.get() else {
+            return;
+        };
         if health.revision > *revision {
             *revision = health.revision;
-            (self.0.observe)(health, notify);
+            observe(health, notify);
         } else if notify {
             // The last slot really pinned, even if a release raced publication.
             // The responder ignores this stale health; the once-only notice stays.
-            (self.0.observe)(health, true);
+            observe(health, true);
         }
     }
     pub fn take(&self, charge: Charge) -> Option<Arc<Resource>> {
@@ -86,7 +100,7 @@ impl Pool {
             state.next = state.next.checked_add(1)?;
             let generation = state.next;
             state.slots[slot] = Some((generation, false));
-            (slot, generation, state.health())
+            (slot, generation, self.health(&mut state))
         };
         self.publish(health);
         Some(Arc::new(Resource {
@@ -107,7 +121,7 @@ impl Pool {
                 return false;
             }
             *entry = Some((resource.generation, true));
-            state.health()
+            self.health(&mut state)
         };
         self.publish(health);
         true
@@ -116,7 +130,7 @@ impl Pool {
         let health = {
             let mut state = lock(&self.0.state);
             state.stopped = true;
-            state.health()
+            self.health(&mut state)
         };
         self.publish(health);
     }
@@ -129,7 +143,7 @@ impl Drop for Resource {
                 return;
             }
             state.slots[self.slot] = None;
-            state.health()
+            self.pool.health(&mut state)
         };
         self.pool.publish(health);
     }
@@ -144,7 +158,8 @@ mod tests {
     fn retained_resources_pin_four_slots_and_notify_once_without_freeing_them() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let saved = events.clone();
-        let pool = Pool::new(Arc::new(move |h, n| lock(&saved).push((h, n))));
+        let pool = Pool::new();
+        pool.observe(Arc::new(move |h, n| lock(&saved).push((h, n))));
         let gate = Gate::new(5).unwrap();
         let mut retained = Vec::new();
         for i in 0..4 {
@@ -175,7 +190,8 @@ mod tests {
     fn ordinary_completion_reuses_a_slot_and_older_health_cannot_replace_it() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let saved = events.clone();
-        let pool = Pool::new(Arc::new(move |h, n| lock(&saved).push((h, n))));
+        let pool = Pool::new();
+        pool.observe(Arc::new(move |h, n| lock(&saved).push((h, n))));
         let gate = Gate::new(4).unwrap();
         let call = pool.take(gate.admit(Role::ReadDelivery).unwrap()).unwrap();
         assert!(!pool.finished(&call));
@@ -187,6 +203,27 @@ mod tests {
         pool.publish(old);
         assert_eq!(lock(&events).len(), count);
         assert_eq!(lock(&events).last().unwrap().0.in_flight, 1);
+    }
+
+    #[test]
+    fn installing_the_observer_late_keeps_counts_and_the_once_only_notice() {
+        let pool = Pool::new();
+        let gate = Gate::new(4).unwrap();
+        let mut retained = Vec::new();
+        for _ in 0..4 {
+            let call = pool.take(gate.admit(Role::ReadDelivery).unwrap()).unwrap();
+            retained.push(call.clone());
+            assert!(pool.finished(&call));
+        }
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let saved = events.clone();
+        pool.observe(Arc::new(move |h, n| lock(&saved).push((h, n))));
+        assert_eq!(lock(&events).last().unwrap().0.pinned, 4);
+        assert_eq!(lock(&events).iter().filter(|(_, n)| *n).count(), 1);
+        pool.observe(Arc::new(|_, _| panic!("observer replaced")));
+        retained.clear();
+        assert_eq!(lock(&events).last().unwrap().0.in_flight, 0);
+        assert_eq!(lock(&events).iter().filter(|(_, n)| *n).count(), 1);
     }
 
     #[cfg(unix)]
@@ -220,7 +257,8 @@ mod tests {
                 if pipe == "stderr" {"sys.stderr"} else {"subprocess.DEVNULL"});
             let events = Arc::new(Mutex::new(Vec::new()));
             let saved = events.clone();
-            let pool = Pool::new(Arc::new(move |h, n| lock(&saved).push((h, n))));
+            let pool = Pool::new();
+            pool.observe(Arc::new(move |h, n| lock(&saved).push((h, n))));
             let gate = Gate::new(4).unwrap();
             let call = pool.take(gate.admit(Role::ReadDelivery).unwrap()).unwrap();
             let result = run_accounted(

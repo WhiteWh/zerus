@@ -387,10 +387,7 @@ pub fn voice_permission() -> serde_json::Value {
 
 #[tauri::command]
 pub async fn voice_open_settings(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
     let url = zerus_client_core::voice_composer::microphone_settings_url(permission_platform())
         .ok_or("Open your desktop's Settings and check microphone permissions for Zerus.")?;
-    app.opener()
-        .open_url(url, None::<&str>)
-        .map_err(|error| error.to_string())
+    crate::external_open::url(&app, url)
 }

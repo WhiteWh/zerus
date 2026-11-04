@@ -1,0 +1,38 @@
+{
+  "isolation": "Normal embedded-assets app in private Xvfb/D-Bus, child environment built from scratch, private HOME/XDG/TMPDIR/TMUX_TMPDIR, nonexistent system bus and Wayland display. Fake hgs, workspace connector and clipboard only. No owner mobile state/unit/relay or agents touched.",
+  "mockup": "Served app.html Settings > Mobile connection, computer code ready state; design/webui/src/screens/settings/Mobile.tsx ws-invite. Side-by-side comparison of Give/Copy/Cancel, divider, inline ready text and status. Other workspace controls belong to later slices.",
+  "credentials": "Copy-only UI, as the mockup: no code or QR is rendered. Synthetic code exists only in backend stdout, transient renderer state and private clipboard stdin. Neither credential bytes nor their hashes appear in proof.",
+  "assertions": {
+    "explicit_issued_codes": 4,
+    "changed_config_issuance_effects": 0,
+    "clipboard_calls": 1,
+    "clipboard_byte_counts": [
+      124
+    ],
+    "confirmed_cancel_effects": 1,
+    "uncertain_cancel_effects": 1,
+    "automatic_issue_or_cancel_replays": 0,
+    "checks_while_first_code_active": 3,
+    "check_gaps_seconds": [
+      5.02,
+      5.02
+    ],
+    "checks_after_cancel_expiry_and_leaving": 0,
+    "expired_copy_disabled": true,
+    "runtime_files_scanned_for_code_prefix": 36,
+    "runtime_files_above_scan_bound": 0,
+    "runtime_credential_prefix_findings": 0,
+    "refusal_notice_survives_status_refresh": true
+  },
+  "checks": {
+    "core_integrations": 6,
+    "native_mobile_tests": 12,
+    "frontend_passed": 2214,
+    "frontend_existing_skip": 1,
+    "phase4_steps_passed": 18,
+    "entry_bytes": 458494,
+    "entry_budget": 500000,
+    "clippy": "Core all-targets; Tauri all-targets default/media/video/no-default-features; Windows MSVC Tauri media cross-Clippy."
+  },
+  "limits": "Fake enrollment endpoints only; no real invite consumption/relay connectivity or Windows runtime claimed."
+}

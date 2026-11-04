@@ -1350,7 +1350,7 @@ mod tests {
             .is_err());
         assert_eq!(f.connector.native.calls.borrow().len(), DISPATCH_CALLS);
     }
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn queued_authenticated_reads_claim_again_after_flush_without_a_success_sleep() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
@@ -1389,13 +1389,14 @@ mod tests {
         .unwrap();
         let membership = json!({"changes":[],"membership_revision":profile.membership.revision,"membership_head":profile.membership.head,"next_after":null});
         let (finished, stop) = tokio::sync::oneshot::channel();
-        let server = std::thread::spawn(move || {
+        // A blocking task inhibits Tokio's paused-clock auto-advance while the
+        // real socket fixture is alive. A success sleep can never complete;
+        // only the real-time fixture deadline bounds a stalled regression.
+        let server = tokio::task::spawn_blocking(move || {
             let deadline = Instant::now() + Duration::from_secs(5);
             let mut claims = 0;
             let mut results = 0;
-            let mut delivered = None;
-            let mut gaps = Vec::new();
-            let mut finished = Some(finished);
+            let mut events = Vec::new();
             while Instant::now() < deadline {
                 let (mut stream, _) = match listener.accept() {
                     Ok(value) => value,
@@ -1447,34 +1448,37 @@ mod tests {
                     membership.clone()
                 } else if path == "/v2/node/requests?wait=25" {
                     claims += 1;
-                    if let Some(at) = delivered.take() {
-                        gaps.push(Instant::now().duration_since(at));
+                    if events.last() == Some(&"result") {
+                        // Exceed the former wall-clock assertion deliberately.
+                        // Scheduler/socket latency must not look like a success sleep.
+                        std::thread::sleep(Duration::from_millis(350));
                     }
+                    events.push("claim");
                     match claims {
                         1 => json!({"requests":[first.clone()]}),
                         2 => json!({"requests":[second.clone()]}),
                         3 => json!({"requests":[first.clone()]}), // Same ID must never execute twice.
-                        4 => {
-                            finished.take().unwrap().send(()).unwrap();
-                            json!({"requests":[]})
-                        }
+                        4 => json!({"requests":[]}),
                         _ => panic!("unexpected fixture claim"),
                     }
                 } else {
                     assert!(path.starts_with("/v2/node/requests/") && path.ends_with("/result"));
                     results += 1;
-                    delivered = Some(Instant::now());
+                    events.push("result");
                     json!({})
                 };
                 let response = serde_json::to_vec(&response).unwrap();
                 write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n", response.len()).unwrap();
                 stream.write_all(&response).unwrap();
                 if claims == 4 {
-                    return (claims, results, gaps);
+                    break;
                 }
             }
-            panic!("bounded fixture did not receive all claims");
+            let observed_at = tokio::time::Instant::now();
+            finished.send(()).unwrap();
+            (claims, results, events, observed_at)
         });
+        let clock = tokio::time::Instant::now();
         f.connector.snapshot_ready.set();
         let engine = f.engine();
         let stopping = async {
@@ -1483,23 +1487,20 @@ mod tests {
         };
         let (result, ()) = future::join(engine.requests(), stopping).await;
         result.unwrap();
-        let (claims, results, gaps) = server.join().unwrap();
-        // Two requests executed once each; a Windows gateway inspects first.
+        let (claims, results, events, observed_at) = server.await.unwrap();
+        assert_eq!(
+            observed_at, clock,
+            "claims after flushed results must complete without advancing Tokio time"
+        );
         assert_eq!(
             (claims, results, f.connector.native.calls.borrow().len()),
             (4, 2, 2 * DISPATCH_CALLS)
         );
-        assert_eq!(gaps.len(), 2);
-        // A fresh TCP connection per claim takes up to a few hundred ms on a
-        // loaded Windows runner (219 and 363 ms seen with no sleep at all), so
-        // the quarter-second pacing is told apart only off Windows; there, a
-        // gap under a second still rules out the retry waits.
-        let prompt = if cfg!(windows) {
-            Duration::from_secs(1)
-        } else {
-            Duration::from_millis(200)
-        };
-        assert!(gaps.iter().all(|gap| *gap < prompt), "queued reads must claim promptly after a flushed result, without a quarter-second success sleep: {gaps:?}");
+        assert_eq!(
+            events,
+            ["claim", "result", "claim", "result", "claim", "claim"],
+            "each result must be flushed before the next claim; a duplicate must not execute"
+        );
         assert!(f.connector.journal.encrypted_pending().unwrap().is_empty());
     }
     #[tokio::test]

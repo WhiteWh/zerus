@@ -6,14 +6,15 @@ const m = vi.hoisted(() => {
   vi.stubGlobal("location", { search: "", hash: "", href: "http://localhost/" });
   vi.stubGlobal("localStorage", { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); }, removeItem: (k: string) => { store.delete(k); } });
   return {
-  markRead: vi.fn(() => true), markNeedsAttention: vi.fn(() => true), markAllRead: vi.fn(() => 0), unreadReplies: vi.fn(() => new Map<string, string>()),
+  markRead: vi.fn(() => true), markReadUnavailable: vi.fn<() => string | undefined>(() => undefined), markNeedsAttention: vi.fn(() => true), markAllRead: vi.fn(() => 0), unreadReplies: vi.fn(() => new Map<string, string>()),
   notify: vi.fn(), stillListed: vi.fn((row: unknown) => row),
   };
 });
-vi.mock("../../store/marks", async (orig) => ({ ...(await orig<object>()), markRead: m.markRead, markNeedsAttention: m.markNeedsAttention, markAllRead: m.markAllRead, unreadReplies: m.unreadReplies }));
+vi.mock("../../store/marks", async (orig) => ({ ...(await orig<object>()), markRead: m.markRead, markReadUnavailable: m.markReadUnavailable, markNeedsAttention: m.markNeedsAttention, markAllRead: m.markAllRead, unreadReplies: m.unreadReplies }));
 vi.mock("../../store/actions", async (orig) => ({ ...(await orig<object>()), notify: m.notify, stillListed: m.stillListed }));
 
 import { markAllEntry, markAllLabel, markAllTip, markEntry, markReadChip } from "./mark-entries";
+import { bindSearchRow, listedByFilter, readSelectionKey, setReadSelectionKey, setSelectedKey } from "../../store/ui";
 import type { Session } from "./types";
 
 const session = (extra: Record<string, unknown> = {}, reviewLater = false) => ({
@@ -21,7 +22,7 @@ const session = (extra: Record<string, unknown> = {}, reviewLater = false) => ({
 }) as unknown as Session;
 const unread = { unread: true };
 
-beforeEach(() => { vi.clearAllMocks(); m.markRead.mockReturnValue(true); m.markNeedsAttention.mockReturnValue(true); m.stillListed.mockImplementation((row: unknown) => row); });
+beforeEach(() => { vi.clearAllMocks(); m.markRead.mockReturnValue(true); m.markReadUnavailable.mockReturnValue(undefined); m.markNeedsAttention.mockReturnValue(true); m.stillListed.mockImplementation((row: unknown) => row); });
 
 describe("markReadChip", () => {
   it("is active for a live row that needs attention", () => {
@@ -102,5 +103,64 @@ describe("markAllEntry", () => {
     m.markAllRead.mockReturnValue(0);
     markAllEntry().action!();
     expect(m.notify).not.toHaveBeenCalled();
+  });
+});
+
+describe("the open row after a read (Qt's m_readSelectionKey)", () => {
+  beforeEach(() => { setSelectedKey(undefined); setReadSelectionKey(undefined); });
+
+  it("keeps the selected row after Mark as read, never another row or a refused mark", () => {
+    setSelectedKey("run:a");
+    markEntry(session({}, true))!.action!();
+    expect(readSelectionKey()).toBe("run:a");
+    setReadSelectionKey(undefined);
+    markEntry(session({ key: "run:b" }, true))!.action!();
+    expect(readSelectionKey()).toBeUndefined();
+    m.markRead.mockReturnValue(false);
+    markEntry(session({}, true))!.action!();
+    expect(readSelectionKey()).toBeUndefined();
+  });
+
+  it("keeps the selected row with an unread reply after Mark all as read", () => {
+    const rows: Record<string, Session> = { "run:u": session({ key: "run:u", unreadReply: true }), "run:r": session({ key: "run:r", unreadReply: false }) };
+    bindSearchRow((key) => rows[key]);
+    m.unreadReplies.mockReturnValue(new Map([["a", "1"]]));
+    setSelectedKey("run:r");
+    markAllEntry().action!();
+    expect(readSelectionKey()).toBeUndefined();
+    setSelectedKey("run:u");
+    markAllEntry().action!();
+    expect(readSelectionKey()).toBe("run:u");
+    bindSearchRow(() => undefined);
+  });
+
+  it("lists the kept row under Needs attention and Active only while it is selected and kept", () => {
+    // No computer is online here: this row matches neither filter by itself.
+    const read = session({ key: "run:k" });
+    expect(listedByFilter(read, "attention")).toBe(false);
+    setSelectedKey("run:k");
+    expect(listedByFilter(read, "attention")).toBe(false);
+    setReadSelectionKey("run:k");
+    expect(listedByFilter(read, "attention")).toBe(true);
+    expect(listedByFilter(read, "active")).toBe(true);
+    expect(listedByFilter(read, "paused")).toBe(false);
+    expect(listedByFilter(read, "archived")).toBe(false);
+    expect(listedByFilter(session({ key: "run:k", state: "archived" }), "attention")).toBe(false);
+    expect(listedByFilter(session({ key: "run:other" }), "attention")).toBe(false);
+    setSelectedKey("run:other");
+    expect(listedByFilter(read, "attention")).toBe(false);
+    expect(listedByFilter(read, "all")).toBe(true);
+  });
+});
+
+
+describe("service mark-read refusal", () => {
+  it("shows the explicit service/host reason instead of a stale-reply notice", () => {
+    for (const reason of ["Read marks are unavailable until the background service is ready.", "This host has no shared read state for this session."]) {
+      m.markReadUnavailable.mockReturnValue(reason);
+      markEntry(session({}, true))!.action!();
+      expect(m.notify).toHaveBeenLastCalledWith("error", reason, true);
+      expect(m.markRead).not.toHaveBeenCalled();
+    }
   });
 });

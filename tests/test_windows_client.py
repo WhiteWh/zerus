@@ -593,10 +593,12 @@ else if (process.argv[2] === 'login') {
         self.assertIn('Setup complete', result.stdout)
         self.assertTrue(self.calls()[-1][-1].startswith("sh -c 'set -eu"))
         with tarfile.open(bundle) as archive:
-            names = set(archive.getnames())
+            # The private source snapshot is archived as `-C snapshot .`.
+            members = {member.name.removeprefix('./'): member for member in archive.getmembers()}
+            names = set(members)
             self.assertTrue({'Cargo.toml', 'src/main.rs', 'scripts/tool.py', 'install.sh', 'hgs_state.py'} <= names, names)
             self.assertFalse([name for name in names if '\\' in name])
-            self.assertEqual(archive.extractfile('install.sh').read(), (source / 'install.sh').read_bytes())
+            self.assertEqual(archive.extractfile(members['install.sh']).read(), (source / 'install.sh').read_bytes())
         (source / 'install.sh').write_bytes(b'#!/usr/bin/env bash\r\necho installed\r\n')
         calls = len(self.calls())
         result = self.hgs('machine', 'setup', 'peer', '--source', str(source), FAKE_SSH_MODE='bundle', FAKE_SSH_BUNDLE=str(bundle))

@@ -7,35 +7,36 @@
 //! only talks to the system. It also tells the desk whether Zerus is the
 //! active app, the tracker's foreground test (`AttentionTracker.cpp:44-48`).
 use std::ptr::NonNull;
-use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{define_class, msg_send, AnyThread, DefinedClass, MainThreadMarker};
 use objc2_app_kit::{
     NSApplication, NSApplicationDidBecomeActiveNotification,
     NSApplicationDidResignActiveNotification,
 };
-use objc2_foundation::{
-    ns_string, NSArray, NSDictionary, NSError, NSNotification, NSNotificationCenter, NSString,
-};
+use objc2_foundation::{ns_string, NSNotification, NSNotificationCenter, NSString};
 use objc2_user_notifications::{
-    UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent, UNNotification,
-    UNNotificationDefaultActionIdentifier, UNNotificationPresentationOptions,
-    UNNotificationRequest, UNNotificationResponse, UNNotificationSettings, UNNotificationSound,
-    UNUserNotificationCenter, UNUserNotificationCenterDelegate,
+    UNNotification, UNNotificationDefaultActionIdentifier, UNNotificationPresentationOptions,
+    UNNotificationResponse, UNUserNotificationCenter, UNUserNotificationCenterDelegate,
 };
 use tauri::{AppHandle, Manager};
-use zerus_client_core::attention::{self, Notice};
+use zerus_client_core::attention::Notice;
 
 use crate::desk::DeskInput;
-use crate::notifier::{Center, Done, Notifier};
+use crate::notifier::Notifier;
+
+mod center;
+use center::System;
+
+pub(crate) mod observers;
+mod owned_request;
 
 pub struct Ivars {
     app: AppHandle,
-    desk: Sender<DeskInput>,
+    desk: crate::desk::InputSender,
 }
 
 define_class!(
@@ -71,6 +72,10 @@ define_class!(
             response: &UNNotificationResponse,
             completion: &block2::DynBlock<dyn Fn()>,
         ) {
+            crate::macos_notification_diagnostics::response(
+                crate::macos_notification_diagnostics::Role::Gui,
+                &response.actionIdentifier(),
+            );
             if let Some(token) = clicked_token(response) {
                 let _ = self.ivars().app.run_on_main_thread(activate);
                 if zerus_client_core::updates::is_update_token(&token) {
@@ -87,7 +92,7 @@ define_class!(
 );
 
 impl Delegate {
-    fn new(app: AppHandle, desk: Sender<DeskInput>) -> Retained<Self> {
+    fn new(app: AppHandle, desk: crate::desk::InputSender) -> Retained<Self> {
         let this = Self::alloc().set_ivars(Ivars { app, desk });
         // SAFETY: NSObject's designated initializer.
         unsafe { msg_send![super(this), init] }
@@ -119,101 +124,13 @@ fn clicked_token(response: &UNNotificationResponse) -> Option<String> {
         .map(|token| token.to_string())
 }
 
-fn describe(error: *mut NSError) -> Option<String> {
-    // SAFETY: the system passes null or a valid error.
-    unsafe { error.as_ref() }.map(|error| error.localizedDescription().to_string())
-}
-
-/// A completion the system calls through an `Fn` block, at most once used.
-fn once<T>(done: Done<T>) -> Mutex<Option<Done<T>>> {
-    Mutex::new(Some(done))
-}
-
-fn take<T>(done: &Mutex<Option<Done<T>>>) -> Option<Done<T>> {
-    done.lock().unwrap_or_else(PoisonError::into_inner).take()
-}
-
-/// `UNUserNotificationCenter.currentNotificationCenter`, asked at each use.
-struct System;
-
-impl Center for System {
-    fn authorize(&self, done: Done<(bool, Option<String>)>) {
-        let done = once(done);
-        let block = RcBlock::new(move |settings: NonNull<UNNotificationSettings>| {
-            let Some(done) = take(&done) else { return };
-            // SAFETY: the system passes a valid settings object.
-            let status = unsafe { settings.as_ref() }.authorizationStatus();
-            if status == UNAuthorizationStatus::NotDetermined {
-                let done = once(done);
-                let reply = RcBlock::new(move |granted: Bool, error: *mut NSError| {
-                    if let Some(done) = take(&done) {
-                        done((granted.as_bool(), describe(error)));
-                    }
-                });
-                UNUserNotificationCenter::currentNotificationCenter()
-                    .requestAuthorizationWithOptions_completionHandler(
-                        UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound,
-                        &reply,
-                    );
-            } else {
-                done((
-                    status == UNAuthorizationStatus::Authorized
-                        || status == UNAuthorizationStatus::Provisional,
-                    None,
-                ));
-            }
-        });
-        UNUserNotificationCenter::currentNotificationCenter()
-            .getNotificationSettingsWithCompletionHandler(&block);
-    }
-
-    fn add(&self, token: &str, title: &str, body: &str, done: Done<Option<String>>) {
-        let content = UNMutableNotificationContent::new();
-        content.setTitle(&NSString::from_str(title));
-        content.setBody(&NSString::from_str(body));
-        content.setSound(Some(&UNNotificationSound::defaultSound()));
-        let value = NSString::from_str(token);
-        let info = NSDictionary::<NSString, NSString>::from_slices(
-            &[ns_string!("hgsAttentionToken")],
-            &[&*value],
-        );
-        // SAFETY: a dictionary of strings is a valid userInfo; the cast only
-        // drops its element types.
-        unsafe {
-            let info: Retained<NSDictionary> = Retained::cast_unchecked(info);
-            content.setUserInfo(&info);
-        }
-        let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
-            &NSString::from_str(&attention::request_id(token)),
-            &content,
-            None,
-        );
-        let done = once(done);
-        let reply = RcBlock::new(move |error: *mut NSError| {
-            if let Some(done) = take(&done) {
-                done(describe(error));
-            }
-        });
-        UNUserNotificationCenter::currentNotificationCenter()
-            .addNotificationRequest_withCompletionHandler(&request, Some(&reply));
-    }
-
-    fn remove(&self, token: &str) {
-        let center = UNUserNotificationCenter::currentNotificationCenter();
-        let ids =
-            NSArray::from_retained_slice(&[NSString::from_str(&attention::request_id(token))]);
-        center.removePendingNotificationRequestsWithIdentifiers(&ids);
-        center.removeDeliveredNotificationsWithIdentifiers(&ids);
-    }
-}
-
 /// The notifier, in the app state.
 pub struct NotifierState(Notifier);
 
 /// Sets the delegate before the first notification posts and starts
 /// following whether Zerus is the active app. Call on the main thread, from
 /// setup: a click that launched the app reaches the delegate once set.
-pub fn install(app: &AppHandle, desk: Sender<DeskInput>) {
+pub fn install(app: &AppHandle, desk: crate::desk::InputSender) {
     let delegate = Delegate::new(app.clone(), desk.clone());
     UNUserNotificationCenter::currentNotificationCenter()
         .setDelegate(Some(ProtocolObject::from_ref(&*delegate)));

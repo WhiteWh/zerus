@@ -4,6 +4,7 @@ import * as organization from "../../store/organization";
 import type { MenuEntry } from "../../store/ui";
 import type { Session } from "./types";
 import { createOrgDialogs, deleteText, nameProblem, projectColor, type OrgDialog } from "./organization-ui";
+import { tr } from "../../i18n";
 
 // The organization dialogs: Move to project (also for a selection), New
 // project, Rename project and Delete project, in one modal host as
@@ -22,7 +23,7 @@ export const moveEntry = (s: Session): MenuEntry => dialogs.moveEntry(s);
 function MoveDialog(props: { rows: Session[] }) {
   return (
     <>
-      <div class="dlg-head"><Icon name="folder" size={18} class="accent" /><h2 id="org-dlg-title">Move to project</h2></div>
+      <div class="dlg-head"><Icon name="folder" size={18} class="accent" /><h2 id="org-dlg-title">{tr("Move to project")}</h2></div>
       <div class="dlg-body col" style={{ gap: "4px" }}>
         <For each={dialogs.moveChoicesFor(props.rows)}>{(p) => (
           <button type="button" class="menu-item entity" style={{ "--entity": projectColor(p) }}
@@ -32,9 +33,9 @@ function MoveDialog(props: { rows: Session[] }) {
           </button>
         )}</For>
         <div class="menu-sep" />
-        <button type="button" class="menu-item" onClick={dialogs.newProject}><Icon name="plus" size={14} />New project…</button>
+        <button type="button" class="menu-item" onClick={dialogs.newProject}><Icon name="plus" size={14} />{tr("New project…")}</button>
       </div>
-      <div class="dlg-foot"><span class="spacer" /><button type="button" class="btn" data-initial onClick={close}>Cancel</button></div>
+      <div class="dlg-foot"><span class="spacer" /><button type="button" class="btn" data-initial onClick={close}>{tr("Cancel")}</button></div>
     </>
   );
 }
@@ -46,13 +47,13 @@ function NameDialog(props: { title: string; initial: string }) {
     <form onSubmit={done}>
       <div class="dlg-head"><Icon name="folder" size={18} class="accent" /><h2 id="org-dlg-title">{props.title}</h2></div>
       <div class="dlg-body">
-        <label class="dlg-label" for="org-name">Project name</label>
+        <label class="dlg-label" for="org-name">{tr("Project name")}</label>
         <input id="org-name" data-initial class="dlg-input" value={value()} onInput={(e) => setValue(e.currentTarget.value)} />
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn" onClick={close}>Cancel</button>
-        <button type="submit" class="btn primary" disabled={!!nameProblem(value())}>OK</button>
+        <button type="button" class="btn" onClick={close}>{tr("Cancel")}</button>
+        <button type="submit" class="btn primary" disabled={!!nameProblem(value())}>{tr("OK")}</button>
       </div>
     </form>
   );
@@ -62,17 +63,17 @@ function DeleteDialog(props: Extract<OrgDialog, { kind: "delete" }>) {
   const [target, setTarget] = createSignal(props.selected);
   return (
     <>
-      <div class="dlg-head"><Icon name="triangle-alert" size={18} class="accent" /><h2 id="org-dlg-title">Delete project</h2></div>
+      <div class="dlg-head"><Icon name="triangle-alert" size={18} class="accent" /><h2 id="org-dlg-title">{tr("Delete project")}</h2></div>
       <div class="dlg-body">
         <p class="confirm-body" id="org-dlg-body">{deleteText(props.name)}</p>
-        <select class="field" style={{ width: "100%", "margin-top": "12px" }} aria-label="Project that receives the sessions" value={target()} onChange={(e) => setTarget(e.currentTarget.value)}>
+        <select class="field" style={{ width: "100%", "margin-top": "12px" }} aria-label={tr("Project that receives the sessions")} value={target()} onChange={(e) => setTarget(e.currentTarget.value)}>
           <For each={props.options}>{(p) => <option value={p.id}>{p.name}</option>}</For>
         </select>
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial autofocus onClick={close}>Cancel</button>
-        <button type="button" class="btn solid-danger" disabled={!target()} onClick={() => dialogs.confirmDelete(target())}>Move sessions and delete</button>
+        <button type="button" class="btn solid-danger" disabled={!target()} onClick={() => dialogs.confirmDelete(target())}>{tr("Move sessions and delete")}</button>
+        <button type="button" class="btn primary" data-initial autofocus onClick={close}>{tr("Cancel")}</button>
       </div>
     </>
   );
@@ -107,7 +108,7 @@ export function OrganizationDialogs() {
           if (d.kind === "move") return <MoveDialog rows={d.rows} />;
           if (d.kind === "delete") return <DeleteDialog {...d} />;
           const named = dialogs.nameDialog();
-          return <NameDialog title={named?.title ?? "New project"} initial={named?.initial ?? ""} />;
+          return <NameDialog title={named?.title ?? tr("New project")} initial={named?.initial ?? ""} />;
         }}
       </Show>
     </dialog>

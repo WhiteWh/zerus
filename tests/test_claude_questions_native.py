@@ -46,6 +46,25 @@ def shows_prefix(rows,text):
  spaces=len(rest)-len(rest.lstrip(' '))
  return any(shows_prefix(rows[1:],tail) for i in range(spaces+1) for tail in [rest[i:]]*bool(rows[0])+[rest[i+1:]]*rest[i:].startswith('\n'))
 
+def failure_evidence(fixture):
+ """Bounded synthetic API evidence when Claude's collapsed TUI hides a result.
+
+ A completed turn does not prove a shell command succeeded. Keep its actual
+ tool result beside the screen, including child results, before owned cleanup.
+ """
+ results=[]
+ requests=getattr(fixture,'native_requests',getattr(fixture,'requests',[]))
+ for request in requests[-8:]:
+  for message in request.get('messages',[])[-8:]:
+   content=message.get('content',[])
+   if not isinstance(content,list):continue
+   for part in content[-8:]:
+    if part.get('type')=='tool_result':
+     result={key:part[key] for key in ('tool_use_id','is_error') if key in part}
+     result['content']=str(part.get('content',''))[:4096]
+     if result not in results:results.append(result)
+ return json.dumps(dict(work=str(fixture.root/'work'),tool_results=results[-8:]),ensure_ascii=False)
+
 @unittest.skipUnless(CLAUDE,'Set HGS_CLAUDE_TEST_BIN to test the installed native Claude against a local fake API')
 class NativeClaudeQuestions(unittest.TestCase):
  script=fixtures.InputTransport.script
@@ -67,7 +86,7 @@ class NativeClaudeQuestions(unittest.TestCase):
    result=callback()
    if result:return result
    time.sleep(.04)
-  self.fail('Native fixture timed out:\n'+self.tmux('capture-pane','-p','-t',self.pane,check=False))
+  self.fail('Native fixture timed out:\n'+self.tmux('capture-pane','-p','-t',self.pane,check=False)+'\nNative tool evidence: '+failure_evidence(self))
  def setUp(self):
   self.temp=tempfile.TemporaryDirectory(prefix='hgs-claude-native-');self.addCleanup(self.temp.cleanup)
   self.root=Path(self.temp.name).resolve();self.bin=self.root/'.local/bin';self.bin.mkdir(parents=True);self.state=self.root/'state';self.state.mkdir()
@@ -97,7 +116,7 @@ class NativeClaudeQuestions(unittest.TestCase):
     blocks=[dict(type='tool_use',id='toolu_native_fixture',name=fixture.tool_name,input=fixture.tool_input or dict(questions=fixture.items))] if asks and not answered else [dict(type='text',text='Fixture complete.')]
     if hasattr(fixture,'native_response_blocks'):blocks=fixture.native_response_blocks(body)
     asks=any(block['type']=='tool_use' for block in blocks)
-    message=dict(id='msg_fixture',type='message',role='assistant',model=body.get('model','claude-sonnet-4-6'),content=blocks,stop_reason='tool_use' if asks else 'end_turn',stop_sequence=None,usage=dict(input_tokens=100,output_tokens=30))
+    message=dict(id='msg_fixture',type='message',role='assistant',model=body.get('model','claude-sonnet-4-6'),content=blocks,stop_reason='tool_use' if asks else 'end_turn',stop_sequence=None,usage=getattr(fixture,'native_response_usage',dict(input_tokens=100,output_tokens=30)))
     self.send_response(200)
     if body.get('stream'):
      self.send_header('Content-Type','text/event-stream');self.end_headers()

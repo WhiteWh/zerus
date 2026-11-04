@@ -112,6 +112,13 @@ def install_tray(app, hgs, setup):
 
 
 def remove(app, links):
+    desktop = Path.home() / "Library/LaunchAgents/com.hgdev.hgs-desktop.plist"
+    if os.path.lexists(desktop):
+        result = subprocess.run([sys.executable, str(app / "Contents/Resources/setup/install-macos-desktop-service.py"),
+                                 str(app / "Contents/MacOS/hgs"), "--remove"])
+        if result.returncode:
+            print("Kept desktop service: its owned registration could not be removed safely.", file=sys.stderr)
+            return 1
     for kind, label in LABELS.items():
         path = agent_path(kind)
         if not os.path.lexists(path):
@@ -185,6 +192,12 @@ def main():
         print(f"zerus-setup: {MIGRATION}", file=sys.stderr)
         return 2
 
+    desktop_installer = setup / "install-macos-desktop-service.py"
+    result = subprocess.run([sys.executable, str(desktop_installer), str(hgs), "--check-only"])
+    if result.returncode:
+        print("zerus-setup: desktop service preflight refused. Nothing was changed.", file=sys.stderr)
+        return 2
+
     directory.mkdir(parents=True, exist_ok=True)
     for destination, target in links:
         if not os.path.lexists(destination):
@@ -198,6 +211,10 @@ def main():
         if result.returncode:
             print(f"zerus-setup: {INSTALLERS[kind]} failed; links already created were kept.", file=sys.stderr)
             return 1
+    result = subprocess.run([sys.executable, str(desktop_installer), str(hgs)])
+    if result.returncode:
+        print("zerus-setup: desktop IPC is not ready; inspect hgs desktop status --json.", file=sys.stderr)
+        return 1
     print("Zerus is ready for SSH sessions. Existing agent sessions and tmux servers were left running.")
     if not args.autostart:
         print("Optional login start: zerus-setup --autostart")

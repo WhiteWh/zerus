@@ -62,6 +62,53 @@ mod native {
         );
         Ok(())
     }
+    pub fn peer_pid(stream: &Stream) -> Result<u32> {
+        authenticate(stream)?;
+        #[cfg(target_os = "linux")]
+        {
+            let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+            let mut size = std::mem::size_of_val(&credentials) as libc::socklen_t;
+            // SAFETY: live socket and exactly sized writable credentials.
+            ensure!(
+                unsafe {
+                    libc::getsockopt(
+                        stream.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_PEERCRED,
+                        (&mut credentials as *mut libc::ucred).cast(),
+                        &mut size,
+                    )
+                } == 0
+                    && size as usize == std::mem::size_of_val(&credentials)
+                    && credentials.pid > 0,
+                "cannot verify desktop peer process"
+            );
+            Ok(credentials.pid as u32)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let mut pid: libc::pid_t = 0;
+            let mut size = std::mem::size_of_val(&pid) as libc::socklen_t;
+            // SAFETY: connected Unix socket and one writable pid_t.
+            ensure!(
+                unsafe {
+                    libc::getsockopt(
+                        stream.as_raw_fd(),
+                        libc::SOL_LOCAL,
+                        libc::LOCAL_PEERPID,
+                        (&mut pid as *mut libc::pid_t).cast(),
+                        &mut size,
+                    )
+                } == 0
+                    && size as usize == std::mem::size_of_val(&pid)
+                    && pid > 0,
+                "cannot verify desktop peer process"
+            );
+            Ok(pid as u32)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        anyhow::bail!("desktop peer process identity is unavailable")
+    }
     fn path(location: &Location) -> Result<PathBuf> {
         let path = location.root.join("service.sock");
         ensure!(
@@ -153,6 +200,13 @@ mod native {
             .authenticate(&token::Identity::current()?)
             .map_err(|_| anyhow::anyhow!("cannot verify desktop peer"))?;
         Ok(())
+    }
+    pub fn peer_pid(stream: &Stream) -> Result<u32> {
+        let peer = stream
+            .authenticate(&token::Identity::current()?)
+            .map_err(|_| anyhow::anyhow!("cannot verify desktop peer process"))?;
+        anyhow::ensure!(peer.pid != 0, "invalid desktop peer process");
+        Ok(peer.pid)
     }
     impl Listener {
         pub fn bind(location: &Location) -> Result<Self> {

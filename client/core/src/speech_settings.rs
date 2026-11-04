@@ -263,7 +263,8 @@ pub struct View {
     /// The change under way; empty hides it and Check operation status.
     pub pending: String,
     pub can_check: bool,
-    pub statistics: String,
+    /// Interface prose with this computer's counters; None before the first read.
+    pub statistics: Option<crate::text::Text>,
     pub editor: Option<EditorView>,
 }
 
@@ -514,20 +515,21 @@ fn object(value: &Value) -> Map<String, Value> {
 }
 
 /// The voice statistics text (SpeechSettings.cpp:284-287).
-pub fn statistics_text(reply: &Map<String, Value>) -> String {
+pub fn statistics_text(reply: &Map<String, Value>) -> crate::text::Text {
     let totals = reply.get("totals").map(object).unwrap_or_default();
     // QJsonValue::toInt(90): a whole number that fits an int.
     let days = i32::try_from(integer(reply.get("retention_days"), 90)).unwrap_or(90);
-    let count = |key: &str| integer(totals.get(key), 0);
-    format!(
-        "This computer (last {days} days)\n{} recordings, {} completed, {} failed, {} cancelled, {} uncertain\n{:.1} minutes of audio, {:.1} seconds processing\nThese counters stay on the speech computer and contain no audio or recognized text.",
+    let count = |key: &str| crate::text::Arg::Number(integer(totals.get(key), 0));
+    crate::text!(
+        "This computer (last %1 days)\n%2 recordings, %3 completed, %4 failed, %5 cancelled, %6 uncertain\n%7 minutes of audio, %8 seconds processing\nThese counters stay on the speech computer and contain no audio or recognized text.",
+        i64::from(days),
         count("submitted"),
         count("completed"),
         count("failed"),
         count("cancelled"),
         count("uncertain"),
-        number(totals.get("audio_ms")) / 60000.0,
-        number(totals.get("processing_ms")) / 1000.0,
+        format!("{:.1}", number(totals.get("audio_ms")) / 60000.0),
+        format!("{:.1}", number(totals.get("processing_ms")) / 1000.0),
     )
 }
 
@@ -550,7 +552,7 @@ pub struct Providers {
     selected: Option<usize>,
     select_after: String,
     status: String,
-    statistics: String,
+    statistics: Option<crate::text::Text>,
     result: String,
     result_failed: bool,
     pending: Option<Map<String, Value>>,
@@ -607,7 +609,7 @@ impl Providers {
             selected: None,
             select_after: String::new(),
             status: String::new(),
-            statistics: String::new(),
+            statistics: None,
             result: String::new(),
             result_failed: false,
             pending,
@@ -703,7 +705,7 @@ impl Providers {
         self.loaded = false;
         self.refreshing = true;
         self.status = "Checking provider configuration…".into();
-        self.statistics = "Loading this computer's voice statistics…".into();
+        self.statistics = Some(crate::text!("Loading this computer's voice statistics…"));
         vec![
             Effect::Call(Call {
                 id: CallId::Stats(generation),
@@ -723,11 +725,11 @@ impl Providers {
         let effects = match id {
             CallId::Stats(generation) => {
                 if generation == self.generation {
-                    self.statistics = if answer.error.is_empty() {
+                    self.statistics = Some(if answer.error.is_empty() {
                         statistics_text(&answer.reply)
                     } else {
-                        "Voice statistics unavailable.".into()
-                    };
+                        crate::text!("Voice statistics unavailable.")
+                    });
                 }
                 Vec::new()
             }

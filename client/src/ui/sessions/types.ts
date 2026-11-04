@@ -22,8 +22,11 @@ export type Status =
 export interface Subagent {
   id: string;
   name: string;
-  state: "working" | "ready" | "attention";
+  state: "working" | "ready" | "attention" | "error" | "paused";
   summary: string;
+  /** Qt's inactiveChild: hidden unless completed children, this child or its draft is retained. */
+  inactive?: boolean;
+  group?: boolean;
 }
 
 export interface Session {
@@ -66,6 +69,7 @@ export interface Session {
   scheduleNext?: string;
   backgroundJobs?: number;
   subagents?: Subagent[];
+  subagentCountsComplete?: boolean;
   reviewLater?: boolean;
   /**
    * Qt's SessionInfo::needsAttention with this device's marks: a request not
@@ -157,6 +161,8 @@ export interface Session {
   baseMuted: boolean;
   /** The host's read mark of this conversation. */
   readReplyId?: string;
+  localReadReply?: boolean;
+  localReadAttention?: boolean;
   readAttentionSignature?: string;
   /** The notification preferences pass Qt's validation, and their revision. */
   sharedNotifications: boolean;
@@ -176,6 +182,10 @@ export interface ItemAttachment {
   index: number;
   /** An image the card shows a thumbnail of: any image but SVG. */
   image: boolean;
+  /** Private presentation from this client's exact local send, never a journal path. */
+  preview_path?: string;
+  image_size?: import("../../types").ImageSize;
+  own?: boolean;
 }
 
 /** A local message row's state (ActivityView.cpp:1053-1068). */
@@ -233,6 +243,7 @@ export interface MediaMessage {
   waveform: number[];
   /** Public receipt identity, never a path on the recording's host. */
   file?: { request_id: string; index: number };
+  posterMessageId?: string;
   transcript?: string;
   error?: string;
 }

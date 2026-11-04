@@ -24,7 +24,7 @@ describe("updates store", () => {
   it("listens before the first read and never lets that read erase an event", async () => {
     let answer!: (view: UpdatesView) => void;
     let changed!: (view: UpdatesView) => void;
-    const available = { ...emptyUpdatesView(), available: true, heading: "Update available", version: "0.47.0" };
+    const available = { ...emptyUpdatesView(), available: true, heading: { source: "Update available" }, version: "0.47.0" };
     const port = fake({
       view: vi.fn(() => new Promise<UpdatesView>((resolve) => { answer = resolve; })),
       listen: vi.fn(async (listener) => { changed = listener; return () => {}; }),
@@ -50,7 +50,7 @@ describe("updates store", () => {
     const store = createUpdates(port);
     await store.start();
     const reading = store.refresh();
-    changed({ ...emptyUpdatesView(), cached: true, error: "Check failed. Try again later." });
+    changed({ ...emptyUpdatesView(), cached: true, error: { source: "Check failed. Try again later." } });
     answer(emptyUpdatesView());
     await reading;
     expect(store.view().cached).toBe(true);

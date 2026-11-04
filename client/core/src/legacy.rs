@@ -89,6 +89,34 @@ impl Read {
 /// Runs one read with `hgs` on `computer`: the reply's JSON, or why there is
 /// none.
 pub fn run(hgs: &Path, computer: &ComputerId, read: &Read) -> Result<Value, String> {
+    run_with(computer, read, |invocation| {
+        run_limited(hgs, invocation, &[], READ_LIMIT)
+            .map_err(|error| format!("the reply passed {} bytes", error.cap))
+    })
+}
+
+pub(crate) fn run_accounted(
+    hgs: &Path,
+    computer: &ComputerId,
+    read: &Read,
+    stop: &std::sync::atomic::AtomicBool,
+    resources: std::sync::Arc<dyn Send + Sync>,
+) -> Result<Value, String> {
+    run_with(computer, read, |invocation| {
+        crate::run::run_accounted(hgs, invocation, &[], READ_LIMIT, stop, resources.clone())
+            .map_err(|error| match error {
+                crate::run::Stopped::Cancelled => "cancelled".into(),
+                crate::run::Stopped::TooLarge(error) => {
+                    format!("the reply passed {} bytes", error.cap)
+                }
+            })
+    })
+}
+fn run_with(
+    computer: &ComputerId,
+    read: &Read,
+    run: impl FnOnce(&Invocation) -> Result<Exit, String>,
+) -> Result<Value, String> {
     let mut args: Vec<String> = computer
         .alias()
         .map(|alias| format!("@{alias}"))
@@ -101,7 +129,7 @@ pub fn run(hgs: &Path, computer: &ComputerId, read: &Read) -> Result<Value, Stri
         timeout: read.timeout(computer),
         request_id: None,
     };
-    match run_limited(hgs, &invocation, &[], READ_LIMIT) {
+    match run(&invocation) {
         Ok(Exit::Code {
             code: 0, stdout, ..
         }) => serde_json::from_slice(&stdout).map_err(|error| format!("invalid reply: {error}")),
@@ -112,7 +140,7 @@ pub fn run(hgs: &Path, computer: &ComputerId, read: &Read) -> Result<Value, Stri
         Ok(Exit::TimedOut) => Err("hgs did not answer in time".into()),
         Ok(Exit::StartFailed(error)) => Err(error),
         Ok(Exit::WriteFailed) => Err("hgs did not take the request".into()),
-        Err(too_large) => Err(format!("the reply passed {} bytes", too_large.cap)),
+        Err(error) => Err(error),
     }
 }
 

@@ -11,6 +11,7 @@ import { notify } from "./actions";
 import { openTask } from "./taskNavigation";
 import { sessionIdentity, sessionLabel, type Task } from "../ui/screens/tasks-ui";
 import type { Session } from "../ui/sessions/types";
+import { tr } from "../i18n";
 
 export interface StartView { project: string; task: string; id: string; session: string; phase: string; snapshot: string; error: string; pending: boolean; outcome?: string | null }
 export interface StartInput { assignment: { kind: string; machine: string; session_id: string; name: string }; project: string; task: string; stage_at: number; target: { computer: string; name: string; run_id: string; conversation_id: string }; catalog_key: string; session_id: string }
@@ -51,18 +52,18 @@ export const pendingStart = (project: string, task: Task) => startView(project, 
 export const START_PENDING = "the previous start of this task may already have reached its executor.";
 export function taskStartBlocker(project: string, task: Task): string | undefined {
   const launch = pendingExecutor(project, task.uuid);
-  if (launch) return launch.phase === "waiting" ? "The new executor is starting" : "The previous executor launch needs review before another launch.";
+  if (launch) return launch.phase === "waiting" ? tr("The new executor is starting") : tr("The previous executor launch needs review before another launch.");
   if (task.targetKind === "new_session" && taskExecutors.error()) return taskExecutors.error();
   if (pendingStart(project, task)) return START_PENDING;
   if (taskStarts.error() && taskStarts.scope()?.project === project && taskStarts.scope()?.task === task.uuid) return taskStarts.error();
-  if (descriptionEditing()?.project === project && descriptionEditing()?.task === task.uuid) return "Save the description before starting this task";
-  if (!task.writable) return "Update Zerus to edit this task";
+  if (descriptionEditing()?.project === project && descriptionEditing()?.task === task.uuid) return tr("Save the description before starting this task");
+  if (!task.writable) return tr("Update Zerus to edit this task");
   const any = !task.target.name, s = startExecutor(task);
-  if (any && !s) return "Open the session to send this task to";
+  if (any && !s) return tr("Open the session to send this task to");
   if (!any && !task.target.known) return task.target.id ? `${sessionLabel(task.target)} no longer has a confirmed session identity — choose another session` : `${sessionLabel(task.target)} is on a computer this one has not verified`;
   if (!s) return `${sessionLabel(task.target)} no longer exists — choose another session`;
-  if (task.targetKind === "new_session") return !task.target.id || !task.target.machine ? "Choose a parent with a confirmed computer and session identity." : computerOffline(s.computer) ? "The selected session is offline." : undefined;
-  if (computerOffline(s.computer) || s.state !== "running" || s.processState === "exited") return "The agent is not running. Resume it before sending.";
+  if (task.targetKind === "new_session") return !task.target.id || !task.target.machine ? tr("Choose a parent with a confirmed computer and session identity.") : computerOffline(s.computer) ? tr("The selected session is offline.") : undefined;
+  if (computerOffline(s.computer) || s.state !== "running" || s.processState === "exited") return tr("The agent is not running. Resume it before sending.");
   if (s.actionNeeded) return "agent is waiting for input, approval, or has an unknown state; open Terminal";
 }
 export function reviewTaskStart(project: string, task: Task, origin?: HTMLElement) {
@@ -71,16 +72,16 @@ export function reviewTaskStart(project: string, task: Task, origin?: HTMLElemen
 export async function startTask(project: string, task: Task) {
   if (writingTask()) return;
   const fresh = tasks.project() === project ? tasks.tasks().find((t) => t.uuid === task.uuid) : undefined;
-  if (!fresh || fresh.stageAt !== task.stageAt || fresh.stage !== task.stage || JSON.stringify(startAssignment(fresh)) !== JSON.stringify(startAssignment(task)) || !["todo", "backlog"].includes(fresh.stage) || !supportsTaskStart(fresh)) { notify("error", "The task or executor changed. Nothing was sent. Refresh the task."); return; }
+  if (!fresh || fresh.stageAt !== task.stageAt || fresh.stage !== task.stage || JSON.stringify(startAssignment(fresh)) !== JSON.stringify(startAssignment(task)) || !["todo", "backlog"].includes(fresh.stage) || !supportsTaskStart(fresh)) { notify("error", tr("The task or executor changed. Nothing was sent. Refresh the task.")); return; }
   openTask(project, task.uuid);
   const reason = taskStartBlocker(project, task), executor = startExecutor(task);
-  if (reason || !executor) { notify("info", reason ?? "Open the session to send this task to"); return; }
+  if (reason || !executor) { notify("info", reason ?? tr("Open the session to send this task to")); return; }
   setWritingTask(task.uuid);
   try {
     const input = { project, task: task.uuid, assignment: startAssignment(task), stage_at: task.stageAt, target: { computer: executor.computer, name: executor.name, run_id: executor.runId ?? "", conversation_id: executor.conversationId ?? "" }, catalog_key: executor.catalogKey, session_id: sessionIdentity(executor) };
     if (task.targetKind === "new_session") { await configureTaskExecutor(input, executor.name.split("/")[0]); return; }
     const answer = await taskStarts.start(input);
-    if (answer.outcome === "submitted") notify("info", "Task started.");
+    if (answer.outcome === "submitted") notify("info", tr("Task started."));
     else if (answer.outcome === "refused") notify("error", answer.error);
     else if (answer.pending) notify("error", answer.error || START_PENDING);
   } catch (e) { notify("error", String(e)); taskStarts.refresh(); }
@@ -91,10 +92,10 @@ export async function releaseTaskStart(review: StartReview): Promise<boolean> {
   setWritingTask(review.task.uuid);
   try {
     const answer = await taskStarts.release(review.view);
-    if (answer.outcome === "submitted") toast("Delivery receipt found", "The task reached its executor. Nothing was sent again.");
-    else if (answer.outcome === "released") toast("Start record released", "Another start is allowed. Nothing was stopped or sent again.");
+    if (answer.outcome === "submitted") toast(tr("Delivery receipt found"), tr("The task reached its executor. Nothing was sent again."));
+    else if (answer.outcome === "released") toast(tr("Start record released"), tr("Another start is allowed. Nothing was stopped or sent again."));
     else throw new Error("Unconfirmed release");
     return true;
-  } catch { notify("error", "Could not release the start record.", true); return false; }
+  } catch { notify("error", tr("Could not release the start record."), true); return false; }
   finally { setWritingTask(undefined); }
 }

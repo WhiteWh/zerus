@@ -7,6 +7,7 @@ import { activityReadOnly, type ActivitySource } from "./activitySource";
 import { page, selected, selectedKey } from "./ui";
 import { pageHidden } from "./visibility";
 import type { ActivityEvent, ArchivedActivity, ComputerId } from "../types";
+import { tr } from "../i18n";
 
 // The recorded Activity of the selected archived row, after Qt's
 // SessionsWindow::inspect (3467-3492) and acceptInspection (3587-3660). An
@@ -151,7 +152,7 @@ export function createArchiveActivity(deps: ArchiveActivityDeps) {
     const text = errorText(reason);
     // Busy is Qt's `return false`: nothing started, so the next tick tries again.
     if (text === bridge.ARCHIVED_ACTIVITY_BUSY) { schedule(ARCHIVED_RETRY_MS); return; }
-    batch(() => { setError(`Could not refresh activity: ${text}`); setLoaded(true); });
+    batch(() => { setError(tr("Could not refresh activity: %1", text)); setLoaded(true); });
     next();
   }
 

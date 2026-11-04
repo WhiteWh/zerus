@@ -1,4 +1,4 @@
-//! Desktop input idle time and screen lock, written by the Zerus tray agent and
+//! Desktop input idle time and screen lock, written by the desktop service and
 //! listed for the mobile relay. Durations are relative, so readers on other
 //! machines need no clock agreement. Nothing else about the desktop is recorded.
 use crate::{cli, config::Config};
@@ -119,6 +119,37 @@ fn write(root: &Path, input: &Input, at: f64) -> Result<Record> {
     Ok(record)
 }
 
+/// The service owns the presence fence around this call. Unknown observations
+/// never refresh a previous activity timestamp. In particular, a lower bound
+/// since Wayland observation started is not evidence of recent user input.
+pub(crate) fn write_sample(
+    root: &Path,
+    sample: zerus_presence_sampler::Sample,
+    at: f64,
+) -> Result<bool> {
+    let Some((idle_seconds, locked)) = sample_values(sample)? else {
+        return Ok(false);
+    };
+    ensure!(at.is_finite() && at >= 0.0, "invalid presence timestamp");
+    write(root, &Input { idle_seconds, locked }, at)?;
+    Ok(true)
+}
+
+pub(crate) fn sample_values(sample: zerus_presence_sampler::Sample) -> Result<Option<(f64, bool)>> {
+    let (Some(idle), Some(locked)) = (sample.idle, sample.locked) else {
+        return Ok(None);
+    };
+    if !idle.since_input {
+        return Ok(None);
+    }
+    let idle_seconds = idle.elapsed.as_secs_f64();
+    ensure!(
+        idle_seconds <= MAX_IDLE_SECONDS,
+        "invalid presence sample"
+    );
+    Ok(Some((idle_seconds, locked)))
+}
+
 /// `desktop_presence` for `hgs ls --json --local`, aged to `at`. Records written
 /// more than two minutes ago, or that far in the future, are not listed.
 pub fn listing(root: &Path, at: f64) -> Option<Value> {
@@ -141,6 +172,78 @@ pub fn listing(root: &Path, at: f64) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+    use zerus_presence_sampler::{Idle, IdleSource, Sample};
+
+    fn sample(seconds: u64, since_input: bool, locked: Option<bool>) -> Sample {
+        Sample {
+            idle: Some(Idle {
+                elapsed: Duration::from_secs(seconds),
+                source: IdleSource::WaylandInputLowerBound,
+                since_input,
+            }),
+            locked,
+        }
+    }
+
+    #[test]
+    fn unknown_or_observation_only_input_never_renews_presence() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!write_sample(dir.path(), Sample::default(), 100.0).unwrap());
+        assert!(!write_sample(dir.path(), sample(0, true, None), 100.0).unwrap());
+        assert!(!dir.path().join(FILE).exists());
+        write(
+            dir.path(),
+            &Input {
+                idle_seconds: 8.0,
+                locked: false,
+            },
+            100.0,
+        )
+        .unwrap();
+        let original = fs::read(dir.path().join(FILE)).unwrap();
+        for input in [
+            sample(1, false, Some(false)),
+            sample(600, false, Some(true)),
+            Sample {
+                idle: None,
+                locked: Some(true),
+            },
+        ] {
+            assert!(!write_sample(dir.path(), input, 110.0).unwrap());
+            assert_eq!(fs::read(dir.path().join(FILE)).unwrap(), original);
+        }
+        assert_eq!(
+            listing(dir.path(), 221.0),
+            None,
+            "unknown samples must not extend the original TTL"
+        );
+    }
+
+    #[test]
+    fn service_samples_preserve_lock_age_and_input_contract() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(write_sample(dir.path(), sample(7, true, Some(true)), 100.0).unwrap());
+        assert!(write_sample(dir.path(), sample(37, true, Some(true)), 130.0).unwrap());
+        assert_eq!(
+            listing(dir.path(), 140.0).unwrap(),
+            json!({"idle_seconds":47.0,"locked":true,"locked_seconds":40.0})
+        );
+        let original = fs::read(dir.path().join(FILE)).unwrap();
+        assert!(write_sample(
+            dir.path(),
+            sample(MAX_IDLE_SECONDS as u64 + 1, true, Some(false)),
+            140.0
+        )
+        .is_err());
+        assert_eq!(fs::read(dir.path().join(FILE)).unwrap(), original);
+        assert!(write_sample(dir.path(), sample(0, true, Some(false)), 150.0).unwrap());
+        assert_eq!(
+            listing(dir.path(), 150.0).unwrap()["locked_seconds"],
+            Value::Null
+        );
+    }
+
 
     #[test]
     fn consecutive_locked_writes_keep_the_lock_time() {

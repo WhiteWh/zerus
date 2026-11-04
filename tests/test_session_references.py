@@ -34,6 +34,12 @@ class SessionReferences(unittest.TestCase):
         self.assertEqual(reference['conversation_id'], self.conversation_id)
         self.assertEqual(self.reference()['machine_id'], reference['machine_id'])
         self.assertEqual(self.cli('inspect', uri)['name'], self.name)
+        original_owner = self.name
+        raw = dict(conversation_id=self.conversation_id, reply_id='original-reply', attention_signature=None, at=1.0)
+        marks = self.state / 'read-marks.json'
+        marks.write_text(json.dumps(dict(version=1, sessions={original_owner: {self.conversation_id: raw}})))
+        marks.chmod(0o600)
+        self.record['journal_name'] = original_owner
         old_path = self.record_path
         old_name = self.name
         self.name = 'codex/renamed/new-tag'
@@ -41,9 +47,12 @@ class SessionReferences(unittest.TestCase):
         self.record['name'] = self.name
         self.record_path = self.state / (hashlib.sha256(self.name.encode()).hexdigest() + '.json')
         self.write_record()
+        self.record_path.chmod(0o600)
         old_path.unlink()
         resolved = self.cli('inspect', uri)
         self.assertEqual(resolved['name'], self.name)
+        self.assertEqual(resolved['read'], raw)
+        self.assertTrue(resolved['read_observation']['complete'])
         self.assertEqual(resolved['session_reference']['original_name'], old_name)
 
     def test_clear_and_wrong_computer_never_silently_retarget(self):
@@ -71,6 +80,7 @@ class SessionReferences(unittest.TestCase):
         self.record['conversation_id'] = str(uuid.uuid4())
         self.write_record()
         resolved = self.cli('inspect', uri)
+        self.assertNotIn('read_observation', resolved)
         self.assertEqual(resolved['archive_id'], archive)
         self.assertEqual(resolved['conversation_id'], self.conversation_id)
 
@@ -91,7 +101,15 @@ os.execv('/bin/sh', ['sh', '-c', sys.argv[-1]])
 """)
         reference = self.cli('@remote', 'reference', self.name, '--json')
         uri = reference['uri']
-        self.assertEqual(self.cli('@remote', 'inspect', uri)['conversation_id'], self.conversation_id)
+        raw = dict(conversation_id=self.conversation_id, reply_id='host-reply', attention_signature=None, at=1.0)
+        marks = self.state / 'read-marks.json'
+        marks.write_text(json.dumps(dict(version=1, sessions={self.name: {self.conversation_id: raw}})))
+        marks.chmod(0o600)
+        self.record_path.chmod(0o600)
+        remote = self.cli('@remote', 'inspect', uri)
+        self.assertEqual(remote['conversation_id'], self.conversation_id)
+        self.assertEqual(remote['read'], raw)
+        self.assertTrue(remote['read_observation']['complete'])
         args = json.loads((self.root / 'ssh-args').read_text())
         self.assertIn('BatchMode=yes', args)
         self.assertTrue(args[-1].endswith(' --local'))

@@ -23,6 +23,8 @@ use sha2::{Digest, Sha256};
 
 use crate::qt_lock;
 
+pub mod maintenance;
+
 /// A copy saved or opened within this long is never removed by a trim.
 pub const OPENING_GRACE_MS: i64 = 60_000;
 
@@ -610,11 +612,16 @@ pub(crate) fn decode_index(bytes: &[u8]) -> Result<Map<String, Value>, String> {
 struct Ledger {
     root: PathBuf,
     entries: Vec<Map<String, Value>>,
+    original_sha256: Option<String>,
     _lock: qt_lock::QtLock,
 }
 
 impl Ledger {
     fn open(root: &Path) -> Result<Ledger, String> {
+        Self::open_bounded(root, MAX_INDEX_BYTES)
+    }
+
+    fn open_bounded(root: &Path, maximum: u64) -> Result<Ledger, String> {
         let root = absolute(root);
         prepare_folder(&root, false)?;
         let busy = || "The downloaded files cache is busy.".to_owned();
@@ -630,6 +637,7 @@ impl Ledger {
         let mut ledger = Ledger {
             root,
             entries: Vec::new(),
+            original_sha256: None,
             _lock: lock,
         };
         if !occupied(&index) {
@@ -639,17 +647,22 @@ impl Ledger {
         let size = fs::symlink_metadata(&index)
             .map_err(|_| unreadable())?
             .len();
-        if !ordinary(&index) || size > MAX_INDEX_BYTES {
+        if !ordinary(&index) || size > maximum {
             return Err(unreadable());
         }
         let mut bytes = Vec::new();
         File::open(&index)
-            .and_then(|file| file.take(MAX_INDEX_BYTES + 1).read_to_end(&mut bytes))
+            .and_then(|file| file.take(maximum + 1).read_to_end(&mut bytes))
             .map_err(|_| unreadable())?;
-        if bytes.len() as u64 > MAX_INDEX_BYTES {
+        if bytes.len() as u64 > maximum {
             return Err(unreadable());
         }
         let mut document = decode_index(&bytes)?;
+        // The service's stricter bounded reader needs an exact frozen index.
+        // Ordinary interactive cache reads retain their existing cost.
+        if maximum < MAX_INDEX_BYTES {
+            ledger.original_sha256 = Some(hex(&Sha256::digest(&bytes)));
+        }
         let Value::Array(files) = document.remove("files").unwrap() else {
             unreachable!()
         };

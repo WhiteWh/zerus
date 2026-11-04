@@ -111,7 +111,26 @@ pub struct LocalMessages {
 fn files_value(files: &[StoredFile]) -> Vec<Value> {
     files
         .iter()
-        .map(|file| serde_json::to_value(file).unwrap_or(Value::Null))
+        .map(|file| {
+            let mut value = serde_json::to_value(file).unwrap_or(Value::Null);
+            // These are our prepared immutable copies, never a journal path.
+            // The existing private-file protocol validates the cache location
+            // again when read, including size, ownership and symlink checks.
+            if file.image_size.is_some() {
+                if let (Some(parent), Some(name)) =
+                    (file.local_path.parent(), file.local_path.file_name())
+                {
+                    if let Some(digest) = parent.file_name() {
+                        value["preview_path"] = json!(format!(
+                            "cache/{}/{}",
+                            digest.to_string_lossy(),
+                            name.to_string_lossy()
+                        ));
+                    }
+                }
+            }
+            value
+        })
         .collect()
 }
 
@@ -428,6 +447,7 @@ mod tests {
             bytes: 5,
             reference: "[File #1]".into(),
             local_path: "/home/example/.cache/attachments/abc/a.txt".into(),
+            image_size: None,
         }
     }
 

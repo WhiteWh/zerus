@@ -115,7 +115,17 @@ pub struct ViewRow {
     pub process_state: String,
     /// `process_work.count`, -1 when unknown.
     pub background: i64,
+    /// Listed optional-question count for the card, None while unknown. Catalog
+    /// state keeps the last known count of the same session and conversation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub optional_question_count: Option<i64>,
     pub archive_id: Option<String>,
+    /// Native children in the listing, capped and keyed by their exact agent ID.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub subagents: BTreeMap<String, Value>,
+    /// Whether grouped child counts are complete (`SessionRows::inactiveChild`).
+    #[serde(skip_serializing_if = "is_false")]
+    pub subagent_counts_complete: bool,
     /// The latest reply and the attention it raised, for marking them read.
     pub reply_id: Option<String>,
     pub attention_signature: Option<String>,
@@ -124,6 +134,12 @@ pub struct ViewRow {
     /// The read mark of this conversation, None when it belongs to another one.
     pub read_reply_id: Option<String>,
     pub read_attention_signature: Option<String>,
+    /// Device-local retained queue overlays, supplied only at the IPC boundary.
+    /// These never assert that the host has applied a shared read mark.
+    #[serde(skip_deserializing, skip_serializing_if = "is_false")]
+    pub local_read_reply: bool,
+    #[serde(skip_deserializing, skip_serializing_if = "is_false")]
+    pub local_read_attention: bool,
     /// The operations the computer reports as allowed, None when it reports none.
     pub allowed_actions: Option<Vec<String>>,
     pub action_reasons: BTreeMap<String, String>,
@@ -1132,9 +1148,33 @@ fn notify_facts(value: &Value, session: &Session) -> NotifyFacts {
     }
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn child_roster(value: &Value) -> BTreeMap<String, Value> {
+    if text(value, "subagent_source") == "hook_profiles" {
+        return BTreeMap::new();
+    }
+    object(value, "subagents")
+        .into_iter()
+        .flatten()
+        .filter(|(id, child)| {
+            child.is_object()
+                && !id.is_empty()
+                && id.len() <= 160
+                && !id.contains(['/', '\\'])
+                && !id.chars().any(char::is_control)
+        })
+        .take(256)
+        .map(|(id, child)| (id.clone(), child.clone()))
+        .collect()
+}
+
 /// The view row of one catalog row.
 pub fn row(value: &Value) -> ViewRow {
     let session = Session::new(value);
+    let notify = notify_facts(value, &session);
     let (status, caption) = session.status();
     let (acknowledged_status, acknowledged_caption) = session.status_with(true);
     let notifications = session.notifications();
@@ -1217,12 +1257,17 @@ pub fn row(value: &Value) -> ViewRow {
         activity: session.activity.to_owned(),
         process_state: session.process_state.to_owned(),
         background: session.background,
+        optional_question_count: (notify.optional_count >= 0).then_some(notify.optional_count),
         archive_id: some(text(value, "archive_id")),
+        subagents: child_roster(value),
+        subagent_counts_complete: flag("subagent_counts_complete").unwrap_or(false),
         reply_id: some(text(value, "reply_id")),
         attention_signature: some(text(value, "attention_signature")),
         shared_read: session.shared_read(),
         read_reply_id: some(session.read_mark("reply_id")),
         read_attention_signature: some(session.read_mark("attention_signature")),
+        local_read_reply: false,
+        local_read_attention: false,
         allowed_actions: value
             .get("allowed_actions")
             .and_then(Value::as_array)
@@ -1254,7 +1299,7 @@ pub fn row(value: &Value) -> ViewRow {
         terminal_reported: flag("terminal_supported").is_some(),
         terminal_attach_supported: flag("terminal_attach_supported").unwrap_or(false),
         terminal_attach_reported: flag("terminal_attach_supported").is_some(),
-        notify: notify_facts(value, &session),
+        notify,
         bulk_lifecycle_supported: flag("bulk_lifecycle_supported").unwrap_or(cmd != "opencode"),
     }
 }
@@ -1263,6 +1308,18 @@ pub fn row(value: &Value) -> ViewRow {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn a_host_cannot_supply_device_local_read_overlays() {
+        let value =
+            json!({"name":"codex/example/one","local_read_reply":true,"local_read_attention":true});
+        for row in [
+            row(&value),
+            serde_json::from_value::<ViewRow>(value).unwrap(),
+        ] {
+            assert!(!row.local_read_reply);
+            assert!(!row.local_read_attention);
+        }
+    }
 
     #[test]
     fn account_binding_comes_from_the_listing_even_when_the_provider_is_presented_differently() {
@@ -1311,6 +1368,26 @@ mod tests {
         assert_eq!(view.conversation_id.as_deref(), Some("conv-1"));
         assert!(!view.unread);
         assert_eq!(view.machine, "");
+    }
+
+    #[test]
+    fn native_child_roster_is_bounded_and_never_uses_hook_profiles() {
+        let view = row(&json!({"subagent_counts_complete":true,"subagents":{
+            "child-b":{"label":"Reviewer","state":"working"},
+            "child-a":{"name":"Explorer","state":"ready"},
+            "../bad":{"state":"working"},
+            "not-an-object":true
+        }}));
+        assert_eq!(view.subagents.len(), 2);
+        assert!(view.subagent_counts_complete);
+        assert!(view.subagents.contains_key("child-a"));
+        assert!(view.subagents.contains_key("child-b"));
+        let profiles = row(&json!({"subagent_source":"hook_profiles","subagents":{"child":{}}}));
+        assert!(profiles.subagents.is_empty());
+        let many: serde_json::Map<String, Value> = (0..300)
+            .map(|n| (format!("child-{n:03}"), json!({"state":"ready"})))
+            .collect();
+        assert_eq!(row(&json!({"subagents":many})).subagents.len(), 256);
     }
 
     #[test]

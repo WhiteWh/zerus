@@ -124,8 +124,8 @@ export async function updatesSmoke(allowed: boolean) {
     log(`updates-smoke location: ${location.href}`);
     await until(() => {
       const view = updates();
-      if (state === "unchecked") return view.heading === "Updates have not been checked" && !view.release_enabled;
-      if (state === "checking") return view.busy && view.heading === "Checking for updates…";
+      if (state === "unchecked") return view.heading.source === "Updates have not been checked" && !view.release_enabled;
+      if (state === "checking") return view.busy && view.heading.source === "Checking for updates…";
       if (state === "available") return view.available && !view.restart_required;
       if (state === "cached-error") return view.cached && !!view.error;
       if (state === "restart-required") return view.restart_required;

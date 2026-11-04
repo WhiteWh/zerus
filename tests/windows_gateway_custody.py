@@ -11,14 +11,16 @@ def termination_adapter(kernel):
     return lambda handle: kernel.TerminateProcess(handle, 1)
 
 
-def guard_root_cleanup(case, temporary, may_remove):
+def guard_root_cleanup(case, temporary, may_remove, *, cleanup_callback=None):
     """Prevent unittest and TemporaryDirectory GC from bypassing custody."""
-    def cleanup():
+    original = temporary.cleanup if cleanup_callback is None else cleanup_callback
+
+    def cleanup(*args, **kwargs):
         if not may_remove():
             raise CustodyUnknown(f"connector custody unknown; private fixture retained at {temporary.name}")
-        temporary.cleanup()
+        original(*args, **kwargs)
     for index, (callback, args, kwargs) in enumerate(case._cleanups):
-        if callback == temporary.cleanup:
+        if callback == original:
             case._cleanups[index] = (cleanup, args, kwargs)
             temporary._finalizer.detach()
             return

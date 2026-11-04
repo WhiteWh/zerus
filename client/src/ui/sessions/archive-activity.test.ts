@@ -12,7 +12,12 @@ vi.hoisted(() => {
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }));
 });
 vi.mock("../../bridge", () => ({
+  // The session entry points also initialize the bounded creation-card store.
+  onCreations: vi.fn(async () => () => {}), creationsView: vi.fn(async () => []),
   inTauri: () => false,
+  // The native workspace store, loaded by the session entry points.
+  nativeUiOpen: vi.fn(), nativeUiRetire: vi.fn(async () => {}), nativeUiVisible: vi.fn(async () => {}),
+  nativeUiBounds: vi.fn(async () => {}), nativeUiBrowser: vi.fn(async () => {}), onNativeUi: vi.fn(async () => () => {}),
   ARCHIVED_ACTIVITY_BUSY: "busy",
   archivedActivity: vi.fn(() => new Promise(() => {})),
   activityPort: { follow: vi.fn(async () => {}), unfollow: vi.fn(async () => {}) },
@@ -131,7 +136,7 @@ describe("Activity's local message rows (Task 7)", () => {
     submitted_at: 1_793_000_500, error: "hgs: refused", uncertain: false, message_id: null, submitted_text: null, source: null, voice: null };
   const view = (key: string): ComposerView => ({
     handle: 1, key, loaded: true, rev: 0, text_epoch: 1, question: null, input_visible: true, queue: null, text: "", position: 0, anchor: 0, attachments: [], removed: null, attaching: false,
-    sending: false, waiting: null, uncertain: false, status: "", status_error: false, can_send: true, send_label: "Send", available: true,
+    sending: false, waiting: null, uncertain: false, status: "", status_error: false, can_send: true, send_label: { source: "Send" }, available: true,
     unavailable_reason: "", block_reason: null, attachments_available: true, attachments_reason: "", session_status: "", session_status_error: false,
     session_blocks_input: false, inspect_error: false, cache: { visible: false, tone: "quiet", label: "", short_label: "" }, cache_warning: "", cache_details: "",
     context: { visible: false, text: "", tooltip: "", warning: false, tone: "quiet", percent: null, accessible_name: "" }, local: [failed],
@@ -208,8 +213,8 @@ describe("the app's archived Activity", () => {
     setSelectedKey("\nrun:run-live");
     expect(archiveActivity.target()).toBeUndefined();
     expect(archiveActivity.events()).toEqual([]);
-    expect(mocked.activityPort.follow).toHaveBeenCalledWith(expect.objectContaining({ key: "run:run-live" }));
     await flush();
+    expect(mocked.activityPort.follow).toHaveBeenCalledWith(expect.objectContaining({ key: "run:run-live" }));
     expect(mocked.composerOpen).toHaveBeenLastCalledWith({ computer: "", key: "run:run-live", name: "codex/example/live", archive_id: null });
     vi.advanceTimersByTime(10_000);
     expect(reads.length).toBe(2);

@@ -36,7 +36,9 @@ class NativeClaudeSafety(unittest.TestCase):
             # One long line of statements, as agents write them, wraps past 24 rows.
             prefix = ''.join(f'test -d {shlex.quote(str(work))} || echo missing fixture directory {i}; '
                              for i in range(8))
-        command = ('T=$(pwd); test "$T" = ' + shlex.quote(str(work)) +
+        # Keep the native variable-path rm warning and an exact directory fence.
+        # Claude 2.1.317's Bash 3.2 guard refuses the former substitution/quote form.
+        command = ('T=$PWD; test . -ef ' + shlex.quote(str(work)) +
                    ' && rm -f $T/*.jsonl $T/*.port && printf approved > approved.txt')
         return dict(command=prefix + command, description='Remove owned fixture files after confirmation')
 

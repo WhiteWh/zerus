@@ -24,6 +24,10 @@ on:
         description: Run macOS CLI and desktop builds/tests
         type: boolean
         default: true
+      windows_installer_version:
+        description: Optional Windows installer release version for a read-only build test
+        type: string
+        default: ''
       run_ios:
         description: Run iOS core tests and simulator build
         type: boolean
@@ -50,6 +54,10 @@ on:
       run_windows:
         type: boolean
         default: false
+      windows_installer_version:
+        description: Optional Windows installer release version for a read-only build test
+        type: string
+        default: ''
       run_ios:
         type: boolean
         default: false
@@ -94,6 +102,7 @@ jobs:
       run_arch: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_arch }}
       run_macos: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_macos }}
       run_windows: ${{ inputs.run_windows || false }}
+      windows_installer_version: ${{ inputs.windows_installer_version || '' }}
       run_ios: ${{ inputs.run_ios || false }}
       filter_pr_platforms: ${{ github.event_name == 'pull_request' }}
   qualification:

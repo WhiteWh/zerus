@@ -185,6 +185,10 @@ impl ExitFlush {
 
 /// All quits the client originates come here. Waiting never blocks the run loop.
 pub(crate) fn quit_with_flush(app: &AppHandle, code: i32) {
+    #[cfg(feature = "live")]
+    if let Some(delays) = app.try_state::<crate::action_delay::Delays>() {
+        delays.cancel_all(true);
+    }
     let end = app.clone();
     app.state::<ExitFlush>().quit(
         code,
@@ -192,8 +196,44 @@ pub(crate) fn quit_with_flush(app: &AppHandle, code: i32) {
         |nonce| {
             let _ = app.emit_to(crate::MAIN_WINDOW, "exit-flush", nonce);
         },
-        move |code| end.exit(code),
+        move |code| finish_exit(end.clone(), code),
     );
+}
+
+fn finish_exit(app: AppHandle, code: i32) {
+    #[cfg(feature = "live")]
+    if let Some(service) = app
+        .try_state::<crate::commands::AppState>()
+        .and_then(|source| source.desktop_service())
+    {
+        // The draft handshake has ended. Join this GUI's owned proxy and view
+        // drain off the event loop before requesting the final native exit.
+        tauri::async_runtime::spawn(finish_service_exit(service, move || app.exit(code)));
+        return;
+    }
+    app.exit(code);
+}
+
+#[cfg(feature = "live")]
+pub(crate) async fn finish_service_exit(
+    service: Arc<crate::desktop_service::Service>,
+    finish: impl FnOnce(),
+) {
+    finish_service_exit_with_deadline(service, finish, std::time::Duration::from_secs(5)).await;
+}
+
+#[cfg(feature = "live")]
+pub(crate) async fn finish_service_exit_with_deadline(
+    service: Arc<crate::desktop_service::Service>,
+    finish: impl FnOnce(),
+    wait: std::time::Duration,
+) {
+    match tokio::time::timeout(wait, service.join()).await {
+        Ok(Ok(())) => (),
+        Ok(Err(error)) => eprintln!("zerus-client: service shutdown: {error}"),
+        Err(_) => eprintln!("zerus-client: service shutdown exceeded the quit deadline"),
+    }
+    finish();
 }
 
 #[tauri::command]

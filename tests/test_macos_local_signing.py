@@ -138,20 +138,23 @@ class LocalSigning(unittest.TestCase):
             stage_root = root / "temporary"
             stage_root.mkdir()
             shutil.copy2(ROOT / "tray/install.sh", tray / "install.sh")
+            scripts = root / "scripts"; scripts.mkdir()
+            (scripts / "install-macos-desktop-service.py").write_text(
+                "import sys\nassert sys.argv[2:] == ['--check-only']\n")
             # Exercise the installer boundary: failed signing must precede even
             # replacing the application or writing a LaunchAgent, with either restart policy.
             (tray / "sign-local-macos.py").write_text(
                 "import pathlib, sys\n"
                 "assert pathlib.Path(sys.argv[1]).resolve() != pathlib.Path(__file__).parent / 'build/hgs-tray.app'\n"
                 "raise SystemExit(17)\n")
-            for name, body in {"uname": "echo Darwin", "brew": "echo /fixture/qt", "cmake": "exit 0",
+            for name, body in {"uname": "echo Darwin", "brew": "echo /fixture/qt", "cmake": "exit 0", "hgs": "exit 0",
                                "ditto": 'cp -R "$1" "$2"',
                                "launchctl": "touch \"$HOME/launchctl-called\""}.items():
                 path = tools / name
                 path.write_text("#!/bin/sh\n" + body + "\n")
                 path.chmod(0o755)
             for restart in ("0", "1"):
-                env = dict(os.environ, HOME=str(home), PATH=str(tools) + os.pathsep + os.environ["PATH"],
+                env = dict(os.environ, HOME=str(home), HGS_MAC_GUI="qt", PATH=str(tools) + os.pathsep + os.environ["PATH"],
                            HGS_TRAY_RESTART=restart, TMPDIR=str(stage_root))
                 result = subprocess.run(["bash", str(tray / "install.sh")], env=env, capture_output=True, text=True, timeout=15)
                 self.assertEqual(result.returncode, 17, result.stderr)

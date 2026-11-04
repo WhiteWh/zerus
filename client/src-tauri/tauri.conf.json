@@ -18,7 +18,7 @@
         "default-src": "'self'",
         "script-src": "'self'",
         "style-src": "'self' 'unsafe-inline'",
-        "img-src": "'self' data: zerus-file: http://zerus-file.localhost",
+        "img-src": "'self' blob: data: zerus-file: http://zerus-file.localhost",
         "media-src": "'self' blob: zerus-file: http://zerus-file.localhost",
         "font-src": "'self' data:",
         "connect-src": "'self' ipc: http://ipc.localhost zerus-file: http://zerus-file.localhost"
@@ -27,7 +27,7 @@
         "default-src": "'self' http://127.0.0.1:1420",
         "script-src": "'self' http://127.0.0.1:1420",
         "style-src": "'self' 'unsafe-inline' http://127.0.0.1:1420",
-        "img-src": "'self' data: http://127.0.0.1:1420 zerus-file: http://zerus-file.localhost",
+        "img-src": "'self' blob: data: http://127.0.0.1:1420 zerus-file: http://zerus-file.localhost",
         "media-src": "'self' blob: http://127.0.0.1:1420 zerus-file: http://zerus-file.localhost",
         "font-src": "'self' data: http://127.0.0.1:1420",
         "connect-src": "'self' ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420 zerus-file: http://zerus-file.localhost"

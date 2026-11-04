@@ -276,11 +276,19 @@ fn installation_rules_match_qt() {
     assert_eq!(update_command(&package, Channel::Dev), "");
     let feed = parse_feed(&bytes(&raw()), Channel::Stable);
     assert!(
-        comparison_message(&package, &feed, "0.9.0", 1, true, "linux").contains("Update available")
+        comparison_message(&package, &feed, "0.9.0", 1, true, "linux")
+            .english()
+            .contains("Update available")
     );
-    assert!(comparison_message(&package, &feed, "0.9.0", -1, true, "linux").contains("at least"));
     assert!(
-        comparison_message(&package, &feed, "0.9.0", 0, false, "linux").contains("No matching")
+        comparison_message(&package, &feed, "0.9.0", -1, true, "linux")
+            .english()
+            .contains("at least")
+    );
+    assert!(
+        comparison_message(&package, &feed, "0.9.0", 0, false, "linux")
+            .english()
+            .contains("No matching")
     );
     let cask = Installation {
         kind: "homebrew-cask".into(),
@@ -311,11 +319,17 @@ fn installation_rules_match_qt() {
     assert_eq!(update_command(&winget, Channel::Nightly), "");
     let guide = installation_guide(&winget, Channel::Stable, &feed, "0.36.2");
     assert_eq!(
-        guide.command,
-        "winget: winget upgrade --id ufna.Zerus --exact"
+        guide.command.as_ref().map(|t| t.english()).as_deref(),
+        Some("winget: winget upgrade --id ufna.Zerus --exact")
     );
-    assert_eq!(guide.copy_name, "Copy winget command");
-    assert!(guide.instructions.contains("keep running"));
+    assert_eq!(
+        guide.copy_name.as_ref().map(|t| t.english()).as_deref(),
+        Some("Copy winget command")
+    );
+    assert!(guide
+        .instructions
+        .as_ref()
+        .is_some_and(|t| t.english().contains("keep running")));
     let nightly = parse_feed(
         &bytes(&nightly_raw("0.38.0.r10.gaaaaaaa.n5")),
         Channel::Nightly,
@@ -324,7 +338,7 @@ fn installation_rules_match_qt() {
     assert!(!portable_update_available("0.38.0", &nightly));
     assert!(stable_has_windows_build("0.42.3"));
     assert!(!stable_has_windows_build("0.42.2"));
-    assert_eq!(comparison_message(&winget, &nightly, "0.37.0", 0, false, "windows"), "Zerus nightly 0.38.0.r10.gaaaaaaa.n5 is available. Download its Windows zip from the release page.");
+    assert_eq!(comparison_message(&winget, &nightly, "0.37.0", 0, false, "windows").english(), "Zerus nightly 0.38.0.r10.gaaaaaaa.n5 is available. Download its Windows zip from the release page.");
     assert_eq!(automatic_interval(Channel::Dev), 15 * 60);
     assert_eq!(automatic_interval(Channel::Stable), 24 * 60 * 60);
     assert!(is_update_token("zerus-update:v2:dev:12345"));

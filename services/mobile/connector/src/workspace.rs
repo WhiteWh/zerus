@@ -1776,7 +1776,7 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn verified_retirement_blocks_start_but_cooperative_stop_drains_journal() {
+    async fn verified_retirement_does_not_authorize_unverified_process_stop() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("connector.json");
         let private = private_directory(&config).unwrap();
@@ -1827,21 +1827,13 @@ mod tests {
         assert!(crate::workspace_lifecycle::manage_start(&config, &input)
             .await
             .is_err());
-        let stopping = crate::runtime::Event::default();
-        let (stopped, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            tokio::join!(
-                crate::workspace_lifecycle::manage_stop(&config, &input),
-                async {
-                    crate::workspace_lifecycle::monitor(&stopping, &profile.state_dir, &generation)
-                        .await;
-                    drop(journal);
-                }
-            )
-        })
-        .await
-        .expect("retired generation must cooperatively drain");
-        assert_eq!(stopped.unwrap()["state"], "stopped");
-        assert!(stopping.is_set());
+        // No verified supervisor or exact connector process owns this fixture
+        // lock. Retirement proves neither; refusal must precede a Stop marker.
+        assert!(crate::workspace_lifecycle::manage_stop(&config, &input)
+            .await
+            .is_err());
+        assert!(!profile.state_dir.join("workspace-stop.json").exists());
+        drop(journal);
         // A corrupt pin is an error, never evidence allowing local shutdown
         // or an implicit reset. HTTP401 does not modify this private record.
         profile.historical_heads.clear();

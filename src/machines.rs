@@ -16,6 +16,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod source;
+
 fn yes() -> bool {
     true
 }
@@ -464,13 +466,37 @@ fn check_windows(config: &Config, alias: &str) -> Result<Option<Value>> {
     Ok(Some(result))
 }
 
-fn setup(config: &Config, alias: &str, source: Option<&str>, dry: bool) -> Result<i32> {
+fn setup_revision(config: &Config, alias: &str, expected: Option<&str>) -> Result<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let bytes = read(&config.dir)?;
+    let current = decode(&bytes)?.machines;
+    if expected != revision(&bytes)
+        || current != config.machines
+        || (!config.base_peers.iter().any(|peer| peer == alias) && !current.contains_key(alias))
+    {
+        return Err(Error::new(
+            1,
+            "Machine settings changed elsewhere. Reload the page before setup.",
+        ));
+    }
+    Ok(())
+}
+fn setup(
+    config: &Config,
+    alias: &str,
+    source: Option<&str>,
+    expected: Option<&str>,
+    dry: bool,
+) -> Result<i32> {
     if crate::wsl::profile(config, alias).is_some() {
         return Err(Error::new(2,"Install the fork's Linux hgs in the selected WSL environment explicitly; WSL setup never replaces an installed agent or starts OpenCode"));
     }
     if crate::windows_peer::is_windows(config, alias) {
         return Err(Error::new(1, "This is a Windows computer: install Zerus there and enable local sessions in Machines, then choose Check."));
     }
+    setup_revision(config, alias, expected)?;
     let root = source
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| Path::new(&config.home).join(".local/src/hgs"));
@@ -501,7 +527,7 @@ hgs_stage=$(mktemp -d "$HOME/.local/share/hgs/setup.XXXXXXXX")
 trap 'rm -rf "$hgs_stage"' EXIT HUP INT TERM
 tar xzf - -C "$hgs_stage"
 printf 'Building HGS for this machine…\n'
-HGS_INSTALL_PREFIX="$HOME/.local" bash "$hgs_stage/install.sh"
+HGS_MOBILE_CONNECTOR=0 HGS_INSTALL_PREFIX="$HOME/.local" bash "$hgs_stage/install.sh"
 if test ! -e "$HOME/.config/hgs/config"; then
   (set -C; printf 'HGS_SELF="%s"\n' "$1" > "$HOME/.config/hgs/config") || true
 fi
@@ -528,26 +554,22 @@ printf 'Setup complete: '
         println!("Bundle CLI sources from {} and run a native build/install on {alias} (no session restart).", root.display());
         return Ok(0);
     }
+    let sources = source::Snapshot::new(&root)?;
     let bundle = tempfile::NamedTempFile::new()?;
     let result = platform::status(
         Command::new("tar")
             .args(["czf", "-"])
             .arg("-C")
-            .arg(&root)
-            .args([
-                "Cargo.toml",
-                "Cargo.lock",
-                "build.rs",
-                "src",
-                "scripts",
-                "install.sh",
-                "hgs_state.py",
-            ])
+            .arg(sources.path())
+            .arg(".")
             .stdout(bundle.reopen()?),
     )?;
     if !result.success() {
         return Err(Error::new(1, "Could not package the HGS CLI sources."));
     }
+    // The SSH options above are frozen from this exact config snapshot. A
+    // changed profile during source preparation refuses before contacting it.
+    setup_revision(config, alias, expected)?;
     let code = platform::ssh_status(
         platform::ssh().args(arguments),
         fs::File::open(bundle.path())?,
@@ -638,17 +660,15 @@ pub fn dispatch(config: &Config, args: &[String], dry: bool) -> Result<i32> {
             Ok(0)
         }
         "setup" => {
-            let source = match &args[2..] {
-                [] => None,
-                [flag, path] if flag == "--source" => Some(path.as_str()),
-                _ => {
-                    return Err(Error::new(
-                        1,
-                        "usage: hgs machine setup <alias> [--source <checkout>]",
-                    ))
+            let (mut source, mut expected) = (None, None);
+            for pair in args[2..].chunks(2) {
+                match pair {
+                    [flag, value] if flag == "--source" && source.is_none() => source = Some(value.as_str()),
+                    [flag, value] if flag == "--revision" && expected.is_none() => expected = Some(value.as_str()),
+                    _ => return Err(Error::new(1, "usage: hgs machine setup <alias> [--source <checkout>] [--revision <revision>]")),
                 }
-            };
-            setup(config, alias, source, dry)
+            }
+            setup(config, alias, source, expected, dry)
         }
         "check" => {
             if args.len() != 2 {

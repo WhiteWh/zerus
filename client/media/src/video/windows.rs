@@ -290,11 +290,8 @@ struct Folder(PathBuf);
 
 impl Folder {
     fn create() -> Option<Folder> {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |time| time.as_nanos());
         // The user's own temporary folder, which only they can read.
-        let path = std::env::temp_dir().join(format!("zerus-video-{}-{nanos}", std::process::id()));
+        let path = std::env::temp_dir().join(super::folder_name());
         std::fs::create_dir(&path).ok()?;
         Some(Folder(path))
     }

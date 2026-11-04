@@ -4,8 +4,12 @@ Start a session (hgs guide launch)
 
 - AGENT is claude, codex or kimi; DIRECTORY is an absolute path on that
   computer, or a project name from hgs [@h] project ls.
-- -d starts it detached and prints "hgs: started NAME". Without --new, an
-  existing session of that name is reused instead.
+- -d starts it detached and prints "hgs: started NAME". It never attaches or
+  switches your terminal, so it works from inside your own session, where a
+  launch without -d is refused. Without --new, an existing session of that
+  name is reused instead.
+- The new session gets its own identity and that computer's default account
+  for AGENT (or --account ID), never your session's.
 - Text after -- is the agent's first prompt; resume never replays it.
 - For Kimi, Zerus waits for the interactive input and sends that prompt once
   through guarded send. It does not use Kimi's non-interactive --prompt mode.

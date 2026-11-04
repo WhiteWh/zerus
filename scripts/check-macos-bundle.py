@@ -32,6 +32,8 @@ REQUIRED_FILES = [
     "Contents/Info.plist", *EXECUTABLES,
     "Contents/Resources/setup/hgs_state.py",
     "Contents/Resources/setup/install-macos-session-service.py",
+    "Contents/Resources/setup/install-macos-desktop-service.py",
+    "Contents/Resources/setup/desktop-revoke-hold.py",
     "Contents/Resources/setup/install-recovery-service.py",
     "Contents/Resources/setup/install-swarm-service.py",
     "Contents/Resources/setup/launchd_agent.py",
@@ -143,15 +145,23 @@ def is_mach_o(path):
         return stream.read(4) in MACH_O
 
 
-def bundle_findings(bundle, version, release=None):
-    findings = plist_findings(plistlib.loads((bundle / "Contents/Info.plist").read_bytes()), version, release)
-    findings += [f"missing {name}" for name in REQUIRED_FILES if not (bundle / name).is_file()]
-    findings += notice_findings(bundle / "Contents/Resources/licenses/qt")
-    provenance = ffmpeg_provenance()
-    findings += ffmpeg_findings(bundle, provenance)
-    manifest = bundle / "Contents/Resources/licenses/qt/FFMPEG-SOURCE.json"
-    if manifest.is_file() and json.loads(manifest.read_text()) != provenance:
-        findings.append("FFMPEG-SOURCE.json differs from the reviewed source/configuration tuple")
+def bundle_findings(bundle, version, release=None, gui="qt"):
+    info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
+    if gui == "tauri":
+        findings = tauri_plist_findings(info, version, release or version)
+        required = TAURI_RELEASE_REQUIRED
+        for name in ("rust", "client-rust", "frontend"):
+            findings += inventory_findings(bundle / "Contents/Resources/licenses" / name)
+    else:
+        findings = plist_findings(info, version, release)
+        required = REQUIRED_FILES
+        findings += notice_findings(bundle / "Contents/Resources/licenses/qt")
+        provenance = ffmpeg_provenance()
+        findings += ffmpeg_findings(bundle, provenance)
+        manifest = bundle / "Contents/Resources/licenses/qt/FFMPEG-SOURCE.json"
+        if manifest.is_file() and json.loads(manifest.read_text()) != provenance:
+            findings.append("FFMPEG-SOURCE.json differs from the reviewed source/configuration tuple")
+    findings += [f"missing {name}" for name in required if not (bundle / name).is_file()]
     findings += [f"not executable: {name}" for name in EXECUTABLES
                  if (bundle / name).is_file() and not os.access(bundle / name, os.X_OK)]
     # The connector's black-box test seams exist only with the test-hooks feature.
@@ -168,6 +178,8 @@ def bundle_findings(bundle, version, release=None):
         for name in names + files:
             path = Path(directory) / name
             label = str(path.relative_to(bundle))
+            if gui == "tauri" and name.lower().startswith("qt"):
+                findings.append(f"{label}: Qt is not part of the Zerus Next bundle")
             # The embedded native UI is an optional Linux plugin; Chromium never ships here.
             if "webengine" in name.lower():
                 findings.append(f"{label}: Qt WebEngine is not part of the macOS bundle")
@@ -197,12 +209,40 @@ TAURI_REQUIRED = [
     "Contents/Resources/hgs-zerus-swarm.icns",
     "Contents/Resources/Assets.car",
 ]
+TAURI_RELEASE_REQUIRED = list(dict.fromkeys([
+    *[name for name in REQUIRED_FILES if "/licenses/qt/" not in name and
+      not name.endswith(("libvterm-LICENSE", "md4c-LICENSE", "qrcodegen-LICENSE"))],
+    *TAURI_REQUIRED,
+    "Contents/Resources/licenses/client-rust/inventory.json",
+    "Contents/Resources/licenses/frontend/inventory.json",
+]))
 
 
-def tauri_plist_findings(plist, version):
-    expected = {"CFBundleExecutable": "hgs-tray", "CFBundleName": "Zerus", "CFBundleDisplayName": "hgs-tray",
+def inventory_findings(directory):
+    try:
+        packages = json.loads((directory / "inventory.json").read_text())["packages"]
+        if not isinstance(packages, list) or not packages:
+            raise ValueError("empty dependency inventory")
+        for package in packages:
+            name, version = package["name"], package["version"]
+            if not isinstance(name, str) or not isinstance(version, str) or not name or not version:
+                raise ValueError("invalid dependency identity")
+            folder = directory / (name.replace("/", "-") + "-" + version)
+            if not folder.is_dir() or not any(p.is_file() for p in folder.rglob("*")):
+                raise ValueError("missing dependency license text")
+    except (OSError, ValueError, KeyError, TypeError):
+        return [f"{directory.name}: invalid or incomplete dependency notices"]
+    return []
+
+
+def tauri_plist_findings(plist, version, release=None):
+    expected = {"CFBundleExecutable": "hgs-tray", "CFBundleName": "Zerus",
+                "CFBundleDisplayName": "Zerus" if release is not None else "hgs-tray",
                 "LSHasLocalizedDisplayName": True, "LSUIElement": True, "CFBundleShortVersionString": version,
-                "LSMinimumSystemVersion": MINIMUM_SYSTEM, "CFBundleIconName": "hgs-zerus-swarm", "ZerusGUI": "tauri"}
+                "LSMinimumSystemVersion": MINIMUM_SYSTEM, "CFBundleIconName": "hgs-zerus-swarm", "ZerusGUI": "tauri",
+                "ZerusReleaseVersion": release or version}
+    if release is not None:
+        expected.update(CFBundleIdentifier=BUNDLE_ID, CFBundleVersion=version)
     findings = [f"Info.plist {key} is {plist.get(key)!r}, expected {value!r}"
                 for key, value in expected.items() if plist.get(key) != value]
     # The raw build keeps the local identifier; tray/sign-local-macos.py promotes its signed copy.
@@ -215,7 +255,9 @@ def tauri_plist_findings(plist, version):
     return findings
 
 
-def tauri_bundle_findings(bundle, version):
+def tauri_bundle_findings(bundle, version, release=None):
+    if release is not None:
+        return bundle_findings(bundle, version, release, gui="tauri")
     findings = tauri_plist_findings(plistlib.loads((bundle / "Contents/Info.plist").read_bytes()), version)
     findings += [f"missing {name}" for name in TAURI_REQUIRED if not (bundle / name).is_file()]
     main = bundle / TAURI_EXECUTABLE
@@ -245,7 +287,18 @@ def tauri_selftest(bundle, version, release=None, commit=None):
     """`--version` and `--build-info` in an empty home: the bundle starts nothing else."""
     with tempfile.TemporaryDirectory(prefix="zerus-bundle-home-") as scratch:
         environment = {"HOME": scratch, "PATH": "/usr/bin:/bin", "TMPDIR": scratch}
+        for key in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
+                    "XDG_RUNTIME_DIR", "TMUX_TMPDIR", "HGS_CONFIG_DIR", "HGS_STATE_DIR"):
+            directory = Path(scratch) / key.lower()
+            directory.mkdir(mode=0o700)
+            environment[key] = str(directory)
         executable = str(bundle / TAURI_EXECUTABLE)
+        if release is not None:
+            for name in ("Contents/MacOS/hgs", CONNECTOR):
+                result = subprocess.run([str(bundle / name), "--version"], env=environment,
+                                        capture_output=True, text=True, timeout=60)
+                if result.returncode:
+                    return [f"{name} --version failed: {result.stderr.strip() or result.stdout.strip()}"]
         result = subprocess.run([executable, "--version"], env=environment, capture_output=True, text=True, timeout=60)
         if result.returncode:
             return [f"--version failed: {result.stderr.strip() or result.stdout.strip()}"]
@@ -330,7 +383,7 @@ def main():
     parser.add_argument("--gui", choices=("qt", "tauri"), default="qt", help="the Qt release bundle or the Tauri switch bundle")
     args = parser.parse_args()
     if args.gui == "tauri":
-        findings = tauri_bundle_findings(args.bundle, args.version)
+        findings = tauri_bundle_findings(args.bundle, args.version, args.release)
         if not findings and args.selftest:
             findings = tauri_selftest(args.bundle, args.version, args.release, args.source_commit)
     else:

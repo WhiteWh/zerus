@@ -16,6 +16,7 @@ import { flag, num, setSetting } from "../../store/settings";
 import { accountTooltip, clock, summaryText, usageLoading, windowsAt } from "../lib/usage";
 import { machineKey } from "./machines-ui";
 import { accountIdentity, accountTone, accountsNote, cpuFigure, level, loadTip, memoryFigure, sampleNote, sampleTip, sessionsLabel } from "./overview-ui";
+import { tr } from "../../i18n";
 
 // Overview (DashboardPage.cpp), ported from design/webui/src/screens/Dashboard.tsx:
 // summary tiles, a card per machine from the stream's machine cards, account
@@ -43,17 +44,17 @@ function MachineCard(props: { m: MachineCardModel; stats: OverviewStats; now: nu
   const note = () => sampleNote(props.m.meta, c(), props.now);
   const openSessions = () => { setMachineFilter([props.m.filter]); setProjectFilter([]); setAccountFilter([]); setFolderFilter(undefined); setStateFilter("all"); setPage("sessions"); };
   return (
-    <article class="ov-mcard box" classList={{ stale: !c().fresh }} aria-label={props.m.local ? "This machine" : props.m.name}>
+    <article class="ov-mcard box" classList={{ stale: !c().fresh }} aria-label={props.m.local ? tr("This machine") : props.m.name}>
       <header class="ov-mtop">
         <MachineTile os={props.m.platform} state={c().tile} size={26} />
         <MachineBadge alias={props.m.name} computer={props.m.computer} />
-        <span class="ov-mos ell"><Show when={props.m.local}><b>This machine</b></Show></span>
+        <span class="ov-mos ell"><Show when={props.m.local}><b>{tr("This machine")}</b></Show></span>
         <span class="ov-mstatus" classList={{ online: c().fresh }}>{c().text}</span>
-        <button class="icon-btn small" data-tip="Machine settings" aria-label="Machine settings" onClick={() => { requestMachine(machineKey(props.m.computer)); setPage("machines"); }}><Icon name="settings" size={14} /></button>
+        <button class="icon-btn small" data-tip={tr("Machine settings")} aria-label={tr("Machine settings")} onClick={() => { requestMachine(machineKey(props.m.computer)); setPage("machines"); }}><Icon name="settings" size={14} /></button>
       </header>
       <div class="ov-mmeters">
         <div class="ov-mm" title={cpu().tip}>
-          <span class="ov-mlabel">CPU</span>
+          <span class="ov-mlabel">{tr("CPU")}</span>
           <span class="ov-mline">
             <b class="ov-mval tabular" data-level={level(cpu().percent, c().fresh)}>{cpu().value}</b>
             <LoadBar percent={cpu().percent} fresh={c().fresh} />
@@ -61,7 +62,7 @@ function MachineCard(props: { m: MachineCardModel; stats: OverviewStats; now: nu
           <span class="ov-mdetail">{cpu().detail}</span>
         </div>
         <div class="ov-mm" title={memory().tip}>
-          <span class="ov-mlabel">Memory</span>
+          <span class="ov-mlabel">{tr("Memory")}</span>
           <span class="ov-mline">
             <b class="ov-mval tabular" data-level={level(memory().percent, c().fresh)}>{memory().value}</b>
             <LoadBar percent={memory().percent} fresh={c().fresh} />
@@ -70,7 +71,7 @@ function MachineCard(props: { m: MachineCardModel; stats: OverviewStats; now: nu
         </div>
       </div>
       <footer class="ov-mfoot">
-        <button class="su-link" title={c().fresh ? `View sessions on ${props.m.name}` : `View last known sessions on ${props.m.name}`} onClick={openSessions}>
+        <button class="su-link" title={c().fresh ? tr("View sessions on %1", props.m.name) : tr("View last known sessions on %1", props.m.name)} onClick={openSessions}>
           {sessionsLabel(counts().sessions, counts().attention)}
         </button>
         <span class="grow" />
@@ -143,7 +144,7 @@ function LiveSessions(props: { rows: Session[]; scroller: () => HTMLElement | un
           <div class="ov-line" style={{ transform: `translateY(${line.start - top()}px)`, "grid-template-columns": `repeat(${cols()}, minmax(0, 1fr))` }}>
             <For each={props.rows.slice(line.index * cols(), line.index * cols() + cols())}>
               {(s) => (
-                <div class="ov-cell rowhit" role="button" tabindex="0" aria-label={`Open ${s.name}`} onClick={() => open(s)}
+                <div class="ov-cell rowhit" role="button" tabindex="0" aria-label={tr("Open %1", s.name)} onClick={() => open(s)}
                   onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(s); } }}>
                   <SessionCard session={s} selected={false} expandable={false} expanded={false} onToggleChildren={() => open(s)} />
                 </div>
@@ -180,7 +181,7 @@ function OverviewEdge(props: { right?: boolean }) {
   let origin = 0, start = 0, widest = 0;
   return (
     <div class="col-edge ov-edge" classList={{ right: props.right, dragging: dragging() }} role="separator" aria-orientation="vertical" tabindex="0"
-      aria-label="Overview width" aria-valuemin={OVERVIEW.min} aria-valuemax={OVERVIEW.max} aria-valuenow={overviewWidth()}
+      aria-label={tr("Overview width")} aria-valuemin={OVERVIEW.min} aria-valuemax={OVERVIEW.max} aria-valuenow={overviewWidth()}
       onPointerDown={(e) => {
         if (e.button !== 0) return;
         e.preventDefault();
@@ -226,47 +227,47 @@ export function OverviewScreen() {
       <div class="ov-content" classList={{ full: overviewFullWidth() }} style={{ "--ovw": `${overviewWidth()}px` }}>
         <Show when={!overviewFullWidth()}><OverviewEdge /><OverviewEdge right /></Show>
         <header class="su-head">
-          <h1>Overview</h1>
+          <h1>{tr("Overview")}</h1>
           <span class="grow" />
-          <button class="icon-btn" data-tip="Refresh overview" aria-label="Refresh overview" disabled={view().busy} onClick={() => void loadAccounts(true)}>
+          <button class="icon-btn" data-tip={tr("Refresh overview")} aria-label={tr("Refresh overview")} disabled={view().busy} onClick={() => void loadAccounts(true)}>
             <Icon name="refresh-cw" size={16} class={view().busy ? "su-spin" : undefined} />
           </button>
         </header>
 
         <div class="ov-tiles">
           <button class="ov-tile" classList={{ hot: ov.stats().attention > 0 }} onClick={() => go("attention")}>
-            <b class="tabular">{ov.stats().attention}</b><span>Needs attention</span>
+            <b class="tabular">{ov.stats().attention}</b><span>{tr("Needs attention")}</span>
           </button>
-          <button class="ov-tile" onClick={() => go("active")}><b class="tabular">{ov.stats().active}</b><span>Active</span></button>
-          <button class="ov-tile" onClick={() => { setMachineFilter([]); setProjectFilter([]); setPage("machines"); }}><b class="tabular">{`${online()} / ${ov.cards().length}`}</b><span>Machines online</span></button>
-          <button class="ov-tile" onClick={() => go("all")}><b class="tabular">{ov.stats().all}</b><span>Sessions</span></button>
+          <button class="ov-tile" onClick={() => go("active")}><b class="tabular">{ov.stats().active}</b><span>{tr("Active")}</span></button>
+          <button class="ov-tile" onClick={() => { setMachineFilter([]); setProjectFilter([]); setPage("machines"); }}><b class="tabular">{`${online()} / ${ov.cards().length}`}</b><span>{tr("Machines online")}</span></button>
+          <button class="ov-tile" onClick={() => go("all")}><b class="tabular">{ov.stats().all}</b><span>{tr("Sessions")}</span></button>
         </div>
 
-        <h2 class="section-title ov-h">Machines</h2>
+        <h2 class="section-title ov-h">{tr("Machines")}</h2>
         <div class="ov-mgrid">
           <Index each={ov.cards()}>{(m) => <MachineCard m={m()} stats={ov.stats()} now={now()} />}</Index>
         </div>
 
         <div class="ov-h row">
-          <h2 class="section-title">Accounts</h2>
+          <h2 class="section-title">{tr("Accounts")}</h2>
           <span class="grow" />
-          <button class="su-link" onClick={() => { setAccountMachine("*"); setPage("accounts"); }}>Manage accounts <Icon name="arrow-right" size={12} /></button>
+          <button class="su-link" onClick={() => { setAccountMachine("*"); setPage("accounts"); }}>{tr("Manage accounts")} <Icon name="arrow-right" size={12} /></button>
         </div>
         <Show when={accountsNote(view())} fallback={<div class="ov-agrid"><Index each={view().overview}>{(a) => <AccountCard a={a()} now={now()} />}</Index></div>}>
           {(note) => <p class="ov-empty">{note()}</p>}
         </Show>
 
         <div class="ov-h row">
-          <h2 class="section-title">Attention &amp; in progress</h2>
+          <h2 class="section-title">{tr("Attention & in progress")}</h2>
           <span class="grow" />
-          <button class="su-link" onClick={() => go("all")}>All sessions <Icon name="arrow-right" size={12} /></button>
+          <button class="su-link" onClick={() => go("all")}>{tr("All sessions")} <Icon name="arrow-right" size={12} /></button>
         </div>
         <Show when={ov.stats().offline > 0}>
           <div class="notice warn ov-note"><Icon name="wifi-off" size={14} />
-            <span>{ov.stats().offline === 1 ? "1 session is on an offline or stale machine." : `${ov.stats().offline} sessions are on offline or stale machines.`} Their last known status is shown on the machine cards.</span>
+            <span>{ov.stats().offline === 1 ? tr("1 session is on an offline or stale machine. Its last known status is shown on the machine cards.") : tr("%1 sessions are on offline or stale machines. Their last known status is shown on the machine cards.", ov.stats().offline)}</span>
           </div>
         </Show>
-        <Show when={ov.live().length} fallback={<p class="ov-empty">No sessions are working, need attention or have drafts.</p>}>
+        <Show when={ov.live().length} fallback={<p class="ov-empty">{tr("No sessions are working, need attention or have drafts.")}</p>}>
           <LiveSessions rows={ov.live()} scroller={() => scroller} />
         </Show>
       </div>

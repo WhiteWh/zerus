@@ -38,8 +38,10 @@ const QUEUE_LINES: usize = 1024;
 const PROBE_BYTES: u64 = 1 << 20;
 const SOURCE_JOIN: Duration = Duration::from_secs(1);
 
+mod helper;
 #[path = "stream_legacy_source.rs"]
 mod legacy_source;
+mod resources;
 
 /// The delays and bounds of a stream. [`Timing::scaled`] shrinks the restart
 /// and re-probe delays for tests.
@@ -171,7 +173,7 @@ pub enum Probe {
 /// `hgs [@alias] <args>` without an agent's attribution identity: the client
 /// acts for the person even when it was started from an agent's shell.
 pub(crate) fn hgs_command(hgs: &Path, computer: &ComputerId, args: &[&str]) -> Command {
-    let mut command = Command::new(hgs);
+    let mut command = crate::child_environment::command(hgs);
     if let Some(alias) = computer.alias() {
         command.arg(format!("@{alias}"));
     }
@@ -184,7 +186,7 @@ pub(crate) fn hgs_command(hgs: &Path, computer: &ComputerId, args: &[&str]) -> C
 
 /// Runs `hgs [@host] -h` and looks for [`HELP_MARKER`].
 pub fn probe(hgs: &Path, computer: &ComputerId, timeout: Duration) -> Probe {
-    probe_until(hgs, computer, timeout, &AtomicBool::new(false), None)
+    probe_until(hgs, computer, timeout, &AtomicBool::new(false), None, None)
 }
 
 fn probe_until(
@@ -193,7 +195,18 @@ fn probe_until(
     timeout: Duration,
     stop: &AtomicBool,
     source: Option<&crate::source::Endpoint>,
+    resources: Option<&resources::Scope>,
 ) -> Probe {
+    let primary = match resources {
+        Some(scope) => match scope.primary() {
+            Some(held) => Some(held),
+            None => {
+                eprintln!("zerus-client: role=fleet operation=probe resources=pending");
+                return Probe::Failed("hgs -h is not ready".into());
+            }
+        },
+        None => None,
+    };
     let reader_slot = if let Some(source) = source {
         let Some(slot) = source.reader() else {
             return Probe::Failed("previous source reader is still open".into());
@@ -202,7 +215,9 @@ fn probe_until(
     } else {
         None
     };
+    let child_charge = primary.clone().map(crate::run::ChildCharge::new);
     let mut command = hgs_command(hgs, computer, &["-h"]);
+    helper::prepare(&mut command);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -213,29 +228,45 @@ fn probe_until(
         command.spawn()
     } {
         Ok(child) => child,
-        Err(error) => return Probe::Failed(format!("cannot start hgs: {error}")),
+        Err(error) => {
+            if let Some(charge) = &child_charge {
+                charge.confirmed();
+            }
+            return Probe::Failed(format!("cannot start hgs: {error}"));
+        }
     };
     let (tx, rx) = mpsc::channel();
     if let Some(stdout) = child.stdout.take() {
+        let callback = resources.cloned();
         thread::spawn(move || {
+            let _callback = callback;
             let mut text = Vec::new();
             let _ = stdout.take(PROBE_BYTES).read_to_end(&mut text);
             // Release before waking launch, which uses the same per-alias
             // guard for its stdout/stderr readers.
             drop(reader_slot);
+            drop(primary);
             let _ = tx.send(text);
         });
     }
     let deadline = Instant::now() + timeout;
     let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
+        match helper::try_wait(&mut child) {
+            Ok(Some(status)) => {
+                if let Some(charge) = &child_charge {
+                    charge.confirmed();
+                }
+                break Some(status);
+            }
             Ok(None) if Instant::now() < deadline && !stop.load(Ordering::Relaxed) => {
                 thread::sleep(Duration::from_millis(10));
             }
             _ => {
-                let _ = child.kill();
-                let _ = child.wait();
+                if helper::terminate(&mut child).is_ok() {
+                    if let Some(charge) = &child_charge {
+                        charge.confirmed();
+                    }
+                }
                 break None;
             }
         }
@@ -352,6 +383,7 @@ pub(crate) fn read_line(
 
 enum Input {
     SourceResnapshot,
+    SourceControls(crate::source::ControlBatch),
     Reconnect,
     Line {
         generation: u64,
@@ -524,9 +556,13 @@ pub struct StreamHandle {
     retry: Arc<Retry>,
     thread: Option<JoinHandle<()>>,
     raw_source: bool,
+    resources: Option<resources::Control>,
 }
 
 impl StreamHandle {
+    pub(crate) fn source_controls(&self, batch: crate::source::ControlBatch) -> bool {
+        self.raw_source && !self.stopped() && self.tx.try_send(Input::SourceControls(batch)).is_ok()
+    }
     pub(crate) fn wake_source_resnapshot(&self) -> bool {
         !self.stopped()
             && match self.tx.try_send(Input::SourceResnapshot) {
@@ -791,9 +827,47 @@ impl StreamHandle {
         self.stop.load(Ordering::Relaxed)
     }
 
-    fn shutdown(&mut self) {
+    /// Close native admissions and wake the owned supervisor without joining.
+    /// This is cancellation only; resource completion needs the host's barrier.
+    pub fn request_stop(&self) {
+        self.close_admissions();
+        let _ = self.tx.try_send(Input::Stop);
+    }
+
+    /// Nonblocking source-owner barrier. No upstream I/O or joins of live work.
+    pub(crate) fn join_source_if_finished(&mut self) -> bool {
+        assert!(self.raw_source);
+        if self
+            .thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
+        {
+            return false;
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        true
+    }
+
+    /// Cancel a source on an owner's early drop without blocking its actor.
+    /// Endpoint guards still count unfinished I/O; this is never a drain proof.
+    pub(crate) fn detach_source(mut self) {
+        assert!(self.raw_source);
+        self.request_stop();
+        self.thread.take();
+    }
+
+    fn close_admissions(&self) {
         self.stop.store(true, Ordering::Relaxed);
-        if self.raw_source {
+        if let Some(resources) = &self.resources {
+            resources.close();
+        }
+    }
+
+    fn shutdown(&mut self) {
+        self.close_admissions();
+        if self.raw_source || self.resources.is_some() {
             let _ = self.tx.try_send(Input::Stop);
             if let Some(thread) = self.thread.take() {
                 let until = Instant::now() + SOURCE_JOIN;
@@ -828,7 +902,34 @@ pub fn spawn(
     timing: Timing,
     sink: Sender<StreamEvent>,
 ) -> StreamHandle {
-    spawn_with(hgs, computer, timing, Some(sink), None).expect("start a stream supervisor")
+    spawn_with(hgs, computer, timing, Some(sink), None, None).expect("start a stream supervisor")
+}
+
+/// Opt into actual helper/pipe/worker retention. The host supplies an already
+/// admitted, bounded source group and retains its consumer callbacks separately.
+/// A bounded stop is not drain: wait on that host's closed admission gate.
+/// Unknown child exit pins its group until host exit. No source or effect authority.
+pub fn spawn_accounted(
+    hgs: &Path,
+    computer: &ComputerId,
+    timing: Timing,
+    sink: Sender<StreamEvent>,
+    resources: Arc<dyn Send + Sync>,
+) -> io::Result<StreamHandle> {
+    if !computer.is_local() && !crate::fleet::valid_alias(&computer.0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid source alias",
+        ));
+    }
+    spawn_with(
+        hgs,
+        computer,
+        timing,
+        Some(sink),
+        None,
+        Some(resources::Scope::new(resources)),
+    )
 }
 
 pub(crate) fn spawn_source(
@@ -837,7 +938,8 @@ pub(crate) fn spawn_source(
     timing: Timing,
     source: crate::source::Endpoint,
 ) -> io::Result<StreamHandle> {
-    spawn_with(hgs, computer, timing, None, Some(source))
+    let resources = source.resources().map(resources::Scope::new);
+    spawn_with(hgs, computer, timing, None, Some(source), resources)
 }
 
 fn spawn_with(
@@ -846,6 +948,7 @@ fn spawn_with(
     timing: Timing,
     sink: Option<Sender<StreamEvent>>,
     mut source: Option<crate::source::Endpoint>,
+    resources: Option<resources::Scope>,
 ) -> io::Result<StreamHandle> {
     let (tx, rx) = mpsc::sync_channel(QUEUE_LINES);
     let follows = Follows::default();
@@ -864,12 +967,16 @@ fn spawn_with(
         });
     }
     let retry = Arc::new(Retry::default());
+    let resource_control = resources.as_ref().map(resources::Scope::control);
     let supervisor = Supervisor {
         hgs: hgs.to_owned(),
         computer: computer.clone(),
         timing,
         sink,
         source,
+        resources,
+        child_charge: None,
+        primary: None,
         connection: None,
         rx,
         tx: tx.clone(),
@@ -916,6 +1023,7 @@ fn spawn_with(
         retry,
         thread: Some(thread),
         raw_source,
+        resources: resource_control,
     })
 }
 
@@ -962,6 +1070,9 @@ struct Supervisor {
     launched: Instant,
     source_seq: Option<u64>,
     reader_stop: Option<Arc<AtomicBool>>,
+    resources: Option<resources::Scope>,
+    child_charge: Option<crate::run::ChildCharge>,
+    primary: Option<Arc<dyn Send + Sync>>,
 }
 
 impl Supervisor {
@@ -987,6 +1098,7 @@ impl Supervisor {
                 timeout,
                 &self.stop,
                 self.source.as_ref(),
+                self.resources.as_ref(),
             ) {
                 Probe::Supported => {
                     self.legacy = None;
@@ -1252,11 +1364,30 @@ impl Supervisor {
     fn spawn_legacy(&mut self, read: crate::legacy::Read) {
         let (hgs, computer, tx) = (self.hgs.clone(), self.computer.clone(), self.tx.clone());
         let failed = read.clone();
+        let resources = match &self.resources {
+            Some(scope) => match scope.rpc() {
+                Some(held) => Some(held),
+                None => {
+                    if let Some(legacy) = &mut self.legacy {
+                        legacy.done(&read, Instant::now());
+                    }
+                    return;
+                }
+            },
+            None => None,
+        };
+        let stop = self.stop.clone();
         let spawned = thread::Builder::new()
             .name("hgs-legacy-poll".into())
             .spawn(move || {
-                let result = crate::legacy::run(&hgs, &computer, &read);
+                let result = match &resources {
+                    Some(held) => {
+                        crate::legacy::run_accounted(&hgs, &computer, &read, &stop, held.clone())
+                    }
+                    None => crate::legacy::run(&hgs, &computer, &read),
+                };
                 let _ = tx.send(Input::Legacy { read, result });
+                drop(resources);
             });
         if spawned.is_err() {
             if let Some(legacy) = self.legacy.as_mut() {
@@ -1363,6 +1494,16 @@ impl Supervisor {
     }
 
     fn launch(&mut self) -> io::Result<()> {
+        let primary = self
+            .resources
+            .as_ref()
+            .map(|scope| {
+                scope.primary().ok_or_else(|| {
+                    eprintln!("zerus-client: role=fleet operation=watch resources=pending");
+                    io::Error::new(io::ErrorKind::WouldBlock, "hgs watch is not ready")
+                })
+            })
+            .transpose()?;
         let reader_slot = if let Some(source) = &self.source {
             let slot = source.reader().ok_or_else(|| {
                 io::Error::new(
@@ -1375,15 +1516,26 @@ impl Supervisor {
             None
         };
 
+        let child_charge = primary.clone().map(crate::run::ChildCharge::new);
         let mut command = hgs_command(&self.hgs, &self.computer, &["watch", "--json"]);
+        helper::prepare(&mut command);
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = if let Some(source) = &self.source {
-            source.spawn(&mut command)?
+        let spawned = if let Some(source) = &self.source {
+            source.spawn(&mut command)
         } else {
-            command.spawn()?
+            command.spawn()
+        };
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(error) => {
+                if let Some(charge) = &child_charge {
+                    charge.confirmed();
+                }
+                return Err(error);
+            }
         };
         self.generation += 1;
         let generation = self.generation;
@@ -1393,20 +1545,26 @@ impl Supervisor {
             let stop = Arc::new(AtomicBool::new(false));
             self.reader_stop = Some(stop.clone());
             let slot = reader_slot.clone();
+            let retained = primary.clone();
             thread::spawn(move || {
                 let _slot = slot;
+                let _resources = retained;
                 read_stream(stdout, generation, tx, source, stop);
             });
         }
         if let Some(mut stderr) = child.stderr.take() {
             let slot = reader_slot.clone();
+            let retained = primary.clone();
             thread::spawn(move || {
                 let _slot = slot;
+                let _resources = retained;
                 let _ = io::copy(&mut stderr, &mut io::sink());
             });
         }
         self.stdin = child.stdin.take();
         self.child = Some(child);
+        self.child_charge = child_charge;
+        self.primary = primary;
         self.greeted = false;
         self.last_frame = Instant::now();
         self.launched = self.last_frame;
@@ -1494,6 +1652,25 @@ impl Supervisor {
                 Ok(Input::UnsubscribeTasks { key }) => {
                     self.state.tasks_mut().unfollow(&key);
                     self.unsubscribe_tasks(&key);
+                }
+                Ok(Input::SourceControls(batch)) => {
+                    if self
+                        .source
+                        .as_ref()
+                        .is_some_and(|source| source.resnapshot.accepting(batch.generation))
+                        && self.greeted
+                        && batch.generation == self.generation
+                    {
+                        if let Some(stdin) = self.stdin.as_mut() {
+                            if stdin
+                                .write_all(&batch.bytes)
+                                .and_then(|()| stdin.flush())
+                                .is_err()
+                            {
+                                return Outcome::Ended;
+                            }
+                        }
+                    }
                 }
                 Ok(Input::Control(control)) => self.write(&control),
                 // A queued wake from an older attempt must never restart a
@@ -1736,15 +1913,26 @@ impl Supervisor {
         let stop = Arc::new(AtomicBool::new(false));
         let (hgs, tx, flag) = (self.hgs.clone(), self.tx.clone(), stop.clone());
         let every = self.timing.organization_poll;
+        let scope = self.resources.clone();
         let spawned = thread::Builder::new()
             .name("hgs-swarm-poll".into())
             .spawn(move || {
                 while !flag.load(Ordering::Relaxed) {
-                    let reply = crate::reads::read(&hgs, &ComputerId::local(), &crate::Read::Swarm);
-                    if flag.load(Ordering::Relaxed)
-                        || tx.send(Input::OrganizationPolled(reply)).is_err()
-                    {
-                        return;
+                    let resources = scope.as_ref().map(resources::Scope::rpc);
+                    if !matches!(resources, Some(None)) {
+                        let held = resources.flatten();
+                        let reply = match &held {
+                            Some(held) => organization_accounted(&hgs, &flag, held.clone()),
+                            None => {
+                                crate::reads::read(&hgs, &ComputerId::local(), &crate::Read::Swarm)
+                            }
+                        };
+                        if flag.load(Ordering::Relaxed)
+                            || tx.send(Input::OrganizationPolled(reply)).is_err()
+                        {
+                            return;
+                        }
+                        drop(held);
                     }
                     let until = Instant::now() + every;
                     while Instant::now() < until && !flag.load(Ordering::Relaxed) {
@@ -1813,12 +2001,24 @@ impl Supervisor {
             .worker_fixed
             .is_none_or(|at| at.elapsed() >= Duration::from_secs(600));
         if self.computer.is_local() && due && self.state.organization().worker_outdated() {
+            let resources = match &self.resources {
+                Some(scope) => match scope.rpc() {
+                    Some(held) => Some(held),
+                    None => return,
+                },
+                None => None,
+            };
             self.worker_fixed = Some(Instant::now());
             let hgs = self.hgs.clone();
+            let stop = self.stop.clone();
             let _ = thread::Builder::new()
                 .name("hgs-swarm-worker".into())
                 .spawn(move || {
-                    let _ = crate::reads::read(&hgs, &ComputerId::local(), &crate::Read::Swarm);
+                    let _held = resources.clone();
+                    let _ = match resources {
+                        Some(held) => organization_accounted(&hgs, &stop, held),
+                        None => crate::reads::read(&hgs, &ComputerId::local(), &crate::Read::Swarm),
+                    };
                 });
         }
     }
@@ -1909,19 +2109,29 @@ impl Supervisor {
         if let Some(mut child) = self.child.take() {
             let deadline = Instant::now() + self.timing.stop_grace;
             loop {
-                match child.try_wait() {
-                    Ok(Some(_)) => break,
+                match helper::try_wait(&mut child) {
+                    Ok(Some(_)) => {
+                        if let Some(charge) = &self.child_charge {
+                            charge.confirmed();
+                        }
+                        break;
+                    }
                     Ok(None) if Instant::now() < deadline => {
                         thread::sleep(Duration::from_millis(5))
                     }
                     _ => {
-                        let _ = child.kill();
-                        let _ = child.wait();
+                        if helper::terminate(&mut child).is_ok() {
+                            if let Some(charge) = &self.child_charge {
+                                charge.confirmed();
+                            }
+                        }
                         break;
                     }
                 }
             }
         }
+        self.child_charge = None;
+        self.primary = None;
         self.connection = None;
         if self.source.is_some() {
             // Release stale-generation ingress before reserving a reconnect
@@ -1997,6 +2207,27 @@ fn read_stream(
             }
         }
     }
+}
+
+fn organization_accounted(
+    hgs: &Path,
+    stop: &AtomicBool,
+    resources: Arc<dyn Send + Sync>,
+) -> Result<Value, crate::reads::ReadError> {
+    use crate::{
+        reads::{self, ReadError},
+        run::Stopped,
+    };
+    let read = crate::Read::Swarm;
+    let inv = reads::invocation(&ComputerId::local(), &read)?;
+    let exit = crate::run::run_accounted(hgs, &inv, &[], read.limit(), stop, resources.clone())
+        .map_err(|error| match error {
+            Stopped::Cancelled => ReadError::Superseded,
+            Stopped::TooLarge(error) => ReadError::TooLarge { limit: error.cap },
+        })?;
+    let outcome = reads::decode(&read, exit);
+    drop(resources);
+    outcome
 }
 
 #[cfg(test)]

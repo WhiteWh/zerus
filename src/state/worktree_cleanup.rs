@@ -585,6 +585,7 @@ fn assess(tree: &Value, trees: &[Value], context: &Context, total: Instant) -> V
     };
     samples.sort_by_key(|(pid, _, _)| *pid);
     samples.dedup_by_key(|(pid, _, _)| *pid);
+    row["process_count"] = json!(samples.len());
     row["processes"] = json!(samples
         .iter()
         .take(MAX_SAMPLES)
@@ -1051,12 +1052,20 @@ pub(super) fn remove_command(args: &[String]) -> Result<Value> {
 /// Only the CLI exposes the structured outcome. Internal lifecycle callers keep
 /// the existing Result contract. Once Git may have started, errors are uncertain.
 pub(super) fn remove_with_outcome(args: &[String]) -> (Result<Value>, bool) {
-    let mut attempted = false;
-    let result = remove(args, &mut attempted);
+    let (result, attempted, _) = remove_with_review(args);
     (result, attempted)
 }
 
-fn remove(args: &[String], attempted: &mut bool) -> Result<Value> {
+/// The same operation's observed review, for the archive cleanup notice. This
+/// never performs a second check or retries an uncertain removal.
+pub(super) fn remove_with_review(args: &[String]) -> (Result<Value>, bool, Option<Value>) {
+    let mut attempted = false;
+    let mut observed = None;
+    let result = remove(args, &mut attempted, &mut observed);
+    (result, attempted, observed)
+}
+
+fn remove(args: &[String], attempted: &mut bool, observed: &mut Option<Value>) -> Result<Value> {
     const USAGE: &str = "usage: hgs worktrees remove --path WORKTREE --common-dir DIR --fingerprint HASH [--ignored-fingerprint HASH] [--process-fingerprint HASH] [--delete-branch] [--request-id ID] [--json]";
     let mut options = BTreeMap::new();
     let mut delete_branch = false;
@@ -1178,6 +1187,7 @@ fn remove(args: &[String], attempted: &mut bool) -> Result<Value> {
         .and_then(|rows| rows.first())
         .cloned()
         .ok_or(changed)?;
+    *observed = Some(row.clone());
     let path = PathBuf::from(string(&row, "path"));
     if options.get("--owner-id").is_some_and(|expected|row["ownership_id"].as_str()!=Some(*expected)) {
         return Err("Worktree ownership changed; the replacement checkout was kept for review".into());

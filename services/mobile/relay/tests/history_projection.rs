@@ -3,6 +3,7 @@ mod common;
 
 use common::Fixture;
 use serde_json::{json, Value};
+use std::time::Duration;
 use uuid::Uuid;
 use zerus_relay::{
     args,
@@ -115,13 +116,21 @@ async fn projection_needs_its_own_selected_machine_operation_and_uses_the_read_q
 
 #[tokio::test]
 async fn projection_terminal_reads_expire_by_own_index_and_keep_active_rows_and_mutations() {
+    tokio::time::timeout(Duration::from_secs(60), projection_retention_fixture())
+        .await
+        .expect("projection retention fixture must finish within its retained-row headroom");
+}
+
+async fn projection_retention_fixture() {
     let f = Fixture::new().await;
     beat(&f, &["history_projection"]).await;
     let mut reads = Vec::new();
     for state in ["completed", "failed", "uncertain"] {
         let body = command(&f.node.id);
         complete(&f, &body, state).await;
-        age(&f, &body, 3599.0).await;
+        // Stay near the one-hour boundary to catch shortened retention.
+        // The 100-second headroom exceeds the whole fixture's 60-second bound.
+        age(&f, &body, 3500.0).await;
         reads.push(body);
     }
     let mutation = f.command("send");
@@ -130,6 +139,8 @@ async fn projection_terminal_reads_expire_by_own_index_and_keep_active_rows_and_
     let active = command(&f.node.id);
     f.submit(&active).await.unwrap();
     age(&f, &active, 3601.0).await;
+    // Reproduce scheduling beyond the former one-second retention headroom.
+    tokio::time::sleep(Duration::from_millis(1250)).await;
     f.store.maintain(false).await.unwrap();
     for body in &reads {
         assert!(f

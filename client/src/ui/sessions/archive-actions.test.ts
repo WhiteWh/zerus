@@ -8,7 +8,10 @@ vi.hoisted(() => {
   // The dialogs module registers Solid's delegated events when it loads; nothing renders here.
   vi.stubGlobal("window", { document: { addEventListener: () => {} } });
 });
+vi.mock("../../store/endActions", () => ({ endActions: { schedule: async (_captures: unknown[], run: (refs: unknown[], key: string) => Promise<unknown>) => run([{ id: "test-delay", index: 0 }], "test-end") } }));
 vi.mock("../../bridge", () => ({
+  // The session entry points also initialize the bounded creation-card store.
+  onCreations: vi.fn(async () => () => {}), creationsView: vi.fn(async () => []),
   archivePage: vi.fn(),
   resetArchivePages: vi.fn(async () => {}),
   cancelArchivePages: vi.fn(async () => {}),
@@ -40,7 +43,7 @@ import { emptyBatch, type ArchivePage, type ArchiveRow, type Outcome, type ViewR
 // app's stores: the archive pages, the guarded calls and the batch.
 
 const mocked = vi.mocked(bridge);
-const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
 const uuid = (n: number) => `20000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const done = (): Outcome => ({ outcome: "done", receipt: {}, cleanup: null });
 const archived = (n: number, group = "ungrouped"): ArchiveRow => ({ group, rank: 0,

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Create opt-in per-user compatibility links for a system Zerus package.
+"""Create per-user compatibility links or register the desktop service.
 
 Existing SSH protocols use ~/.local/bin/hgs. Pacman cannot install into a user's
-home, so this explicit command supplies that link without replacing existing
-executables, changing agent state, or starting any service.
+home, so the default command supplies that link without replacing existing
+executables or starting services. --desktop-service explicitly registers this
+user's background service with the selected CLI and local configuration.
 """
 import argparse
 import os
@@ -23,11 +24,36 @@ def main():
                              "writes one file and starts or restarts nothing")
     parser.add_argument("--binary", help="with --mobile-connector install or migrate: the Rust connector to use "
                                          "when both /usr/bin and ~/.local/bin copies exist")
+    parser.add_argument("--desktop-service", nargs="?", const="install", choices=("install", "session"),
+                        help="register the user desktop service, or refresh its current graphical session")
+    parser.add_argument("--hgs", type=Path, help="with --desktop-service: the selected local CLI")
+    parser.add_argument("--config-dir", help="with --desktop-service: selected HGS_CONFIG_DIR")
+    parser.add_argument("--state-dir", help="with --desktop-service: selected HGS_STATE_DIR")
+    parser.add_argument("--no-start", action="store_true", help="register desktop startup for the next graphical login")
+    parser.add_argument("--check", action="store_true", help="validate desktop registration without changing files")
     args = parser.parse_args()
     if os.geteuid() == 0:
         parser.error("run this command as the desktop user, without sudo")
     if args.binary and args.mobile_connector not in ("install", "migrate"):
         parser.error("--binary applies to --mobile-connector install and migrate")
+    if args.desktop_service and args.mobile_connector:
+        parser.error("choose desktop or mobile connector registration separately")
+    if not args.desktop_service and (args.hgs or args.config_dir or args.state_dir or args.no_start or args.check):
+        parser.error("desktop options require --desktop-service")
+    if args.desktop_service:
+        tool = args.prefix.resolve() / "lib/zerus/install-linux-desktop-service.py"
+        if not tool.is_file():
+            parser.error(f"packaged file is missing: {tool}")
+        hgs = args.hgs if args.hgs is not None else args.prefix.resolve() / "bin/hgs"
+        command = [sys.executable, str(tool), args.desktop_service, "--hgs", str(hgs)]
+        for flag, value in (("--config-dir", args.config_dir), ("--state-dir", args.state_dir)):
+            if value is not None:
+                command += [flag, value]
+        if args.no_start:
+            command.append("--no-start")
+        if args.check:
+            command.append("--check")
+        return subprocess.run(command, stdin=subprocess.DEVNULL, close_fds=True).returncode
     if args.mobile_connector:
         # Only the connector service changes; no compatibility link is made.
         tool = args.prefix.resolve() / "lib/zerus/install-mobile-connector-service.py"
@@ -53,6 +79,7 @@ def main():
             destination.symlink_to(target)
     print("Compatibility links ready. Existing agent sessions and services were left running.")
     print("Optional desktop autostart: systemctl --user enable --now hgs-tray.service")
+    print("Desktop background service: zerus-setup --desktop-service")
     print("Optional background workers: systemctl --user enable --now hgs-swarm.service hgs-recovery.service")
     return 0
 

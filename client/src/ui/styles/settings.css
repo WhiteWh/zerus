@@ -53,9 +53,37 @@
   .skin-meta {display: flex; align-items: center; gap: 6px; min-width: 0; }
   .skin-name {font-weight: 600; font-size: var(--fs-sm); }
   .skin-inuse {background: var(--z-color-accent-bg); color: var(--z-color-accent); }
+  .ws-panel {padding: 8px 16px 10px; }
+  .ws-summary {display: flex; align-items: flex-start; gap: 12px; padding: 10px 0 2px; font-size: var(--fs-sm); }
+  .ws-icon {display: grid; place-items: center; width: 36px; height: 36px; flex: none; border-radius: var(--z-radius-lg); background: var(--z-color-hover); color: var(--z-color-muted); }
+  .ws-icon.ok {background: var(--z-color-accent-bg); color: var(--z-color-accent); }
+  .ws-icon.warn {background: var(--z-color-warn-bg); color: var(--z-color-warn); }
+  .ws-title > div:first-child {font-weight: 600; font-size: var(--fs-md); color: var(--z-color-text); }
+  .ws-title > div + div {color: var(--z-color-muted); }
+  .ws-enroll {border-top: 1px solid var(--z-color-divider); margin-top: 4px; }
+  .ws-enroll .set-row {padding: 8px 0; }
+  .ws-enroll .set-wide-field, .set-legacy .set-wide-field {width: 380px; max-width: 100%; }
+  .set-disclosure {align-self: flex-start; padding-left: 4px; }
+  .set-legacy p {font-size: var(--fs-sm); }
+  .set-legacy .small-path {font-size: var(--fs-xs); }
+  .ws-invite {border-top: 1px solid var(--z-color-divider); margin-top: 4px; padding-top: 4px; }
   .skin-swatches {display: flex; align-items: center; gap: 4px; }
   .skin-swatches i {width: 11px; height: 11px; border-radius: 50%; border: 1px solid var(--z-color-divider); }
   .skin-origin {margin-left: auto; font-size: var(--fs-2xs); color: var(--z-color-dim); }
+  .pp-body {display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 18px; align-items: center; margin: 12px 0 6px; font-size: var(--fs-sm); }
+  .pp-ws {line-height: 1.5; }
+  .pp-body .kv {grid-template-columns: 56px minmax(0, 1fr); }
+  .pp-code {width: 100%; margin: 4px 0; font-size: var(--fs-xs); }
+  .qr, .qr-status {width: 200px; height: 200px; }
+  .qr-status {display: grid; place-items: center; text-align: center; }
+  /* Camera-readable contrast, as Qt PhonePairing::QrCodeView, in every skin. */
+  .qr-paper {fill: #fff; } .qr-ink {fill: #000; } .qr.expired {opacity: .2; }
+  .si-grid {display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 16px; }
+  textarea.si-text {width: 100%; height: 360px; resize: vertical; font-size: var(--fs-xs); white-space: pre; tab-size: 2; }
+  .si-result {display: flex; flex-direction: column; gap: 8px; font-size: var(--fs-sm); }
+  .si-name {display: flex; align-items: center; gap: 8px; }
+  .si-result .kv {grid-template-columns: 110px 1fr; }
+  @media (max-width: 1180px) {.si-grid {grid-template-columns: minmax(0, 1fr); }}
   .skin-variants {font-size: var(--fs-2xs); color: var(--z-color-dim); }
   /* The mockup's narrow and reduced-motion rules, with the client's Reduce
      motion setting (motion.css) as well as the system's. */

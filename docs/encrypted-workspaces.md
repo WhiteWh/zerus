@@ -159,3 +159,14 @@ crash tests in `services/mobile/connector`; real PostgreSQL workspace controls
 in `services/mobile/workspace-tests`; service isolation/priority tests in the
 relay suite; and native wire/storage/HTTP tests in Android and ZerusKit. Source
 changes and test builds do not migrate a live gateway or publish a release.
+
+Desktop Stop admission is advertised as `Workspace stop ABI: service-preflight-v1`
+in connector help and `capabilities.workspace_stop` in `--check --json`. Before
+writing a generation-bound Stop marker, Linux verifies the saved managed unit,
+its effective `KillMode=process` policy, unchanged definition, exact MainPID,
+connector image, journal lock and generation. Extra processes or delegated
+cgroups refuse. A foreground connector needs the exact journal-owning process
+and no active service; unreadable supervision refuses. Platforms without a
+verified installer service admission refuse Stop. Clients must require the ABI
+marker before offering Stop or a running workspace change; there is no legacy
+Stop fallback. Installing a new connector on a live gateway remains explicit.

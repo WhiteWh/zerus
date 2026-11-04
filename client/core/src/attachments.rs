@@ -20,6 +20,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub mod image;
+
 pub const MAX_ATTACHMENTS: usize = 8;
 pub const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
 pub const MAX_TOTAL_BYTES: usize = 20 * 1024 * 1024;
@@ -562,6 +564,8 @@ pub struct StoredFile {
     pub bytes: u64,
     pub reference: String,
     pub local_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_size: Option<image::Size>,
 }
 
 /// Cache a message's attachments before it is sent, as `prepareAsync`.
@@ -592,6 +596,7 @@ pub fn prepare(root: &Path, attachments: &[Attachment]) -> Result<Vec<StoredFile
                 bytes: attachment.bytes.len() as u64,
                 reference: attachment.reference.clone(),
                 local_path,
+                image_size: image::dimensions(&attachment.bytes),
             })
         })
         .collect()

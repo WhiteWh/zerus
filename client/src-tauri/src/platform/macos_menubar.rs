@@ -27,6 +27,7 @@ use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, Wry};
 use zerus_client_core::menubar::{Apply, Entry, Face, OpenMode};
+use zerus_client_core::text::Text;
 use zerus_client_core::trayicon::{self, Rgb, Step, Tile};
 
 pub use crate::desk::MenuAction;
@@ -188,10 +189,12 @@ fn rebuild(app: &AppHandle, glue: &mut Glue, entries: &[Entry]) -> tauri::Result
             }
             Item::Separator => glue.menu.append(&PredefinedMenuItem::separator(app)?)?,
             Item::OpenIn { id, modes } => {
-                let submenu = Submenu::with_id(app, id, "Open in", true)?;
+                let title = crate::native_text::render(&zerus_client_core::text!("Open in"));
+                let submenu = Submenu::with_id(app, id, title, true)?;
                 for (id, mode, checked) in modes {
+                    let label = crate::native_text::render(&Text::new(mode.label()));
                     let check =
-                        CheckMenuItem::with_id(app, id, mode.label(), true, checked, None::<&str>)?;
+                        CheckMenuItem::with_id(app, id, label, true, checked, None::<&str>)?;
                     submenu.append(&check)?;
                     glue.open_in.push((check, mode));
                 }

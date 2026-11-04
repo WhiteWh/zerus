@@ -1,5 +1,6 @@
 import type { Session } from "./types";
 import { effortValid } from "./opencode-models";
+import { tr } from "../../i18n";
 
 export interface ModelChoice { id: string; label: string; effort_options: string[]; effort_labels: string[] }
 export interface ModelContext {
@@ -37,24 +38,24 @@ export function settingsView(input: ModelContext, changing = false) {
   const pendingModel = text(d?.pending_model), pendingEffort = text(d?.pending_effort);
   const pending = !!pendingModel || !!pendingEffort;
   const applyWhen = text(d?.settings_apply_when);
-  const reason = !online ? "Machine unavailable. Reconnect to change model settings."
-    : changing ? "Updating model settings…"
-    : busy ? "Wait for the session update to finish."
-    : input.answering ? "Wait for the answer to be delivered."
-    : input.inspectError || !d ? "Refresh the session before changing model settings."
-    : d.settings_change_supported !== true ? text(d.settings_change_reason) || "Model settings are not available for this session." : "";
+  const reason = !online ? tr("Machine unavailable. Reconnect to change model settings.")
+    : changing ? tr("Updating model settings…")
+    : busy ? tr("Wait for the session update to finish.")
+    : input.answering ? tr("Wait for the answer to be delivered.")
+    : input.inspectError || !d ? tr("Refresh the session before changing model settings.")
+    : d.settings_change_supported !== true ? text(d.settings_change_reason) || tr("Model settings are not available for this session.") : "";
   const shownModel = model || "Model", suffix = (effort ? `  ${effort}` : "") + (pending ? "  ◷" : "");
-  let hint = reason || (applyWhen === "resume" ? "Saved for the next resume. The session stays stopped."
-    : applyWhen === "ready" ? "Applies when the agent is ready. Messages sent while it is working use the current model." : "Applies to this session only.");
-  const changeNotice = text(d?.settings_change_notice) || (row.cmd === "claude" ? "Claude re-reads the conversation with the new model on its next turn." : "");
+  let hint = reason || (applyWhen === "resume" ? tr("Saved for the next resume. The session stays stopped.")
+    : applyWhen === "ready" ? tr("Applies when the agent is ready. Messages sent while it is working use the current model.") : tr("Applies to this session only."));
+  const changeNotice = text(d?.settings_change_notice) || (row.cmd === "claude" ? tr("Claude re-reads the conversation with the new model on its next turn.") : "");
   if (pending) hint = `Pending: ${pendingModel || model}${pendingEffort ? `  ${pendingEffort}` : ""}\nCurrent: ${model}${effort ? `  ${effort}` : ""}\n${hint}`;
   let tooltip = `Current: ${shownModel}${effort ? `  ${effort}` : ""}`;
   if (pending) tooltip += `\nPending: ${pendingModel || model}${pendingEffort ? `  ${pendingEffort}` : ""}`;
   if (reason) tooltip += `\n${reason}`;
-  return { model, effort, shownModel, suffix, tooltip, accessible: `Model and reasoning effort: ${shownModel}${suffix}`,
+  return { model, effort, shownModel, suffix, tooltip, accessible: tr("Model and reasoning effort: %1%2", shownModel, suffix),
     pending, pendingModel, pendingEffort, applyWhen, reason, hint, changeNotice, enabled: !reason,
     intendedModel: pendingModel || model, intendedEffort: pending ? pendingEffort : effort,
-    applyLabel: applyWhen === "resume" ? "Save for resume" : applyWhen === "ready" ? "Save change" : "Apply",
+    applyLabel: applyWhen === "resume" ? tr("Save for resume") : applyWhen === "ready" ? tr("Save change") : "Apply",
     openCode: row.cmd === "opencode", terminal: row.cmd === "claude" && online && row.state === "running" && !text(d?.expected_id),
     options: modelChoices(d?.model_options) };
 }
@@ -67,6 +68,6 @@ export function effortChoices(options: ModelChoice[], model: string, preferred: 
     if ((!openCode || effortValid(effort)) && !choices.some((c) => c.value === effort)) choices.push({ value: effort, label: openCode ? option.effort_labels[i] || effort : effort });
   });
   if (openCode && model === currentModel && effortValid(currentEffort) && !choices.some((c) => c.value === currentEffort)) choices.push({ value: currentEffort, label: currentEffort });
-  if (!choices.length) choices.push({ value: "", label: "Provider default" });
+  if (!choices.length) choices.push({ value: "", label: tr("Provider default") });
   return { choices, value: choices.some((c) => c.value === preferred) ? preferred : choices[0].value };
 }

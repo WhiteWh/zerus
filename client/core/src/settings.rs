@@ -7,8 +7,13 @@
 //! from Qt's own store; Qt's store is never written, so a rollback finds Qt as
 //! it was. Loading, seeding and writing run on the store's own thread.
 
+mod capture;
+pub mod geometry;
+pub use capture::{CapturedQt, CapturedSettings};
 mod imports;
 pub mod qt;
+mod qt_layout;
+pub mod repository;
 pub use imports::OrganizationImport;
 pub(crate) use imports::{family_metadata, valid_family_metadata};
 
@@ -65,8 +70,8 @@ const fn key(name: &'static str, kind: Kind) -> Key {
     }
 }
 
-/// A setting of the client's own that Qt does not have: its `client/`
-/// prefix keeps it apart from any key Qt adds later, and it is never seeded.
+/// A Next preference excluded from the original switch seed. Explicit new
+/// G3 families may import compatible Qt values through their own journal.
 const fn client(name: &'static str, kind: Kind) -> Key {
     Key {
         name,
@@ -88,6 +93,17 @@ pub const QT_AUTOMATIC_APPROVALS: &str = "automaticApprovals/qtEnabledAtSwitch";
 
 /// Every local setting the client has. Sources are in the plan's table.
 pub const KEYS: &[Key] = &[
+    // Dangerous Next opt-in: never seed Qt's enabled value or transient error.
+    Key {
+        name: crate::approvals::automatic::ENABLED,
+        kind: Kind::Flag(false),
+        seeded: false,
+    },
+    Key {
+        name: crate::approvals::automatic::ERROR,
+        kind: Kind::Text(""),
+        seeded: false,
+    },
     // Appearance (SettingsPage.h:46-95, UiLanguage.h, ContentScale.h,
     // ActivityWidth.h, WindowLayer.cpp).
     key(
@@ -243,6 +259,24 @@ pub const KEYS: &[Key] = &[
         },
     ),
     client("workspace/inspectorClosed", Kind::Text("[]")),
+    // New G3 families use the family journal, not the original switch seed.
+    client("client/windowGeometry", Kind::Text("")),
+    client(
+        "workspace/sessionsWidth",
+        Kind::Whole {
+            default: 310,
+            min: 270,
+            max: 2400,
+        },
+    ),
+    client(
+        "workspace/projectFolderSplit",
+        Kind::Whole {
+            default: 230,
+            min: 160,
+            max: 4096,
+        },
+    ),
 ];
 
 /// The setting called `name`: a listed key, a shortcut override, or one of
@@ -554,6 +588,57 @@ impl QtStore {
             modified_at,
         }))
     }
+
+    /// Native report capture. The fixed Mac export child and every original
+    /// pipe retain the supplied source resources; failure never substitutes a
+    /// potentially stale plist for an uncertain current defaults export.
+    pub fn snapshot_retained(
+        &self,
+        resources: Arc<dyn Send + Sync>,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<Option<QtSnapshot>, String> {
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("Qt source capture stopped".into());
+        }
+        if let QtStore::Plist {
+            domain: Some(domain),
+            ..
+        } = self
+        {
+            let invocation = crate::actions::Invocation {
+                args: vec!["export".into(), domain.into(), "-".into()],
+                stdin: None,
+                timeout: Duration::from_secs(10),
+                request_id: None,
+            };
+            let result = crate::run::run_streamed_retained(
+                Path::new(DEFAULTS),
+                &invocation,
+                &[],
+                MAX_QT_STORE as usize,
+                cancel,
+                resources,
+                |_| true,
+            );
+            let bytes = match result {
+                Ok(crate::actions::Exit::Code {
+                    code: 0, stdout, ..
+                }) => stdout,
+                _ => return Err("Qt source export is unconfirmed".into()),
+            };
+            let values = qt::read_plist(&bytes)?;
+            return Ok(Some(QtSnapshot {
+                values,
+                source: "qt-defaults",
+                sha256: zerus_desktop_migration::sha256(&bytes),
+                modified_at: fs::metadata(self.path())
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(seconds),
+            }));
+        }
+        self.snapshot()
+    }
 }
 
 fn seconds(time: SystemTime) -> Option<u64> {
@@ -724,6 +809,7 @@ struct State {
     seed: Option<QtStore>,
     error: Option<String>,
     revision: u64,
+    capturing: bool,
 }
 
 struct Shared {
@@ -762,6 +848,7 @@ impl Settings {
                 seed,
                 error: None,
                 revision: 0,
+                capturing: false,
             }),
             signal: Condvar::new(),
             listeners: Mutex::new(Vec::new()),
@@ -846,8 +933,8 @@ impl Settings {
     }
 
     /// Stores a value, normalized as Qt reads it, and returns what is now in
-    /// effect. Removing a shortcut override (`Null`) restores its defaults and
-    /// returns `Null`.
+    /// effect. Removing an override (`Null`) restores its defaults and returns
+    /// `Null` where that setting supports removal.
     pub fn set(&self, name: &str, value: Value) -> Result<Value, String> {
         self.set_tracked(name, value).map(|(value, _)| value)
     }
@@ -860,6 +947,7 @@ impl Settings {
         }
         let stored = match (&key.kind, &value) {
             (Kind::Chords, Value::Null) => None,
+            (Kind::Text(""), Value::Null) if name.starts_with("machines/colors/") => None,
             (Kind::AutoFlag, Value::String(s)) if s == "auto" => Some(Value::from("auto")),
             (Kind::AutoFlag | Kind::Flag(_), Value::Bool(_))
             | (Kind::Choice(_) | Kind::Text(_) | Kind::Bytes, Value::String(_))
@@ -877,6 +965,9 @@ impl Settings {
         };
         let (now, revision) = {
             let mut state = self.loaded();
+            if state.capturing {
+                return Err("Settings are temporarily paused for the migration snapshot.".into());
+            }
             if let Some(error) = &state.unreadable {
                 return Err(error.clone());
             }
@@ -979,7 +1070,7 @@ impl Settings {
     ) -> Result<bool, String> {
         let changed = {
             let mut state = self.loaded();
-            if state.unreadable.is_some() || state.closed {
+            if state.unreadable.is_some() || state.closed || state.capturing {
                 return Err("Settings cannot record a project import.".into());
             }
             let mut candidate = state.contents.clone();

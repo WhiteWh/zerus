@@ -1,0 +1,373 @@
+[
+  {
+    "case": "awaiting_handoff",
+    "status": {
+      "abi": "desktop-v1",
+      "automatic_approvals": null,
+      "catalog_reads": {
+        "abi": "desktop-catalog-v1",
+        "change_byte_limit": 16777216,
+        "change_item_limit": 32768,
+        "changes_abi": "desktop-catalog-changes-v1",
+        "idle_ms": 120000,
+        "lifetime_ms": 600000,
+        "limit": 64,
+        "retained_walks": 0
+      },
+      "configuration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "epoch": "00000000-0000-4000-8000-000000000001",
+      "generation": 1,
+      "lifecycle": {
+        "abi": "desktop-lifecycle-v1",
+        "background": {
+          "approvals": {
+            "code": "awaiting_handoff",
+            "drained": false,
+            "enabled": null,
+            "ready": false
+          },
+          "attention": {
+            "code": "not_started",
+            "ready": false
+          },
+          "fleet": {
+            "code": "not_started",
+            "ready": false
+          },
+          "presence": {
+            "code": "not_started",
+            "ready": false
+          },
+          "reads": {
+            "code": "awaiting_handoff",
+            "drained": false,
+            "ready": false
+          }
+        },
+        "configuration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "epoch": "00000000-0000-4000-8000-000000000001",
+        "generation": 1,
+        "ipc_ready": true,
+        "phase": "serving"
+      }
+    }
+  },
+  {
+    "case": "disabled_but_ready",
+    "status": {
+      "abi": "desktop-v1",
+      "automatic_approvals": false,
+      "catalog_reads": {
+        "abi": "desktop-catalog-v1",
+        "change_byte_limit": 16777216,
+        "change_item_limit": 32768,
+        "changes_abi": "desktop-catalog-changes-v1",
+        "idle_ms": 120000,
+        "lifetime_ms": 600000,
+        "limit": 64,
+        "retained_walks": 0
+      },
+      "configuration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "epoch": "00000000-0000-4000-8000-000000000001",
+      "generation": 1,
+      "lifecycle": {
+        "abi": "desktop-lifecycle-v1",
+        "background": {
+          "approvals": {
+            "code": "disabled",
+            "drained": false,
+            "enabled": false,
+            "ready": true
+          },
+          "attention": {
+            "code": "not_started",
+            "ready": false
+          },
+          "fleet": {
+            "code": "not_started",
+            "ready": false
+          },
+          "presence": {
+            "code": "not_started",
+            "ready": false
+          },
+          "reads": {
+            "code": "running",
+            "drained": false,
+            "ready": true
+          }
+        },
+        "configuration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "epoch": "00000000-0000-4000-8000-000000000001",
+        "generation": 1,
+        "ipc_ready": true,
+        "phase": "serving"
+      }
+    }
+  },
+  {
+    "case": "enabled",
+    "status": {
+      "abi": "desktop-v1",
+      "automatic_approvals": true,
+      "catalog_reads": {
+        "abi": "desktop-catalog-v1",
+        "change_byte_limit": 16777216,
+        "change_item_limit": 32768,
+        "changes_abi": "desktop-catalog-changes-v1",
+        "idle_ms": 120000,
+        "lifetime_ms": 600000,
+        "limit": 64,
+        "retained_walks": 0
+      },
+      "configuration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "epoch": "00000000-0000-4000-8000-000000000001",
+      "generation": 1,
+      "lifecycle": {
+        "abi": "desktop-lifecycle-v1",
+        "background": {
+          "approvals": {
+            "code": "running",
+            "drained": false,
+            "enabled": true,
+            "ready": true
+          },
+          "attention": {
+            "code": "not_started",
+            "ready": false
+          },
+          "fleet": {
+            "code": "not_started",
+            "ready": false
+          },
+          "presence": {
+            "code": "not_started",
+            "ready": false
+          },
+          "reads": {
+            "code": "running",
+            "drained": false,
+            "ready": true
+          }
+        },
+        "configuration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "epoch": "00000000-0000-4000-8000-000000000001",
+        "generation": 1,
+        "ipc_ready": true,
+        "phase": "serving"
+      }
+    }
+  },
+  {
+    "case": "approval_degraded",
+    "status": {
+      "abi": "desktop-v1",
+      "automatic_approvals": true,
+      "catalog_reads": {
+        "abi": "desktop-catalog-v1",
+        "change_byte_limit": 16777216,
+        "change_item_limit": 32768,
+        "changes_abi": "desktop-catalog-changes-v1",
+        "idle_ms": 120000,
+        "lifetime_ms": 600000,
+        "limit": 64,
+        "retained_walks": 0
+      },
+      "configuration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "epoch": "00000000-0000-4000-8000-000000000001",
+      "generation": 1,
+      "lifecycle": {
+        "abi": "desktop-lifecycle-v1",
+        "background": {
+          "approvals": {
+            "code": "unavailable",
+            "drained": false,
+            "enabled": true,
+            "ready": false
+          },
+          "attention": {
+            "code": "not_started",
+            "ready": false
+          },
+          "fleet": {
+            "code": "not_started",
+            "ready": false
+          },
+          "presence": {
+            "code": "not_started",
+            "ready": false
+          },
+          "reads": {
+            "code": "running",
+            "drained": false,
+            "ready": true
+          }
+        },
+        "configuration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "epoch": "00000000-0000-4000-8000-000000000001",
+        "generation": 1,
+        "ipc_ready": true,
+        "phase": "serving"
+      }
+    }
+  },
+  {
+    "case": "disabled_while_degraded",
+    "status": {
+      "abi": "desktop-v1",
+      "automatic_approvals": false,
+      "catalog_reads": {
+        "abi": "desktop-catalog-v1",
+        "change_byte_limit": 16777216,
+        "change_item_limit": 32768,
+        "changes_abi": "desktop-catalog-changes-v1",
+        "idle_ms": 120000,
+        "lifetime_ms": 600000,
+        "limit": 64,
+        "retained_walks": 0
+      },
+      "configuration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "epoch": "00000000-0000-4000-8000-000000000001",
+      "generation": 1,
+      "lifecycle": {
+        "abi": "desktop-lifecycle-v1",
+        "background": {
+          "approvals": {
+            "code": "unavailable",
+            "drained": false,
+            "enabled": false,
+            "ready": false
+          },
+          "attention": {
+            "code": "not_started",
+            "ready": false
+          },
+          "fleet": {
+            "code": "not_started",
+            "ready": false
+          },
+          "presence": {
+            "code": "not_started",
+            "ready": false
+          },
+          "reads": {
+            "code": "running",
+            "drained": false,
+            "ready": true
+          }
+        },
+        "configuration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "epoch": "00000000-0000-4000-8000-000000000001",
+        "generation": 1,
+        "ipc_ready": true,
+        "phase": "serving"
+      }
+    }
+  },
+  {
+    "case": "read_degraded",
+    "status": {
+      "abi": "desktop-v1",
+      "automatic_approvals": false,
+      "catalog_reads": {
+        "abi": "desktop-catalog-v1",
+        "change_byte_limit": 16777216,
+        "change_item_limit": 32768,
+        "changes_abi": "desktop-catalog-changes-v1",
+        "idle_ms": 120000,
+        "lifetime_ms": 600000,
+        "limit": 64,
+        "retained_walks": 0
+      },
+      "configuration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "epoch": "00000000-0000-4000-8000-000000000001",
+      "generation": 1,
+      "lifecycle": {
+        "abi": "desktop-lifecycle-v1",
+        "background": {
+          "approvals": {
+            "code": "disabled",
+            "drained": false,
+            "enabled": false,
+            "ready": true
+          },
+          "attention": {
+            "code": "not_started",
+            "ready": false
+          },
+          "fleet": {
+            "code": "not_started",
+            "ready": false
+          },
+          "presence": {
+            "code": "not_started",
+            "ready": false
+          },
+          "reads": {
+            "code": "unavailable",
+            "drained": false,
+            "ready": false
+          }
+        },
+        "configuration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "epoch": "00000000-0000-4000-8000-000000000001",
+        "generation": 1,
+        "ipc_ready": true,
+        "phase": "serving"
+      }
+    }
+  },
+  {
+    "case": "drained",
+    "status": {
+      "abi": "desktop-v1",
+      "automatic_approvals": false,
+      "catalog_reads": {
+        "abi": "desktop-catalog-v1",
+        "change_byte_limit": 16777216,
+        "change_item_limit": 32768,
+        "changes_abi": "desktop-catalog-changes-v1",
+        "idle_ms": 120000,
+        "lifetime_ms": 600000,
+        "limit": 64,
+        "retained_walks": 0
+      },
+      "configuration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "epoch": "00000000-0000-4000-8000-000000000001",
+      "generation": 1,
+      "lifecycle": {
+        "abi": "desktop-lifecycle-v1",
+        "background": {
+          "approvals": {
+            "code": "drained",
+            "drained": true,
+            "enabled": false,
+            "ready": false
+          },
+          "attention": {
+            "code": "not_started",
+            "ready": false
+          },
+          "fleet": {
+            "code": "not_started",
+            "ready": false
+          },
+          "presence": {
+            "code": "not_started",
+            "ready": false
+          },
+          "reads": {
+            "code": "drained",
+            "drained": true,
+            "ready": false
+          }
+        },
+        "configuration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "epoch": "00000000-0000-4000-8000-000000000001",
+        "generation": 1,
+        "ipc_ready": true,
+        "phase": "serving"
+      }
+    }
+  }
+]

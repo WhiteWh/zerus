@@ -2,6 +2,7 @@ import { Index, Show, createEffect, createMemo, createSignal, onCleanup, onMount
 import type { PickerView } from "./opencode-models";
 import { composing } from "../lib/keys";
 import { SEARCH_LIMIT, SEARCH_PAUSE_MS, enterRow, pickerValues, popoverBox, starText, stepRow } from "./model-picker";
+import { tr } from "../../i18n";
 
 // OpenCode's model popover (NewSessionDialog::openModelPicker 1266-1274 with
 // OpenCodeModelPicker.cpp), from the prototype's layout (design/webui/src/
@@ -77,13 +78,13 @@ export function ModelList(props: { view: () => PickerView; act: ModelPickerActio
   };
   return (
     <div class="ocm">
-      <input ref={search} disabled={props.disabled} class="field" type="search" placeholder="Search models" aria-label="Search models" maxLength={SEARCH_LIMIT} value={text()}
+      <input ref={search} disabled={props.disabled} class="field" type="search" placeholder={tr("Search models")} aria-label={tr("Search models")} maxLength={SEARCH_LIMIT} value={text()}
         onInput={(e) => onSearch(e.currentTarget.value)}
         onKeyDown={(e) => {
           // Escape closes the popup, as Qt's: WebKit's search field would only clear itself.
           if (e.key === "Escape") { e.preventDefault(); props.act.close(); }
         }} />
-      <div class="ocm-list" ref={list} role="listbox" aria-label="Models" tabindex="0" aria-activedescendant={activeId()} onKeyDown={listKey}>
+      <div class="ocm-list" ref={list} role="listbox" aria-label={tr("Models")} tabindex="0" aria-activedescendant={activeId()} onKeyDown={listKey}>
         <Index each={view().groups}>{(group) => (
           <div role="group" aria-label={group().label}>
             <div class="ocm-group" aria-hidden="true">{group().label}</div>
@@ -106,7 +107,7 @@ export function ModelList(props: { view: () => PickerView; act: ModelPickerActio
       </div>
       <div class="ocm-foot">
         <button type="button" class="btn small" aria-pressed={view().all.checked} classList={{ on: view().all.checked }} disabled={props.disabled || !view().all.enabled}
-          title={view().all.tooltip} onClick={() => props.act.toggleAll()}>All models</button>
+          title={view().all.tooltip} onClick={() => props.act.toggleAll()}>{tr("All models")}</button>
         <Show when={view().notice}><span class="ocm-notice" role="status">{view().notice}</span></Show>
       </div>
     </div>
@@ -151,10 +152,10 @@ export function ModelPopover(props: { view: () => PickerView; act: ModelPickerAc
     if (e.key === "Enter" && (target.tagName === "BUTTON" || target.tagName === "INPUT")) e.preventDefault();
   };
   return (
-    <dialog class="ns-model-pop" ref={el} aria-label="Model" onPointerDown={outside} onKeyDown={keys}
+    <dialog class="ns-model-pop" ref={el} aria-label={tr("Model")} onPointerDown={outside} onKeyDown={keys}
       onCancel={(e) => { e.preventDefault(); close(); }} onClose={close}>
       <ModelList view={props.view} act={props.act} />
-      <button type="button" class="btn small ns-model-native" onClick={() => props.act.useNative()}>Use native default model</button>
+      <button type="button" class="btn small ns-model-native" onClick={() => props.act.useNative()}>{tr("Use native default model")}</button>
     </dialog>
   );
 }

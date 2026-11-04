@@ -48,10 +48,11 @@ def manifests(version, sha256, release_date):
             + f"MinimumOSVersion: {MINIMUM_OS}\n"
             + "InstallerType: zip\nNestedInstallerType: portable\nNestedInstallerFiles:\n"
             + f"- RelativeFilePath: {windows_portable.TOP}/hgs-tray.exe\n"
-            # Qt and the app-local runtime load from the folder of the executable:
+            # The staged CLI, connector and app-local runtime stay with the desktop:
             # winget puts that folder on PATH instead of linking the executable alone.
             + "ArchiveBinariesDependOnPath: true\n"
             + "Commands:\n- hgs\n- hgs-tray\n"
+            + "Dependencies:\n  PackageDependencies:\n  - PackageIdentifier: Microsoft.EdgeWebView2Runtime\n"
             + f"ReleaseDate: {release_date}\n"
             + "Installers:\n- Architecture: x64\n"
             + f"  InstallerUrl: {installer_url(version)}\n"

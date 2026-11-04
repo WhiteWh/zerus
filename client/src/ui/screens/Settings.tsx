@@ -2,6 +2,7 @@ import { For, Show } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import { Icon } from "../lib/icons";
 import { available, section, setSection, type SectionId } from "./settings/sections";
+import { tr } from "../../i18n";
 
 // Settings (tray/src/SettingsPage.h): a fixed section list and one scrollable
 // page at a time, at most 850 px wide, as in the approved mockup
@@ -27,15 +28,15 @@ export function SettingsScreen() {
   return (
     <div class="set-page">
       <div class="set-shell">
-        <nav class="set-nav" aria-label="Settings sections" onKeyDown={onNavKey}>
-          <h1>Settings</h1>
+        <nav class="set-nav" aria-label={tr("Settings sections")} onKeyDown={onNavKey}>
+          <h1>{tr("Settings")}</h1>
           <div role="tablist" aria-orientation="vertical" class="set-nav-list">
             <For each={available()}>
               {(s) => (
                 <button id={`set-nav-${s.id}`} role="tab" class="set-nav-item" classList={{ on: current().id === s.id }} aria-selected={current().id === s.id}
                   tabindex={current().id === s.id ? 0 : -1} aria-controls="set-content" onClick={() => open(s.id)}>
                   <Icon name={s.icon} size={15} stroke={1.8} />
-                  <span class="ell">{s.label}</span>
+                  <span class="ell">{tr(s.label)}</span>
                 </button>
               )}
             </For>

@@ -1,4 +1,5 @@
 import type { MenuEntry } from "../../store/ui";
+import { trNoop, tr } from "../../i18n";
 
 // The per-machine Pause all and Resume all entries of the batch menu, after
 // Qt's populateBatchActions (SessionsWindow.cpp 2844-2893). The client's menu
@@ -6,8 +7,8 @@ import type { MenuEntry } from "../../store/ui";
 
 export const NATIVE_LINE = "OpenCode uses individual Pause / Resume controls";
 export const NATIVE_HINT = "OpenCode sessions are excluded; use their individual Pause / Resume controls.";
-export const MIXED_STATE = "Some sessions are busy or context is not tracked";
-export const MACHINES_WAITING = "Waiting for machines…";
+export const MIXED_STATE = trNoop("Some sessions are busy or context is not tracked");
+export const MACHINES_WAITING = trNoop("Waiting for machines…");
 
 /** What the counts read from a catalog row. */
 export interface MachineRow {
@@ -58,14 +59,14 @@ export function machineEntries(m: MachineInput): MenuEntry[] {
   const out: MenuEntry[] = [{ heading: m.machine }];
   if (nativeControls) out.push({ label: NATIVE_LINE, disabled: true });
   const pause: Entry = {
-    label: `Pause all (${live})`,
+    label: tr("Pause all (%1)", live),
     disabled: !(m.online && !m.batchRunning && live > 0 && allIdle),
     action: () => m.start("pause_all", live),
   };
   out.push(pause);
-  if (live > 0 && !allIdle) out.push({ label: MIXED_STATE, disabled: true });
+  if (live > 0 && !allIdle) out.push({ label: tr(MIXED_STATE), disabled: true });
   const resume: Entry = {
-    label: `Resume all in background (${saved})`,
+    label: tr("Resume all in background (%1)", saved),
     disabled: !(m.online && !m.batchRunning && saved > 0),
     action: () => m.start("resume_all", saved),
   };

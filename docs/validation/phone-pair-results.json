@@ -1,0 +1,63 @@
+{
+  "isolation": "Normal embedded-assets app; child env built from scratch, private HOME/XDG/TMPDIR/TMUX_TMPDIR, Xvfb and private D-Bus, nonexistent system bus and Wayland display. Fake hgs, connector status and clipboard only. No live mobile config, unit, relay, desktop or agents touched.",
+  "mockup": "Served app.html Settings > Mobile connection, settings-phone-pair and settings-phone-revoke; design/webui/src/screens/settings/Phones.tsx and dialogs/SettingsDialogs.tsx. Compared side by side: grouped Phones table, 520 px pair dialog, 200 px QR, disclosure/copy/new-code actions, 460 px revoke confirmation and Cancel first.",
+  "credential_protection": "Invitations generated only in fake process memory/stdout. QR and manual code masked by private X11 overlays before framebuffer capture. Clipboard helper logs byte counts only. No codes, links or credential hashes in evidence.",
+  "assertions": {
+    "workspace_groups": 2,
+    "initial_phones": 3,
+    "selected_peer_workspace": "Lab team via lab",
+    "explicit_invites": 2,
+    "copy_calls": 2,
+    "expired_copies_disabled": true,
+    "cancel_revoke_effects": 0,
+    "changed_workspace_revoke_effects": 0,
+    "confirmed_peer_revokes": 1,
+    "uncertain_local_revokes": 1,
+    "automatic_replays": 0,
+    "phones_after_explicit_refresh": 1,
+    "escape_closes_and_reopen_works": true
+  },
+  "effects_metadata": [
+    {
+      "host": "lab",
+      "effect": "invite",
+      "workspace": "ws-lab"
+    },
+    {
+      "host": "lab",
+      "effect": "invite",
+      "workspace": "ws-lab"
+    },
+    {
+      "host": "lab",
+      "effect": "revoke",
+      "workspace": "ws-lab",
+      "device": "33333333-3333-4333-8333-333333333333"
+    },
+    {
+      "host": "",
+      "effect": "revoke",
+      "workspace": "ws-example",
+      "device": "22222222-2222-4222-8222-222222222222"
+    }
+  ],
+  "clipboard_byte_counts": [
+    {
+      "bytes": 134
+    },
+    {
+      "bytes": 200
+    }
+  ],
+  "checks": {
+    "core_phone_integrations": 6,
+    "native_mobile_tests": 9,
+    "frontend_tests_passed": 2205,
+    "frontend_tests_existing_skip": 1,
+    "phase4_steps_passed": 18,
+    "entry_bytes": 458494,
+    "entry_budget": 500000,
+    "clippy": "Core all-targets; Tauri all-targets default/media/video/no-default-features; Windows MSVC Tauri media cross-Clippy."
+  },
+  "limits": "Synthetic mobile services only; no real pairing, relay connectivity or Windows runtime claimed."
+}

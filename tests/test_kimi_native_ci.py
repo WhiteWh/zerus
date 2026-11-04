@@ -328,6 +328,17 @@ class KimiNativeCI(unittest.TestCase):
             with self.assertRaisesRegex(TimeoutError, 'late'):
                 self.fetch(Response(b'image'))
 
+    def test_native_failure_summary_names_the_actual_case_and_inventory_size(self):
+        case = ci.METHODS[4]
+        result = dict(tests=5, failures=1, errors=0, skipped=0,
+                      failed_cases=[case], error_cases=[], skipped_cases=[])
+        summary = ci.failure_summary(result)
+        self.assertIn('all %d exact cases' % len(ci.METHODS), summary)
+        self.assertNotIn('all eight', summary)
+        self.assertIn(case, summary)
+        self.assertIn('"tests": 5', summary)
+        self.assertIn('"failures": 1', summary)
+
     def test_exit_zero_without_exact_cases_and_clean_result_is_not_a_pass(self):
         good = dict(tests=len(ci.METHODS), started=list(ci.METHODS), completed=list(ci.METHODS), failures=0,
                     errors=0, skipped=0, expected_failures=0, unexpected_successes=0)

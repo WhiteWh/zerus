@@ -334,7 +334,7 @@ class BundleChecks(unittest.TestCase):
     @unittest.skipUnless(Path("/bin/bash").exists(), "requires Bash")
     def test_unattended_cask_execution_requires_prior_installed_gatekeeper_acceptance(self):
         script = (ROOT / "scripts/ci/macos-cask-install.sh").read_text()
-        segment = script.split("app=/Applications/Zerus.app\n", 1)[1].split('\nhome="', 1)[0]
+        segment = script.split("app=/Applications/Zerus.app\n", 1)[1].split('\nfixture_home="', 1)[0]
         with tempfile.TemporaryDirectory(prefix="zerus-cask-gate-") as temporary:
             directory = Path(temporary)
             log = directory / "calls.jsonl"

@@ -380,7 +380,9 @@ login PATH applies and the supervisor becomes the pane's root process. On Window
   the S3 dialog fixtures in M4;
 - `HGS_HOST_PANE` and `HGS_HOST_SESSION` replace `TMUX_PANE` and the session name
   lookup (`src/state/lifecycle.rs:95-117`); the nested guard checks them as it
-  checks `$TMUX` today.
+  checks `$TMUX` today. It refuses only what would attach the console there
+  (`hgs a`, a launch, fork or resume without `-d`); detached ones start beside
+  the enclosing session.
 
 **Agent resolution.** `PATHEXT` lookup (`platform::which`) finds the program. An npm
 shim (`.cmd`) is resolved to `node.exe <script>` only when it matches the exact npm

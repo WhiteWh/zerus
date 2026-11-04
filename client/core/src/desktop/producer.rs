@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use zerus_desktop_migration::canonical_uuid;
 
+pub mod timing;
+
 pub const ABI: &str = "desktop-producer-v1";
 pub const CHALLENGE_WAIT: Duration = Duration::from_secs(10);
 

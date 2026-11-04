@@ -142,6 +142,12 @@ pub(crate) struct PanePath {
 pub(crate) enum PaneField {
     SessionId,
     SessionName,
+    SocketPath,
+    SessionCreated,
+    SessionWindows,
+    SessionGrouped,
+    WindowPanes,
+    WindowLinked,
     PaneId,
     /// The terminal server's process ID.
     ServerPid,

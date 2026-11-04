@@ -157,6 +157,15 @@ def events_for(row, count):
     return events[-count:] if len(events) > count else events
 
 
+def phase4_children(row):
+    if row["name"] == PROCESS_SESSION:
+        row["subagents"] = {
+            "agent-writable": {"label": "Writable child", "state": "working", "detail": "Ready for a direct message"},
+            "agent-readonly": {"label": "Read-only child", "state": "working", "detail": "Managed by the parent conversation"},
+        }
+        row["subagent_counts_complete"] = True
+
+
 def phase4_rows(rows):
     """The deterministic sessions the Part A smoke drives, whatever the random fleet does."""
     states = {
@@ -174,6 +183,7 @@ def phase4_rows(rows):
             row.update(phase=phase, activity=activity, state="running", runtime_state=runtime, process_state=process)
         if row["name"] == PROCESS_SESSION:
             row["process_work"] = processes_for(row)["process_work"]
+        phase4_children(row)
     return rows
 
 
@@ -243,6 +253,7 @@ def state_for(row):
     elif row["name"] == "codex/sample-project/release-notes":
         state["input_queue"] = {"id": "queue-fixture", "text": "↳ also update the changelog", "can_send_now": True,
                                 "hint": "Interrupt the current turn and send pending messages now"}
+    phase4_children(state)
     return state
 
 

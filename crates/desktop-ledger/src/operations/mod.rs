@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+pub mod cache;
 pub mod custody;
 
 pub const PRIVATE_BYTES: usize = 1 << 20;

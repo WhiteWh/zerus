@@ -14,6 +14,7 @@ import tempfile
 from macos_release import add_macos
 from release_common import binary_dependencies
 import windows_portable
+import windows_installer_release
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -29,6 +30,8 @@ def main():
     parser.add_argument("--version", required=True)
     parser.add_argument("--windows-zip", type=Path,
                         help="tested Windows portable zip from the same CI run (copied unchanged)")
+    parser.add_argument("--windows-installer", type=Path, help="tested installer from the same CI run")
+    parser.add_argument("--windows-installer-info", type=Path, help="the installer CI build metadata")
     parser.add_argument("--macos", type=Path, help="signed and notarized macOS artifact from the macos-signing job")
     args = parser.parse_args()
     version = (ROOT / "VERSION").read_text().strip()
@@ -38,13 +41,17 @@ def main():
         parser.error("commit the reviewed checkout before preparing an exact-source candidate")
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     epoch = int(subprocess.check_output(["git", "show", "-s", "--format=%ct", "HEAD"], cwd=ROOT, text=True))
+    installer_build = None
     if args.windows_zip:
-        # Reads only the zip directory, build-info.json and the pinned ConPTY pair
-        # (checked in memory); never extracts or runs it.
+        if not args.windows_installer or not args.windows_installer_info:
+            parser.error("the Windows ZIP requires its tested installer and build metadata")
         try:
-            windows_portable.require_build(args.windows_zip, revision, version)
+            installer_build = windows_installer_release.require_build(
+                args.windows_installer, args.windows_zip, args.windows_installer_info, version, version, revision)
         except ValueError as error:
             parser.error(str(error))
+    elif args.windows_installer or args.windows_installer_info:
+        parser.error("a Windows installer requires its paired portable ZIP")
     args.output.mkdir(parents=True, exist_ok=True)
     if any(args.output.iterdir()):
         parser.error("use an empty candidate output directory; never overwrite an existing candidate")
@@ -94,6 +101,8 @@ def main():
         # The tested CI bytes under their stable name: renamed, never rebuilt.
         info["windows_portable"] = windows_portable.asset_name(version)
         shutil.copyfile(args.windows_zip, args.output / info["windows_portable"])
+    if installer_build:
+        windows_installer_release.add(args.output, args.windows_installer, installer_build, version, info)
     if args.macos:
         add_macos(args.output, args.macos, version, info)
     (args.output / "release-info.json").write_text(json.dumps(info, indent=2) + "\n")

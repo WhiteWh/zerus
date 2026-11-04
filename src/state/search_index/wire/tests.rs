@@ -84,6 +84,37 @@ impl Fixture {
         panic!("wire fixture did not reach {messages} messages and {unavailable} unavailable sources in 32 bounded passes: {}",
             serde_json::to_string(&store.index.status().unwrap()).unwrap());
     }
+    fn prepare_publication(&self, store: &mut Store) -> Value {
+        // A bounded indexing slice may expire before it reaches this source.
+        // Use the same 32-pass preparation fence as the other index fixtures,
+        // retaining the original per-slice budgets and committed cursors.
+        for _ in 0..32 {
+            let slice = budget();
+            let progress = self.step(store, &slice);
+            if Instant::now() >= slice.deadline {
+                continue;
+            }
+            assert!(!progress.stopped, "fixture work bound exhausted");
+            assert!(progress.errors.is_empty(), "{:?}", progress.errors);
+            let slice = budget();
+            let reply = store
+                .publish(
+                    &self.state,
+                    "needle",
+                    100,
+                    None,
+                    &slice,
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+            if Instant::now() < slice.deadline {
+                // Return the first completed publication, even if wrong. A
+                // genuine lookup/invalidation failure must not be retried away.
+                return reply;
+            }
+        }
+        panic!("fixture preparation did not finish within 32 bounded passes");
+    }
     fn publish(&self, store: &mut Store) -> Value {
         store
             .publish(
@@ -213,14 +244,8 @@ fn a_wire_added_below_an_existing_conversation_still_invalidates_uniqueness() {
         .join("agents/main/wire.jsonl");
     fs::create_dir_all(duplicate.parent().unwrap()).unwrap();
     let mut store = fixture.store();
-    fixture.prepare(&mut store, 1, 0);
-    assert_eq!(
-        fixture.publish(&mut store)["results"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
+    let initial = fixture.prepare_publication(&mut store);
+    assert_eq!(initial["results"].as_array().unwrap().len(), 1);
     let root = fixture.home.join("sessions");
     let workspace = root.join("workspace-b");
     let before = (
@@ -239,6 +264,20 @@ fn a_wire_added_below_an_existing_conversation_still_invalidates_uniqueness() {
         .as_array()
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn an_expired_setup_slice_resumes_before_the_initial_wire_assertion() {
+    let fixture = Fixture::new();
+    let mut store = fixture.store();
+    let mut expired = budget();
+    expired.deadline = Instant::now();
+    let progress = fixture.step(&mut store, &expired);
+    assert!(progress.stopped);
+    assert_eq!(store.index.status().unwrap().messages, 0);
+    let initial = fixture.prepare_publication(&mut store);
+    assert_eq!(initial["results"].as_array().unwrap().len(), 1);
+    assert_eq!(initial["results"][0]["message_id"], "native-one");
 }
 
 #[test]

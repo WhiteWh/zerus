@@ -31,6 +31,11 @@
 //! the I/O lock. Startup reads and all token checkpoints run off main. The exit
 //! path waits at most 500 ms before independently flushing draft and layout.
 
+pub mod clones;
+pub mod folders;
+pub mod overview;
+pub mod swarm_dialog;
+
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read as _};
 use std::panic::AssertUnwindSafe;
@@ -116,7 +121,7 @@ struct Hub {
     waiting: HashMap<Ticket, SyncSender<EditOutcome>>,
     presented: Option<Presented>,
     /// The revision and status line Projects last received.
-    shown: Option<(u64, String, bool)>,
+    shown: Option<(u64, String, bool, Option<String>)>,
     /// Settled edits' answers, sent once the lock is released.
     answers: Vec<(SyncSender<EditOutcome>, EditOutcome)>,
     /// The Projects call, numbered, made once the lock is released.
@@ -133,6 +138,14 @@ struct Hub {
     recovery_seen: Option<(String, bool)>,
     recovery_due: Option<String>,
     presentation_due: bool,
+    catalog: Option<swarm_dialog::Context>,
+    source_generation: u64,
+    /// Only an adopted current source observation can qualify local metadata.
+    /// Kept out of Controller: it is never shared state or apply input.
+    windows_read: Option<(u64, u64, String)>,
+    /// One startup attempt once both the local watch and catalog are current.
+    /// Failed/absent sources stay unhandled on disk for the next startup.
+    windows_import_attempted: bool,
 }
 
 #[derive(Clone)]
@@ -244,6 +257,100 @@ impl Organization {
         hub.shown = None;
         self.publish(&mut hub);
         self.release(hub);
+        Ok(())
+    }
+
+    fn recover_windows_folders(&self) -> Result<(), String> {
+        let (node, generation, revision, catalog, source, recovery) = {
+            let mut hub = self.lock();
+            if hub.windows_import_attempted {
+                return Ok(());
+            }
+            let Some(node) = self.windows_read_node(&hub) else {
+                return Ok(());
+            };
+            let (Some(catalog), Some(source), Some(recovery)) = (
+                hub.sync.observed_value(),
+                hub.source.clone(),
+                hub.qt_recovery.clone(),
+            ) else {
+                return Ok(());
+            };
+            hub.windows_import_attempted = true;
+            (
+                node,
+                hub.source_generation,
+                hub.sync.revision(),
+                catalog,
+                source,
+                recovery,
+            )
+        };
+        let Some(layout) = self.0.pump.windows_folders_import_layout()? else {
+            return Ok(());
+        };
+        // The fixed local Qt source is supplied only by the switch identity.
+        // Its explicit folder machine IDs are checked against the independent
+        // current local watch and hgs catalog, never aliases or path spellings.
+        // No organization key means no call to the nonempty-source importer,
+        // and no durable empty/handled family is manufactured.
+        if recovery
+            .source
+            .snapshot()?
+            .is_none_or(|snapshot| !snapshot.values.contains_key(swarm::qt_import::KEY))
+        {
+            return Ok(());
+        }
+        let context = swarm::layout::WindowsFoldersContext {
+            source_node: &node,
+            current_node: &node,
+            catalog: &catalog,
+        };
+        let seed_at = recovery
+            .settings
+            .seed_record()
+            .and_then(|record| record["at"].as_u64());
+        let Some(seed) = swarm::layout::qt_windows_folders(
+            &layout,
+            &recovery.source,
+            &self.0.layout,
+            &context,
+            seed_at,
+        )?
+        else {
+            return Ok(());
+        };
+        // Source callbacks run outside our locks. A source change during the
+        // Qt read invalidates the attempt; commit rechecks the current catalog
+        // and live project IDs under the same writer as every Layout save.
+        let Some(snapshot) = source() else {
+            return Ok(());
+        };
+        let mut writer = self.writer();
+        let mut hub = self.lock();
+        if generation != hub.source_generation
+            || revision != hub.sync.revision()
+            || self.windows_read_node(&hub).as_deref() != Some(&node)
+            || snapshot.node_id != node
+            || snapshot.digest != catalog["digest"].as_str().unwrap_or_default()
+            || snapshot.swarm_id != catalog["swarm_id"].as_str().unwrap_or_default()
+            || snapshot.base != catalog["organization"]
+        {
+            return Ok(());
+        }
+        let Some(current) = hub.sync.observed_value() else {
+            return Ok(());
+        };
+        let context = swarm::layout::WindowsFoldersContext {
+            source_node: &node,
+            current_node: &node,
+            catalog: &current,
+        };
+        self.0.pump.seed_windows_folders(seed, &context)?;
+        hub.shown = None;
+        self.publish(&mut hub);
+        self.release(hub);
+        writer.save_layout(&self.0.pump, &self.0.layout, self.0.layout_writable);
         Ok(())
     }
     pub fn new(
@@ -383,8 +490,31 @@ impl Organization {
         u64::try_from(self.0.clock.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
+    /// Repeated start_source calls keep the same Live source (webview reload).
+    /// Do not invalidate an accepted observation when that source did not change.
+    pub fn set_initial_source(&self, source: SnapshotSource) {
+        self.replace_source(source, true);
+    }
+
+    #[cfg(all(test, unix))]
     pub fn set_source(&self, source: SnapshotSource) {
-        self.lock().source = Some(source);
+        self.replace_source(source, false);
+    }
+
+    fn replace_source(&self, source: SnapshotSource, only_absent: bool) {
+        let mut hub = self.lock();
+        if only_absent && hub.source.is_some() {
+            return;
+        }
+        if let Some(generation) = hub.source_generation.checked_add(1) {
+            hub.source_generation = generation;
+        } else {
+            hub.stopped = true;
+        }
+        hub.windows_read = None;
+        hub.source = Some(source);
+        self.publish(&mut hub);
+        self.release(hub);
     }
 
     /// The last `swarm get` observed (its `worker`, `peers` and
@@ -405,12 +535,38 @@ impl Organization {
 
     /// This computer's organization changes, from the drain thread.
     pub fn observe(&self, change: &Change) {
+        // This callback precedes Pump::push. Drop the proof before a new hello
+        // or a disconnect can leave the previous card cached in the pump.
+        let identity_changed = match change {
+            Change::Machine { computer, machine } if computer.is_local() => {
+                self.0.pump.machine(computer).is_none_or(|old| {
+                    old.machine_id != machine.machine_id
+                        || old.platform != machine.platform
+                        || old.ok != machine.ok
+                        || old.local_sessions != machine.local_sessions
+                })
+            }
+            _ => false,
+        };
+        if identity_changed
+            || matches!(change, Change::Computer { computer, status } if computer.is_local() && *status != zerus_client_core::ComputerStatus::Live)
+        {
+            let mut hub = self.lock();
+            hub.windows_read = None;
+            self.publish(&mut hub);
+            self.release(hub);
+            return;
+        }
         let Change::Organization { computer, update } = change else {
             return;
         };
         if !computer.is_local() {
             return;
         }
+        let (generation, source) = {
+            let hub = self.lock();
+            (hub.source_generation, hub.source.clone())
+        };
         let mut hub = match update {
             OrganizationUpdate::State {
                 value,
@@ -418,37 +574,70 @@ impl Organization {
                 membership,
             } => {
                 // Asked without the hub's lock: the source takes its own.
-                let source = self.lock().source.clone();
                 let Some(snapshot) = source.and_then(|source| source()) else {
+                    self.invalidate_windows_read(generation);
                     return;
                 };
                 // Base and versions of one digest; a newer state is on its way otherwise.
-                if snapshot.digest != *digest {
+                if snapshot.digest != *digest
+                    || value["node_id"].as_str().unwrap_or_default() != snapshot.node_id
+                    || value["swarm_id"].as_str().unwrap_or_default() != snapshot.swarm_id
+                    || value["organization"] != snapshot.base
+                {
+                    self.invalidate_windows_read(generation);
                     return;
                 }
-                let observation = Observation {
-                    digest: digest.clone(),
-                    value: Arc::clone(value),
-                    versions: snapshot.versions,
-                    membership: Arc::clone(membership),
-                };
                 let mut hub = self.lock();
-                let now = self.now();
-                if hub.sync.observe(observation, now) {
-                    // The list shows a catalog now; the dropped draft's notice goes.
-                    hub.notice = None;
+                if generation != hub.source_generation {
+                    return;
                 }
-                Self::queue_recovery(&mut hub, value);
+                let now = self.now();
+                hub.windows_read = None;
+                let adopted = if !self.0.hub.is_poisoned()
+                    && swarm_dialog::settle(&mut hub, &snapshot, now)
+                {
+                    hub.shown = None;
+                    true
+                } else {
+                    let observation = Observation {
+                        digest: digest.clone(),
+                        value: Arc::clone(value),
+                        versions: snapshot.versions,
+                        membership: Arc::clone(membership),
+                    };
+                    let adopted = hub.sync.observe(observation, now);
+                    if adopted {
+                        // The list shows a catalog now; the dropped draft's notice goes.
+                        hub.notice = None;
+                    }
+                    adopted
+                };
+                if adopted {
+                    hub.windows_read =
+                        Some((hub.source_generation, hub.sync.revision(), snapshot.node_id));
+                }
+                // A held pre-operation observation is not a new recovery source.
+                if let Some(current) = hub.sync.observed_value() {
+                    Self::queue_recovery(&mut hub, &current);
+                }
                 hub
             }
             OrganizationUpdate::Failed { message, .. } => {
                 let mut hub = self.lock();
+                if generation != hub.source_generation {
+                    return;
+                }
                 hub.sync.source_failed(message);
+                hub.windows_read = None;
                 hub
             }
             OrganizationUpdate::Ended => {
                 let mut hub = self.lock();
+                if generation != hub.source_generation {
+                    return;
+                }
                 hub.sync.source_ended();
+                hub.windows_read = None;
                 hub
             }
         };
@@ -481,7 +670,13 @@ impl Organization {
     /// source that fails before its first state still reaches Projects.
     fn publish(&self, hub: &mut Hub) {
         let view = self.view(hub);
-        let shown = (hub.sync.revision(), view.status.clone(), view.status_error);
+        let windows_node = self.windows_read_node(hub);
+        let shown = (
+            hub.sync.revision(),
+            view.status.clone(),
+            view.status_error,
+            windows_node.clone(),
+        );
         match hub.sync.presented() {
             Some((organization, membership)) => {
                 self.0
@@ -496,7 +691,23 @@ impl Organization {
         let Some(presented) = hub.presented.clone() else {
             return;
         };
-        let value = hub.sync.presented_value();
+        let value = hub.sync.presented_value().map(|value| {
+            windows_node
+                .as_deref()
+                .and_then(|node| {
+                    self.0
+                        .pump
+                        .local_windows_projects(&value["organization"], node)
+                })
+                .map_or_else(
+                    || Arc::clone(&value),
+                    |organization| {
+                        let mut shown = (*value).clone();
+                        shown["organization"] = organization;
+                        Arc::new(shown)
+                    },
+                )
+        });
         let status = (shown.1.clone(), shown.2);
         hub.announcements += 1;
         hub.announce = Some((
@@ -504,6 +715,36 @@ impl Organization {
             (presented, value, self.0.pump.default_project(), status),
         ));
         hub.shown = Some(shown);
+    }
+
+    fn windows_read_node(&self, hub: &Hub) -> Option<String> {
+        let (generation, revision, node) = hub.windows_read.as_ref()?;
+        if !self.0.allowed
+            || !self.0.layout_writable
+            || hub.stopped
+            || hub.presentation_due
+            || hub.recovery_due.is_some()
+            || !hub.sync.ready()
+            || hub.sync.busy()
+            || hub.sync.pending()
+            || *generation != hub.source_generation
+            || *revision != hub.sync.revision()
+        {
+            return None;
+        }
+        self.0
+            .pump
+            .local_windows_node()
+            .filter(|current| current == node)
+    }
+
+    fn invalidate_windows_read(&self, generation: u64) {
+        let mut hub = self.lock();
+        if generation == hub.source_generation {
+            hub.windows_read = None;
+            self.publish(&mut hub);
+        }
+        self.release(hub);
     }
 
     /// Drops the lock, then answers the settled edits and makes the queued
@@ -601,6 +842,24 @@ impl Organization {
         self.submit_with(move |_| intent)
     }
 
+    fn choose_default(&self, project: &str) -> Result<(), String> {
+        if !self.0.allowed {
+            return Err(REPLAY_NEEDS_HGS.into());
+        }
+        let mut hub = self.lock();
+        if let Some(reason) = self.view(&hub).reason {
+            return Err(reason);
+        }
+        self.0.pump.set_default_project(project)?;
+        // The shared revision is unchanged. Projects still needs its new
+        // device-local default, through the existing presentation callback.
+        hub.shown = None;
+        self.publish(&mut hub);
+        self.release(hub);
+        self.0.wake.notify_all();
+        Ok(())
+    }
+
     /// The Controller's current refusal; after-bind edits only wait while
     /// its first state has not arrived, never on a later apply.
     pub(crate) fn creation_refusal(&self) -> Option<String> {
@@ -652,6 +911,10 @@ impl Organization {
     /// read their members from the organization the edit applies to, never
     /// from one a state replaced in between.
     fn submit_with(&self, intent: impl FnOnce(&Pump) -> Intent) -> EditOutcome {
+        self.submit_checked(move |pump| Ok(intent(pump)))
+    }
+
+    fn submit_checked(&self, intent: impl FnOnce(&Pump) -> Result<Intent, String>) -> EditOutcome {
         if !self.0.allowed {
             return EditOutcome::Refused {
                 detail: REPLAY_NEEDS_HGS.into(),
@@ -664,7 +927,10 @@ impl Organization {
                     detail: STOPPED.into(),
                 };
             }
-            let intent = intent(&self.0.pump);
+            let intent = match intent(&self.0.pump) {
+                Ok(intent) => intent,
+                Err(detail) => return EditOutcome::Refused { detail },
+            };
             let ticket = match hub.sync.edit(&intent, self.now()) {
                 Ok(ticket) => ticket,
                 Err(detail) => return EditOutcome::Refused { detail },
@@ -744,6 +1010,7 @@ impl Organization {
             if let Err(detail) = self.recover_presentation(&recovery) {
                 let mut hub = self.lock();
                 hub.sync.source_failed(&detail);
+                hub.windows_read = None;
                 self.publish(&mut hub);
                 self.release(hub);
             }
@@ -757,7 +1024,11 @@ impl Organization {
             if hub.stopped {
                 None
             } else {
-                hub.recovery_due.take().zip(hub.qt_recovery.clone())
+                let recovery = hub.recovery_due.take().zip(hub.qt_recovery.clone());
+                if recovery.is_some() {
+                    hub.windows_read = None;
+                }
+                recovery
             }
         };
         if let Some((node, recovery)) = recovery {
@@ -770,10 +1041,21 @@ impl Organization {
             ) {
                 let mut hub = self.lock();
                 hub.sync.source_failed(&detail);
+                hub.windows_read = None;
                 self.publish(&mut hub);
                 self.release(hub);
             }
             return;
+        }
+        if self.catalog_pass() {
+            return;
+        }
+        if let Err(detail) = self.recover_windows_folders() {
+            let mut hub = self.lock();
+            hub.notice = Some(detail);
+            hub.shown = None;
+            self.publish(&mut hub);
+            self.release(hub);
         }
         self.runs_writer().request(false);
         let mut writer = self.writer();
@@ -812,6 +1094,16 @@ impl Organization {
                 return;
             }
             Due::Nothing => {}
+        }
+        // The drain invokes observe before updating Pump. A Live status can
+        // therefore arrive just after the accepted organization. Recheck on
+        // this existing idle pass; no read, poller or cached-source adoption.
+        if hub
+            .shown
+            .as_ref()
+            .is_some_and(|shown| shown.3 != self.windows_read_node(&hub))
+        {
+            self.publish(&mut hub);
         }
         self.release(hub);
         if writer.saved.elapsed() >= SAVE_EVERY {
@@ -1367,18 +1659,24 @@ pub async fn move_to_project(
 }
 
 /// New project…, with the sessions it takes (none from the list's menu).
+#[derive(serde::Serialize)]
+pub struct CreatedProject {
+    #[serde(flatten)]
+    outcome: EditOutcome,
+    /// The writer's reserved identity, never a name-based lookup.
+    project: String,
+}
+
 #[tauri::command]
 pub async fn create_project(
     state: State<'_, Organization>,
     name: String,
     members: Vec<String>,
-) -> Result<EditOutcome, String> {
-    edit(state, move |_| Intent::Create {
-        id: uuid::Uuid::new_v4().to_string(),
-        name,
-        members,
-    })
-    .await
+) -> Result<CreatedProject, String> {
+    let project = uuid::Uuid::new_v4().to_string();
+    let id = project.clone();
+    let outcome = edit(state, move |_| Intent::Create { id, name, members }).await?;
+    Ok(CreatedProject { outcome, project })
 }
 
 /// Uses the existing shared organization writer; local vivid never enters it.
@@ -1452,6 +1750,12 @@ pub fn project_folders(state: State<'_, Organization>, project: String) -> Vec<F
     state.project_folders(&project)
 }
 
+/// The default is this computer's local presentation; never a shared edit.
+#[tauri::command(async)]
+pub fn set_default_project(state: State<'_, Organization>, project: String) -> Result<(), String> {
+    state.choose_default(&project)
+}
+
 /// Expand or collapse a project: this device's layout, no `hgs`. Off the
 /// main thread, as every command that takes a lock: the pump's lock may be
 /// held by a grouping pass over every row.
@@ -1462,9 +1766,67 @@ pub fn set_project_collapsed(state: State<'_, Organization>, project: String, co
 
 #[cfg(all(test, unix))]
 mod tests {
+    mod swarm_conflicts;
+    mod swarm_dialog_cases;
+    mod windows_folders;
     use super::*;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn local_default_publishes_projects_and_uses_only_the_layout_writer() {
+        let fake = Fake::landing();
+        let pump = Pump::default();
+        let org = fake.organization(&pump, true);
+        org.set_source(snapshot("d1"));
+        org.observe(&state("d1"));
+        assert!(org.choose_default("missing").is_err());
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let seen = calls.clone();
+        org.set_presented(Arc::new(move |_, default, _| {
+            seen.lock().unwrap().push(default);
+        }));
+        org.choose_default("alpha").unwrap();
+        assert_eq!(pump.default_project(), "alpha");
+        assert_eq!(
+            calls.lock().unwrap().last().map(String::as_str),
+            Some("alpha")
+        );
+        org.flush();
+        assert_eq!(
+            zerus_client_core::swarm::layout::Layout::from_json(
+                &std::fs::read(fake.layout()).unwrap()
+            )
+            .default_project(),
+            Some("alpha")
+        );
+        assert!(fake.applies().is_empty());
+        fake.finish(org);
+    }
+
+    #[test]
+    fn creation_keeps_the_edit_outcome_and_returns_its_exact_project() {
+        for outcome in [
+            EditOutcome::Done { conflicts: 0 },
+            EditOutcome::Kept {
+                detail: "offline".into(),
+            },
+            EditOutcome::Refused {
+                detail: "not ready".into(),
+            },
+        ] {
+            let mut expected = serde_json::to_value(&outcome).unwrap();
+            expected["project"] = json!("reserved-project");
+            assert_eq!(
+                serde_json::to_value(CreatedProject {
+                    outcome,
+                    project: "reserved-project".into(),
+                })
+                .unwrap(),
+                expected
+            );
+        }
+    }
     use zerus_client_core::swarm::edit::shared;
     use zerus_client_core::{ComputerId, ViewRow};
 
@@ -1725,10 +2087,10 @@ mod tests {
             Some(zerus_client_core::settings::QtStore::Ini(qt.clone())),
             settings.clone(),
         );
-        organization.set_source(snapshot("d1"));
         let mut observed = full("d1");
         observed["node_id"] = json!(node);
         observed["initialized"] = json!(false);
+        organization.set_source(snapshot_of(&observed));
         organization.observe(&state_of(&observed));
         wait_until("the held recovery status", || {
             std::fs::read_to_string(fake.dir.join("log.ndjson"))
@@ -2055,13 +2417,37 @@ mod tests {
     }
 
     fn snapshot(digest: &'static str) -> SnapshotSource {
-        Arc::new(move || {
-            Some(OrganizationSnapshot {
-                digest: digest.into(),
-                base: full(digest)["organization"].clone(),
-                versions: json!({}),
-            })
-        })
+        snapshot_of(&full(digest))
+    }
+
+    fn snapshot_of(value: &Value) -> SnapshotSource {
+        let snapshot = OrganizationSnapshot {
+            node_id: value["node_id"].as_str().unwrap_or_default().into(),
+            swarm_id: value["swarm_id"].as_str().unwrap_or_default().into(),
+            digest: value["digest"].as_str().unwrap_or_default().into(),
+            base: value["organization"].clone(),
+            versions: value["versions"].clone(),
+        };
+        Arc::new(move || Some(snapshot.clone()))
+    }
+
+    #[test]
+    fn source_and_state_need_the_same_node_and_catalog_even_when_digest_matches() {
+        let fake = Fake::landing();
+        let org = fake.organization(&Pump::default(), true);
+        org.set_source(snapshot("d1"));
+        let mut other = full("d1");
+        other["node_id"] = json!("other-node");
+        org.observe(&state_of(&other));
+        assert!(org.swarm_snapshot().is_none());
+        other["node_id"] = json!("node-1");
+        other["swarm_id"] = json!("other-catalog");
+        org.observe(&state_of(&other));
+        assert!(org.swarm_snapshot().is_none());
+        org.observe(&state("d1"));
+        assert!(org.swarm_snapshot().is_some());
+        assert!(fake.applies().is_empty());
+        fake.finish(org);
     }
 
     fn finished_archive(pump: &Pump) -> uuid::Uuid {
@@ -2124,6 +2510,8 @@ mod tests {
         let base = initial["organization"].clone();
         organization.set_source(Arc::new(move || {
             Some(OrganizationSnapshot {
+                node_id: "node-1".into(),
+                swarm_id: String::new(),
                 digest: "d1".into(),
                 base: base.clone(),
                 versions: json!({}),
@@ -3633,7 +4021,7 @@ mod tests {
                 "no state yet"
             );
             assert_eq!(organization.swarm_id(), "");
-            organization.set_source(snapshot("d1"));
+            organization.set_source(snapshot_of(&value));
             organization.observe(&state_of(&value));
             answers.push(organization.project_folders("alpha"));
             assert!(organization.project_folders("gone").is_empty());
@@ -3660,7 +4048,7 @@ mod tests {
         catalog["organization"]["projects"][0]["folders"] = json!(many);
         let fake = Fake::landing();
         let organization = fake.organization(&Pump::default(), true);
-        organization.set_source(snapshot("d1"));
+        organization.set_source(snapshot_of(&catalog));
         organization.observe(&state_of(&catalog));
         let folders = organization.project_folders("alpha");
         assert_eq!(folders.len(), swarm::FOLDERS);

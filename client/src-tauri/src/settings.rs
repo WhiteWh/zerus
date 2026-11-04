@@ -5,6 +5,8 @@
 //! Rust code reads a setting from the managed [`Store`], for example
 //! `app.state::<settings::Store>().0.number("processes/activeSeconds")`.
 
+pub mod skins;
+
 use serde_json::{json, Value};
 use std::path::Path;
 use std::time::Duration;
@@ -54,6 +56,8 @@ pub fn open(app: &AppHandle, dir: &Path, replay: bool) -> Store {
             replay,
         ),
     );
+    // Natively drawn text (tray, menu bar) follows the language saved at startup.
+    crate::native_text::configure(&settings.text("workspace/language"));
     let handle = app.clone();
     settings.subscribe(Box::new(move |key, value, revision| {
         let _ = handle.emit(
@@ -103,7 +107,7 @@ pub fn open_url(url: &str) -> std::io::Result<()> {
     } else {
         "xdg-open"
     };
-    let mut child = std::process::Command::new(program)
+    let mut child = crate::child_environment::command(program)
         .arg(url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -124,8 +128,8 @@ pub async fn settings_get(store: State<'_, Store>) -> Result<Value, String> {
 }
 
 /// Stores one setting and answers with the value now in effect (clamped as
-/// Qt clamps it; `null` for a removed shortcut override) and the store's
-/// revision after the change.
+/// Qt clamps it; `null` for a removed override) and the store's revision after
+/// the change.
 #[tauri::command]
 pub async fn settings_set(
     app: AppHandle,
@@ -133,6 +137,17 @@ pub async fn settings_set(
     key: String,
     value: Value,
 ) -> Result<Value, String> {
+    if crate::desktop_service::mode() && key == "automaticApprovals/enabled" {
+        return Err(
+            "Automatic approval settings must be changed through the background service.".into(),
+        );
+    }
+    if crate::desktop_service::mode() && key == "notifications/optionalQuestions" {
+        return Err(zerus_client_core::source!(
+            "Notification settings must be changed through the background service."
+        )
+        .into());
+    }
     let (value, revision) = if key == ALWAYS_ON_TOP {
         let on = value.as_bool().ok_or("Keep Above requires a boolean.")?;
         crate::window_layer::request(&app, on).await?

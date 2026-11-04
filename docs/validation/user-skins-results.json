@@ -1,0 +1,19 @@
+{
+  "isolation": "Normal embedded-assets app, fresh private D-Bus/Xvfb and child environment built from scratch with private HOME/XDG/TMPDIR/TMUX_TMPDIR. Native GTK file chooser; capture-only folder opener; synthetic local and peer data, no owner desktop or bus.",
+  "mockup": "Served app.html Settings > Appearance and settings-skin-import; design/webui/src/screens/settings/Appearance.tsx and dialogs/SettingsDialogs.tsx. Compared side by side: actions below cards; 760 px dialog, 360 px editor, 250 px preview, texts, footer and initial Close focus.",
+  "assertions": {
+    "real_file_chooser_import": "Ocean, based on zerus-light, accent #006699",
+    "private_atomic_file": "ocean.json, mode0600",
+    "file_sha256_unchanged_after_invalid_json": "8f78bb3dc76bbdac0c277eba6493144e095d8d17f0a8e5417254800be0999b76",
+    "selected_after_invalid_and_restart": "light appearance, ocean",
+    "reopen_and_escape": "repeated dialog opens work; Escape returns focus to Import skin",
+    "fixed_folder_opener_calls": 1,
+    "unexpected_skin_files": 0
+  },
+  "bounds": {
+    "file_bytes": 262144,
+    "folder_entries": 32,
+    "library_bytes": 1048576
+  },
+  "limits": "Windows native runtime not claimed; Windows MSVC cross-Clippy only."
+}

@@ -6,6 +6,7 @@ import { toast } from "./notices";
 import { writingTask, setWritingTask } from "./taskBoard";
 import type { StartInput } from "./taskStart";
 import type { Task } from "../ui/screens/tasks-ui";
+import { tr } from "../i18n";
 export type TaskLaunchContext = StartInput;
 export interface ExecutorView { project: string; task: string; id: string; session: string; phase: string; snapshot: string; error: string }
 export function createTaskExecutors(read: typeof taskExecutorOpen) {
@@ -32,7 +33,7 @@ export async function configureTaskExecutor(input: TaskLaunchContext, agent: str
 export async function releaseTaskExecutor(review: NonNullable<ReturnType<typeof taskExecutorReview>>) {
   if (writingTask() || review.view.phase === "waiting") return false;
   setWritingTask(review.task.uuid);
-  try { await taskExecutorRelease(review.view.id, review.view.snapshot); taskExecutors.released(review.view.id); taskExecutors.refresh(); toast("Launch record released", "Another launch is allowed. Nothing was stopped or sent again."); return true; }
-  catch { notify("error", "Could not release the executor launch record.", true); return false; }
+  try { await taskExecutorRelease(review.view.id, review.view.snapshot); taskExecutors.released(review.view.id); taskExecutors.refresh(); toast(tr("Launch record released"), tr("Another launch is allowed. Nothing was stopped or sent again.")); return true; }
+  catch { notify("error", tr("Could not release the executor launch record."), true); return false; }
   finally { setWritingTask(undefined); }
 }

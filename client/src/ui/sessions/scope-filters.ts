@@ -1,6 +1,7 @@
 import type { Account, BindingEvidence } from "../../types";
 import type { Session } from "./types";
 import { same, type Style } from "./paths";
+import { tr } from "../../i18n";
 
 /** Qt SessionAccounts::binding: lengths are UTF-16 code units in both clients. */
 export const accountBinding = (host: string, provider: string, id: string, home = "") =>
@@ -50,7 +51,7 @@ export function accountChoices(accounts: readonly Account[], evidence: readonly 
     const groups = homes.get(home) ?? new Set<string>(); groups.add(e.group); homes.set(home, groups);
   }
   const choices = accounts.map((a) => {
-    let label = a.label || "Unnamed account";
+    let label = a.label || tr("Unnamed account");
     const { email, organization } = a.usage.identity;
     if (email && !label.toLowerCase().includes(email.toLowerCase())) label += ` (${email})`;
     if (organization) label += ` (${organization})`;
@@ -72,13 +73,13 @@ export function accountChoices(accounts: readonly Account[], evidence: readonly 
     const id = previous?.id ?? `binding:${binding}`;
     const choice = byId.get(id);
     if (choice) choice.bindings.push(binding);
-    else { const added = { id, label: previous?.label ?? "Unavailable account", provider: previous?.provider ?? "", bindings: [binding] }; choices.push(added); byId.set(id, added); }
+    else { const added = { id, label: previous?.label ?? tr("Unavailable account"), provider: previous?.provider ?? "", bindings: [binding] }; choices.push(added); byId.set(id, added); }
     known.add(binding);
   }
   const captions = new Map<string, number>();
   for (const c of choices) captions.set(`${c.provider}\n${c.label}`, (captions.get(`${c.provider}\n${c.label}`) ?? 0) + 1);
   for (const c of choices) if ((captions.get(`${c.provider}\n${c.label}`) ?? 0) > 1) {
-    const profiles = c.bindings.map(bindingParts).filter((p) => p.length === 4).map((p) => `${p[0] || "This computer"} / ${p[3] || "Not recorded"}`).sort();
+    const profiles = c.bindings.map(bindingParts).filter((p) => p.length === 4).map((p) => `${p[0] || tr("This computer")} / ${p[3] || tr("Not recorded")}`).sort();
     if (profiles.length) c.label += ` (${profiles.join(", ")})`;
   }
   return choices.sort((a, b) => `${a.provider}\n${a.label}`.localeCompare(`${b.provider}\n${b.label}`) || a.id.localeCompare(b.id));

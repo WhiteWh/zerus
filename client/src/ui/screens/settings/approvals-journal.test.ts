@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createJournal, PLACEHOLDER, type JournalState, type ListRequest, type Page } from "./approvals-journal";
+import { createJournal, PLACEHOLDER, type JournalState, type JournalScope, type ListRequest, type Page } from "./approvals-journal";
 
 /** A promise the test settles. */
 function deferred<T>() {
@@ -13,17 +13,46 @@ const entry = (id: number) => ({ id, at: 1_800_000_000_000, host: "desktop-a", s
 
 function harness() {
   const lists: { request: ListRequest; reply: ReturnType<typeof deferred<Page>> }[] = [];
-  const details: { id: number; reply: ReturnType<typeof deferred<string>> }[] = [];
+  const details: { id: number; scope?: JournalScope; reply: ReturnType<typeof deferred<string>> }[] = [];
   let shown: JournalState | undefined;
   const filters = { host: "", session: "" };
   const journal = createJournal({
     list: (request) => { const reply = deferred<Page>(); lists.push({ request, reply }); return reply.promise; },
-    detail: (id) => { const reply = deferred<string>(); details.push({ id, reply }); return reply.promise; },
+    detail: (id, scope) => { const reply = deferred<string>(); details.push({ id, scope, reply }); return reply.promise; },
   }, () => filters, (state) => { shown = state; });
   return { journal, lists, details, filters, shown: () => shown! };
 }
 
 describe("the approval journal", () => {
+  it("carries the selected service journal and fixed high water through pages and details", async () => {
+    const h = harness();
+    const scope: JournalScope = { configuration: "a".repeat(64), epoch: "epoch-a", generation: 1, journal: "journal-a", through: 53, host: "", session: "" };
+    h.journal.firstPage();
+    h.lists[0].reply.resolve({ entries: [entry(53)], next: 4, previous: 0, scope });
+    await settle();
+    h.journal.select("53");
+    expect(h.details[0].scope).toEqual(scope);
+    h.journal.older();
+    expect(h.lists[1].request.scope).toEqual(scope);
+    expect(h.lists[1].request.before).toBe(4);
+    h.lists[1].reply.resolve({ entries: [entry(3)], next: 0, previous: 3, scope });
+    await settle();
+    h.journal.newer();
+    expect(h.lists[2].request.scope).toEqual(scope);
+    expect(h.lists[2].request.after).toBe(3);
+    // A first-page refresh/filter edit must not inherit the previous journal.
+    h.journal.firstPage();
+    h.lists[2].reply.resolve({ entries: [entry(53)], next: 4, previous: 0, scope });
+    await settle();
+    expect(h.lists[3].request.scope).toBeUndefined();
+    h.details[0].reply.resolve("old journal detail");
+    expect(h.shown().detail).toBeUndefined();
+    h.lists[3].reply.reject("The approval journal changed. Refresh to read it again.");
+    await settle();
+    expect(h.shown().page.entries).toEqual([]);
+    expect(h.shown().page.scope).toBeUndefined();
+    expect(h.shown().status).toContain("Refresh");
+  });
   it("reads one page at a time and once more for edits made meanwhile", async () => {
     const h = harness();
     h.journal.firstPage();

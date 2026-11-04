@@ -19,6 +19,13 @@ pub struct Queue {
 }
 
 impl Queue {
+    #[cfg(test)]
+    pub(super) fn take(&self) -> Option<Arc<[u8]>> {
+        let mut state = self.state.lock().unwrap();
+        let frame = state.frames.pop_front()?;
+        state.bytes -= frame.len();
+        Some(frame)
+    }
     pub fn offer(&self, frame: Arc<[u8]>) -> bool {
         let mut state = self.state.lock().unwrap();
         if state.closed {

@@ -111,6 +111,45 @@ describe("applyBatch", () => {
     appAttach.mockRestore();
   });
 
+  it("carries a known conversation's resumed run through a coalesced full catalog", () => {
+    const c = createCatalog(), moves: [string, string][] = [];
+    c.applyBatch(batchOf({ upserts: [row("run:old", "claude/p/review", { run_id: "old", conversation_id: "conversation", state: "paused" })] }));
+    c.onReplaced((from, to) => moves.push([from, to]));
+    c.applyBatch(batchOf({ replaces: [{ computer: "", rows: [row("run:new", "claude/p/review", { run_id: "new", conversation_id: "conversation", state: "running" })] }] }));
+    expect(moves).toEqual([["\nrun:old", "\nrun:new"]]);
+  });
+
+  it("hands selection to a successor published before the replaced removal in a later batch", () => {
+    const c = createCatalog(), moves: [string, string][] = [];
+    c.applyBatch(batchOf({ upserts: [row("run:old", "claude/p/review", { run_id: "old", conversation_id: "conversation", state: "paused" })] }));
+    c.onReplaced((from, to) => moves.push([from, to]));
+    c.applyBatch(batchOf({ upserts: [row("run:new", "claude/p/review", { run_id: "new", conversation_id: "conversation", state: "running" })] }));
+    expect(moves).toEqual([]);
+    c.applyBatch(batchOf({ removes: [{ computer: "", key: "run:old", reason: "replaced" }] }));
+    expect(moves).toEqual([["\nrun:old", "\nrun:new"]]);
+  });
+
+  it.each([{ conversation_id: "different" }, { conversation_id: "" }, { state: "archived" }, { run_id: "" }])(
+    "does not infer a resumed run from unknown or different identity: %j", (changed) => {
+      const c = createCatalog(), moves: unknown[] = [];
+      c.applyBatch(batchOf({ upserts: [row("run:old", "claude/p/review", { run_id: "old", conversation_id: "conversation", state: "paused" })] }));
+      c.onReplaced((...move) => moves.push(move));
+      c.applyBatch(batchOf({ replaces: [{ computer: "", rows: [row("run:new", "claude/p/review", { run_id: "new", conversation_id: "conversation", state: "running", ...changed })] }] }));
+      expect(moves).toEqual([]);
+    });
+
+  it("refuses ambiguous full-catalog successors and preserves an explicit handoff delivered before a full catalog", () => {
+    const c = createCatalog(), moves: [string, string][] = [];
+    c.applyBatch(batchOf({ upserts: [row("run:old", "claude/p/review", { run_id: "old", conversation_id: "conversation", state: "paused" })] }));
+    c.onReplaced((from, to) => moves.push([from, to]));
+    const next = row("run:new", "claude/p/review", { run_id: "new", conversation_id: "conversation", state: "running" });
+    c.applyBatch(batchOf({ replaces: [{ computer: "", rows: [next, row("run:other", "claude/p/review", { run_id: "other", conversation_id: "conversation", state: "running" })] }] }));
+    expect(moves).toEqual([]);
+    c.applyBatch(batchOf({ removes: [{ computer: "", key: "run:new", reason: "replaced" }] }));
+    c.applyBatch(batchOf({ replaces: [{ computer: "", rows: [row("run:last", "claude/p/review", { run_id: "last", conversation_id: "different", state: "running" })] }] }));
+    expect(moves).toContainEqual(["\nrun:new", "\nrun:last"]);
+  });
+
   it("records computer status", () => {
     createRoot((dispose) => {
       const { catalog, applyBatch } = createCatalog();
@@ -163,7 +202,8 @@ describe("toSession", () => {
       archiveId: undefined, replyId: "r1", attentionSignature: "s1", sharedRead: true, allowed: "resume rename",
       archiveReason: "No archive", terminateReason: "Use Pause", forgetReason: "No forget",
     });
-    expect(Object.values(s).some((v) => typeof v === "object" && v !== null)).toBe(false);
+    expect(Object.entries(s).filter(([key]) => key !== "subagents").some(([, v]) => typeof v === "object" && v !== null)).toBe(false);
+    expect(s.subagents).toBeUndefined();
     expect(toSession("", "run:a", view("a", { allowed_actions: null })).allowed).toBeUndefined();
     expect(toSession("", "run:a", view("a", { allowed_actions: [] })).allowed).toBe("");
     expect(toSession("", "run:a", view("x/a", { agent: "sh" }))).toMatchObject({ agent: "sh", cmd: "sh" });

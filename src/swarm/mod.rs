@@ -165,6 +165,16 @@ pub(crate) fn local_node_id(config: &Config) -> Result<String> {
     Ok(store.data.node_id.clone())
 }
 
+/// Validate an already admitted existing catalog without loading, initializing
+/// or saving a store. The receipt reader owns its bounded private file read.
+pub(crate) fn existing_node_id(bytes: &[u8]) -> Result<String> {
+    let data: store::Store = serde_json::from_slice(bytes)?;
+    data.catalog.validate()?;
+    let id = uuid::Uuid::parse_str(&data.node_id)?;
+    ensure!(!id.is_nil() && id.to_string() == data.node_id, "invalid persisted machine identity");
+    Ok(data.node_id)
+}
+
 fn input() -> Result<Value> {
     let mut bytes = Vec::new();
     std::io::stdin()

@@ -31,6 +31,8 @@ export function createActivityScroll(readTop: () => number, settle: (flush: () =
   const intent = () => { if (!disposed) { active = true; arm(); } };
   return {
     active: () => active,
+    /** A layout waits for the gesture or selection to end: the transcript shown is not the latest. */
+    deferred: () => pending !== undefined,
     intent,
     moved() { if (active) intent(); },
     hold() { held = true; intent(); },

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The seven Kimi Bash, four CreateGoal and one ExitPlanMode approval contracts in a private Windows ConPTY host.
+"""The seven Kimi Bash, eight CreateGoal and one ExitPlanMode approval contracts in a private Windows ConPTY host.
 
 Only the sealed selected official latest win32-x64 image qualifies. No tmux, shared Kimi,
 user profile, real provider or relaxed screen predicate is used. A separate
@@ -126,7 +126,7 @@ class NativeWindowsKimiApprovals(approvals.ApprovalCases, approvals.GoalCases, a
         approvals.make_private_folders(self.env)
         (self.home / 'config.toml').write_text(
             approvals.model_config(self.server.server_port, self.goal_mode or 'default'))
-        (self.home / 'tui.toml').write_text('[upgrade]\nauto_install = false\n')
+        (self.home / 'tui.toml').write_text(approvals.tui_config(self._testMethodName))
         portable = self.root / 'portable'
         portable.mkdir()
         self.hgs_exe = portable / 'hgs.exe'
@@ -154,6 +154,7 @@ class NativeWindowsKimiApprovals(approvals.ApprovalCases, approvals.GoalCases, a
         text = 'Start the fixture goal.' if self.goal_mode else 'Run the fixture command.'
         marker = '1. Switch to Never Ask and start' if self.goal_mode else '1. Approve once'
         if self.plan_scenario:
+            ready = self.plan_mode_on()
             text, marker = approvals.PLAN_PROMPT, 'Ready to build with this plan?'
         payload = dict(request_id=str(uuid.uuid4()), text=text,
                        expected_run_id=ready['run_id'], expected_conversation_id=ready.get('conversation_id') or '')
@@ -197,6 +198,10 @@ class NativeWindowsKimiApprovals(approvals.ApprovalCases, approvals.GoalCases, a
 
     def height(self):
         return self.rpc('pane_info', target=dict(name=self.name))['height']
+
+    def press(self, key):
+        """One key into the private pseudoconsole, written as tmux send-keys writes it."""
+        self.rpc('send_keys', target=dict(name=self.name), keys=[dict(named=key)])
 
     def until(self, predicate, seconds=WAIT):
         end = time.monotonic() + seconds

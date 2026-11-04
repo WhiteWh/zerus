@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use serde_json::json;
 use tauri::{AppHandle, Manager, State};
+use zerus_client_core::desktop::cache_maintenance::{Phase, Timing};
 use zerus_client_core::download_cache::{self, Usage};
 
 use crate::settings::Store;
@@ -93,43 +94,79 @@ fn now_ms() -> i64 {
 
 /// DownloadCacheSettings::refresh: with a limit, a trim to it; otherwise
 /// the use as it is.
-fn refresh(app: &AppHandle, files: &Files) -> Result<FilesView, String> {
+async fn refresh(app: &AppHandle, files: &Files, change: Option<u64>) -> Result<FilesView, String> {
     let root = folder(app);
+    let service_mode = crate::desktop_service::mode();
+    let mut service_error = None;
+    if service_mode {
+        let service = app
+            .state::<crate::commands::AppState>()
+            .desktop_service()
+            .ok_or("Downloaded files maintenance is unavailable from the desktop service.")?;
+        match service
+            .cache_pass(root.clone(), change, Timing::Immediate)
+            .await
+        {
+            Ok(Some(status)) => {
+                if change.is_some() && !status.policy_saved {
+                    return Err("The downloaded files limit was not saved.".into());
+                }
+                // This mirrors correlated service data for display. It is
+                // never read back as service consent or execution permission.
+                app.state::<Store>()
+                    .0
+                    .set("downloads/cacheBytes", json!(status.limit))?;
+                if status.phase == Phase::Unknown {
+                    service_error=Some("Some downloaded files have an unknown removal result and need review. They will not be retried.".into());
+                } else if status.phase == Phase::Refused {
+                    service_error=Some("The downloaded files could not be verified. Existing files were preserved.".into());
+                }
+            }
+            Ok(None) => (),
+            Err(error) => return Err(error),
+        }
+    } else if let Some(bytes) = change {
+        app.state::<Store>()
+            .0
+            .set("downloads/cacheBytes", json!(bytes))?;
+    }
     let limit = limit(app);
     let path = root.clone();
-    let usage: Usage = files.run(move || {
-        if limit > 0 {
-            download_cache::trim(&path, limit, now_ms())
-        } else {
-            download_cache::usage(&path)
-        }
-    })?;
+    let worker = files.clone();
+    let usage: Usage = tauri::async_runtime::spawn_blocking(move || {
+        worker.run(move || {
+            if !service_mode && limit > 0 {
+                download_cache::trim(&path, limit, now_ms())
+            } else {
+                download_cache::usage(&path)
+            }
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())??;
     Ok(FilesView {
         folder: root.to_string_lossy().into_owned(),
         limit,
         bytes: usage.bytes,
         files: usage.files,
-        error: usage.error,
+        error: service_error.or(usage.error),
     })
 }
 
 /// The folder and its use now.
 #[tauri::command(async)]
-pub fn files_usage(app: AppHandle, files: State<'_, Files>) -> Result<FilesView, String> {
-    refresh(&app, &files)
+pub async fn files_usage(app: AppHandle, files: State<'_, Files>) -> Result<FilesView, String> {
+    refresh(&app, &files, None).await
 }
 
 /// Apply: stores the limit (0: never clear), then trims to it.
 #[tauri::command(async)]
-pub fn files_apply_limit(
+pub async fn files_apply_limit(
     app: AppHandle,
     files: State<'_, Files>,
     bytes: u64,
 ) -> Result<FilesView, String> {
-    app.state::<Store>()
-        .0
-        .set("downloads/cacheBytes", json!(bytes))?;
-    refresh(&app, &files)
+    refresh(&app, &files, Some(bytes)).await
 }
 
 /// Opens the folder in the file manager; the address is the client's own.

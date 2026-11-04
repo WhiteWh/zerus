@@ -31,6 +31,27 @@ impl Fixture {
             deadline: Instant::now() + Duration::from_secs(2),
         }
     }
+    fn discover(&self, entries: usize) -> DiscoveryProgress {
+        self.discover_with_cancel(entries, &AtomicBool::new(false))
+    }
+    fn discover_with_cancel(&self, entries: usize, cancel: &AtomicBool) -> DiscoveryProgress {
+        // Schema commits and filesystem work may consume a whole slice on
+        // Windows. Retry the same bounded page; discovery does not save an
+        // interrupted directory iterator, so never add repeated entry counts.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        for _ in 0..128 {
+            let progress = self
+                .store
+                .discover(&self.state, &Self::budget(entries), cancel)
+                .unwrap();
+            assert!(Instant::now() < deadline, "fixture discovery timed out");
+            assert!(progress.entries <= entries);
+            if progress.complete || progress.entries == entries {
+                return progress;
+            }
+        }
+        panic!("fixture discovery exhausted its bounded attempts");
+    }
     fn totals(&self) -> (i64, i64) {
         self.store
             .index
@@ -47,31 +68,14 @@ impl Fixture {
 #[test]
 fn discovery_stages_only_paths_and_requires_full_unchanged_coverage() {
     let fixture = Fixture::new(20);
-    let progress = fixture
-        .store
-        .discover(&fixture.state, &Fixture::budget(3), &AtomicBool::new(false))
-        .unwrap();
+    let progress = fixture.discover(3);
     assert_eq!(progress.entries, 3);
     assert!(!progress.complete);
     assert!(fixture.totals().0 <= 3);
-    let complete = fixture
-        .store
-        .discover(
-            &fixture.state,
-            &Fixture::budget(100),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+    let complete = fixture.discover(100);
     assert!(complete.complete);
     assert_eq!(fixture.totals(), (20, 20));
-    let repeat = fixture
-        .store
-        .discover(
-            &fixture.state,
-            &Fixture::budget(100),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+    let repeat = fixture.discover(100);
     assert!(repeat.complete);
     assert_eq!(repeat.entries, 0);
     assert_eq!(repeat.staged, 0);
@@ -84,16 +88,26 @@ fn discovery_stages_only_paths_and_requires_full_unchanged_coverage() {
 }
 
 #[test]
+fn fixture_discovery_resumes_after_a_schema_commit_spends_the_first_slice() {
+    let fixture = Fixture::new(1);
+    let first_commit = std::sync::Arc::new(AtomicBool::new(true));
+    let on_commit = first_commit.clone();
+    fixture.store.index.connection().commit_hook(Some(move || {
+        if on_commit.swap(false, Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(1100));
+        }
+        false
+    }));
+    let progress = fixture.discover(100);
+    assert!(!first_commit.load(Ordering::Relaxed));
+    assert!(progress.complete);
+    assert_eq!(fixture.totals(), (1, 1));
+}
+
+#[test]
 fn changed_metadata_returns_only_that_queued_path_to_pending() {
     let fixture = Fixture::new(20);
-    fixture
-        .store
-        .discover(
-            &fixture.state,
-            &Fixture::budget(100),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+    fixture.discover(100);
     fixture
         .store
         .index
@@ -108,14 +122,7 @@ fn changed_metadata_returns_only_that_queued_path_to_pending() {
         fixture.store.catalog_status().unwrap()["discovery"],
         "stale"
     );
-    let progress = fixture
-        .store
-        .discover(
-            &fixture.state,
-            &Fixture::budget(100),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+    let progress = fixture.discover(100);
     assert!(progress.complete);
     assert_eq!(fixture.totals(), (20, 1));
 }
@@ -172,14 +179,7 @@ fn failed_schema_migration_rolls_back_and_can_be_retried() {
         .unwrap();
     assert!(!queue_exists);
     db.execute_batch("DROP TABLE catalog_totals").unwrap();
-    let progress = fixture
-        .store
-        .discover(
-            &fixture.state,
-            &Fixture::budget(100),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+    let progress = fixture.discover(100);
     assert!(progress.complete);
     assert_eq!(fixture.totals(), (1, 1));
 }
@@ -206,10 +206,7 @@ fn cancellation_during_schema_commit_keeps_setup_for_the_next_pass() {
         .connection()
         .commit_hook(None::<fn() -> bool>);
     cancel.store(false, Ordering::Relaxed);
-    let retry = fixture
-        .store
-        .discover(&fixture.state, &Fixture::budget(100), &cancel)
-        .unwrap();
+    let retry = fixture.discover_with_cancel(100, &cancel);
     assert!(retry.complete);
     assert_eq!(fixture.totals(), (1, 1));
 }
@@ -245,14 +242,7 @@ fn routed_bindings_archives_and_native_bindings_share_one_bounded_queue() {
     )
     .unwrap();
     fs::write(fixture.state.join("unrelated.json"), "{}").unwrap();
-    let result = fixture
-        .store
-        .discover(
-            &fixture.state,
-            &Fixture::budget(100),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+    let result = fixture.discover(100);
     assert!(result.complete);
     assert_eq!(fixture.totals(), (5, 5));
 }
@@ -264,16 +254,6 @@ fn discovery_never_follows_a_binding_symlink() {
     let other = fixture.state.join("unrelated.json");
     fs::write(&other, "PRIVATE").unwrap();
     std::os::unix::fs::symlink(&other, fixture.state.join(format!("{:064x}.json", 42))).unwrap();
-    assert!(
-        fixture
-            .store
-            .discover(
-                &fixture.state,
-                &Fixture::budget(100),
-                &AtomicBool::new(false)
-            )
-            .unwrap()
-            .complete
-    );
+    assert!(fixture.discover(100).complete);
     assert_eq!(fixture.totals(), (2, 2));
 }

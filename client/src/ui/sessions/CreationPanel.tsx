@@ -1,4 +1,5 @@
 import { Show, createEffect } from "solid-js";
+import { tr } from "../../i18n";
 import { BUTTON, PROGRESS, createDetailsView, panelButtons, panelStatus } from "./creations-ui";
 import { cardVersion, creationDetailsText, editChoices, hideCreation, returnToFilters, runCreationAction, selectedCard } from "../../store/creations";
 import { now } from "../../store/ui";
@@ -41,16 +42,16 @@ export function CreationPanel() {
               <h1 class="cr-title">{c().tag}</h1>
               <p class="cr-status tabular">{panelStatus(c(), now())}</p>
             </header>
-            <textarea class="field cr-text" readonly aria-label={PROGRESS} ref={text} />
+            <textarea class="field cr-text" readonly aria-label={tr(PROGRESS)} ref={text} />
             <div class="cr-actions">
-              <Show when={buttons().resume}><button class="btn c1" onClick={() => void runCreationAction(c().id, "resume")}>{BUTTON.resume}</button></Show>
-              <Show when={buttons().check}><button class="btn c2" onClick={() => void runCreationAction(c().id, "check")}>{BUTTON.check}</button></Show>
+              <Show when={buttons().resume}><button class="btn c1" onClick={() => void runCreationAction(c().id, "resume")}>{tr(BUTTON.resume)}</button></Show>
+              <Show when={buttons().check}><button class="btn c2" onClick={() => void runCreationAction(c().id, "check")}>{tr(BUTTON.check)}</button></Show>
               <Show when={buttons().stop}>
                 <button class="btn wide" disabled={!buttons().stopEnabled} onClick={() => void runCreationAction(c().id, "stop")}>{buttons().stopText}</button>
               </Show>
-              <Show when={buttons().edit}><button class="btn c1" onClick={() => void editChoices(c().id)}>{BUTTON.edit}</button></Show>
-              <button class="btn c2" onClick={() => void hideCreation(c().id)}>{BUTTON.hide}</button>
-              <button class="btn wide" onClick={returnToFilters}>{BUTTON.back}</button>
+              <Show when={buttons().edit}><button class="btn c1" onClick={() => void editChoices(c().id)}>{tr(BUTTON.edit)}</button></Show>
+              <button class="btn c2" onClick={() => void hideCreation(c().id)}>{tr(BUTTON.hide)}</button>
+              <button class="btn wide" onClick={returnToFilters}>{tr(BUTTON.back)}</button>
             </div>
           </>
         );

@@ -1,0 +1,48 @@
+{
+  "bead": "zerus-5wmh.24.5",
+  "mockup": "design/webui/src/screens/settings/Mobile.tsx Workspace actions row",
+  "environment": {
+    "built_embedded_app": true,
+    "private_bus_xvfb_home_xdg_tmp_tmux": true,
+    "child_env_from_scratch": true,
+    "fake_hgs_and_connector_only": true,
+    "live_units_config_or_relays_accessed": false
+  },
+  "assertions": [
+    "Start dispatches once without a dialog.",
+    "Stop dispatches once directly from its click, without a dialog.",
+    "Stop uses the original generation; a draining receipt disables lifecycle buttons.",
+    "Refresh settles the same draining connection to Connector stopped without another Stop.",
+    "An older connector has Stop disabled and no fallback.",
+    "A fake unsafe-service preflight refuses before any Stop effect.",
+    "An uncertain Stop reads fresh status once and never repeats the original action.",
+    "A replaced generation refuses before the Stop command."
+  ],
+  "effects": {
+    "start": 3,
+    "stop": 2
+  },
+  "stop_attempts": 3,
+  "tests": {
+    "core_library_passed": 1038,
+    "core_existing_ignored": 4,
+    "core_connector_actions": 6,
+    "other_mobile_integrations": 21,
+    "native_mobile": 20,
+    "frontend_passed": 2242,
+    "frontend_existing_skipped": 1,
+    "phase4_passed": 18,
+    "entry_bytes": 459408,
+    "entry_limit": 500000
+  },
+  "credential_scan_findings": 0,
+  "captures": [
+    "connector-actions-running.png",
+    "connector-actions-draining.png",
+    "connector-actions-stopped.png",
+    "connector-actions-unsupported.png",
+    "connector-actions-refused.png",
+    "connector-actions-unknown.png"
+  ],
+  "stop_action": "Direct one-use plan dispatch on click, matching Qt and the mockup; coordinator withdrew the earlier confirmation ruling."
+}

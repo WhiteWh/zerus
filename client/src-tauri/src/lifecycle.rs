@@ -1,7 +1,7 @@
 //! The menu-bar app's lifecycle, as the Qt GUI behaves on macOS
 //! (`tray/src/main.cpp`, `tray/src/MacAppVisibility.mm`): closing the window
 //! hides it and the app stays in the menu bar; a Dock icon shows only while
-//! the window is open; a Dock click restores a minimised window; quitting
+//! the window is open; a Dock click opens or restores it when hidden; quitting
 //! removes the single-instance socket. Builds without a menu-bar item close
 //! as before. `lib.rs` calls [`on_event`] from its run loop (Decision 15).
 use tauri::{AppHandle, Manager, RunEvent, WebviewWindow, WindowEvent};
@@ -32,11 +32,24 @@ pub fn policy(window_open: bool) -> Policy {
     }
 }
 
-/// A Dock click restores a minimised window when none is visible
-/// (`MacAppVisibility.mm:82-88`).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn reopen_restores(minimized: bool, visible: bool) -> bool {
-    minimized && !visible
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReopenAction {
+    Restore,
+    Show,
+    Nothing,
+}
+
+/// A Dock click leaves a visible window alone, restores a minimised one
+/// as Qt does, and opens a hidden or missing window (owner rule, .66.2.37).
+/// An existing window is represented by (minimized, visible).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn reopen_action(window: Option<(bool, bool)>) -> ReopenAction {
+    match window {
+        Some((_, true)) => ReopenAction::Nothing,
+        Some((true, false)) => ReopenAction::Restore,
+        _ => ReopenAction::Show,
+    }
 }
 
 /// The window opens at start for `--sessions`, and always without a menu-bar item.
@@ -122,7 +135,23 @@ pub fn show_main(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     window.show()?;
     window.set_focus()?;
     sync_policy(app);
+    #[cfg(all(windows, feature = "live"))]
+    crate::platform::windows::tray::apply_badge(app);
     Ok(window)
+}
+
+/// Windows cannot construct WebView2 synchronously in a native event callback.
+/// The existing window-layer worker owns the first creation as well as its
+/// level and presentation. Other platforms keep their main-thread behavior.
+pub fn request_main(app: &AppHandle) -> Result<(), String> {
+    #[cfg(all(windows, feature = "live"))]
+    {
+        crate::window_layer::open(app)
+    }
+    #[cfg(not(all(windows, feature = "live")))]
+    show_main(app)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 pub fn hide_main(app: &AppHandle) {
@@ -173,13 +202,24 @@ pub fn prepare(app: &mut tauri::App, menu_bar: bool, opens_sessions: bool) {
 
 #[cfg(target_os = "macos")]
 fn reopen(app: &AppHandle) {
-    if let Some(window) = crate::main_window(app) {
-        let minimized = window.is_minimized().unwrap_or(false);
-        let visible = window.is_visible().unwrap_or(false);
-        if reopen_restores(minimized, visible) {
-            let _ = window.unminimize();
-            let _ = window.set_focus();
+    let window = crate::main_window(app);
+    let state = window.as_ref().map(|window| {
+        (
+            window.is_minimized().unwrap_or(false),
+            window.is_visible().unwrap_or(false),
+        )
+    });
+    match reopen_action(state) {
+        ReopenAction::Restore => {
+            if let Some(window) = window {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
         }
+        ReopenAction::Show => {
+            let _ = show_main(app);
+        }
+        ReopenAction::Nothing => {}
     }
 }
 
@@ -192,6 +232,10 @@ fn reopen(app: &AppHandle) {
 /// outlives the tray agent whose `aboutToQuit` flushes (`main.cpp:340`,
 /// `:378`), so the socket is removed last, as `QLocalServer::close` does.
 fn exit(app: &AppHandle) {
+    #[cfg(feature = "live")]
+    if let Some(native) = app.try_state::<crate::native_ui::runtime::NativeUi>() {
+        native.shutdown();
+    }
     // Quitting is not a hang (`Watchdog::stop`).
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if let Some(dog) = app.try_state::<crate::watchdog::Watchdog>() {
@@ -204,16 +248,18 @@ fn exit(app: &AppHandle) {
     }
     #[cfg(all(target_os = "macos", feature = "live"))]
     crate::platform::macos_menubar::clear_badge(app);
+    #[cfg(all(windows, feature = "live"))]
+    crate::platform::windows::tray::stop(app);
     // Settings, the organization, voice, composers and drafts reach the disk
     // while the socket still stands, as Qt's tray agent flushes before its
     // server goes.
     #[cfg(feature = "live")]
     crate::exit_work(app);
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if let Some(state) = app.try_state::<crate::instance::InstanceState>() {
         state.release();
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     let _ = app;
 }
 
@@ -228,13 +274,12 @@ mod tests {
     }
 
     #[test]
-    fn a_dock_click_restores_only_a_minimised_window() {
-        assert!(reopen_restores(true, false));
-        assert!(!reopen_restores(true, true));
-        assert!(
-            !reopen_restores(false, false),
-            "a closed window stays closed, as in Qt"
-        );
+    fn a_dock_click_opens_hidden_or_missing_windows_and_restores_minimised_ones() {
+        assert_eq!(reopen_action(None), ReopenAction::Show);
+        assert_eq!(reopen_action(Some((false, false))), ReopenAction::Show);
+        assert_eq!(reopen_action(Some((true, false))), ReopenAction::Restore);
+        assert_eq!(reopen_action(Some((false, true))), ReopenAction::Nothing);
+        assert_eq!(reopen_action(Some((true, true))), ReopenAction::Nothing);
     }
 
     #[test]

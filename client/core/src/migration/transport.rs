@@ -7,7 +7,7 @@
 use super::{bounded_json, Bundle, BundleItem, SourceError};
 use crate::{
     actions::{Exit, Invocation},
-    run::run_streamed,
+    run::{run_streamed, run_streamed_retained},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -15,7 +15,7 @@ use std::{
     fmt,
     io::Write,
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{atomic::AtomicBool, mpsc, Arc},
     time::Duration,
 };
 use zerus_desktop_migration::{
@@ -54,6 +54,7 @@ pub struct Publisher {
     hgs: PathBuf,
     environment: Vec<(String, String)>,
     configuration: String,
+    retained: Option<(Arc<dyn Send + Sync>, Arc<AtomicBool>)>,
 }
 
 impl Publisher {
@@ -68,9 +69,53 @@ impl Publisher {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             configuration: String::new(),
+            retained: None,
         };
         publisher.configuration = publisher.current_configuration()?;
         Ok(publisher)
+    }
+
+    /// Native startup's original source/freeze/helper resources, not a writer
+    /// permit. Every probe, publication and lookup retains them through actual
+    /// child/pipe completion; uncertain publication still keeps the same UUID.
+    pub fn probe_retained(
+        hgs: &Path,
+        environment: &[(&str, &str)],
+        resources: Arc<dyn Send + Sync>,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<Self, AdmissionError> {
+        let mut publisher = Self {
+            hgs: hgs.into(),
+            environment: environment
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            configuration: String::new(),
+            retained: Some((resources, cancel)),
+        };
+        publisher.configuration = publisher.current_configuration()?;
+        Ok(publisher)
+    }
+
+    fn exchange(
+        &self,
+        inv: &Invocation,
+        cap: usize,
+        input: impl FnOnce(std::process::ChildStdin) -> bool + Send + 'static,
+    ) -> Result<Exit, crate::run::TooLarge> {
+        if let Some((resources, cancel)) = &self.retained {
+            run_streamed_retained(
+                &self.hgs,
+                inv,
+                &self.environment(),
+                cap,
+                cancel,
+                resources.clone(),
+                input,
+            )
+        } else {
+            run_streamed(&self.hgs, inv, &self.environment(), cap, input)
+        }
     }
 
     pub fn configuration(&self) -> &str {
@@ -85,13 +130,7 @@ impl Publisher {
     }
 
     fn read(&self, args: &[&str], cap: usize) -> Option<Vec<u8>> {
-        match run_streamed(
-            &self.hgs,
-            &invocation(args, Duration::from_secs(5)),
-            &self.environment(),
-            cap,
-            |_| true,
-        ) {
+        match self.exchange(&invocation(args, Duration::from_secs(5)), cap, |_| true) {
             Ok(Exit::Code {
                 code: 0, stdout, ..
             }) => Some(stdout),
@@ -135,6 +174,18 @@ impl Publisher {
     /// unconfirmed result retains that UUID for explicit read-only inspection;
     /// this method never retries, overwrites or generates another identity.
     pub fn publish(&self, bundle: Bundle) -> Result<StagedReceipt, PublishFailure> {
+        self.publish_with_receipt(bundle, |_| Ok(()))
+    }
+
+    /// Persist the exact expected receipt after all source rechecks, BEFORE
+    /// writing the final record that can commit. Native recovery can therefore
+    /// bind an uncertain outcome by original UUID and manifest hash, without
+    /// recapturing sources, guessing counts or replaying publication.
+    pub fn publish_with_receipt(
+        &self,
+        bundle: Bundle,
+        before_record: impl FnOnce(&StagedReceipt) -> Result<(), SourceError> + Send + 'static,
+    ) -> Result<StagedReceipt, PublishFailure> {
         let import_id = bundle.record.import_id.clone();
         let failure = |reason| PublishFailure {
             import_id: import_id.clone(),
@@ -151,13 +202,11 @@ impl Publisher {
         self.revalidate()
             .map_err(|e| failure(PublishError::Admission(e)))?;
         let (done, result) = mpsc::sync_channel(1);
-        let exit = run_streamed(
-            &self.hgs,
+        let exit = self.exchange(
             &invocation(&["desktop", "import-evidence", "--json"], CHILD_TIMEOUT),
-            &self.environment(),
             OUTPUT,
             move |mut pipe| {
-                let result = encode(bundle, &mut pipe);
+                let result = encode(bundle, &mut pipe, before_record);
                 let ok = result.is_ok();
                 // Store the expected receipt before EOF can let the child
                 // commit/exit. This bounded, initially empty channel cannot
@@ -172,18 +221,7 @@ impl Publisher {
             Ok(Err(error)) => return Err(failure(error)),
             Err(_) => return Err(failure(PublishError::Unconfirmed)),
         };
-        let actual: StagedReceipt = match exit {
-            Ok(Exit::Code {
-                code: 0, stdout, ..
-            }) => {
-                serde_json::from_slice(&stdout).map_err(|_| failure(PublishError::Unconfirmed))?
-            }
-            _ => return Err(failure(PublishError::Unconfirmed)),
-        };
-        if actual != expected {
-            return Err(failure(PublishError::Unconfirmed));
-        }
-        Ok(actual)
+        publication_reply(exit, &expected, self.retained.is_some()).map_err(failure)
     }
 
     /// Read one retained UUID. Absent includes incomplete publication and never
@@ -276,7 +314,51 @@ pub enum PublishError {
     InvalidBundle,
     Admission(AdmissionError),
     Source(SourceError),
+    /// Only this exact attempt is known not to have reserved/committed. Native
+    /// explicit retry still needs the SAME UUID/record and fresh source checks.
+    HandoffBusy,
     Unconfirmed,
+}
+
+fn publication_reply(
+    exit: Result<Exit, crate::run::TooLarge>,
+    expected: &StagedReceipt,
+    original_complete: bool,
+) -> Result<StagedReceipt, PublishError> {
+    let stdout = match exit {
+        Ok(Exit::Code {
+            code: 0, stdout, ..
+        }) => stdout,
+        _ => return Err(PublishError::Unconfirmed),
+    };
+    if serde_json::from_slice::<StagedReceipt>(&stdout).is_ok_and(|actual| actual == *expected) {
+        return Ok(expected.clone());
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct NotCommitted {
+        abi: String,
+        published: bool,
+        configuration: String,
+        import_id: String,
+        import_record: ImportRecordRef,
+        code: String,
+        this_attempt_not_committed: bool,
+    }
+    if original_complete
+        && serde_json::from_slice::<NotCommitted>(&stdout).is_ok_and(|reply| {
+            reply.abi == expected.abi
+                && !reply.published
+                && reply.configuration == expected.configuration
+                && reply.import_id == expected.import_id
+                && reply.import_record == expected.import_record
+                && reply.code == "handoff_busy"
+                && reply.this_attempt_not_committed
+        })
+    {
+        return Err(PublishError::HandoffBusy);
+    }
+    Err(PublishError::Unconfirmed)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -326,7 +408,11 @@ fn body(
         .map_err(|_| PublishError::Unconfirmed)
 }
 
-fn encode(mut bundle: Bundle, output: &mut impl Write) -> Result<StagedReceipt, PublishError> {
+fn encode(
+    mut bundle: Bundle,
+    output: &mut impl Write,
+    before_record: impl FnOnce(&StagedReceipt) -> Result<(), SourceError>,
+) -> Result<StagedReceipt, PublishError> {
     line(
         output,
         &json!({"abi":ABI,"configuration":bundle.record.configuration,
@@ -348,9 +434,7 @@ fn encode(mut bundle: Bundle, output: &mut impl Write) -> Result<StagedReceipt, 
             BundleItem::Record(record) => {
                 let bytes =
                     bounded_json(&record, MAX_IMPORT_RECORD_BYTES).map_err(PublishError::Source)?;
-                body(output, &json!({"t":"record","bytes":bytes.len()}), &bytes)?;
-                output.flush().map_err(|_| PublishError::Unconfirmed)?;
-                return Ok(StagedReceipt {
+                let receipt = StagedReceipt {
                     abi: ABI.into(),
                     published: true,
                     evidence: Evidence::Staged,
@@ -363,7 +447,11 @@ fn encode(mut bundle: Bundle, output: &mut impl Write) -> Result<StagedReceipt, 
                     bytes: bundle.emitted_bytes,
                     snapshots: bundle.snapshots.len() as u64,
                     pages: record.pages.len() as u64,
-                });
+                };
+                before_record(&receipt).map_err(PublishError::Source)?;
+                body(output, &json!({"t":"record","bytes":bytes.len()}), &bytes)?;
+                output.flush().map_err(|_| PublishError::Unconfirmed)?;
+                return Ok(receipt);
             }
         }
     }

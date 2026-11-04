@@ -93,3 +93,22 @@ it("opens a measured long history and scrolls slowly without new events or corre
   for(let n=0;n<200;n++){motion.intent();top-=3;motion.moved();anchor.remember();anchor.beforeChange();anchor.changed();c.advance(100);c.frame();const row=visible()[0];expect(row.offset+top).toBe(absolute.get(row.key));expect(writes).toBe(0);}
   c.advance(250);c.frame();c.frame();c.frame();expect(writes).toBe(0);
 });
+
+it("reports a deferred layout until the quiet period applies it, and not for a gesture alone", () => {
+  const c = clock();
+  const motion = createActivityScroll(() => 10, (flush) => flush(), c.host);
+  motion.update(() => {});
+  expect(motion.deferred()).toBe(false);
+  motion.intent();
+  expect(motion.active()).toBe(true);
+  expect(motion.deferred()).toBe(false);
+  motion.update(() => {});
+  expect(motion.deferred()).toBe(true);
+  c.advance(250); c.frame(); c.frame();
+  expect(motion.active()).toBe(false);
+  expect(motion.deferred()).toBe(false);
+  motion.selection(true); motion.update(() => {});
+  expect(motion.deferred()).toBe(true);
+  motion.reset();
+  expect(motion.deferred()).toBe(false);
+});

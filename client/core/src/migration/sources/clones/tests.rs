@@ -263,3 +263,182 @@ fn existing_ini_and_plist_readers_leave_the_complete_synthetic_source_unchanged(
     }
     std::fs::remove_dir_all(root).unwrap();
 }
+
+fn next_bytes(raw: &str) -> Vec<u8> {
+    format!(r#"{{"version":1,"values":{{"unrelated":"private setting stays outside this family"}},"repository_clones":{raw}}}"#).into_bytes()
+}
+fn next_bodies(source: SourceStream, hash: &str) -> Vec<Value> {
+    let mut values = Vec::new();
+    let mut finished = false;
+    for item in bundle(source) {
+        match item.unwrap() {
+            BundleItem::Snapshot { reference, reader } => {
+                reference.verify(reader.get_ref()).unwrap();
+                assert!(reference.bytes <= MAX_SNAPSHOT_BYTES);
+                values.push(serde_json::from_slice(reader.get_ref()).unwrap());
+            }
+            BundleItem::Record(record) => {
+                assert_eq!(record.evidence, Evidence::Staged);
+                assert_eq!(record.sources[0].family, "next-repository-clones");
+                assert_eq!(record.sources[0].format, "settings-json-v1");
+                assert_eq!(record.sources[0].schema, 1);
+                assert_eq!(record.sources[0].sha256, hash);
+                finished = true;
+            }
+            _ => (),
+        }
+    }
+    assert!(finished);
+    values
+}
+fn original_extension(values: &[Value]) -> Vec<u8> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let mut original = Vec::new();
+    for value in &values[1..] {
+        assert_eq!(value["kind"], "clone-checkpoint-bytes");
+        assert_eq!(value["offset"], original.len());
+        original.extend(STANDARD.decode(value["base64"].as_str().unwrap()).unwrap());
+    }
+    original
+}
+
+#[test]
+fn next_checkpoint_keeps_exact_original_extension_bytes_and_requests_only() {
+    let mut pending = pending(false);
+    pending.as_object_mut().unwrap().remove("future_private");
+    let mut previous = pending.clone();
+    previous["request_id"] = json!("22222222-2222-4222-8222-222222222222");
+    let raw = format!("{{ \n  \"version\": 1, \"entries\": {{\"{}\": {{\"previous\": {previous}, \"pending\": {pending}, \"parent\": null}}}} \n}}", "a".repeat(64));
+    let bytes = next_bytes(&raw);
+    let before = bytes.clone();
+    let values = next_bodies(next_repository_clones(&bytes).unwrap(), &sha256(&bytes));
+    assert_eq!(values[0]["present"], true);
+    assert_eq!(values[0]["bytes"], raw.len());
+    assert_eq!(original_extension(&values), raw.as_bytes());
+    assert_eq!(bytes, before);
+    assert!(!serde_json::to_string(&values)
+        .unwrap()
+        .contains("private setting stays outside"));
+}
+
+#[test]
+fn next_absent_and_explicit_empty_extensions_stay_distinct() {
+    let absent = br#"{"version":1,"values":{}}"#;
+    let values = next_bodies(next_repository_clones(absent).unwrap(), &sha256(absent));
+    assert_eq!(values.len(), 1);
+    assert_eq!(values[0]["present"], false);
+    assert_eq!(values[0]["bytes"], Value::Null);
+    let raw = r#"{"version":1,"entries":{}}"#;
+    let bytes = next_bytes(raw);
+    let values = next_bodies(next_repository_clones(&bytes).unwrap(), &sha256(&bytes));
+    assert_eq!(values[0]["present"], true);
+    assert_eq!(original_extension(&values), raw.as_bytes());
+}
+
+#[test]
+fn next_future_malformed_duplicate_and_oversized_checkpoints_refuse_the_family() {
+    let scope = "a".repeat(64);
+    for raw in [
+        "null".to_owned(),
+        r#"{"version":2,"entries":{}}"#.into(),
+        r#"{"version":1,"entries":null}"#.into(),
+        r#"{"version":1,"entries":{},"future":true}"#.into(),
+        format!(
+            r#"{{"version":1,"entries":{{"{scope}":{{"pending":{{"request_id":"not-an-id"}}}}}}}}"#
+        ),
+        r#"{"version":1,"entries":{"wrong-scope":{}}}"#.into(),
+        format!(
+            r#"{{"version":1,"entries":{{"{scope}":{{}},"{scope}":{{"parent":"/srv/other"}}}}}}"#
+        ),
+        format!(
+            r#"{{"version":1,"entries":{{"{scope}":{{"parent":"/srv/example","parent":"/srv/other"}}}}}}"#
+        ),
+        format!(r#"{{"version":1,"entries":{{"{scope}":{{"future":true}}}}}}"#),
+    ] {
+        assert!(
+            matches!(
+                next_repository_clones(&next_bytes(&raw)),
+                Err(SourceError::UnsupportedSource)
+            ),
+            "{raw}"
+        );
+    }
+    let entries: serde_json::Map<String, Value> =
+        (0..65).map(|n| (format!("{n:064x}"), json!({}))).collect();
+    assert!(next_repository_clones(&next_bytes(
+        &json!({"version":1,"entries":entries}).to_string()
+    ))
+    .is_err());
+    assert!(matches!(
+        next_repository_clones(&vec![b' '; (4 << 20) + 1]),
+        Err(SourceError::TooLarge)
+    ));
+    let duplicate = br#"{"repository_clones":{"version":1,"entries":{}},"repository_clones":{"version":1,"entries":{}}}"#;
+    assert!(next_repository_clones(duplicate).is_err());
+}
+
+#[test]
+fn next_credential_bearing_pending_and_previous_urls_remain_in_the_original_only() {
+    for field in ["pending", "previous"] {
+        for url in [
+            "https://fixture-user:fixture-secret@example.invalid/repo.git",
+            "https://example.invalid/repo.git?token=synthetic",
+            "https://example.invalid/repo.git#synthetic-fragment",
+        ] {
+            let mut pending = pending(false);
+            pending.as_object_mut().unwrap().remove("future_private");
+            pending["url"] = json!(url);
+            let raw = json!({"version":1,"entries":{"a".repeat(64):{field:pending}}}).to_string();
+            let bytes = next_bytes(&raw);
+            let before = bytes.clone();
+            assert!(matches!(
+                next_repository_clones(&bytes),
+                Err(SourceError::UnsupportedSource)
+            ));
+            assert_eq!(bytes, before);
+        }
+    }
+}
+
+#[test]
+fn next_large_original_extension_is_chunked_with_exact_offsets_and_utf8_bytes() {
+    let entries: serde_json::Map<String, Value> = (0..20)
+        .map(|n| {
+            (
+                format!("{n:064x}"),
+                json!({"parent":format!("/srv/{}","я".repeat(15000))}),
+            )
+        })
+        .collect();
+    let raw = json!({"version":1,"entries":entries}).to_string();
+    assert!(raw.len() > 512 << 10);
+    let bytes = next_bytes(&raw);
+    let values = next_bodies(next_repository_clones(&bytes).unwrap(), &sha256(&bytes));
+    assert!(values.len() > 2);
+    assert_eq!(original_extension(&values), raw.as_bytes());
+}
+
+#[test]
+fn next_source_recheck_refuses_a_final_record_and_never_changes_settings() {
+    let root = std::env::temp_dir().join(format!("zerus-g3-next-clone-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let path = root.join("settings.json");
+    let bytes = next_bytes(r#"{"version":1,"entries":{}}"#);
+    std::fs::write(&path, &bytes).unwrap();
+    let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let source = next_repository_clones(&std::fs::read(&path).unwrap())
+        .unwrap()
+        .recheck(|| Ok("b".repeat(64)));
+    let mut changed = false;
+    for item in bundle(source) {
+        match item {
+            Ok(BundleItem::Record(_)) => panic!("changed source completed"),
+            Err(SourceError::SourceChanged) => changed = true,
+            _ => (),
+        }
+    }
+    assert!(changed);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), mtime);
+    std::fs::remove_dir_all(root).unwrap();
+}

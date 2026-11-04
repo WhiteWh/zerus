@@ -18,7 +18,7 @@ pub use approvals::approval_policies;
 mod launches;
 pub use launches::{qt_executor_launches, qt_pending_launches};
 mod clones;
-pub use clones::qt_repository_clones;
+pub use clones::{next_repository_clones, qt_repository_clones};
 mod downloads;
 pub use downloads::download_index;
 mod organization;
@@ -38,7 +38,9 @@ pub use attention::{next_attention_observed, qt_attention_observed};
 mod local_reads;
 pub use local_reads::{next_local_read_marks, qt_local_read_marks};
 mod linux_notifications;
-pub use linux_notifications::{next_linux_notifications, qt_linux_notifications};
+pub use linux_notifications::{
+    next_linux_notifications, next_linux_owned_notifications, qt_linux_notifications,
+};
 mod recovery;
 pub use recovery::recovery_policy_caches;
 

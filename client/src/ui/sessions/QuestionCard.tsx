@@ -1,8 +1,13 @@
-import { Index, Show, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js";
+import { Index, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
+import { tr } from "../../i18n";
+import { trText } from "../../text";
+import { askedTimeOf, zonedTimeOf } from "../lib/dates";
 import { Icon } from "../lib/icons";
 import { questions } from "../../store/questions";
 import { terminal } from "../../store/terminal";
 import { setDetailTab } from "../../store/ui";
+import { selected } from "../../store/ui";
+import { nativeBinding, nativeRoute } from "./native-entry";
 import { Body } from "./Activity";
 import type { FormView, OptionView } from "../../types";
 
@@ -10,9 +15,19 @@ import type { FormView, OptionView } from "../../types";
 export function QuestionCard() {
   // Rebuilt for a new card or a rebuilt one only: typing never remounts the fields.
   const ident = createMemo(() => { const q = questions.view(); return q ? `${q.card}\n${q.revision}` : undefined; });
+  // A card rises in only when a new question arrives in a session already open.
+  // Opening a session, or rebuilding the same card, paints it in place.
+  let openedAt = performance.now(), shownCard: string | undefined;
+  createEffect(on(() => selected()?.key, () => { openedAt = performance.now(); shownCard = undefined; }, { defer: true }));
+  const arrived = () => {
+    const card = untrack(() => questions.view()?.card);
+    const fresh = card !== shownCard && performance.now() - openedAt > 1500;
+    shownCard = card;
+    return fresh;
+  };
   return (
     <>
-      <Show when={ident()} keyed>{(_ident) => <Card />}</Show>
+      <Show when={ident()} keyed>{(_ident) => <Card arrived={arrived()} />}</Show>
       <ColdAnswerDialog />
     </>
   );
@@ -39,7 +54,8 @@ function guardKeys(e: KeyboardEvent) {
   if (e.repeat || (e.key === "Enter" && e.target instanceof HTMLButtonElement)) { e.preventDefault(); e.stopPropagation(); }
 }
 
-function Card() {
+function Card(props: { arrived: boolean }) {
+  const openNative = nativeRoute(selected());
   const q = () => questions.view()!;
   const c = () => q().view;
   // Tabs stay browsable while the card is locked; the draft keeps its page (QuestionCard.cpp:249-255).
@@ -66,56 +82,62 @@ function Card() {
       questions.setActive(false);
     });
   });
-  const native = () => q().terminal_label === "Open native UI";
-  const terminalTip = () => (native() ? "Arrives with Native UI." : terminal.texts()?.available ? undefined : terminal.texts()?.reason);
+  const native = () => q().native_ui;
+  // Rust's "Asked" text is the fallback; the webview dates it in the interface language.
+  const asked = () => { const at = c().created_at; return at > 0 && at < 253_402_300_800 ? new Date(at * 1000) : undefined; };
+  const terminalTip = () => (native() ? undefined : terminal.texts()?.available ? undefined : terminal.texts()?.reason);
   const onKey = (e: KeyboardEvent) => {
     if (e.isComposing || e.keyCode === 229) return;
     if (e.key !== "Enter" || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
     e.preventDefault();
     void questions.enter(e.repeat);
   };
+  // The owner's "needs attention" card: icon, heading and Asked on top; counters below when there are any.
   return (
-    <div class="qcard" ref={el} role="group" aria-label={c().heading} onKeyDown={guardKeys}>
+    <div class="cmp-col"><div class="qcard" classList={{ arrived: props.arrived }} ref={el} role="group" aria-label={trText(c().heading)} onKeyDown={guardKeys}>
       <div class="qcard-head">
-        <b class="qcard-title">{c().heading}</b><span class="grow" />
-        <Show when={c().progress}><span class="qcard-dim">{c().progress}</span></Show>
+        <Icon name="circle-question-mark" size={16} class="warn" />
+        <b class="qcard-title">{trText(c().heading)}</b><span class="grow" />
+        <Show when={q().asked}><span class="qcard-dim" title={asked() ? zonedTimeOf(asked()!) : q().asked_tip}>{asked() ? tr("Asked %1", askedTimeOf(asked()!)) : q().asked}</span></Show>
       </div>
-      <div class="qcard-meta">
-        <Show when={q().asked}><span class="qcard-dim" title={q().asked_tip}>{q().asked}</span></Show>
-        <span class="grow" />
-        <Show when={c().pending}><span class="qcard-dim" title={c().pending_tip}>{c().pending}</span></Show>
-        <Show when={c().nav}>{(nav) => (
-          <>
-            <button type="button" class="icon-btn small" aria-label="Previous queued question" title={nav().previous_tip} disabled={!nav().previous}
-              onClick={() => void questions.navigate(-1)}><Icon name="chevron-left" size={12} /></button>
-            <button type="button" class="icon-btn small" aria-label="Next queued question" title={nav().next_tip} disabled={!nav().next}
-              onClick={() => void questions.navigate(1)}><Icon name="chevron-right" size={12} /></button>
-          </>
-        )}</Show>
-      </div>
+      <Show when={c().progress || c().pending || c().nav}>
+        <div class="qcard-meta">
+          <Show when={c().progress}>{(p) => <span class="qcard-dim">{trText(p())}</span>}</Show>
+          <span class="grow" />
+          <Show when={c().pending}>{(p) => <span class="qcard-dim" title={trText(c().pending_tip)}>{trText(p())}</span>}</Show>
+          <Show when={c().nav}>{(nav) => (
+            <>
+              <button type="button" class="icon-btn small" aria-label={tr("Previous queued question")} title={trText(nav().previous_tip)} disabled={!nav().previous}
+                onClick={() => void questions.navigate(-1)}><Icon name="chevron-left" size={12} /></button>
+              <button type="button" class="icon-btn small" aria-label={tr("Next queued question")} title={trText(nav().next_tip)} disabled={!nav().next}
+                onClick={() => void questions.navigate(1)}><Icon name="chevron-right" size={12} /></button>
+            </>
+          )}</Show>
+        </div>
+      </Show>
       <Show when={c().tabs_visible}>
         <div class="qcard-tabs tabs" role="tablist">
           <Index each={c().forms}>{(f, i) => (
             <button type="button" class="tab" role="tab" classList={{ on: i === page() }} aria-selected={i === page()}
-              onClick={() => choose(i)}>{f().tab}</button>
+              onClick={() => choose(i)}>{trText(f().tab)}</button>
           )}</Index>
         </div>
       </Show>
       <Show when={formId()} keyed>{(id) => <Form id={id} onKey={onKey} />}</Show>
-      <p class="qcard-status" classList={{ error: c().status_error }} title={c().status} role="status" aria-live="polite">{c().status}</p>
+      {/* The hint on the left, the actions on the right; they wrap under it when the column is narrow. */}
       <div class="qcard-actions">
-        <button type="button" class="btn ghost" disabled={native() || !terminal.texts()?.available} title={terminalTip()}
-          onClick={() => { terminal.opened(); setDetailTab("terminal"); }}>{q().terminal_label}</button>
-        <span class="grow" />
-        <Show when={c().skip.visible}><button type="button" class="btn ghost" title={c().skip_tip} disabled={!questions.enabled(c().skip)} onClick={() => void questions.skip()}>{c().skip.label}</button></Show>
-        <Show when={c().retry}><button type="button" class="btn ghost" title={c().retry_tip} onClick={() => void questions.allowRetry()}>Allow retry</button></Show>
-        <Show when={c().previous.visible}><button type="button" class="btn ghost" disabled={!c().previous.enabled} onClick={() => void questions.page(c().page - 1)}>{c().previous.label}</button></Show>
-        <Show when={c().next.visible}><button type="button" class="btn ghost accent" disabled={!c().next.enabled} onClick={() => void questions.page(c().page + 1)}>{c().next.label}</button></Show>
-        <Show when={c().submit.visible}><button type="button" class="btn primary" disabled={!questions.enabled(c().submit)} onClick={() => void questions.submit()}>{questions.label(c().submit)}</button></Show>
-        <Show when={c().deny.visible}><button type="button" class="btn ghost" disabled={!questions.enabled(c().deny)} onClick={() => void questions.decide(false)}>{c().deny.label}</button></Show>
-        <Show when={c().approve.visible}><button type="button" class="btn primary" disabled={!questions.enabled(c().approve)} onClick={() => void questions.decide(true)}>{questions.label(c().approve)}</button></Show>
+        <p class="qcard-status" classList={{ error: c().status_error }} title={trText(c().status)} role="status" aria-live="polite">{trText(c().status)}</p>
+        <button type="button" class="btn small ghost" disabled={native() ? !nativeBinding(selected()) : !terminal.texts()?.available} title={terminalTip()}
+          onClick={() => { if (native()) openNative(); else { terminal.opened(); setDetailTab("terminal"); } }}>{trText(q().terminal_label)}</button>
+        <Show when={c().skip.visible}><button type="button" class="btn small ghost" title={trText(c().skip_tip)} disabled={!questions.enabled(c().skip)} onClick={() => void questions.skip()}>{trText(c().skip.label)}</button></Show>
+        <Show when={c().retry}><button type="button" class="btn small ghost" title={trText(c().retry_tip)} onClick={() => void questions.allowRetry()}>{tr("Allow retry")}</button></Show>
+        <Show when={c().previous.visible}><button type="button" class="btn small ghost" disabled={!c().previous.enabled} onClick={() => void questions.page(c().page - 1)}>{trText(c().previous.label)}</button></Show>
+        <Show when={c().next.visible}><button type="button" class="btn small ghost accent" disabled={!c().next.enabled} onClick={() => void questions.page(c().page + 1)}>{trText(c().next.label)}</button></Show>
+        <Show when={c().submit.visible}><button type="button" class="btn small primary" disabled={!questions.enabled(c().submit)} onClick={() => void questions.submit()}>{questions.label(c().submit)}</button></Show>
+        <Show when={c().deny.visible}><button type="button" class="btn small ghost" disabled={!questions.enabled(c().deny)} onClick={() => void questions.decide(false)}>{trText(c().deny.label)}</button></Show>
+        <Show when={c().approve.visible}><button type="button" class="btn small primary" disabled={!questions.enabled(c().approve)} onClick={() => void questions.decide(true)}>{questions.label(c().approve)}</button></Show>
       </div>
-    </div>
+    </div></div>
   );
 }
 
@@ -130,11 +152,19 @@ function Form(props: { id: string; onKey: (e: KeyboardEvent) => void }) {
           <Show when={form().body}>
             <Show when={form().markdown} fallback={<p class="qcard-body wrap-pre" classList={{ mono: form().monospace_body }}>{form().body}</p>}><div class="qcard-body"><Body text={form().body} /></div></Show>
           </Show>
-          <Show when={form().mode_visible}><p class="qcard-mode">{form().mode}</p></Show>
-          <Index each={form().options}>{(o) => <Choice form={form()} id={o().id} group={group} onKey={props.onKey} />}</Index>
-          <Show when={form().other}><Choice form={form()} group={group} other onKey={props.onKey} /></Show>
+          <Show when={form().mode_visible}><p class="qcard-mode">{trText(form().mode)}</p></Show>
+          <div class="qcard-options">
+            <Index each={form().options}>{(o) => <Choice form={form()} id={o().id} group={group} onKey={props.onKey} />}</Index>
+            {/* Other keeps its own row, and the answer line opens inside it once Other is chosen. */}
+            <Show when={form().other}>
+              <div class="qother" classList={{ on: !!form().other?.checked, off: !form().other?.enabled }}>
+                <Choice form={form()} group={group} other onKey={props.onKey} />
+                <Show when={form().text?.visible}><AnswerLine id={props.id} onKey={props.onKey} /></Show>
+              </div>
+            </Show>
+          </div>
         </div>
-        <Show when={form().text?.visible}><AnswerLine id={props.id} onKey={props.onKey} /></Show>
+        <Show when={!form().other && form().text?.visible}><AnswerLine id={props.id} onKey={props.onKey} /></Show>
       </div>
     )}</Show>
   );
@@ -146,7 +176,7 @@ function AnswerLine(props: { id: string; onKey: (e: KeyboardEvent) => void }) {
   let input!: HTMLInputElement;
   onEpoch(() => { const value = t()?.value ?? ""; if (input && input.value !== value) input.value = value; });
   return (
-    <input ref={input} class="qcard-text" type="text" placeholder={t()?.placeholder} aria-label={t()?.accessible_name} maxLength={t()?.max_units}
+    <input ref={input} class="qcard-text" type="text" placeholder={t() ? trText(t()!.placeholder) : undefined} aria-label={t() ? trText(t()!.accessible_name) : undefined} maxLength={t()?.max_units}
       disabled={!t()?.enabled} value={untrack(() => t()?.value ?? "")}
       onInput={(e) => {
         const el = e.currentTarget;
@@ -175,9 +205,9 @@ function Choice(props: { form: FormView; id?: string; group: string; other?: boo
         <input ref={input} type={props.form.multi ? "checkbox" : "radio"} name={props.group} checked={!!o()?.checked} disabled={!o()?.enabled}
           onChange={(e) => toggle(e.currentTarget.checked)} onKeyDown={props.onKey} />
         <span class="qchoice-copy">
-          <span class="qchoice-title">{o()?.label}</span>
-          <Show when={o()?.description}>
-            <Show when={o()?.markdown} fallback={<span class="qchoice-desc wrap-pre">{o()?.description}</span>}><span class="qchoice-desc"><Body text={o()?.description ?? ""} /></span></Show>
+          <span class="qchoice-title">{o() ? trText(o()!.label) : ""}</span>
+          <Show when={o() && trText(o()!.description)}>
+            <Show when={o()?.markdown} fallback={<span class="qchoice-desc wrap-pre">{o() ? trText(o()!.description) : ""}</span>}><span class="qchoice-desc"><Body text={o() ? trText(o()!.description) : ""} /></span></Show>
           </Show>
         </span>
       </label>
@@ -206,7 +236,7 @@ function ColdAnswerDialog() {
           <div class="dlg-body"><div class="confirm-body wrap-pre" id="qcard-cold-text">{d().prompt.text}</div></div>
           <div class="dlg-foot">
             <span class="spacer" />
-            <button type="button" class="btn primary" data-initial autofocus onClick={() => void questions.answerCold(false)}>Cancel</button>
+            <button type="button" class="btn primary" data-initial autofocus onClick={() => void questions.answerCold(false)}>{tr("Cancel")}</button>
             <button type="button" class="btn" onClick={() => void questions.answerCold(true)}>{d().prompt.proceed}</button>
           </div>
         </>

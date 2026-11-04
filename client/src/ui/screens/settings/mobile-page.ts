@@ -5,7 +5,8 @@
 export interface Controls { change: boolean; enrollment: boolean; start: boolean; stop: boolean; check: string | null; invitations: boolean }
 export interface Workspace {
   state: string; encrypted: boolean; summary: string; connection: string; pending: string | null; running: boolean;
-  config_revision: string; controls: Controls;
+  config_revision: string; server_url: string; controls: Controls;
+  connector_state?:string; stop_supported?:boolean; node_id?:string; generation?:string|null; pending_state?:string|null; pending_node_id?:string|null; pending_action?:string|null; migration_reason?:string|null;
 }
 export interface Phone { id: string; name: string; platform: string; paired_at: number | null; last_seen_at: number | null; added_from: string | null; revoke: string }
 export interface PhoneList { host: string; workspace_id: string; workspace_name: string; encrypted: boolean; server_url: string; invite: string; phones: Phone[] }
@@ -44,7 +45,9 @@ export function createMobile(io: MobileIo, show: (state: MobileState) => void) {
     open() { call(() => io.open()); },
     /** The app says an answer came. */
     changed() { call(() => io.view()); },
-    refreshWorkspace() { if (!state.view?.workspace_busy) call(() => io.refreshWorkspace()); },
+    // An effect receipt may beat its busy=false event. The native lane remains
+    // authoritative; an explicit post-receipt read must not use that stale flag.
+    refreshWorkspace(afterAction = false) { if (afterAction || !state.view?.workspace_busy) call(() => io.refreshWorkspace()); },
     refreshPhones() { if (!state.view?.phones_busy) call(() => io.refreshPhones()); },
     setDelivery(value: string) {
       const view = state.view;

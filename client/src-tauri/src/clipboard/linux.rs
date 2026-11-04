@@ -6,7 +6,7 @@ use std::io::{Seek, Write};
 use std::os::fd::FromRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
@@ -115,7 +115,7 @@ fn wl_copy(program: &OsStr, home: &Path, text: &str, timeout: Duration) -> Resul
         .write_all(text.as_bytes())
         .map_err(|e| e.to_string())?;
     input.rewind().map_err(|e| e.to_string())?;
-    let mut command = Command::new(program);
+    let mut command = crate::child_environment::command(program);
     command
         .args(["-t", "text/plain"])
         .current_dir(home)

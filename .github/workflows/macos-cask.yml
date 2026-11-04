@@ -107,7 +107,7 @@ jobs:
             --version "$version" --release "$RELEASE" --output artifacts/macos-signed \
             --notary-key-file "$signing/notary.p8" --notary-key-id "$NOTARY_KEY_ID" "${issuer[@]}"
           ditto -x -k "artifacts/macos-signed/zerus-$RELEASE-macos-arm64.zip" "$RUNNER_TEMP/signed"
-          python3 scripts/check-macos-bundle.py "$RUNNER_TEMP/signed/Zerus.app" --version "$version" \
+          python3 scripts/check-macos-bundle.py "$RUNNER_TEMP/signed/Zerus.app" --gui tauri --version "$version" \
             --release "$RELEASE" --team-id "$TEAM_ID"
       - name: Remove signing material
         if: always()

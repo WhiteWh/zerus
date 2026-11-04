@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub(super) mod hold;
+
 pub(super) const OPERATION_REMEDIATION: &str = "Keep Qt stopped. Wait for the named helper, or stop only that helper yourself. Then restart only hgs-desktop through its service manager and retry the original revoke request. Reboot only as a last resort.";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
@@ -90,12 +93,41 @@ struct Record {
     result: Option<String>,
 }
 fn record(store: &Store, id: &str) -> Result<Option<Record>> {
-    Ok(store.db.query_row("SELECT substr(fingerprint,1,65),substr(reason,1,33),substr(writer_epoch,1,37),substr(state,1,16),substr(result,1,4097) FROM desktop_commands WHERE request_id=?1",[id],|r|Ok(Record {fingerprint:r.get(0)?,reason:r.get(1)?,writer_epoch:r.get(2)?,state:r.get(3)?,result:r.get(4)?})).optional()?)
+    record_db(&store.db, id)
+}
+fn record_db(db: &rusqlite::Connection, id: &str) -> Result<Option<Record>> {
+    Ok(db.query_row("SELECT substr(fingerprint,1,65),substr(reason,1,33),substr(writer_epoch,1,37),substr(state,1,16),substr(result,1,4097) FROM desktop_commands WHERE request_id=?1",[id],|r|Ok(Record {fingerprint:r.get(0)?,reason:r.get(1)?,writer_epoch:r.get(2)?,state:r.get(3)?,result:r.get(4)?})).optional()?)
+}
+
+/// A requested background mode is not a new handoff. Every retained revoke,
+/// including an interrupted one, blocks restart. Historical handoff state also
+/// requires explicit reconciliation; a login must not reinterpret it as consent.
+pub(super) fn background_permitted(location: &Location, store: &Store) -> Result<bool> {
+    if super::ownership::service_granted(store, &location.configuration)? {
+        return Ok(true);
+    }
+    let ownership = super::ownership::status(store, &location.configuration)?;
+    if ownership.rearm_required {
+        return Ok(false);
+    }
+    // A still-current grant supersedes old revoke/marker history. Losing only
+    // its launch-image identity cannot revoke unrelated background work.
+    if ownership.state == zerus_client_core::desktop::ownership::State::IdentityChanged {
+        return Ok(true);
+    }
+    let lock = location.handoff_lock()?;
+    let marker = handoff::marker(location, &lock)?;
+    let revoked: bool = store.db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM desktop_commands LIMIT 1)",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(!revoked && marker.is_none())
 }
 
 /// The drain callback runs only after policy revocation commits. Current kernel
-/// callers have no effect workers. Any future dispatcher must cancel its lease
-/// and join/settle owned workers here before marker/checkpoint success is possible.
+/// callers drain their owned runtime here. Effect dispatchers must also cancel
+/// their leases and settle owned workers before marker/checkpoint success.
 fn execute(
     location: &Location,
     store: &mut Store,
@@ -103,6 +135,20 @@ fn execute(
     held: Option<&HandoffLock>,
     drain: impl FnOnce() -> Result<()>,
 ) -> Result<Value> {
+    execute_scoped(location, store, command, held, None, |_| drain())
+}
+fn execute_scoped(
+    location: &Location,
+    store: &mut Store,
+    command: &Command,
+    held: Option<&HandoffLock>,
+    runtime_epoch: Option<&str>,
+    drain: impl FnOnce(&mut Store) -> Result<()>,
+) -> Result<Value> {
+    ensure!(
+        runtime_epoch.is_none_or(canonical_id),
+        "invalid runtime epoch"
+    );
     command.validate()?;
     let acquired = if held.is_none() {
         Some(step(location.handoff_lock(), "handoff_unavailable")?)
@@ -112,7 +158,9 @@ fn execute(
     let lock = held.or(acquired.as_ref()).context("missing handoff lock")?;
     lock.verify(location)?;
     let marker = step(handoff::marker(location, lock), "unsupported_handoff")?;
-    let current_epoch = marker.as_ref().map(|m| m.writer_epoch.clone());
+    let current_epoch = runtime_epoch
+        .map(str::to_owned)
+        .or_else(|| marker.as_ref().map(|m| m.writer_epoch.clone()));
     let fingerprint = command.fingerprint(location);
     let prior = step(record(store, &command.request_id), "audit_unavailable")?;
     let record = if let Some(record) = prior {
@@ -126,6 +174,7 @@ fn execute(
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute("INSERT INTO desktop_commands(request_id,fingerprint,reason,writer_epoch,state,at) VALUES(?1,?2,?3,?4,'prepared',?5)",params![command.request_id,fingerprint,command.reason.name(),current_epoch,chrono::Utc::now().timestamp_millis()])?;
+        super::ownership::invalidate(&tx)?;
         zerus_desktop_ledger::revoke(&tx, command.reason.code())?;
         tx.commit()?;
         Record {
@@ -155,11 +204,16 @@ fn execute(
         return receipt(location, command, &record);
     }
     ensure!(record.state == "prepared", "invalid revoke state");
-    step(drain(), "drain_not_settled")?;
+    step(drain(store), "drain_not_settled")?;
     ensure!(
-        zerus_desktop_ledger::operations::totals(&store.db)?.undrained == 0,
+        store.operation_undrained()? == 0,
         Declined("operation_resources_not_drained")
     );
+    #[cfg(unix)]
+    let _native_host = step(
+        location.notification_host_exclusion(),
+        "notification_host_not_drained",
+    )?;
     if let Some(marker) = marker {
         step(
             handoff::write_revoked(location, lock, &marker),
@@ -227,6 +281,19 @@ fn receipt(location: &Location, command: &Command, record: &Record) -> Result<Va
 /// An indexed, read-only lookup. A pending reservation remains pending until
 /// the exact command is explicitly reconciled; a query never drains or writes.
 fn query(location: &Location, store: &Store, id: &str) -> Result<Value> {
+    query_scoped(location, store, id, None, None)
+}
+fn query_scoped(
+    location: &Location,
+    store: &Store,
+    id: &str,
+    runtime_epoch: Option<&str>,
+    held: Option<&HandoffLock>,
+) -> Result<Value> {
+    ensure!(
+        runtime_epoch.is_none_or(canonical_id),
+        "invalid runtime epoch"
+    );
     let record = record(store, id)?.context(Declined("request_not_found"))?;
     let command = Command {
         op: "revoke".into(),
@@ -237,10 +304,21 @@ fn query(location: &Location, store: &Store, id: &str) -> Result<Value> {
         record.fingerprint == command.fingerprint(location),
         "invalid audit fingerprint"
     );
-    let lock = step(location.handoff_lock(), "handoff_unavailable")?;
-    let marker = step(handoff::marker(location, &lock), "unsupported_handoff")?;
+    let acquired = if held.is_none() {
+        Some(step(location.handoff_lock(), "handoff_unavailable")?)
+    } else {
+        None
+    };
+    let lock = held
+        .or(acquired.as_ref())
+        .context("missing original handoff lock")?;
+    lock.verify(location)?;
+    let marker = step(handoff::marker(location, lock), "unsupported_handoff")?;
     ensure!(
-        record.writer_epoch == marker.as_ref().map(|m| m.writer_epoch.clone()),
+        record.writer_epoch
+            == runtime_epoch
+                .map(str::to_owned)
+                .or_else(|| marker.as_ref().map(|m| m.writer_epoch.clone())),
         Declined("writer_epoch_changed")
     );
     ensure!(
@@ -251,7 +329,68 @@ fn query(location: &Location, store: &Store, id: &str) -> Result<Value> {
         Declined("revocation_pending")
     );
     ensure!(record.state == "settled", Declined("revocation_pending"));
+    ensure!(
+        store.operation_undrained()? == 0,
+        Declined("operation_resources_not_drained")
+    );
+    #[cfg(unix)]
+    let _native_host = step(
+        location.notification_host_exclusion(),
+        "notification_host_not_drained",
+    )?;
     receipt(location, &command, &record)
+}
+
+pub(super) fn request_with_runtime(
+    location: &Location,
+    store: &mut Store,
+    value: &Value,
+    runtime_epoch: &str,
+    held: Option<&HandoffLock>,
+    drain: impl FnOnce(&mut Store) -> Result<()>,
+) -> Value {
+    let result = if value["op"] == "revoke_status" {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Query {
+            op: String,
+            request_id: String,
+        }
+        match serde_json::from_value::<Query>(value.clone()) {
+            Ok(query) if query.op == "revoke_status" && canonical_id(&query.request_id) => {
+                query_scoped(
+                    location,
+                    store,
+                    &query.request_id,
+                    Some(runtime_epoch),
+                    held,
+                )
+            }
+            _ => Err(anyhow::anyhow!("invalid revoke query")),
+        }
+    } else if let Ok(command) = serde_json::from_value::<Command>(value.clone()) {
+        execute_scoped(location, store, &command, held, Some(runtime_epoch), drain)
+    } else {
+        Err(anyhow::anyhow!("invalid revoke request"))
+    };
+    result.unwrap_or_else(|error| {
+        let accepted = serde_json::from_value::<Command>(value.clone())
+            .ok()
+            .filter(|command| command.validate().is_ok())
+            .and_then(|command| {
+                record(store, &command.request_id)
+                    .ok()
+                    .flatten()
+                    .map(|record| {
+                        record.fingerprint == command.fingerprint(location)
+                            && record.writer_epoch.as_deref() == Some(runtime_epoch)
+                    })
+            })
+            .unwrap_or(false);
+        json!({"request_id":value.get("request_id"),
+        "accepted":accepted,"durable":accepted,"revoked":false,"checkpointed":false,
+        "code":error.downcast_ref::<Declined>().map(|e|e.0).unwrap_or("revocation_not_settled")})
+    })
 }
 
 pub fn request(location: &Location, store: &mut Store, value: &Value) -> Value {
@@ -391,6 +530,85 @@ pub fn offline(location: &Location, command: &Command) -> Result<Value> {
 mod tests {
     use super::*;
     use zerus_desktop_migration::{canonical, Handoff, Phase, HANDOFF_FILE};
+
+    #[test]
+    fn even_an_interrupted_revoke_blocks_background_restart() {
+        let mut f = Fixture::new();
+        assert!(background_permitted(&f.location, &f.store).unwrap());
+        let command = f.command();
+        let epoch = f.epoch.clone();
+        let error = execute_scoped(
+            &f.location,
+            &mut f.store,
+            &command,
+            None,
+            Some(&epoch),
+            |_| anyhow::bail!("fixture drain still pending"),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<Declined>().unwrap().0,
+            "drain_not_settled"
+        );
+        assert!(!background_permitted(&f.location, &f.store).unwrap());
+        let next = uuid::Uuid::new_v4().to_string();
+        drop(f.store);
+        let reopened = Store::open(&f.location, &next).unwrap();
+        assert!(!background_permitted(&f.location, &reopened).unwrap());
+    }
+
+    #[test]
+    fn runtime_revoke_receipt_cannot_drain_a_replacement_service() {
+        let mut f = Fixture::new();
+        let command = f.command();
+        let first = uuid::Uuid::new_v4().to_string();
+        let next = uuid::Uuid::new_v4().to_string();
+        let receipt = execute_scoped(
+            &f.location,
+            &mut f.store,
+            &command,
+            None,
+            Some(&first),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(receipt["writer_epoch"], first);
+        assert_eq!(
+            query_scoped(&f.location, &f.store, command.id(), Some(&first), None).unwrap(),
+            receipt
+        );
+        assert!(query_scoped(&f.location, &f.store, command.id(), Some(&next), None).is_err());
+        let error = execute_scoped(
+            &f.location,
+            &mut f.store,
+            &command,
+            None,
+            Some(&next),
+            |_| panic!("stale request must not stop replacement"),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<Declined>().unwrap().0,
+            "writer_epoch_changed"
+        );
+    }
+
+    #[test]
+    fn runtime_query_keeps_the_closed_request_shape() {
+        let mut f = Fixture::new();
+        let id = uuid::Uuid::new_v4().to_string();
+        let epoch = f.epoch.clone();
+        let result = request_with_runtime(
+            &f.location,
+            &mut f.store,
+            &json!({"op":"revoke_status","request_id":id,"extra":true}),
+            &epoch,
+            None,
+            |_| panic!("query cannot drain"),
+        );
+        assert_eq!(result["revoked"], false);
+        assert_eq!(result["accepted"], false);
+    }
     struct Fixture {
         _temp: tempfile::TempDir,
         location: Location,
@@ -435,6 +653,33 @@ mod tests {
             .unwrap();
             marker
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn historical_revoke_lookup_cannot_ignore_a_retained_native_host() {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = Fixture::new();
+        let command = f.command();
+        assert_eq!(
+            response(&f.location, &mut f.store, &command)["checkpointed"],
+            true
+        );
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(f.location.root.join("notification-host.lock"))
+            .unwrap();
+        fs2::FileExt::try_lock_exclusive(&file).unwrap();
+        let blocked = query_result(&f.location, &f.store, &command.request_id);
+        assert_eq!(blocked["checkpointed"], false);
+        assert_eq!(blocked["code"], "notification_host_not_drained");
+        drop(file);
+        assert_eq!(
+            query_result(&f.location, &f.store, &command.request_id)["checkpointed"],
+            true
+        );
     }
     #[test]
     fn revokes_only_phase_and_drains_after_the_policy_fence() {

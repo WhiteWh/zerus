@@ -5,7 +5,7 @@
 # Optional reverse peer: HGS_MAC_PEER (existing SSH alias), or also set
 # HGS_MAC_PEER_HOST to add a new SSH entry. HGS_MAC_PEER_USER, HGS_MAC_PEER_KEY
 # and HGS_MAC_PEER_COLOR are optional. No machine-specific defaults are supplied.
-# HGS_MAC_GUI=qt|client chooses the desktop GUI; by default the installed kind stays.
+# Fresh installs and upgrades use Zerus Next; HGS_MAC_GUI=qt selects the Qt fallback.
 set -euo pipefail
 host=""; with_tray=1
 for a in "$@"; do
@@ -65,7 +65,9 @@ sources=(Cargo.toml Cargo.lock build.rs .cargo src scripts install.sh hgs hgs_st
   crates/desktop-catalog/Cargo.toml crates/desktop-catalog/src
   crates/desktop-ledger/Cargo.toml crates/desktop-ledger/src
   crates/desktop-migration/Cargo.toml crates/desktop-migration/src
-  crates/desktop-read-policy/Cargo.toml crates/desktop-read-policy/src)
+  crates/desktop-read-policy/Cargo.toml crates/desktop-read-policy/src
+  crates/freedesktop-notify/Cargo.toml crates/freedesktop-notify/src
+  crates/presence-sampler/Cargo.toml crates/presence-sampler/src)
 tar czf - -C "$here" "${sources[@]}" \
   | ssh -o BatchMode=yes "$host" "cd ~/.local/src/hgs/.rust-build && rm -rf ${sources[*]} && tar xzf -"
 # install.sh builds the mobile connector only on request (HGS_MOBILE_CONNECTOR=1)
@@ -133,20 +135,22 @@ REMOTE
 # там переживает build/, поэтому повторный прогон собирается инкрементально, а install.sh
 # по cdhash бандла видит, что ничего не изменилось, и не дёргает живой LaunchAgent.
 # DEV_VERSION sits beside tray/: its CMake reads the Dev base version from there.
-# The Tauri client's sources travel too, so tray/install.sh can build it
-# (HGS_MAC_GUI=client, or a Mac whose installed Zerus is already the client), with
+# The Tauri client's sources travel too, so tray/install.sh builds Next by default, with
 # VERSION, crates/watch-protocol and the desktop read-policy and migration crates,
 # which client/core and client/src-tauri take by path. Source folders are replaced;
 # their build caches stay. A numbered Dev build needs a clean Git checkout on the
 # Mac instead (docs/macos-distribution.md).
+# Cargo resolves target-specific dependency manifests on the Mac too, including
+# the Linux notification adapter.
 tar czf - -C "$here" --exclude='tray/build' --exclude='tray/.cache' \
   --exclude='client/node_modules' --exclude='client/dist' --exclude='client/*/target' \
   --exclude='client/src-tauri/gen' \
   tray client crates/watch-protocol/Cargo.toml crates/watch-protocol/src \
   crates/desktop-read-policy/Cargo.toml crates/desktop-read-policy/src \
-  crates/desktop-migration/Cargo.toml crates/desktop-migration/src DEV_VERSION VERSION \
-  | ssh -o BatchMode=yes "$host" 'mkdir -p ~/.local/src/hgs && cd ~/.local/src/hgs && rm -rf client/src client/core/src client/media/src client/src-tauri/src client/src-tauri/capabilities crates/watch-protocol/src crates/desktop-read-policy/src crates/desktop-migration/src && tar xzf -'
+  crates/desktop-migration/Cargo.toml crates/desktop-migration/src \
+  crates/freedesktop-notify/Cargo.toml crates/freedesktop-notify/src DEV_VERSION VERSION \
+  | ssh -o BatchMode=yes "$host" 'mkdir -p ~/.local/src/hgs && cd ~/.local/src/hgs && rm -rf client/src client/core/src client/media/src client/src-tauri/src client/src-tauri/capabilities crates/watch-protocol/src crates/desktop-read-policy/src crates/desktop-migration/src crates/freedesktop-notify/src && tar xzf -'
 # PATH неинтерактивного ssh на маке — без Homebrew; cmake/brew tray/install.sh ищет сам
 # (find_tool в его маковской ветке). Signing uses the Mac's existing keychain;
 # an optional exact identity selector travels as one literal environment value.
-ssh -o BatchMode=yes "$host" "HGS_MACOS_SIGN_IDENTITY=$(shq "${HGS_MACOS_SIGN_IDENTITY:-}") HGS_MAC_GUI=$(shq "${HGS_MAC_GUI:-}") bash ~/.local/src/hgs/tray/install.sh"
+ssh -o BatchMode=yes "$host" "HGS_MAC_CLI_BUILD=~/.local/src/hgs/.rust-build/target/release/hgs HGS_MACOS_SIGN_IDENTITY=$(shq "${HGS_MACOS_SIGN_IDENTITY:-}") HGS_MAC_GUI=$(shq "${HGS_MAC_GUI:-client}") bash ~/.local/src/hgs/tray/install.sh"

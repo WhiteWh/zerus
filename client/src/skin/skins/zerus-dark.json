@@ -36,6 +36,7 @@
       "warn": "#edbd77",
       "warn-bg": "rgba(237,189,119,.11)",
       "danger": "#ff9ca8",
+      "danger-text": "#33151c",
       "danger-bg": "rgba(255,156,168,.11)",
       "info": "#98bdeb",
       "info-bg": "rgba(152,189,235,.11)",

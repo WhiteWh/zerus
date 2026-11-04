@@ -240,6 +240,17 @@ def build_feed(release,info,files,sums,package_versions,commit):
             # Stable and nightly releases may carry it. Linked from GitHub only;
             # deployed GUIs reject unknown feed artifact kinds.
             require(portable==windows_portable(version),'Unexpected Windows portable asset');expected.add(portable)
+        installer=info.get('windows_installer')
+        if installer is not None:
+            require(channel in {'stable','nightly'} and isinstance(installer,dict) and
+                    set(installer)=={'asset','portable_sha256'} and
+                    installer['asset']==f'zerus-{version}-windows-x86_64-setup.exe' and
+                    portable==windows_portable(version) and
+                    isinstance(installer['portable_sha256'],str) and
+                    re.fullmatch(r'[0-9a-f]{64}',installer['portable_sha256']) and
+                    sums.get(portable)==installer['portable_sha256'],
+                    'Unexpected Windows installer asset or paired ZIP digest')
+            expected.add(installer['asset'])
         macos=info.get('macos')
         if macos is not None:
             # Schema 2 adds the notarized Apple Silicon bundle of the channel's Homebrew cask.
@@ -337,6 +348,8 @@ def validate_and_fetch(client,release,directory,expected_platform,expected_chann
     if info.get('platform','desktop')!=expected_platform or info.get('channel','stable')!=expected_channel:
         raise ChannelMismatch('Selected release belongs to another channel')
     portable=info.get('windows_portable') if expected_platform=='desktop' and expected_channel in {'stable','nightly'} else None
+    installer=info.get('windows_installer') if expected_platform=='desktop' else None
+    setup=installer.get('asset') if isinstance(installer,dict) else None
     macos=info.get('macos') if expected_platform=='desktop' else None
     cask=macos.get('asset') if isinstance(macos,dict) else None
     dmg=macos.get('dmg') if isinstance(macos,dict) else None
@@ -344,11 +357,13 @@ def validate_and_fetch(client,release,directory,expected_platform,expected_chann
     for name,digest in sums.items():
         if name in files:continue
         if (isinstance(portable,str) and name==portable and name.endswith('-windows-x86_64.zip')) or \
+                (isinstance(setup,str) and name==setup and name.endswith('-windows-x86_64-setup.exe')) or \
                 (isinstance(cask,str) and name==cask and name.endswith('-macos-arm64.zip')) or \
                 (isinstance(image,str) and name==image and name.endswith('-macos-arm64.dmg')):
             # Not mirrored (the mirror never deletes and has a fixed disk budget)
             # and not a feed artifact; build_feed checks its sealed name. Homebrew
             # downloads the macOS zip from GitHub; direct installs use the DMG.
+            # Windows installers also stay on GitHub, alongside their paired ZIP.
             declared=assets[name].get('digest')
             require(declared is None or declared=='sha256:'+digest,'GitHub asset digest mismatch')
             continue

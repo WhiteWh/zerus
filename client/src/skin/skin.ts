@@ -83,8 +83,16 @@ const SHADOW_PART = /^(?:inset\s+)?(?:-?\d+(?:\.\d+)?(?:px)?\s+){2,4}rgba?\([\d\
 
 export class SkinError extends Error {}
 
+function validRgb(value: string): boolean {
+  if (!RGB.test(value)) return false;
+  const parts = value.slice(value.indexOf("(") + 1, -1).split(",").map(Number);
+  return parts.length === (value.toLowerCase().startsWith("rgba") ? 4 : 3) && parts.every((n, i) => Number.isFinite(n) && n >= 0 && n <= (i === 3 ? 1 : 255));
+}
+
 function isColor(value: unknown): boolean {
-  return typeof value === "string" && (HEX.test(value) || RGB.test(value) || REF.test(value) || KEYWORD.test(value));
+  if (typeof value !== "string") return false;
+  const ref = REF.exec(value);
+  return HEX.test(value) || validRgb(value) || !!ref && ["color", "agent", "list"].includes(ref[1]) || KEYWORD.test(value);
 }
 
 function check(type: TokenType, path: string, value: unknown): void {
@@ -99,7 +107,7 @@ function check(type: TokenType, path: string, value: unknown): void {
       if (!isColor(value)) fail("expected #hex, rgb()/rgba() or a {group.token} reference");
       return;
     case "colors":
-      if (!Array.isArray(value) || value.length < 1 || value.length > 16 || !value.every((c) => typeof c === "string" && (HEX.test(c) || RGB.test(c))))
+      if (!Array.isArray(value) || value.length < 1 || value.length > 16 || !value.every((c) => typeof c === "string" && (HEX.test(c) || validRgb(c))))
         fail("expected 1..16 literal colors");
       return;
     case "percent":
@@ -114,13 +122,17 @@ function check(type: TokenType, path: string, value: unknown): void {
       return num(0, 5000);
     case "easing":
       if (typeof value !== "string" || !EASING.test(value)) fail("expected a CSS easing keyword or cubic-bezier()");
+      if (typeof value === "string" && value.startsWith("cubic-bezier")) {
+        const p = value.slice(value.indexOf("(") + 1, -1).split(",").map(Number);
+        if (p.length !== 4 || !p.every((n, i) => Number.isFinite(n) && (i % 2 === 1 || n >= 0 && n <= 1))) fail("invalid cubic-bezier() coordinates");
+      }
       return;
     case "fonts":
       if (!Array.isArray(value) || value.length < 1 || value.length > 8 || !value.every((f) => typeof f === "string" && FAMILY.test(f)))
         fail("expected 1..8 font family names");
       return;
     case "shadow":
-      if (typeof value !== "string" || value.length > 160 || !value.split(/,(?![^(]*\))/).every((p) => SHADOW_PART.test(p.trim())))
+      if (typeof value !== "string" || value.length > 160 || !value.split(/,(?![^(]*\))/).every((p) => SHADOW_PART.test(p.trim()) && validRgb(p.slice(p.search(/rgba?/i)).trim())))
         fail("expected box-shadow lengths with an rgb()/rgba() color");
       return;
   }
@@ -131,25 +143,26 @@ function validateFile(file: SkinFile, base: SkinFile | undefined): void {
   if (!/^[a-z0-9-]{1,40}$/.test(file.id)) throw new SkinError("id: lowercase letters, digits and dashes");
   if (file.appearance !== "dark" && file.appearance !== "light") throw new SkinError(`${file.id}: appearance must be dark or light`);
   for (const [group, values] of Object.entries(file.tokens ?? {})) {
+    if (base && !Object.hasOwn(base.tokens ?? {}, group)) throw new SkinError(`${file.id}: unknown token group ${group}`);
     for (const [key, value] of Object.entries(values)) {
       const type = tokenType(group, key);
       if (!type) throw new SkinError(`${file.id}: unknown token group ${group}`);
-      if (base && !(key in ((base.tokens ?? {})[group] ?? {}))) throw new SkinError(`${file.id}: unknown token ${group}.${key}`);
+      if (base && !Object.hasOwn((base.tokens ?? {})[group] ?? {}, key)) throw new SkinError(`${file.id}: unknown token ${group}.${key}`);
       check(type, `${file.id}: ${group}.${key}`, value);
     }
   }
   for (const [name, value] of Object.entries(file.components ?? {})) {
     const allowed = (COMPONENT_VARIANTS as Record<string, readonly string[]>)[name];
-    if (!allowed || !allowed.includes(String(value))) throw new SkinError(`${file.id}: components.${name} must be one of ${allowed?.join(", ") ?? "(unknown)"}`);
+    if (!Array.isArray(allowed) || typeof value !== "string" || !allowed.includes(value)) throw new SkinError(`${file.id}: components.${name} must be one of ${allowed?.join(", ") ?? "(unknown)"}`);
   }
   for (const [name, value] of Object.entries(file.layout ?? {})) {
     const allowed = (LAYOUT_VARIANTS as Record<string, readonly string[]>)[name];
-    if (!allowed || !allowed.includes(String(value))) throw new SkinError(`${file.id}: layout.${name} must be one of ${allowed?.join(", ") ?? "(unknown)"}`);
+    if (!Array.isArray(allowed) || typeof value !== "string" || !allowed.includes(value)) throw new SkinError(`${file.id}: layout.${name} must be one of ${allowed?.join(", ") ?? "(unknown)"}`);
   }
 }
 
 /** Validate and resolve `extends` chains. The first file is the base skin. */
-export function resolveSkins(files: SkinFile[]): ResolvedSkin[] {
+export function resolveSkins(files: SkinFile[], ids?: readonly string[]): ResolvedSkin[] {
   const byId = new Map(files.map((f) => [f.id, f]));
   const base = files[0];
   validateFile(base, undefined);
@@ -157,7 +170,7 @@ export function resolveSkins(files: SkinFile[]): ResolvedSkin[] {
     if (seen.has(file.id)) throw new SkinError(`${file.id}: extends cycle`);
     seen.add(file.id);
     if (file !== base) validateFile(file, base);
-    const parent = file.extends ? byId.get(file.extends) : undefined;
+    const parent = file.extends ? byId.get(file.extends) : file === base ? undefined : base;
     if (file.extends && !parent) throw new SkinError(`${file.id}: extends unknown skin ${file.extends}`);
     const inherited = parent ? resolve(parent, seen) : undefined;
     const tokens: Record<string, Record<string, unknown>> = {};
@@ -172,7 +185,19 @@ export function resolveSkins(files: SkinFile[]): ResolvedSkin[] {
       layout: { ...(inherited?.layout ?? {}), ...(file.layout ?? {}) } as LayoutVariants,
     };
   };
-  return files.map((f) => resolve(f, new Set()));
+  return files.filter(f => !ids || ids.includes(f.id)).map((f) => {
+    const result = resolve(f, new Set());
+    const checkRef = (group: string, key: string, seen: Set<string>): void => {
+      const token = `${group}.${key}`;
+      if (seen.has(token)) throw new SkinError(`${f.id}: token reference cycle at ${token}`);
+      const value = result.tokens[group]?.[key];
+      if (value === undefined) throw new SkinError(`${f.id}: unknown token reference ${token}`);
+      const ref = typeof value === "string" ? REF.exec(value) : undefined;
+      if (ref) { seen.add(token); checkRef(ref[1], ref[2], seen); }
+    };
+    for (const [group, values] of Object.entries(result.tokens)) for (const key of Object.keys(values)) checkRef(group, key, new Set());
+    return result;
+  });
 }
 
 const varName = (group: string, key: string) => `--z-${group}-${key}`;

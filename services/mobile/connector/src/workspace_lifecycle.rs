@@ -12,6 +12,8 @@ use std::{
     process::{Command, Stdio},
     time::Duration,
 };
+/// Consumers must require this exact capability before offering a running Stop.
+pub const STOP_PREFLIGHT_ABI: &str = "service-preflight-v1";
 const CONTROL: &str = "workspace-control.json";
 const STOP: &str = "workspace-stop.json";
 fn fail() -> ConnectorError {
@@ -191,7 +193,7 @@ pub async fn manage_start(config_path: &Path, input: &Value) -> Result<Value> {
     ))
 }
 pub async fn manage_stop(config_path: &Path, input: &Value) -> Result<Value> {
-    let (profile, revision, _private_dir) = configured(config_path, input)?;
+    let (profile, revision, private_dir) = configured(config_path, input)?;
     let current = status(&profile.state_dir)?;
     if current["running"] != true {
         return Ok(current);
@@ -207,7 +209,24 @@ pub async fn manage_stop(config_path: &Path, input: &Value) -> Result<Value> {
         let store = Store::lock(&profile.state_dir, false).map_err(|_| fail())?;
         let control = record(&profile.state_dir, CONTROL)?.ok_or_else(fail)?;
         if generation(&control)? != expected
+            || control["pid"].as_u64() == Some(std::process::id() as u64)
             || workspace_cli::read_config(config_path)?.1 != revision
+        {
+            return Err(fail());
+        }
+        crate::workspace_service::stop_preflight(
+            config_path,
+            &private_dir,
+            &revision,
+            &profile,
+            &control,
+        )
+        .await?;
+        // The admission awaited bounded manager reads. Do not publish against a
+        // replaced generation, lock owner or configuration after that await.
+        if record(&profile.state_dir, CONTROL)?.as_ref() != Some(&control)
+            || workspace_cli::read_config(config_path)?.1 != revision
+            || status(&profile.state_dir)?["generation"].as_str() != Some(expected)
         {
             return Err(fail());
         }

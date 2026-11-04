@@ -2,6 +2,7 @@ import type { MenuEntry } from "../../store/ui";
 import type { Row } from "./model";
 import type { Session } from "./types";
 import { MOVE_LATER, SELECTION_ACTIONS, selectionText, type SelectionAction, type SelectionRow } from "./selection";
+import { tr } from "../../i18n";
 
 // The selection bar and the selection context menu, after Qt's
 // SessionsWindow::setupSelectionActions, updateSelectionActions and
@@ -60,7 +61,7 @@ export function barTools(count: (a: SelectionAction) => number, selected: number
       action,
       icon: SELECTION_ICONS[action],
       text: `${selectionText(action)} (${n})`,
-      hint: move ? MOVE_LATER : `${selectionText(action)} — ${n} of ${selected} selected sessions`,
+      hint: move ? tr(MOVE_LATER) : `${selectionText(action)} — ${n} of ${selected} selected sessions`,
       count: n,
       enabled: !move && (presentation(action) || !batchRunning),
       danger: action === "forget" || action === "terminate",
@@ -78,7 +79,7 @@ export function splitTools<T>(tools: readonly T[], capacity: number): { shown: T
 
 /** An overflow entry for a tool. */
 export function toolEntry(t: SelectionTool, run: (a: SelectionAction) => void): MenuEntry {
-  return { label: t.text, icon: t.icon, danger: t.danger, disabled: !t.enabled, hint: t.action === "move" ? MOVE_LATER : undefined, action: () => run(t.action) };
+  return { label: t.text, icon: t.icon, danger: t.danger, disabled: !t.enabled, hint: t.action === "move" ? tr(MOVE_LATER) : undefined, action: () => run(t.action) };
 }
 
 /** The selection menu: a section, the applicable actions, a separator and Deselect all. */
@@ -87,7 +88,7 @@ export function selectionMenu(count: (a: SelectionAction) => number, selected: n
     { heading: `${selected} selected sessions` },
     ...barTools(count, selected, batchRunning).map((t) => toolEntry(t, run)),
     { separator: true },
-    { label: "Deselect all", action: deselect },
+    { label: tr("Deselect all"), action: deselect },
   ];
 }
 

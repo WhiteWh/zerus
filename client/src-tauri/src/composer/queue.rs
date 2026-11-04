@@ -63,7 +63,13 @@ impl Composers {
     /// Qt's `sendQueuedNow` (248-260), while the selection and details are
     /// held. The native action is built only here, never from webview JSON.
     fn begin_queue(&self, hub: &mut Hub, queue_id: Option<String>) -> Option<Delivery> {
-        if hub.closed || hub.queue.sending.is_some() {
+        if hub.closed
+            || hub.queue.sending.is_some()
+            || hub
+                .open
+                .as_ref()
+                .is_some_and(|open| open.subagent.is_some())
+        {
             return None;
         }
         let ctx = self.context(hub);
@@ -193,6 +199,14 @@ impl Composers {
             self.hand_back(hub, handle);
             return SendReply::Busy;
         };
+        if hub
+            .open
+            .as_ref()
+            .is_some_and(|open| open.subagent.is_some())
+        {
+            self.hand_back(hub, handle);
+            return SendReply::Busy;
+        }
         // A required card replaces the editor and both Send chords, even
         // when a native queue is visible (A2-3/A2-4 review ruling).
         if !self.question_part(&hub).1 {
@@ -546,6 +560,7 @@ mod tests {
             key: "run:run-2".into(),
             name: "codex/sample-project/other".into(),
             archive_id: None,
+            subagent: None,
         }));
         assert_eq!(
             c.take_events(),
@@ -827,7 +842,7 @@ mod tests {
                 }),
                 facts: Arc::new(|_, _| None),
                 reconnect: Arc::new(|_| {}),
-                inspect: Arc::new(|_, _| Err("timed out".into())),
+                inspect: Arc::new(|_, _, _| Err("timed out".into())),
                 dispatch: Arc::new(move |target, action, id| {
                     lock(&recorded).push((target, action.clone(), id.clone()));
                     if matches!(&action, Action::Send { .. }) {
@@ -1213,6 +1228,7 @@ mod tests {
             key: "run:run-2".into(),
             name: "claude/sample-project/other".into(),
             archive_id: None,
+            subagent: None,
         }));
         let mut second = state(queued("❯ other", true));
         second.activity[0].key = "run:run-2".into();
@@ -1261,6 +1277,7 @@ mod tests {
                 key: "run:run-2".into(),
                 name: "claude/sample-project/other".into(),
                 archive_id: None,
+                subagent: None,
             }));
             let mut other = state(queued("❯ other", true));
             other.activity[0].key = "run:run-2".into();

@@ -3,8 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { setSetting } from "./settings";
 import { bus } from "./notices";
+import { trNoop, tr } from "../i18n";
 
-export const LAYER_UNAVAILABLE = "Keep Above is unavailable in this Zerus session. On Wayland, KDE Plasma 6 with KWin scripting is required. You can use your desktop's window menu or rules.";
+export const LAYER_UNAVAILABLE = trNoop("Keep Above is unavailable in this Zerus session. On Wayland, KDE Plasma 6 with KWin scripting is required. You can use your desktop's window menu or rules.");
 export interface WindowLayer { supported: boolean; on: boolean; busy: boolean; hint: string; revision: number }
 export interface LayerPort {
   load(): Promise<WindowLayer>;
@@ -39,7 +40,7 @@ const layer = createWindowLayer({
   load: () => native ? invoke<WindowLayer>("window_layer_state") : Promise.reject(),
   listen: (receive) => native ? listen<WindowLayer>("window-layer-changed", (event) => receive(event.payload)) : Promise.resolve(() => {}),
   save: (on) => setSetting("workspace/alwaysOnTop", on),
-  error: (text) => bus.notify("error", text, true, "window-layer", "Keep Zerus above other windows"),
+  error: (text) => bus.notify("error", text, true, "window-layer", tr("Keep Zerus above other windows")),
 });
 export const windowLayer = layer.view;
 export const setWindowLayer = layer.set;

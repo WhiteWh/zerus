@@ -74,7 +74,12 @@
   .col-edge:hover::before, .col-edge:focus-visible::before { opacity: .55; }
   .col-edge.dragging::before { opacity: 1; transition: none; }
   .act-label { padding: 2px 0; }
-  .act-col > [id^="item-"] { scroll-margin-top: 10px; }
+  .act-history-header { display: flex; align-items: center; gap: 8px; min-height: 26px; }
+  .act-virtual { position: relative; box-sizing: border-box; flex: none; width: 100%; }
+  .act-virtual-flow { position: relative; width: 100%; }
+  .act-virtual-spacer { overflow-anchor: none; }
+  .act-virtual-row { position: relative; width: 100%; }
+  .act-col [id^="item-"] { scroll-margin-top: 10px; }
   .act-msg { border-radius: var(--z-radius-lg); padding: 9px 14px 11px; background: var(--z-color-tile); border-left: 3px solid var(--z-color-border); animation: rise var(--z-motion-slow) var(--ease) both; }
   .act-msg.k-user { background: var(--z-color-bubble); border-left-color: var(--z-color-accent-muted); white-space: pre-wrap; }
   .act-msg.k-agent { border-left-color: var(--z-color-accent); }
@@ -96,7 +101,6 @@
   .act-copy { opacity: 0; transition: opacity var(--z-motion-fast); }
   .act-msg:hover .act-copy { opacity: 1; }
   .act-body { line-height: 1.5; color: var(--z-color-text); }
-  .act-body p + p, .act-body p + ul, .act-body ul + p { margin-top: 8px; }
   .act-body code { font-family: var(--z-font-mono); font-size: .9em; padding: 1px 5px; border-radius: 4px; background: var(--z-color-code-bg); }
   .act-body a { color: var(--z-color-accent); text-decoration: none; }
   /* Message tables use the mockup proc-table's type, header and divider tokens. */
@@ -104,9 +108,25 @@
   .act-table { width: 100%; min-width: calc(var(--fs-sm) * var(--table-columns) * 9); border-collapse: collapse; font-size: var(--fs-sm); }
   .act-table th { font-weight: 600; color: var(--z-color-label); font-size: var(--fs-xs); padding: 4px 8px; border-bottom: 1px solid var(--z-color-divider); }
   .act-table td { padding: 5px 8px; border-bottom: 1px solid color-mix(in srgb, var(--z-color-divider) 60%, transparent); }
-  .act-table th, .act-table td { vertical-align: top; white-space: normal; overflow-wrap: anywhere; }
+  /* Preserve word-sized min-content columns; long cells still wrap or scroll. */
+  .act-table th, .act-table td { vertical-align: top; white-space: normal; overflow-wrap: break-word; }
   .md-list { padding-left: 20px !important; list-style: disc !important; }
   .md-list li { margin: 2px 0; }
+  ol.md-list { list-style: decimal !important; }
+  .md-list .md-list { margin: 2px 0 0; }
+  ul.md-list .md-list:not(ol) { list-style: circle !important; }
+  .md-list li.md-task { list-style: none; }
+  .md-check { width: 13px; height: 13px; margin: 0 6px 0 -19px; vertical-align: -2px; accent-color: var(--z-color-accent); }
+  .md-heading { margin: 0; font-weight: 600; line-height: 1.3; font-size: var(--fs-md); }
+  h1.md-heading { font-size: var(--fs-xl); }
+  h2.md-heading { font-size: var(--fs-lg); }
+  .md-quote { margin: 0; padding-left: 10px; border-left: 3px solid var(--z-color-divider); color: var(--z-color-muted); }
+  .md-rule { margin: 0; border: 0; border-top: 1px solid var(--z-color-divider); }
+  .act-body em { font-style: italic; }
+  .act-body del { text-decoration: line-through; }
+  /* Blocks keep the mockup's 8 px paragraph rhythm, inside quotes and list items
+     too. It comes after the block rules above, whose margin: 0 resets the UA's. */
+  .act-body > * + *, .md-quote > * + *, .md-list li > :not(.md-check) + :is(p, pre, blockquote, .act-table-wrap, h1, h2, h3, h4, h5, h6, hr) { margin-top: 8px; }
   .act-code { margin: 8px 0 0; padding: 9px 12px; border-radius: var(--z-radius-md); background: var(--z-color-code-bg); border: 1px solid var(--z-color-divider); font-size: calc(var(--fs-base) * .9); line-height: 1.45; overflow-x: auto; white-space: pre; }
   .act-attachments { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 8px; }
   /* Qt's attachment card (ActivityView.cpp:779): one bordered row, an image's thumbnail in a fixed 96x64 cell. */
@@ -204,12 +224,15 @@
   .q-option small { color: var(--z-color-muted); font-size: var(--fs-xs); }
   .question-card footer { display: flex; align-items: center; gap: 10px; }
 
-  /* The native queue shares the reading column (ActivityView.cpp:1280-1292). */
+  /* Pending outgoing messages share the reading column and stay distinct from sent Activity. */
   .act-queue { width: min(var(--col), calc(100% - 32px)); margin: 0 auto 8px; padding: 8px 12px; flex-shrink: 0;
-    background: var(--z-color-surface); border: 1px solid var(--z-color-border); border-radius: var(--z-radius-md); }
+    background: var(--z-color-surface); border: 1px dashed var(--z-color-accent-muted); border-radius: var(--z-radius-md); }
   .act-queue-head { display: flex; align-items: center; gap: 8px; }
   .act-queue-head b { color: var(--z-color-muted); font-weight: 600; }
-  .act-queue-text { max-height: 100px; overflow-y: auto; user-select: text; }
+  .act-queue-head > svg { color: var(--z-color-muted); flex-shrink: 0; }
+  .act-queue-text { max-height: 220px; overflow-y: auto; user-select: text; }
+  .act-queue-message { margin-top: 8px; padding-left: 10px; border-left: 2px solid var(--z-color-accent-muted); }
+  .act-queue-message + .act-queue-message { padding-top: 8px; border-top: 1px dashed var(--z-color-border); }
 
   /* Composer: toolbar 34, editor 76, action row 34. */
   .cmp-col { width: min(var(--col), calc(100% - 32px)); margin: 0 auto 10px; }
@@ -239,8 +262,8 @@
   .att-row { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 4px 4px 4px 6px; border-radius: 6px; cursor: pointer; outline: none; }
   .att-row:hover, .att-row:focus-visible { background: var(--z-color-hover); }
   .att-row:focus-visible { box-shadow: inset 0 0 0 1px var(--z-color-accent); }
-  .att-thumb { flex: none; width: 30px; height: 22px; border-radius: 3px; overflow: hidden; display: grid; place-items: center; background: var(--z-color-tile); color: var(--z-color-muted); }
-  .att-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .att-pop .att-thumb { flex: none; width: 30px; height: 22px; border-radius: 3px; overflow: hidden; display: grid; place-items: center; background: var(--z-color-tile); color: var(--z-color-muted); }
+  .att-pop .att-thumb img { width: 100%; height: 100%; object-fit: cover; }
   .att-text { flex: 1; min-width: 0; display: flex; flex-direction: column; font-size: 11px; line-height: 1.35; color: var(--z-color-text); }
   .att-ref { color: var(--z-color-muted); }
   .att-remove { flex: none; width: 24px; height: 24px; color: var(--z-color-muted); }
@@ -459,29 +482,72 @@
 /* A required question card hides the composer's input without unmounting it. */
 .composer [hidden] { display: none !important; }
 
-/* The question card (Qt's QuestionCard), between Activity and the composer. */
-.qcard { display: flex; flex-direction: column; gap: 9px; padding: 12px 14px; margin-bottom: 8px; background: var(--z-color-surface);
-  border: 1px solid var(--z-color-border); border-radius: var(--z-radius-lg); max-height: 60vh; }
+/* The question card (Qt's QuestionCard), between Activity and the composer, in
+   the reading column. Questions and approvals read as needing attention, after
+   the owner's prototype: warn border and tint, card-coloured option rows. */
+.qcard { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--z-color-warn-bg);
+  border: 1px solid var(--z-color-warn); border-radius: 12px; max-height: 60vh; }
+/* Only a question arriving in an open session rises in; opening one paints in place. */
+.qcard.arrived { animation: rise var(--z-motion-slow) var(--ease) both; }
 .qcard-head, .qcard-meta, .qcard-actions { display: flex; align-items: center; gap: 8px; }
-.qcard-title { color: var(--z-color-accent); font-weight: 600; }
+.qcard-head > svg { flex: none; }
+.qcard-title { font-weight: 600; }
 .qcard-dim, .qcard-mode { color: var(--z-color-muted); font-size: 11px; }
-.qcard-page { display: flex; flex-direction: column; gap: 7px; min-height: 0; }
-.qcard-scroll { display: flex; flex-direction: column; gap: 7px; overflow-y: auto; min-height: 40px; }
-.qcard-prompt { font-weight: 600; }
+.qcard-head .qcard-dim { flex: none; }
+.qcard-page { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.qcard-scroll { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; min-height: 40px; }
+.qcard-prompt { color: var(--z-color-text-2); line-height: 1.5; }
 .qcard-body { color: var(--z-color-muted); font-size: 11px; }
-.qchoice { display: flex; gap: 8px; align-items: flex-start; padding: 9px 12px 9px 10px; border: 1px solid var(--z-color-border);
-  border-radius: var(--z-radius-md); background: var(--z-color-raised); cursor: pointer; }
-.qchoice:hover, .qchoice.on { border-color: var(--z-color-accent); }
-.qchoice.on { background: var(--z-color-accent-bg); }
+/* An approval's command or patch. */
+.qcard-body.mono { color: var(--z-color-text-2); font-size: 12px; padding: 7px 10px; background: var(--z-color-card);
+  border: 1px solid var(--z-color-card-border); border-radius: 8px; }
+.qcard-options { display: flex; flex-direction: column; gap: 5px; }
+.qchoice, .qother { border: 1px solid var(--z-color-card-border); border-radius: 9px; background: var(--z-color-card);
+  transition: border-color var(--z-motion-fast), background var(--z-motion-fast); }
+.qchoice { display: flex; gap: 8px; align-items: flex-start; padding: 7px 10px; cursor: pointer; }
+.qchoice:hover, .qother:hover { border-color: var(--z-color-text-3); }
+.qchoice.on, .qother.on { border-color: var(--z-color-accent); background: var(--z-color-card-selected); }
 .qchoice.off { cursor: default; opacity: .7; }
-.qchoice-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.qchoice-desc { color: var(--z-color-muted); font-size: 11px; }
-.qcard-text { min-height: 35px; padding: 7px; border: 1px solid var(--z-color-border); border-radius: var(--z-radius-md); background: var(--z-color-raised); color: var(--z-color-text); }
+.qchoice.off:not(.on):hover, .qother.off:not(.on):hover { border-color: var(--z-color-card-border); }
+.qchoice-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.qchoice-title { font-weight: 600; color: var(--z-color-text); }
+.qchoice-desc { color: var(--z-color-muted); font-size: 11.5px; }
+/* Other: the choice and, once chosen, its answer line in one row. */
+.qother { display: flex; flex-direction: column; }
+.qother > .qchoice, .qother > .qchoice.on { border: 0; background: transparent; }
+.qother > .qcard-text { margin: 0 10px 8px 32px; }
+.qother.off { opacity: .7; }
+.qother.off > .qchoice.off { opacity: 1; }
+/* 14 px radio and check, accent when chosen; the native controls keep their keys and focus. */
+.qchoice > input { appearance: none; flex: none; display: grid; place-content: center; width: 14px; height: 14px; margin: 2px 0 0;
+  border: 1.5px solid var(--z-color-muted); border-radius: 50%; background: transparent; cursor: inherit; }
+.qchoice > input[type="checkbox"] { border-radius: 4px; }
+.qchoice > input::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--z-color-accent); transform: scale(0);
+  transition: transform var(--z-motion-fast); }
+.qchoice > input[type="checkbox"]::before { width: 8px; height: 8px; border-radius: 0; background: var(--z-color-accent-text);
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0, 43% 62%); }
+.qchoice > input:checked { border-color: var(--z-color-accent); }
+.qchoice > input[type="checkbox"]:checked { background: var(--z-color-accent); }
+.qchoice > input:checked::before { transform: scale(1); }
+.qchoice > input:focus-visible { outline: 2px solid var(--z-color-focus); outline-offset: 2px; }
+.qcard-text { min-height: 30px; padding: 5px 9px; border: 1px solid var(--z-color-border); border-radius: var(--z-radius-md); background: var(--z-color-field); color: var(--z-color-text); }
 .qcard-text:focus { border-color: var(--z-color-accent); outline: none; }
-.qcard-status { color: var(--z-color-muted); font-size: 11px; margin: 0; }
-.qcard-status.error { color: var(--z-color-danger); }
+/* One footer line whose height never follows the buttons: a review countdown
+   ("Submit answer (3)") must not rewrap the hint and move the whole column.
+   The hint ellipsizes (its full text is the tooltip); an error may wrap. */
+.qcard-actions:has(> .qcard-status) { justify-content: flex-end; }
+.qcard-actions > .btn { flex: none; }
+.qcard-status { flex: 1 1 0; min-width: 0; color: var(--z-color-muted); font-size: 11.5px; margin: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qcard-status.error { color: var(--z-color-danger); white-space: normal; }
 .wrap-pre { white-space: pre-wrap; }
-.session-file-path { overflow-wrap: anywhere; }
+dialog.session-file { width: min(520px, calc(100vw - 32px)); max-width: calc(100vw - 32px); }
+.session-file .dlg-body { display: grid; gap: 10px; padding-top: 6px; padding-bottom: 16px; }
+.session-file .dlg-detail { margin: 0; }
+.session-file-path-row { display: flex; align-items: flex-start; gap: 12px; padding: 10px; border: 1px solid var(--z-color-border); border-radius: var(--z-radius-md); background: var(--z-color-field); }
+.session-file-path { flex: 1; min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; font-family: var(--z-font-mono); font-size: var(--fs-sm); color: var(--z-color-text); user-select: text; }
+.session-file-path-row > .btn { flex: none; }
+.session-file-actions { justify-content: flex-end; flex-wrap: wrap; }
 .session-file-hint { white-space: pre-wrap; overflow-wrap: anywhere; }
 .act-reply-q { color: var(--z-color-muted); font-size: 10px; margin-bottom: 3px; }
 .act-reply-a { border: 1px solid var(--z-color-border); background: var(--z-color-code-bg); padding: 10px; border-radius: var(--z-radius-md); margin-bottom: 10px; }
@@ -508,4 +574,4 @@
 
 /* The mockup round player keeps its geometry while real frames decode. */
 .vm-poster .vm-frames.real { inset: 0; animation: none; will-change: auto; background: none; }
-.vm-frames > video { display: block; width: 100%; height: 100%; object-fit: cover; }
+.vm-frames > video, .vm-frames > img { display: block; width: 100%; height: 100%; object-fit: cover; }

@@ -1,0 +1,17 @@
+unicode-casefold 0.2.0
+Author: Chris Wong (as named in the published crate's Cargo.toml).
+Source: https://crates.io/crates/unicode-casefold/0.2.0
+Repository: https://github.com/lambda-fairy/unicode-casefold
+Declared license: MIT/Apache-2.0. Zerus uses the MIT option.
+
+The crate and its upstream repository provide no license text. MIT.txt is the
+unmodified MIT license text from SPDX license-list-data v3.29.0, including its
+placeholder copyright line; no unpublished copyright year is inferred.
+https://github.com/spdx/license-list-data/blob/v3.29.0/text/MIT.txt
+
+The crate's src/tables.rs identifies Unicode 9.0.0 and was generated from the
+Unicode Character Database's CaseFolding.txt. Its source header attributes
+Copyright 2016 Unicode, Inc. The Unicode data permission notice is included
+unchanged as Unicode-DFS-2016.txt from SPDX license-list-data v3.29.0.
+https://www.unicode.org/Public/9.0.0/ucd/CaseFolding.txt
+https://github.com/spdx/license-list-data/blob/v3.29.0/text/Unicode-DFS-2016.txt

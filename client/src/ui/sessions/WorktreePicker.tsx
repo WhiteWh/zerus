@@ -2,6 +2,7 @@ import { For, createEffect, createMemo, createSignal, onCleanup, onMount } from 
 import type { Json } from "../lib/json";
 import type { Style } from "./paths";
 import { WorktreePicker, type PickerSession } from "./worktree-dialogs";
+import { tr } from "../../i18n";
 
 // Choose existing… (NewSessionDialog::chooseWorktree 1114-1124): a dialog
 // with WorktreePanel in picker mode (tray/src/WorktreePanel.h), from the
@@ -72,11 +73,11 @@ export function ChooseWorktreeDialog(props: {
   return (
     <dialog class="dlg wt-dlg" ref={el} aria-labelledby="wt-title" onKeyDown={keys}
       onCancel={(e) => { e.preventDefault(); props.onClose(); }} onClose={() => { if (!gone) props.onClose(); }}>
-      <div class="dlg-head"><h2 id="wt-title">Choose an existing worktree</h2></div>
+      <div class="dlg-head"><h2 id="wt-title">{tr("Choose an existing worktree")}</h2></div>
       <div class="dlg-body wt-body">
         <div class="row">
-          <h3 class="section-title grow" id="wt-heading">Folder and worktrees</h3>
-          <button type="button" class="btn small" disabled={!v().refreshEnabled} onClick={() => panel.refresh(props.online())}>Refresh</button>
+          <h3 class="section-title grow" id="wt-heading">{tr("Folder and worktrees")}</h3>
+          <button type="button" class="btn small" disabled={!v().refreshEnabled} onClick={() => panel.refresh(props.online())}>{tr("Refresh")}</button>
         </div>
         <p class="wt-status" title={v().status}>{v().status}</p>
         <ul class="wt-tree" ref={tree} role="listbox" aria-labelledby="wt-heading" tabindex="0"
@@ -92,8 +93,8 @@ export function ChooseWorktreeDialog(props: {
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" disabled={!v().useEnabled} onClick={use}>Use folder</button>
-        <button type="button" class="btn" onClick={() => props.onClose()}>Cancel</button>
+        <button type="button" class="btn primary" disabled={!v().useEnabled} onClick={use}>{tr("Use folder")}</button>
+        <button type="button" class="btn" onClick={() => props.onClose()}>{tr("Cancel")}</button>
       </div>
     </dialog>
   );

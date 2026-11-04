@@ -28,6 +28,12 @@ use zerus_client_core::attachments;
 
 use super::{lock, Composers, Spawn};
 
+const APP_ORIGIN: &str = if cfg!(windows) {
+    "http://tauri.localhost"
+} else {
+    "tauri://localhost"
+};
+
 /// Copies another owner still needs, by path (a failed message's files that
 /// Retry sends again).
 pub type Keep = Arc<dyn Fn() -> HashSet<PathBuf> + Send + Sync>;
@@ -484,8 +490,16 @@ pub fn respond(
     composers: &Composers,
     webview: &str,
     request: &Request<Vec<u8>>,
+    poster: impl FnOnce(&str, &str, &str) -> Option<Arc<[u8]>>,
 ) -> Response<Vec<u8>> {
     if webview != crate::MAIN_WINDOW {
+        return status(StatusCode::FORBIDDEN);
+    }
+    let mut origins = request.headers().get_all(header::ORIGIN).iter();
+    let origin = origins.next();
+    if origin.is_some_and(|value| value.to_str().ok() != Some(APP_ORIGIN))
+        || origins.next().is_some()
+    {
         return status(StatusCode::FORBIDDEN);
     }
     if request.method() != Method::GET {
@@ -499,7 +513,34 @@ pub fn respond(
     let Some(path) = request.uri().path().strip_prefix('/').and_then(decode) else {
         return status(StatusCode::NOT_FOUND);
     };
-    if let Some(rest) = path.strip_prefix("draft/") {
+    if path == "poster" {
+        if origin.is_none() {
+            return status(StatusCode::FORBIDDEN);
+        }
+        let Some((computer, key, message)) = poster_reference(request.uri().query()) else {
+            return status(StatusCode::NOT_FOUND);
+        };
+        let Some(bytes) = poster(&computer, &key, &message) else {
+            return status(StatusCode::NOT_FOUND);
+        };
+        if bytes.len() > zerus_client_core::video_posters::POSTER_BYTES || bytes.is_empty() {
+            return status(StatusCode::NOT_FOUND);
+        }
+        let mut response = answer(request, bytes.len(), |part| {
+            Some((
+                "image/jpeg".into(),
+                match part {
+                    Some((start, end)) => bytes[start..=end].to_vec(),
+                    None => bytes.to_vec(),
+                },
+            ))
+        });
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            header::HeaderValue::from_static(APP_ORIGIN),
+        );
+        response
+    } else if let Some(rest) = path.strip_prefix("draft/") {
         let Some(bytes) = draft_file(composers, rest) else {
             return status(StatusCode::NOT_FOUND);
         };
@@ -524,12 +565,131 @@ pub fn respond(
     }
 }
 
+fn poster_reference(query: Option<&str>) -> Option<(String, String, String)> {
+    let query = query.filter(|query| query.len() <= 8192)?;
+    let mut fields = HashMap::new();
+    for part in query.split('&') {
+        let (key, value) = part.split_once('=')?;
+        if !matches!(key, "computer" | "key" | "message_id") || fields.contains_key(key) {
+            return None;
+        }
+        fields.insert(key, decode(&value.replace('+', " "))?);
+    }
+    let (computer, key, message) = (
+        fields.remove("computer")?,
+        fields.remove("key")?,
+        fields.remove("message_id")?,
+    );
+    zerus_client_core::video_posters::valid_reference(&computer, &key, &message)
+        .then_some((computer, key, message))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::composer::tests::{dir, hub, session, until, Scratch};
     use std::io::Write;
     use zerus_client_core::attachments::Selection;
+
+    fn respond(c: &Composers, webview: &str, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
+        super::respond(c, webview, request, |_, _, _| None)
+    }
+
+    #[test]
+    fn poster_protocol_is_exact_bounded_raw_and_main_get_only() {
+        use std::cell::Cell;
+        let root = dir("poster-protocol");
+        let (c, _) = hub(&root);
+        let calls = Cell::new(0);
+        let lookup = |computer: &str, key: &str, message: &str| {
+            calls.set(calls.get() + 1);
+            (computer == "example-peer" && key == "run:one" && message == "message-1")
+                .then(|| Arc::<[u8]>::from([255, 216, 1, 2, 255, 217]))
+        };
+        let path = "poster?computer=example-peer&key=run%3Aone&message_id=message-1";
+        let response = super::respond(&c, "main", &get(path, None), lookup);
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.body(), &[255, 216, 1, 2, 255, 217]);
+        assert_eq!(response.headers()["content-type"], "image/jpeg");
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let response = super::respond(&c, "main", &get(path, Some("bytes=2-3")), lookup);
+        assert_eq!(response.status(), 206);
+        assert_eq!(response.body(), &[1, 2]);
+        assert_eq!(
+            super::respond(&c, "native-ui", &get(path, None), lookup).status(),
+            403
+        );
+        for invalid in [
+            "poster?key=one",
+            "poster?computer=example-peer&key=one&key=two&message_id=one",
+            "poster?computer=example-peer&key=%00&message_id=one",
+            "poster?computer=example-peer&key=one&message_id=one&path=private",
+        ] {
+            assert_eq!(
+                super::respond(&c, "main", &get(invalid, None), lookup).status(),
+                404
+            );
+        }
+        let post = Request::builder()
+            .method("POST")
+            .uri(format!("zerus-file://localhost/{path}"))
+            .body(Vec::new())
+            .unwrap();
+        assert_eq!(super::respond(&c, "main", &post, lookup).status(), 405);
+        assert_eq!(calls.get(), 2, "refused requests must not read the cache");
+        {
+            let origin = APP_ORIGIN;
+            let mut request = get(path, None);
+            request
+                .headers_mut()
+                .insert(header::ORIGIN, origin.parse().unwrap());
+            let response = super::respond(&c, "main", &request, lookup);
+            assert_eq!(response.status(), 200);
+            assert_eq!(
+                response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+                origin
+            );
+        }
+        let before = calls.get();
+        for origin in [
+            "https://example.invalid",
+            "http://127.0.0.1:1420",
+            "http://127.0.0.1:9988",
+            "http://localhost:9988",
+            "null",
+            "tauri://localhost.invalid",
+        ] {
+            let mut request = get(path, None);
+            request
+                .headers_mut()
+                .insert(header::ORIGIN, origin.parse().unwrap());
+            for webview in ["main", "native-ui"] {
+                let refused = super::respond(&c, webview, &request, lookup);
+                assert_eq!(refused.status(), 403);
+                assert!(refused.body().is_empty());
+                assert!(!refused
+                    .headers()
+                    .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+            }
+        }
+        let mut missing = get(path, None);
+        missing.headers_mut().remove(header::ORIGIN);
+        assert_eq!(super::respond(&c, "main", &missing, lookup).status(), 403);
+        assert_eq!(calls.get(), before);
+        assert_eq!(
+            super::respond(
+                &c,
+                "main",
+                &get(
+                    "poster?computer=other&key=run%3Aone&message_id=message-1",
+                    None
+                ),
+                lookup
+            )
+            .status(),
+            404
+        );
+    }
 
     #[test]
     fn playback_reads_only_bounded_recordings_in_the_private_cache() {
@@ -583,6 +743,9 @@ mod tests {
 
     fn get(path: &str, range: Option<&str>) -> Request<Vec<u8>> {
         let mut request = Request::builder().uri(format!("zerus-file://localhost/{path}"));
+        if path.starts_with("poster?") {
+            request = request.header(header::ORIGIN, APP_ORIGIN);
+        }
         if let Some(range) = range {
             request = request.header("range", range);
         }

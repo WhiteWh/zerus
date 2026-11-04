@@ -121,7 +121,7 @@ describe("Choose existing… (WorktreePanel in picker mode)", () => {
     reads.calls[0].answer({ state: "not_repo", path: "/srv/notes", worktrees: [] });
     await settle();
     const view = panel.view(true, sessions, "posix");
-    expect(view.rows).toEqual([{ path: "/srv/notes", label: "Folder (1 session)", tooltip: "/srv/notes\n\n", usable: true }]);
+    expect(view.rows).toEqual([{ path: "/srv/notes", sessions: 1, label: "Folder (1 session)", tooltip: "/srv/notes\n\n", usable: true }]);
     expect(view.useEnabled).toBe(true);
     // Before any answer the folder is not known to be available.
     expect(picker("/srv/notes").panel.view(true, sessions, "posix").rows[0]).toMatchObject({ label: "Folder (unavailable) (1 session)", usable: false });

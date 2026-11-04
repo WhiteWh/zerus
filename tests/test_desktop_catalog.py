@@ -37,6 +37,7 @@ class Catalog(unittest.TestCase):
         help_result = subprocess.run([str(kernel.HGS), '--help'], env=self.env, capture_output=True, text=True, timeout=5)
         self.assertEqual(help_result.returncode, 0, help_result.stderr)
         self.assertIn('Desktop catalog ABI: desktop-catalog-v1', [line.strip() for line in help_result.stdout.splitlines()])
+        self.assertIn('Desktop catalog changes ABI: desktop-catalog-changes-v1', [line.strip() for line in help_result.stdout.splitlines()])
         self.cli('desktop', 'request', '--json', data=dict(op='catalog_page', request_id=str(uuid.uuid4()), computer='peer'), ok=False)
         self.assertFalse(self.state.exists())
         self.serve()
@@ -106,10 +107,31 @@ class Catalog(unittest.TestCase):
         final = self.page(first['next_cursor'])
         self.assertEqual([r['key'] for r in final['items']], [self.item(n)['key'] for n in range(128, 256)])
         self.assertIsNone(final['next_cursor'], 'new inserts cannot extend the existing walk')
+        self.assertEqual(first['changes_abi'], 'desktop-catalog-changes-v1')
+        self.assertEqual(first['start_revision'], '0')
+        self.assertEqual(final['start_revision'], '0')
+        self.assertEqual(final['revision'], '1')
+        self.assertTrue(final['stale'])
+        self.assertFalse(final['complete'])
+        request = dict(op='catalog_changes', request_id=str(uuid.uuid4()), computer='peer',
+                       epoch=first['epoch'], incarnation=first['incarnation'], generation=first['generation'],
+                       projection=first['projection'], since_revision=first['start_revision'])
+        changes = self.cli('desktop', 'request', '--json', data=request)
+        self.assertTrue(changes['accepted'])
+        self.assertEqual(changes['through_revision'], '1')
+        self.assertIsNone(changes['next_cursor'])
+        self.assertEqual(changes['items'], [dict(op='upsert', revision='1', **self.item(256))])
+        request['request_id'] = str(uuid.uuid4())
+        request['since_revision'] = '1'
+        self.assertEqual(self.cli('desktop', 'request', '--json', data=request)['items'], [])
         cursor = self.page()['next_cursor']
         watch(hello, generation=2)
         watch(dict(v=1, t='snapshot', seq=2, topic='catalog', items=[self.item(999)], page=0, last=True, cursor=1), generation=2)
         self.assertEqual(self.page(cursor)['code'], 'catalog_read_refused')
+        request['request_id'] = str(uuid.uuid4())
+        reset = self.cli('desktop', 'request', '--json', data=request)
+        self.assertEqual(reset['code'], 'catalog_changes_reset')
+        self.assertTrue(reset['reset_required'])
         self.assertEqual(self.page()['items'], [self.item(999)])
         process.stdin.close()
         process.wait(timeout=5)
@@ -133,6 +155,29 @@ class Catalog(unittest.TestCase):
         self.assertFalse(value['complete'])
         self.assertFalse(value['authority'])
 
+    def test_schema_twelve_upgrade_preserves_last_known_rows_without_a_watermark(self):
+        service, _ = self.serve()
+        process, _, frames = self.feed()
+        self.seed(process, frames, rows=300)
+        self.stop(service)
+        process.stdin.close()
+        process.wait(timeout=5)
+        with closing(sqlite3.connect(self.desktop / 'state.sqlite3')) as db, db:
+            kernel.Desktop.remove_changes_schema(db)
+            db.execute('PRAGMA user_version=12')
+        _, status = self.serve()
+        self.assertEqual(status['schema'], kernel.SCHEMA)
+        value = self.page()
+        self.assertEqual(len(value['items']), 128)
+        self.assertFalse(value['complete'])
+        self.assertFalse(value['online'])
+        self.assertTrue(value['last_known'])
+        for field in ('projection', 'start_revision', 'revision'):
+            self.assertIsNone(value[field])
+        with closing(sqlite3.connect(self.desktop / 'state.sqlite3')) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM desktop_catalog_rows').fetchone()[0], 300)
+            self.assertEqual(db.execute('SELECT count(*) FROM desktop_maintenance').fetchone()[0], 1)
+
     def test_large_valid_singleton_and_corrupt_encoded_key_keep_service_alive(self):
         service, status = self.serve()
         process, _, frames = self.feed()
@@ -145,6 +190,7 @@ class Catalog(unittest.TestCase):
         self.assertEqual(value['items'], [row])
         self.assertIsNone(value['next_cursor'])
         with closing(sqlite3.connect(self.desktop / 'state.sqlite3')) as db, db:
+            db.create_function("desktop_shared_flags", 1, lambda raw: 0)
             db.execute("UPDATE desktop_catalog_rows SET key=?,json='{}',bytes=200066", ('\x01' * 200_000,))
         refused = self.page()
         self.assertEqual(refused['code'], 'catalog_read_refused')

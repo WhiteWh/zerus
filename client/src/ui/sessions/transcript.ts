@@ -1,6 +1,14 @@
 import type { ActivityEvent, LocalMessage, Reply } from "../../types";
 import { eventKey } from "../../store/activity";
 import type { ActivityItem, LocalItem, MediaMessage, TranscriptItem, VoiceState } from "./types";
+import { imageSize } from "./attachment-image";
+import { messageTimeOf } from "../lib/dates";
+import { tr, trNoop } from "../../i18n";
+
+// A Symbol cannot arrive from a provider's JSON. Only our own local send
+// supplies these immutable-cache preview paths and oriented dimensions.
+const LOCAL_FILES = Symbol("local attachment presentation");
+type DisplayEvent = ActivityEvent & { [LOCAL_FILES]?: LocalMessage["attachments"] };
 
 // Journal events as the Activity items of the approved design, after the
 // rules of tray/src/ActivityView.cpp: messages by role, thinking, cleared
@@ -10,59 +18,58 @@ import type { ActivityItem, LocalItem, MediaMessage, TranscriptItem, VoiceState 
 
 /** Delivery labels, as in ActivityView.cpp (unknown states read "Delivery not confirmed"). */
 export const VOICE_STATE_LABEL: Record<VoiceState, string> = {
-  uploading: "Sending recording…",
-  queued: "Waiting for recognition",
-  transcribing: "Recognizing…",
-  ready: "Ready to deliver",
-  waiting_agent: "Waiting for agent",
-  delivering: "Delivering…",
-  submitted: "Accepted by native app",
-  failed: "Voice message failed",
-  cancelled: "Cancelled",
-  uncertain: "Delivery not confirmed",
+  uploading: trNoop("Sending recording…"),
+  queued: trNoop("Waiting for recognition"),
+  transcribing: trNoop("Recognizing…"),
+  ready: trNoop("Ready to deliver"),
+  waiting_agent: trNoop("Waiting for agent"),
+  delivering: trNoop("Delivering…"),
+  submitted: trNoop("Accepted by native app"),
+  failed: trNoop("Voice message failed"),
+  cancelled: trNoop("Cancelled"),
+  uncertain: trNoop("Delivery not confirmed"),
 };
 
 /** Tooltip detail: only Accepted explains what it does not confirm. */
 export function voiceStateDetail(state: VoiceState): string {
   return state === "submitted"
-    ? "The native app accepted the recognized text. Queue status, when present, is shown alongside this recording. This does not confirm model delivery, reading or completion."
-    : VOICE_STATE_LABEL[state];
+    ? tr("The native app accepted the recognized text. Queue status, when present, is shown alongside this recording. This does not confirm model delivery, reading or completion.")
+    : tr(VOICE_STATE_LABEL[state]);
 }
 
 /** States drawn with the warning glyph (VoicePlayerImage::deliveryIcon). */
 export const voiceStateIssue = (state: VoiceState) => state === "failed" || state === "uncertain";
 
 const EVENT_TITLE: Record<string, string> = {
-  SessionStart: "Session started", SessionEnd: "Session closed",
-  TurnStarted: "Turn started", UserPromptQueued: "Message queued",
-  PreToolUse: "Tool started", PostToolUse: "Tool finished",
-  PostToolUseFailure: "Tool failed", PermissionRequest: "Approval requested",
-  PermissionResult: "Approval resolved", Stop: "Response finished",
-  StopFailure: "Response failed", Interrupt: "Turn interrupted",
-  PreCompact: "Compacting context", PostCompact: "Context compacted",
-  SubagentStart: "Subagent started", SubagentStop: "Subagent finished",
-  TaskStarted: "Background task started", Notification: "Agent notification",
+  SessionStart: trNoop("Session started"), SessionEnd: trNoop("Session closed"),
+  TurnStarted: trNoop("Turn started"), UserPromptQueued: trNoop("Message queued"),
+  PreToolUse: trNoop("Tool started"), PostToolUse: trNoop("Tool finished"),
+  PostToolUseFailure: trNoop("Tool failed"), PermissionRequest: trNoop("Approval requested"),
+  PermissionResult: trNoop("Approval resolved"), Stop: trNoop("Response finished"),
+  StopFailure: trNoop("Response failed"), Interrupt: trNoop("Turn interrupted"),
+  PreCompact: trNoop("Compacting context"), PostCompact: trNoop("Context compacted"),
+  SubagentStart: trNoop("Subagent started"), SubagentStop: trNoop("Subagent finished"),
+  TaskStarted: trNoop("Background task started"), Notification: trNoop("Agent notification"),
 };
-export const eventTitle = (type: string | undefined) => (type ? EVENT_TITLE[type] ?? type : "Activity");
+export const eventTitle = (type: string | undefined) => (type ? (type in EVENT_TITLE ? tr(EVENT_TITLE[type]) : type) : tr("Activity"));
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-/** "Oct 27 09:12", local time, as the design shows message times. */
+/** "Oct 27 09:12" ("27 октября 09:12" in Russian), local time, as the design shows message times. */
 export function timeText(at: number | undefined): string {
   if (!at || at <= 0) return "";
-  const d = new Date(at * 1000);
-  return `${MONTHS[d.getMonth()]} ${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return messageTimeOf(new Date(at * 1000));
 }
 
 type Role = "user" | "assistant" | "notice" | "";
+const childEvent = (event: ActivityEvent): event is ActivityEvent & { agent_id: string } => !!event.agent_id && event.agent_id !== "main";
 
 /** ActivityView.cpp messageRole: who wrote an event, if anyone. */
 export function messageRole(e: ActivityEvent): Role {
   if (e.source === "zerus_task" && e.type === "TaskEntry") return e.task_role === "person" ? "user" : e.task_role === "agent" ? "assistant" : "";
   if (e.source === "hgs_voice" && e.voice && typeof e.voice === "object") return "user";
-  if (e.agent_id || (!e.detail && !(e.attachments?.length))) return "";
+  if (childEvent(e) || (!e.detail && !(e.attachments?.length))) return "";
   if (e.origin === "task_notification" || e.origin === "subagent_report" || e.origin === "peer_message") return "notice";
   switch (e.type) {
-    case "UserPromptSubmit": case "UserPromptQueued": case "TurnStarted": case "QuestionAnswered": case "LocalMessage": return "user";
+    case "UserPromptSubmit": case "UserPromptQueued": case "UserMessage": case "TurnStarted": case "QuestionAnswered": case "LocalMessage": return "user";
     case "Stop": case "AgentMessage": return "assistant";
   }
   return "";
@@ -76,10 +83,13 @@ const attention = (e: ActivityEvent) => e.type === "PermissionRequest" || e.type
 export function attachments(e: ActivityEvent): ActivityItem["attachments"] {
   const list = Array.isArray(e.attachments) ? e.attachments : [];
   if (!list.length) return undefined;
-  return list.map((a) => {
+  return list.map((a, index) => {
     const text = (value: unknown) => (typeof value === "string" ? value : "");
     const name = text(a?.name), reference = text(a?.reference), mime = text(a?.mime);
     const bytes = typeof a?.bytes === "number" && Number.isFinite(a.bytes) ? a.bytes : 0;
+    const local = (e as DisplayEvent)[LOCAL_FILES]?.[index];
+    const own = !!local && local.name === name && local.mime === mime && local.bytes === bytes && local.reference === reference;
+    const preview = own && typeof local.preview_path === "string" && /^cache\/[a-f0-9]{64}\/[^/\\]+$/u.test(local.preview_path) ? local.preview_path : undefined;
     return {
       name,
       caption: (reference ? `${reference} ` : "") + name,
@@ -88,6 +98,7 @@ export function attachments(e: ActivityEvent): ActivityItem["attachments"] {
       request_id: text(a?.request_id),
       index: typeof a?.index === "number" && Number.isInteger(a.index) ? a.index : -1,
       image: mime.startsWith("image/") && mime !== "image/svg+xml",
+      ...(own ? { own: true, preview_path: preview, image_size: imageSize(local.image_size) } : {}),
     };
   });
 }
@@ -145,7 +156,7 @@ export function mergeAttachmentMessages(given: readonly ActivityEvent[], summary
     if (receipts.filter((other) => typeof other.submitted_text === "string" && other.submitted_text.trim() === submitted).length !== 1) continue;
     const exact: number[] = [];
     events.forEach((event, index) => {
-      if (event.source !== "hgs_voice" && !event.agent_id && !event.attachments?.length && PROMPTS.has(event.type ?? "")
+      if (event.source !== "hgs_voice" && !childEvent(event) && !event.attachments?.length && PROMPTS.has(event.type ?? "")
         && (event.detail ?? "").trim() === submitted) exact.push(index);
     });
     if (exact.length !== 1) continue;
@@ -168,11 +179,13 @@ function media(e: ActivityEvent, id: string): MediaMessage {
   const waveform = Array.isArray(audio.waveform) ? (audio.waveform as unknown[]).map((v) => Math.max(0, Math.min(255, Number(v) || 0))) : [];
   const file = video && Object.keys(video).length ? video : audio;
   const index = Number(file.index);
+  const message = typeof e.message_id === "string" && e.message_id || (typeof voice.id === "string" ? voice.id : "");
   return {
     id, kind: "media", media: video && Object.keys(video).length ? "video" : "voice", at: timeText(e.at),
     state: state in VOICE_STATE_LABEL ? state : "uncertain",
     durationMs: Math.max(0, Number(audio.duration_ms) || 0),
     waveform: waveform.length === 64 ? waveform : [],
+    posterMessageId: video?.poster_available === true && message ? message : undefined,
     file: typeof audio.request_id === "string" && !!audio.request_id && typeof file.request_id === "string" && !!file.request_id
       && typeof file.index === "number" && Number.isSafeInteger(index) && index >= 0 ? { request_id: file.request_id, index } : undefined,
     transcript: typeof voice.transcript === "string" && voice.transcript ? voice.transcript : undefined,
@@ -196,11 +209,11 @@ function recordedContext(summary: Record<string, unknown> | undefined): Transcri
   const prompt = typeof summary?.prompt === "string" ? summary.prompt.trim() : "";
   const answer = typeof summary?.last_message === "string" ? summary.last_message.trim() : "";
   if (!prompt && !answer) return [];
-  const items: TranscriptItem[] = [{ id: "context", kind: "context", at: "", body: "Recorded context — outside the available timeline" }];
+  const items: TranscriptItem[] = [{ id: "context", kind: "context", at: "", body: tr("Recorded context — outside the available timeline") }];
   // A recorded prompt that holds Codex replies reads as one (Rust's prompt_replies).
   const replies = Array.isArray(summary?.prompt_replies) && summary.prompt_replies.length ? summary.prompt_replies as Reply[] : undefined;
-  if (prompt) items.push({ id: "prompt-snapshot", kind: "user", at: "", label: replies ? "You (recorded answer)" : "You (recorded request)", body: prompt, replies });
-  if (answer) items.push({ id: "answer-snapshot", kind: "agent", at: "", label: "Agent (recorded response)", body: answer });
+  if (prompt) items.push({ id: "prompt-snapshot", kind: "user", at: "", label: replies ? tr("You (recorded answer)") : tr("You (recorded request)"), body: prompt, replies });
+  if (answer) items.push({ id: "answer-snapshot", kind: "agent", at: "", label: tr("Agent (recorded response)"), body: answer });
   return items;
 }
 
@@ -210,7 +223,7 @@ function recordedContext(summary: Record<string, unknown> | undefined): Transcri
 // 1053-1068).
 
 const PROMPTS = new Set(["UserPromptSubmit", "UserPromptQueued", "TurnStarted"]);
-const LOCAL_STAMP: Record<LocalMessage["status"], string> = { sending: "Sending…", error: "Not sent", sent: "Submitted to terminal" };
+const LOCAL_STAMP: Record<LocalMessage["status"], string> = { sending: trNoop("Sending…"), error: trNoop("Not sent"), sent: trNoop("Submitted to terminal") };
 /** How far a sent row's own prompt event may be from it, in seconds (ActivityView.cpp:684). */
 const NEAREST = 10;
 
@@ -230,21 +243,22 @@ export function localItem(row: LocalMessage, summary?: Record<string, unknown>):
   const failed = row.status === "error";
   return {
     id: row.id,
-    stamp: failed && row.uncertain ? "Delivery not confirmed" : LOCAL_STAMP[row.status] ?? LOCAL_STAMP.sent,
+    stamp: failed && row.uncertain ? tr("Delivery not confirmed") : tr(LOCAL_STAMP[row.status] ?? LOCAL_STAMP.sent),
     error: failed ? row.error : "",
     uncertain: failed && row.uncertain,
     // A delivery that may have happened is never retried from here: Check, then Allow retry in the composer.
     actions: failed && row.id ? (row.uncertain ? ["inspect", "delete"] : ["retry", "delete"]) : [],
-    inspectLabel: summary?.native_ui_available === true ? "Check native UI" : "Check Terminal",
+    inspectLabel: summary?.native_ui_available === true ? tr("Check native UI") : tr("Check Terminal"),
     available: row.attachments.map(localFileAvailable),
   };
 }
 
 /** A local row as a timeline event (Qt's `type: LocalMessage`). */
-function localEvent(row: LocalMessage): ActivityEvent {
+function localEvent(row: LocalMessage): DisplayEvent {
   return {
     type: "LocalMessage", detail: row.text, at: row.submitted_at, attachments: row.attachments as ActivityEvent["attachments"],
     source: row.source ?? undefined, voice: row.voice ?? undefined, message_id: row.message_id ?? undefined, local: row,
+    [LOCAL_FILES]: row.attachments,
   };
 }
 
@@ -271,7 +285,7 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
     const sent = row.status !== "error";
     let match = -1;
     const exact: number[] = [];
-    const eligible = (e: ActivityEvent, i: number) => !claimed.has(i) && !e.agent_id && e.source !== "hgs_voice" && PROMPTS.has(e.type ?? "")
+    const eligible = (e: ActivityEvent, i: number) => !claimed.has(i) && !childEvent(e) && e.source !== "hgs_voice" && PROMPTS.has(e.type ?? "")
       && (!e.activity_display_key || e.activity_display_key === `local-${row.id}`);
     if (sent) match = source.findIndex((e, i) => eligible(e, i) && e.activity_display_key === `local-${row.id}`);
     if (sent && match < 0) match = source.findIndex((e, i) => eligible(e, i)
@@ -301,17 +315,29 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
       source[match] = {
         ...source[match], activity_journal_key: eventKey(source[match]), activity_key: `local-${row.id}`, activity_display_key: `local-${row.id}`, detail: row.text,
         attachments: source[match].attachments?.length ? source[match].attachments : row.attachments as ActivityEvent["attachments"], attachment_submitted_text: row.submitted_text,
-      };
+        [LOCAL_FILES]: row.attachments,
+      } as DisplayEvent;
       continue;
     }
     if (append) appended.push(localEvent(row));
   }
-  if (!appended.length) return source;
+  // A native echo may precede both the CLI acknowledgement and its durable
+  // receipt. Keep the client's row visible through that short gap; do not
+  // invent an identity binding from text. Equal-text sends remain separate.
+  const visible = source.filter((event, index) => claimed.has(index) || !candidates.some((row) => {
+    if (row.status === "error" || !row.attachments.length || !PROMPTS.has(event.type ?? "") || childEvent(event)
+      || event.attachments?.length || Math.abs((event.at ?? NaN) - row.submitted_at) > NEAREST) return false;
+    const raw = event.detail ?? "";
+    if (!echoMatchesFiles(raw, row.attachments as ActivityEvent["attachments"])) return false;
+    const canonical = raw.replace(/\[(Image|File) #([1-9][0-9]{0,8})\] ?\((?:Inspect the attached image at|Read the attached file at) (?:"(?:[^"\\]|\\.)*") ?\)/g, "[$1 #$2]");
+    return canonical.trim() === row.text.trim();
+  }));
+  if (!appended.length) return visible;
   // Placed by time, after the events of the same time (Qt's stable sort by `at`).
   const placed = appended.map((e, i) => ({ e, i })).sort((a, b) => (a.e.at ?? 0) - (b.e.at ?? 0) || a.i - b.i).map((p) => p.e);
   const merged: ActivityEvent[] = [];
   let next = 0;
-  for (const e of source) {
+  for (const e of visible) {
     const at = typeof e.at === "number" ? e.at : 0;
     while (next < placed.length && at > 0 && (placed[next].at ?? 0) < at) merged.push(placed[next++]);
     merged.push(e);
@@ -321,6 +347,30 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
 }
 
 const PROVIDER_SOURCES = new Set(["codex_transcript", "claude_transcript", "kimi_wire"]);
+const MESSAGE_TYPES = new Set(["SessionCleared", "UserPromptSubmit", "UserPromptQueued", "UserMessage", "TurnStarted", "QuestionAnswered", "AgentMessage", "Stop"]);
+
+/** The inspection keeps up to 100 main journal messages independently of its
+ * tool-event tail. Merge that bounded window for display only; tool cursors and
+ * older-page requests continue to use the source's original journal events. */
+export function mergeMessages(given: readonly ActivityEvent[], summary?: Record<string, unknown>): readonly ActivityEvent[] {
+  if (!Array.isArray(summary?.message_events) || !summary.message_events.length) return given;
+  const events = [...given];
+  const known = new Set(given.map(eventKey));
+  for (const value of summary.message_events.slice(-100)) {
+    if (!value || typeof value !== "object") continue;
+    const message = value as ActivityEvent;
+    if (!MESSAGE_TYPES.has(message.type ?? "") || childEvent(message)
+      || typeof message.seq !== "number" || !Number.isSafeInteger(message.seq) || message.seq <= 0) continue;
+    const key = eventKey(message);
+    if (known.has(key)) continue;
+    known.add(key);
+    events.push(message);
+  }
+  if (events.length === given.length) return given;
+  if (events.every(event => typeof event.seq === "number" && event.seq > 0)) events.sort((a, b) => a.seq! - b.seq!);
+  else if (events.every(event => typeof event.at === "number" && Number.isFinite(event.at) && event.at > 0)) events.sort((a, b) => a.at! - b.at!);
+  return events;
+}
 const isExcerpt = (excerpt: string, full: string) => {
   const prefix = excerpt.endsWith("…") ? excerpt.slice(0, -1) : excerpt;
   return !!prefix && full.startsWith(prefix);
@@ -345,7 +395,7 @@ export function mergeProvider(given: readonly ActivityEvent[], summary?: Record<
   // Index only matching candidates once, rather than scanning every loaded
   // journal page for each provider row on every streaming rebuild.
   const index = (e: ActivityEvent, i: number) => {
-    if (e.agent_id || (e.type !== "Stop" && !PROVIDER_SOURCES.has(e.source ?? ""))) return;
+    if (childEvent(e) || (e.type !== "Stop" && !PROVIDER_SOURCES.has(e.source ?? ""))) return;
     const key = nativeKey(e);
     if (key) identities.add(key);
     const second = Math.floor(at(e));
@@ -357,7 +407,7 @@ export function mergeProvider(given: readonly ActivityEvent[], summary?: Record<
   for (const value of summary.provider_messages.slice(-100)) {
     if (!value || typeof value !== "object") continue;
     const message = value as ActivityEvent;
-    if (!PROVIDER_SOURCES.has(message.source ?? "") || message.agent_id
+    if (!PROVIDER_SOURCES.has(message.source ?? "") || childEvent(message)
       || (message.type !== "AgentMessage" && !(message.type === "AgentThinking" && message.source === "claude_transcript"))) continue;
     const key = nativeKey(message);
     if (key && identities.has(key)) continue;
@@ -402,7 +452,7 @@ export function mergeProvider(given: readonly ActivityEvent[], summary?: Record<
  * append. `local` are the open session's local rows (the composer view's).
  */
 export function buildTranscript(given: readonly ActivityEvent[], summary?: Record<string, unknown>, local: readonly LocalMessage[] = []): TranscriptItem[] {
-  const provider = mergeProvider(given, summary);
+  const provider = mergeAttachmentMessages(mergeProvider(mergeMessages(given, summary), summary), summary);
   if (!provider.length && !local.length) return recordedContext(summary);
   const events = mergeAttachmentMessages(local.length ? mergeLocal(provider, local) : provider, summary);
   return transcriptItems(events, summary, !provider.length);
@@ -417,7 +467,7 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
     const role = messageRole(e);
     const at = timeText(e.at);
     if (e.type === "SessionCleared") {
-      items.push({ id, kind: "cleared", at, sender: "Session cleared", body: "The agent no longer sees the activity above. New messages start with a fresh conversation context." });
+      items.push({ id, kind: "cleared", at, sender: tr("Session cleared"), body: tr("The agent no longer sees the activity above. New messages start with a fresh conversation context.") });
       i++; continue;
     }
     if (e.type === "AgentThinking") {
@@ -426,8 +476,8 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
     }
     if (role === "notice") {
       const report = typeof e.report === "string" ? e.report : "";
-      if (e.origin === "subagent_report") items.push({ id, kind: "report", at, title: preview(e.detail) || "Subagent report", body: report || e.detail, sender: e.sender || undefined });
-      else items.push({ id, kind: "system", at, sender: e.origin === "peer_message" ? `Message from ${e.sender ?? "another session"}` : "Background task", body: report || e.detail });
+      if (e.origin === "subagent_report") items.push({ id, kind: "report", at, title: preview(e.detail) || tr("Subagent report"), body: report || e.detail, sender: e.sender || undefined });
+      else items.push({ id, kind: "system", at, sender: e.origin === "peer_message" ? tr("Message from %1", e.sender ?? tr("another session")) : tr("Background task"), body: report || e.detail });
       i++; continue;
     }
     if (role === "user" && e.source === "hgs_voice") {
@@ -448,13 +498,13 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
           const next = events[j];
           if ((next.type === "UserPromptSubmit" || next.type === "TurnStarted") && next.detail === e.detail) accepted = true;
         }
-        receipt = accepted ? "Sent" : "Queued at this time";
+        receipt = accepted ? tr("Sent") : tr("Queued at this time");
       }
       // An answer to a question card, or a message holding Codex replies (ActivityView.cpp:1036-1038).
       const replies = role === "user" && e.question_replies?.length ? e.question_replies : undefined;
       // Qt's order: a queued prompt first, then an answer (ActivityView.cpp:1036-1038).
-      const label = role !== "user" ? undefined : e.type === "UserPromptQueued" ? "You (queued)"
-        : e.type === "QuestionAnswered" || replies ? "You (answer)" : undefined;
+      const label = role !== "user" ? undefined : e.type === "UserPromptQueued" ? tr("You (queued)")
+        : e.type === "QuestionAnswered" || replies ? tr("You (answer)") : undefined;
       items.push({ id, kind: role === "user" ? "user" : "agent", at, body: e.detail ?? "",
         echoBody: typeof e.attachment_echo === "string" ? e.attachment_echo : undefined,
         attachments: attachments(e), receipt, label, replies });
@@ -472,12 +522,12 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
       if (g.type === "PreToolUse") calls++;
     }
     const last = group[group.length - 1];
-    const lines = group.map((g) => `${eventTitle(g.type)}${g.tool ? ` / ${g.tool}` : ""}${g.agent_id ? ` (subagent ${g.agent_id})` : ""}  ${preview(g.detail)}`);
+    const lines = group.map((g) => `${eventTitle(g.type)}${g.tool ? ` / ${g.tool}` : ""}${childEvent(g) ? tr(" (subagent %1)", g.agent_id) : ""}  ${preview(g.detail)}`);
     const shownTools = tools.slice(0, 3).join(", ") + (tools.length > 3 ? " …" : "");
     if (group.length === 1) {
       items.push({ id, kind: "tool", at: timeText(last.at), title: `${eventTitle(e.type)}${e.tool ? ` / ${e.tool}` : ""}`, body: preview(e.detail), lines, warn: attention(e) });
     } else {
-      const title = calls > 0 ? `${calls === 1 ? "1 tool call" : `${calls} tool calls`}, ${group.length} events` : `${group.length} activity events`;
+      const title = calls > 0 ? tr("%1, %2 events", calls === 1 ? tr("1 tool call") : tr("%1 tool calls", calls), group.length) : tr("%1 activity events", group.length);
       items.push({ id, kind: "tools", at: timeText(last.at), title, body: shownTools || preview(last.detail), lines, warn: group.some(attention) });
     }
   }
@@ -502,7 +552,7 @@ export function createTranscriptProjection() {
       // journal event. Keep that one row through the handoff, without actions.
       const waiting = missing.filter(row => !bound.has(`local-${row.id}`));
       const bindingOnly = missing.filter(row => bound.has(`local-${row.id}`));
-      const provider = mergeProvider(given, summary);
+      const provider = mergeAttachmentMessages(mergeProvider(mergeMessages(given, summary), summary), summary);
       const aliased = provider.map(event => {
         const id = bindings.get(eventKey(event));
         return id ? { ...event, activity_display_key: id } : event;

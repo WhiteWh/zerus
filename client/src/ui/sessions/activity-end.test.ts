@@ -34,6 +34,26 @@ describe("Activity end settling", () => {
       expect(f.geometry.top + f.geometry.viewport).toBe(f.geometry.height);
     }
   });
+  it("settles a resize before paint, without a shifted frame", () => {
+    const f = fixture(); f.end.pin(); f.frame(); f.frame();
+    // A question card mounts under the column, then an image row grows: each
+    // resize is re-pinned in its ResizeObserver delivery, before the frame paints.
+    f.geometry.viewport = 200; f.end.settle();
+    expect(f.geometry.top).toBe(1800);
+    f.geometry.height += 300; f.end.settle();
+    expect(f.geometry.top + f.geometry.viewport).toBe(f.geometry.height);
+    // The next frame only verifies: it writes nothing more at a settled end.
+    const writes = f.writes(); f.frame(); f.frame();
+    expect(f.writes()).toBe(writes);
+  });
+  it("never settles during a user scroll or after the pin is released", () => {
+    let scrolling = true;
+    const f = fixture(() => !scrolling); f.end.pin(); f.frame(); f.frame();
+    f.geometry.height += 400; f.end.settle();
+    expect(f.geometry.top).toBe(0);
+    scrolling = false; f.end.release(); f.end.settle();
+    expect(f.geometry.top).toBe(0); expect(f.writes()).toBe(0);
+  });
   it("keeps the last row above the composer when the viewport shrinks", () => {
     const f = fixture(); f.end.pin(); f.frame(); f.frame();
     f.geometry.viewport = 200; f.end.changed(); f.frame(); f.frame();

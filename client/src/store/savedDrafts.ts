@@ -5,6 +5,7 @@ import type { ConflictsPage, DraftSource, SavedDraftDetail, SavedDraftItem, Save
 import type { Session } from "../ui/sessions/types";
 import { folderOf } from "../ui/sessions/SessionCard";
 import { composer } from "./composer";
+import { tr, trNoop } from "../i18n";
 
 // Saved drafts (Qt's MessageComposer::showSavedDrafts, MessageComposer.cpp
 // 1230-1387) over src-tauri's composer/saved.rs. Three sections: this
@@ -18,14 +19,14 @@ import { composer } from "./composer";
 export const PAGE = 100;
 
 export const TEXTS = {
-  title: "Saved drafts",
-  hint: "Drafts stay on this desktop, including those from ended or unavailable sessions. Restoring never sends a message.",
-  empty: "No saved drafts on this desktop.",
-  loading: "Loading draft…",
-  unreachable: "This session is not in the session list now.",
-  replaceTitle: "Replace current draft?",
-  replaceConfirm: "Replace draft",
-  recovered: "Recovered to this computer.",
+  title: trNoop("Saved drafts"),
+  hint: trNoop("Drafts stay on this desktop, including those from ended or unavailable sessions. Restoring never sends a message."),
+  empty: trNoop("No saved drafts on this desktop."),
+  loading: trNoop("Loading draft…"),
+  unreachable: trNoop("This session is not in the session list now."),
+  replaceTitle: trNoop("Replace current draft?"),
+  replaceConfirm: trNoop("Replace draft"),
+  recovered: trNoop("Recovered to this computer."),
 } as const;
 
 /**
@@ -34,18 +35,18 @@ export const TEXTS = {
  * reads " / claude/..." for this computer's empty machine: the empty parts
  * are left out.
  */
-export const replaceText = (key: string) => `Replace the unsent draft in ${key.split("\n").filter(Boolean).join(" / ")} with the selected saved draft?`;
+export const replaceText = (key: string) => tr("Replace the unsent draft in %1 with the selected saved draft?", key.split("\n").filter(Boolean).join(" / "));
 
 /** Why a button is off; each shows as its tooltip. */
 export const REASONS = {
-  select: "Select a draft.",
-  loading: "Loading draft…",
-  noText: "This draft has no text.",
-  noSession: "Select a session to restore a draft into it.",
-  otherSession: "Another session opened after Saved drafts. Open Saved drafts again to restore into it.",
+  select: trNoop("Select a draft."),
+  loading: trNoop("Loading draft…"),
+  noText: trNoop("This draft has no text."),
+  noSession: trNoop("Select a session to restore a draft into it."),
+  otherSession: trNoop("Another session opened after Saved drafts. Open Saved drafts again to restore into it."),
   /** src-tauri `saved::RESTORE_LATER`. */
-  composerBusy: "The current draft cannot be replaced while it is loading, sending or waiting to send.",
-  working: "Wait for the current action to finish.",
+  composerBusy: trNoop("The current draft cannot be replaced while it is loading, sending or waiting to send."),
+  working: trNoop("Wait for the current action to finish."),
 } as const;
 
 /**
@@ -70,9 +71,9 @@ export function listStep(count: number, index: number, key: string, page: number
 
 export type SectionId = "client" | "qt" | "conflicts";
 export const SECTIONS: { id: SectionId; title: string; note?: string }[] = [
-  { id: "client", title: "On this computer" },
-  { id: "qt", title: "From the previous Zerus app" },
-  { id: "conflicts", title: "Not imported at the switch", note: "A different draft was already here, so these copies stayed where they were." },
+  { id: "client", title: trNoop("On this computer") },
+  { id: "qt", title: trNoop("From the previous Zerus app") },
+  { id: "conflicts", title: trNoop("Not imported at the switch"), note: trNoop("A different draft was already here, so these copies stayed where they were.") },
 ];
 
 interface Section {

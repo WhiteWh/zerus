@@ -715,6 +715,9 @@ class Harness(unittest.TestCase):
             if time.monotonic() >= deadline:
                 self.fail(f"private tmux processes did not exit: {remaining}; preserved fixtures: {self.root}")
             time.sleep(0.02)
+        self.remove_fixture_root()
+
+    def remove_fixture_root(self):
         shutil.rmtree(self.root)
 
     def script(self, name, text):

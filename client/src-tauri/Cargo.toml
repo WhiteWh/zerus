@@ -19,7 +19,7 @@ default = ["live"]
 # Streams from `hgs watch` through zerus-client-core. Without it the app builds
 # with no data source and the frontend uses its built-in replay.
 # On Linux it talks to Konsole over D-Bus (libdbus) for terminal tabs.
-live = ["dep:zerus-client-core", "zerus-client-core/konsole"]
+live = ["dep:qrcodegen", "dep:zerus-client-core", "zerus-client-core/konsole", "zerus-client-core/macos-native-peer"]
 # Voice messages: microphone capture through client/media (cpal). Linux
 # builds need the ALSA development package; nothing else does.
 media = ["live", "dep:zerus-client-media"]
@@ -29,7 +29,9 @@ media = ["live", "dep:zerus-client-media"]
 video = ["media", "zerus-client-media/video"]
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+# Same Nayuki encoder as Qt, generating pairing QR modules locally.
+qrcodegen = { version = "1.8", optional = true }
+tauri = { version = "2", features = ["tray-icon", "unstable"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The clipboard is written from Rust only (copy_text): the webview loses the user activation navigator.clipboard needs while hgs runs.
@@ -42,7 +44,7 @@ tauri-plugin-dialog = "2"
 # no capability lets the webview reach it.
 tauri-plugin-opener = "2"
 # A queued attachment read is awaited on a oneshot, holding no thread (composer/fetch.rs).
-tokio = { version = "1", default-features = false, features = ["sync"] }
+tokio = { version = "1", default-features = false, features = ["sync", "process", "io-util", "time", "macros"] }
 # Windows canonical paths lose their \\?\ prefix before a notice or an opener sees them.
 dunce = "1"
 zerus-watch-protocol = { path = "../../crates/watch-protocol" }
@@ -51,6 +53,7 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # The composer's continuations compare attachment digests (S3's `DraftMark`).
 sha2 = "0.10"
+semver = "1"
 # Verified update catalogs: rustls with the system trust store, no bundled-only roots.
 ureq = { version = "3.4", default-features = false, features = ["rustls", "platform-verifier"] }
 # The pure-Rust core (watch streams, catalog state, per-frame batches).
@@ -69,21 +72,38 @@ webkit2gtk = "2.0.2"
 # Tauri's AppIndicator backend has no primary-click events on Linux. The
 # approved Linux adapter exports the same native SNI/DBusMenu protocol as Qt.
 zbus = { version = "5.19", features = ["blocking-api"] }
+zerus-freedesktop-notify = { path = "../../crates/freedesktop-notify" }
+# Dormant bounded socket ingress, using zbus's already-locked async-io backend.
+async-io = "2.6"
 
 # macOS: process metrics through libproc, the WebKit preference that lets
 # page rendering follow the display rate (platform/macos.rs), and the menu-bar
 # tile, its tracking notices and the Dock badge (platform/macos_menubar.rs).
 [target.'cfg(target_os = "macos")'.dependencies]
+# The fixed headless SDK entry is independent of the GUI's live-data feature.
+# Every Mac build understands it, including a minimal replay UI build.
+zerus-client-core = { path = "../core", features = ["macos-native-peer"] }
 block2 = "0.6.2"
 objc2 = { version = "0.6.4", features = ["exception"] }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "NSAppearance", "NSApplication", "NSAttributedString", "NSBezierPath", "NSBitmapImageRep", "NSColor", "NSDockTile", "NSFont", "NSGraphics", "NSGraphicsContext", "NSImageRep", "NSMenu", "NSResponder", "NSStringDrawing"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "NSAppearance", "NSApplication", "NSAttributedString", "NSBezierPath", "NSBitmapImageRep", "NSColor", "NSDockTile", "NSFont", "NSGraphics", "NSGraphicsContext", "NSImageRep", "NSMenu", "NSResponder", "NSRunningApplication", "NSStringDrawing"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSAttributedString", "NSBundle", "NSData", "NSDate", "NSDictionary", "NSDistributedNotificationCenter", "NSError", "NSGeometry", "NSNotification", "NSObjCRuntime", "NSOperation", "NSRunLoop", "NSString", "NSProcessInfo", "NSTimer", "NSUserDefaults"] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKPreferences", "WKWebViewConfiguration"] }
 # Attention notifications under the app's identity (platform/macos_notify.rs).
 objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 
+[target.'cfg(windows)'.dependencies]
+unicode-casefold = "0.2"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Recovery", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
 [build-dependencies]
+cc = "1"
 tauri-build = { version = "2", features = [] }
+# The manifest must also reach the library's Windows unit-test executable.
+embed-resource = "3"
+
+[dev-dependencies]
+# The subscriber's silence deadline is tested without thirty wall-clock seconds.
+tokio = { version = "1", default-features = false, features = ["test-util"] }
 
 # Dependencies optimised once keep the debug app responsive.
 [profile.dev.package."*"]

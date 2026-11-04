@@ -227,3 +227,9 @@ describe("selectionSnapshot", () => {
     expect(Object.keys(snap)).not.toContain("title");
   });
 });
+
+
+it("counts unknown batch outcomes separately with the same bounded Qt sentence", () => {
+  expect(summaryText("archive", 1, 3, 1, ["known", "unknown"], 1)).toEqual({ text: "Move to archive: 1 of 3 completed. 1 failed or changed, 1 unknown; refresh before retrying.\nknown\nunknown", failed: true });
+  expect(summaryText("archive", 0, 2, 0, ["a", "b", "c", "omitted"], 2)).toEqual({ text: "Move to archive: 0 of 2 completed. 2 unknown; refresh before retrying.\na\nb\nc", failed: true });
+});

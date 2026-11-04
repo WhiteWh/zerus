@@ -34,6 +34,22 @@ fn identity(edge: &str) -> Identity {
         edge: edge.into(),
     }
 }
+
+#[test]
+fn local_computer_alias_is_distinct_from_a_named_peer() {
+    let mut db = database();
+    let remote = put_intent(&mut db, &identity("edge"), 1, &json!({})).unwrap();
+    let mut local = identity("edge");
+    if let Target::Session { computer, .. } = &mut local.target {
+        computer.clear();
+    }
+    let local_id = put_intent(&mut db, &local, 1, &json!({})).unwrap();
+    assert_ne!(local_id, remote);
+    if let Target::Session { computer, .. } = &mut local.target {
+        *computer = "invalid\npeer".into();
+    }
+    assert!(put_intent(&mut db, &local, 1, &json!({})).is_err());
+}
 fn request(intent: &str, n: u32) -> Reserve {
     Reserve {
         request_id: id(n + 10),
@@ -49,6 +65,101 @@ fn request(intent: &str, n: u32) -> Reserve {
 fn ready(db: &mut Connection, edge: &str) -> String {
     authorize(db, &id(2), &id(1)).unwrap();
     put_intent(db, &identity(edge), 1, &json!({"title":"Example"})).unwrap()
+}
+
+#[test]
+fn revoked_cleanup_is_only_an_exact_original_delivery_and_never_a_post_or_replay() {
+    let mut db = database();
+    authorize(&mut db, &id(2), &id(1)).unwrap();
+    let identity = identity("confirmed");
+    let native = json!({"platform":"macos","request_id":id(20)});
+    let post = put_intent(
+        &mut db,
+        &identity,
+        1,
+        &json!({"op":"post","token":"original","title":"Title","body":"Body"}),
+    )
+    .unwrap();
+    let post_req = request(&post, 1);
+    let response = reserve(&mut db, &post_req).unwrap();
+    let receipt = json!({"binding":{"request_id":post_req.request_id,"intent_id":post,"revision":1,"seq":response.attempt.seq,
+        "session":{"writer_epoch":post_req.epoch,"service_epoch":post_req.service_epoch,"adapter":post_req.adapter,"lease":post_req.lease}},
+        "outcome":{"state":"delivered","native_id":native}});
+    finish(&mut db, &post_req, State::Delivered, &receipt).unwrap();
+    let mut close = identity;
+    close.kind = Kind::Withdrawal;
+    let withdrawal = put_intent(
+        &mut db,
+        &close,
+        1,
+        &json!({"op":"withdraw","token":"original","native_id":native}),
+    )
+    .unwrap();
+    revoke(&db, "manual_revoke").unwrap();
+    let req = request(&withdrawal, 2);
+    assert!(reserve(&mut db, &req).is_err());
+    assert!(reserve_withdrawal(&mut db, &request(&post, 3)).is_err());
+    let mut stale = req.clone();
+    stale.epoch = id(90);
+    assert!(reserve_withdrawal(&mut db, &stale).is_err());
+    let mut corrupt = receipt.clone();
+    corrupt["binding"]["request_id"] = id(91).into();
+    db.execute(
+        "UPDATE desktop_attempts SET receipt=?2 WHERE request_id=?1",
+        params![post_req.request_id, corrupt.to_string()],
+    )
+    .unwrap();
+    assert!(
+        reserve_withdrawal(&mut db, &req).is_err(),
+        "a mismatched receipt cannot name a native cleanup target"
+    );
+    db.execute(
+        "UPDATE desktop_attempts SET receipt=?2 WHERE request_id=?1",
+        params![post_req.request_id, receipt.to_string()],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE desktop_intents SET payload=?2 WHERE id=?1",
+        params![
+            withdrawal,
+            json!({"op":"withdraw","token":"other","native_id":native}).to_string()
+        ],
+    )
+    .unwrap();
+    assert!(
+        reserve_withdrawal(&mut db, &req).is_err(),
+        "cleanup cannot replace the original token"
+    );
+    db.execute(
+        "UPDATE desktop_intents SET payload=?2 WHERE id=?1",
+        params![
+            withdrawal,
+            json!({"op":"withdraw","token":"original","native_id":native}).to_string()
+        ],
+    )
+    .unwrap();
+    let fresh = reserve_withdrawal(&mut db, &req).unwrap();
+    assert!(fresh.fresh);
+    assert!(
+        native::inspect(&mut db, &req).is_err(),
+        "read-only lookup cannot reconstruct cleanup origin"
+    );
+    assert_eq!(
+        native::inspect_original(&mut db, fresh)
+            .unwrap()
+            .snapshot()
+            .identity()
+            .kind,
+        Kind::Withdrawal
+    );
+    assert_eq!(status(&db).unwrap()["revoked"], true);
+    finish(&mut db, &req, State::Unknown, &json!({"state":"unknown"})).unwrap();
+    let again = reserve_withdrawal(&mut db, &request(&withdrawal, 4)).unwrap();
+    assert!(!again.fresh);
+    assert!(native::inspect_original(&mut db, again).is_err());
+    let mut retry = request(&withdrawal, 5);
+    retry.retry_of = Some(req.request_id.clone());
+    assert!(reserve_withdrawal(&mut db, &retry).is_err());
 }
 
 #[test]
@@ -363,4 +474,19 @@ fn input_bounds_and_changed_revision_payload_fail_before_reservation() {
     req.revision = 1;
     req.request_id = "not-a-uuid".into();
     assert!(reserve(&mut db, &req).is_err());
+}
+
+#[test]
+fn canonical_intent_lookup_is_read_only_and_matches_original_insert() {
+    let mut db = database();
+    let post = identity("lookup");
+    let before = db.total_changes();
+    let key = intent_id(&post).unwrap();
+    assert_eq!(db.total_changes(), before);
+    assert_eq!(put_intent(&mut db, &post, 1, &json!({})).unwrap(), key);
+    let mut withdrawal = post.clone();
+    withdrawal.kind = Kind::Withdrawal;
+    assert_ne!(intent_id(&withdrawal).unwrap(), key);
+    withdrawal.edge.clear();
+    assert!(intent_id(&withdrawal).is_err());
 }

@@ -1,0 +1,24 @@
+   No session yet — one will be created on your first message.
+   tmux extended-keys is off. Modified Enter keys may not work. Add `set -g
+ extended-keys on` to ~/.tmux.conf and restart tmux.
+
+ ❯ Start the fixture goal.
+
+ ● Starting goal (Завершить проверку отдельного intrinsic слоя и новой публик…)
+ ──────────────────────────────────────────────────────────────────────────────
+   ▶ Approve CreateGoal?
+
+   Start goal: Завершить проверку отдельного intrinsic слоя и новой публика...
+   Done when: Все 13 trophy/156 состояний проверены, включая g2★0, без двой...
+
+   ▶ 1. Switch to Never Ask and start
+     2. Switch to Ask When Needed and start
+     3. Start in Always Ask
+     4. Do not start
+
+   Best if you want Kimi Code to keep working while you are away. Tools are
+   approved automatically and questions are skipped; only plans in Plan mode
+   wait for your review.
+
+   ↑/↓ select · 1/2/3/4 choose · ↵ confirm
+ ──────────────────────────────────────────────────────────────────────────────

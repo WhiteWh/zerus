@@ -912,6 +912,51 @@ os.execv('/bin/sh',['sh','-c',sys.argv[-1]])
                 self.send(success=False)
                 self.assertEqual(self.received(), b"")
 
+    def test_busy_unknown_prompt_refuses_before_input_and_retains_only_bounded_private_diagnostics(self):
+        for agent, prompt in [('codex', '›'), ('claude', '❯')]:
+            self.record.update(agent=agent, activity='busy', phase='tool', active_tools={'one': {}})
+            self.write_record()
+            # Only the cursor row may be retained. In particular the rest of a
+            # multiline draft, queued text and output must never be copied.
+            for suffix in ['first', 'second']:
+                self.screen('\x1b[2J\x1b[Hprivate tool output\r\n' + prompt +
+                            ' cursor draft ' + suffix + '\r\n  secret continuation\r\n  secret queued message\x1b[2;3H', '2:1')
+                request = self.payload(text='private attempted send')
+                self.assertIn('agent busy:', self.send(request, success=False))
+                self.assertEqual(self.received(), b'')
+                self.assertFalse((self.state / 'input_receipts' / (request['request_id'] + '.json')).exists())
+                path = self.state / 'input_diagnostics' / (agent + '.json')
+                raw = path.read_bytes()
+                self.assertLessEqual(len(raw), 16 * 1024)
+                sample = json.loads(raw)
+                self.assertIn('cursor draft ' + suffix, sample['cursor_row'])
+                for text in ['secret continuation', 'secret queued message', 'private tool output', 'private attempted send']:
+                    self.assertNotIn(text.encode(), raw)
+                self.assertLessEqual(len(sample['rows']), 8)
+                self.assertTrue(sample['cursor_stable'])
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(sorted(p.name for p in (self.state / 'input_diagnostics').iterdir()), ['claude.json', 'codex.json'])
+
+    def test_redraw_between_cursor_and_capture_refuses_without_input(self):
+        self.record.update(activity='busy', phase='tool')
+        self.write_record()
+        # Capture the old empty frame, then let this fixture's native process
+        # move its own cursor before the capture returns to hgs.
+        (self.root / 'screen').write_text('\x1b[1;4H')
+        self.script('tmux', '#!/usr/bin/env python3\n' +
+            f'import os,signal,subprocess,sys,time\nargs=sys.argv[1:]\nbase={[TMUX,"-S",str(self.socket),"-f","/dev/null"]!r}\n' +
+            'r=subprocess.run(base+args,stdout=subprocess.PIPE)\n' +
+            'if args and args[0]=="capture-pane":\n' +
+            f' os.kill({self.record["pid"]},signal.SIGUSR1)\n' +
+            f' for _ in range(100):\n  if subprocess.check_output(base+["display-message","-p","-t",{self.pane!r},"#{{cursor_x}}"]).strip()==b"3":break\n  time.sleep(.01)\n' +
+            'sys.stdout.buffer.write(r.stdout)\nsys.exit(r.returncode)\n')
+        self.assertIn('agent busy:', self.send(success=False))
+        self.assertEqual(self.received(), b'')
+        sample = json.loads((self.state / 'input_diagnostics/codex.json').read_text())
+        self.assertFalse(sample['cursor_stable'])
+        self.assertEqual(sample['cursor_row'], '')
+
     def test_working_agent_accepts_next_message_without_interrupting(self):
         self.record.update(activity="busy", phase="tool", active_tools={"one": {}},
                            subagents={"one": {"state": "working"}})
@@ -1131,7 +1176,7 @@ os.execv('/bin/sh',['sh','-c',sys.argv[-1]])
         self.assertEqual(self.received(), b"\x1b[200~" + "когда это завершится, то что потом?".encode() + b"\x1b[201~\r")
 
     def test_control_sequences_slash_commands_and_invalid_attachment_are_refused(self):
-        for text in ("\x1b[201~bad", "test\rnext", "\x00", " /exit", "!ls"):
+        for text in ("\x1b[201~bad", "test\rnext", "\x00", " /exit", "/help args", "/clear\n/tmp/file", "!ls"):
             self.send(self.payload(text=text), success=False)
         self.send(self.payload(attachments=[dict(name="img.png", mime="image/png", data_base64="bad===")]), success=False)
         self.assertEqual(self.received(), b"")

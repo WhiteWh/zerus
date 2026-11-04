@@ -4,6 +4,8 @@
 // The core projects resets as Unix seconds; `fromProjected` turns them into
 // minutes from `now` on each 15 s render, so nothing else runs on a timer.
 import type { ProjectedWindow, Usage } from "../../types";
+import { tr } from "../../i18n";
+import { clockOf, dayTimeOf } from "./dates";
 
 export interface UsageWindow {
   /** Window length in minutes (300 = 5 h, 10080 = 7 d); null when the provider reports none. */
@@ -69,42 +71,43 @@ export function period(w: UsageWindow) {
   const m = w.minutes ?? 0;
   const duration = m === 10080 ? "7d" : m && m % 1440 === 0 ? `${m / 1440}d` : m && m % 60 === 0 ? `${m / 60}h` : m ? `${m}m` : "";
   const name = w.label ?? "";
-  return name ? (duration ? `${name} ${duration}` : name) : duration || "Usage";
+  return name ? (duration ? `${name} ${duration}` : name) : duration || tr("Usage");
 }
 
 export function remaining(minutes: number | null) {
-  if (minutes === null) return "reset unknown";
+  if (minutes === null) return tr("reset unknown");
   const m = Math.max(0, Math.ceil(minutes));
-  if (!m) return "refresh needed";
-  if (m >= 1440) return `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h`;
-  if (m >= 60) return `${Math.floor(m / 60)}h ${m % 60}m`;
-  return `${m}m`;
+  if (!m) return tr("refresh needed");
+  if (m >= 1440) return tr("%1d %2h", Math.floor(m / 1440), Math.floor((m % 1440) / 60));
+  if (m >= 60) return tr("%1h %2m", Math.floor(m / 60), m % 60);
+  return tr("%1m", m);
 }
 
 /** Footer countdown: only the largest whole unit fits next to the percentage. */
 export function countdown(minutes: number) {
   const m = Math.max(1, Math.ceil(minutes));
-  return m < 60 ? `${m}m` : m < 2880 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`;
+  return m < 60 ? tr("%1m", m) : m < 2880 ? tr("%1h", Math.floor(m / 60)) : tr("%1d", Math.floor(m / 1440));
 }
 
-export function windowText(w: UsageWindow, withReset = true) {
-  if (!current(w)) return `${period(w)} refresh`;
-  return `${period(w)} ${Math.round(w.used)}%${withReset && w.used >= 100 ? ` (${remaining(w.resetsIn)})` : ""}`;
+/** "5h 34%", with the time to reset once usage reaches `resetFrom` percent. */
+export function windowText(w: UsageWindow, withReset = true, resetFrom = 100) {
+  if (!current(w)) return period(w) + tr(" refresh");
+  return `${period(w)} ${Math.round(w.used)}%${withReset && w.used >= resetFrom ? ` (${remaining(w.resetsIn)})` : ""}`;
 }
 
 export function approximately(minutes: number) {
   const m = Math.max(1, Math.floor(minutes)), d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), r = m % 60;
-  if (d) return h ? `${d}d ${h}h` : `${d}d`;
-  if (h) return r ? `${h}h ${r}m` : `${h}h`;
-  return `${m}m`;
+  if (d) return h ? tr("%1d %2h", d, h) : tr("%1d", d);
+  if (h) return r ? tr("%1h %2m", h, r) : tr("%1h", h);
+  return tr("%1m", m);
 }
 
 export function forecast(w: UsageWindow) {
   if (!current(w)) return "";
   const p = pace(w);
   if (!p.known || p.early || p.used >= 100) return "";
-  return p.runsOutIn >= 0 ? `At the current pace, the limit runs out in about ${approximately(p.runsOutIn)}`
-    : `At the current pace, about ${Math.round(p.projected)}% by reset`;
+  return p.runsOutIn >= 0 ? tr("At the current pace, the limit runs out in about %1", approximately(p.runsOutIn))
+    : tr("At the current pace, about %1% by reset", Math.round(p.projected));
 }
 
 const TONES: Tone[] = ["normal", "warning", "critical"];
@@ -131,44 +134,34 @@ export const usageLoading = (u: Usage) => u.status === "loading" && !u.windows.l
 export function summaryText(u: Usage) {
   const b = u.balances[0];
   if (b) return `${b.balance} ${b.currency}`;
-  if (u.status === "configured") return u.provider === "opencode" ? "Configured" : "API key";
-  if (u.status === "signed_out") return "Sign in required";
-  if (u.status === "expired") return "Sign-in expired";
-  if (u.status === "unavailable" || u.refresh_error || u.offline) return "limits n/a";
-  return "Unavailable";
+  if (u.status === "configured") return u.provider === "opencode" ? tr("Configured") : tr("API key");
+  if (u.status === "signed_out") return tr("Sign in required");
+  if (u.status === "expired") return tr("Sign-in expired");
+  if (u.status === "unavailable" || u.refresh_error || u.offline) return tr("limits n/a");
+  return tr("Unavailable");
 }
 
 /** AccountUsage::state: what the usage panel says without windows or balances. */
 export function stateText(u: Usage) {
   const s = u.status;
-  if (!s || s === "loading") return "Loading account details…";
-  if (s === "configured" && u.provider === "opencode") return "OpenCode uses its native provider configuration. Usage is not available here.";
-  if (s === "configured") return "API key configured. Usage is available in the DeepSeek console.";
-  if (u.offline || s === "offline") return "Machine is offline. Showing the last available account data.";
-  if (s === "expired") return "Native sign-in has expired. Open the agent or sign in again, then refresh usage.";
-  if (s === "signed_out" && u.provider === "dsh") return "DeepSeek account is signed out. API-key connections are configured separately in the native settings.";
-  if (s === "signed_out") return "No native subscription sign-in found. API-key sessions may still work.";
-  if (s === "credentials_locked") return "Saved sign-in is in the locked macOS Keychain. Unlock it in Keychain Access, then refresh.";
-  if (s === "desktop_session_unavailable") return "Saved sign-in requires the Mac desktop session. Log in to macOS and check the HGS installation, then refresh.";
-  if (s === "credentials_unavailable") return "The saved Keychain sign-in could not be used. Check account access or sign in again.";
-  return "Usage is unavailable from this provider. Open its native account page or refresh after signing in.";
+  if (!s || s === "loading") return tr("Loading account details…");
+  if (s === "configured" && u.provider === "opencode") return tr("OpenCode uses its native provider configuration. Usage is not available here.");
+  if (s === "configured") return tr("API key configured. Usage is available in the DeepSeek console.");
+  if (u.offline || s === "offline") return tr("Machine is offline. Showing the last available account data.");
+  if (s === "expired") return tr("Native sign-in has expired. Open the agent or sign in again, then refresh usage.");
+  if (s === "signed_out" && u.provider === "dsh") return tr("DeepSeek account is signed out. API-key connections are configured separately in the native settings.");
+  if (s === "signed_out") return tr("No native subscription sign-in found. API-key sessions may still work.");
+  if (s === "credentials_locked") return tr("Saved sign-in is in the locked macOS Keychain. Unlock it in Keychain Access, then refresh.");
+  if (s === "desktop_session_unavailable") return tr("Saved sign-in requires the Mac desktop session. Log in to macOS and check the HGS installation, then refresh.");
+  if (s === "credentials_unavailable") return tr("The saved Keychain sign-in could not be used. Check account access or sign in again.");
+  return tr("Usage is unavailable from this provider. Open its native account page or refresh after signing in.");
 }
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const two = (n: number) => String(n).padStart(2, "0");
-
-/** Qt's "d MMM HH:mm" in local time with English months; optionally include seconds. */
-export function dayTime(seconds: number, withSeconds = false) {
-  const d = new Date(seconds * 1000);
-  const text = `${d.getDate()} ${MONTHS[d.getMonth()]} ${two(d.getHours())}:${two(d.getMinutes())}`;
-  return withSeconds ? `${text}:${two(d.getSeconds())}` : text;
-}
+/** Qt's "d MMM HH:mm" in local time ("3 ноября 02:27" in Russian); optionally include seconds. */
+export const dayTime = (seconds: number, withSeconds = false) => dayTimeOf(new Date(seconds * 1000), withSeconds);
 
 /** Qt's "HH:mm" in local time. */
-export function clock(seconds: number) {
-  const d = new Date(seconds * 1000);
-  return `${two(d.getHours())}:${two(d.getMinutes())}`;
-}
+export const clock = (seconds: number) => clockOf(new Date(seconds * 1000));
 
 /** AccountUsage::tooltip (AccountUsage.h:197-219). */
 export function accountTooltip(u: Usage, now: number) {
@@ -179,21 +172,21 @@ export function accountTooltip(u: Usage, now: number) {
   for (const value of [u.identity.name, u.identity.email, u.identity.plan, u.identity.organization]) if (value) lines.push(value);
   for (const p of u.windows) {
     const w = fromProjected(p, now);
-    lines.push(`${period(w)}: ${Math.round(w.used)}% used`);
-    if (p.resets_at !== null) lines.push(`Resets ${dayTime(p.resets_at)}${current(w) ? ` (in ${remaining(w.resetsIn)})` : ""}`);
+    lines.push(tr("%1: %2% used", period(w), Math.round(w.used)));
+    if (p.resets_at !== null) lines.push(tr("Resets %1", dayTime(p.resets_at)) + (current(w) ? tr(" (in %1)", remaining(w.resetsIn)) : ""));
     const f = forecast(w);
     if (f) lines.push(f);
   }
   for (const b of u.balances) lines.push(`${b.kind}: ${b.balance} ${b.currency}`);
   if (u.checked_at !== null) {
-    if (u.seeded) lines.unshift(`Checked ${clock(u.checked_at)}`);
-    else lines.push(`Updated ${clock(u.checked_at)}`);
+    if (u.seeded) lines.unshift(tr("Checked %1", clock(u.checked_at)));
+    else lines.push(tr("Updated %1", clock(u.checked_at)));
   }
-  if (u.refreshing) lines.push("Updating… Previous values remain visible.");
-  else if (u.refresh_error) lines.push("Update failed. Showing the last available values.");
-  if (u.offline) lines.push("Machine is offline.");
+  if (u.refreshing) lines.push(tr("Updating… Previous values remain visible."));
+  else if (u.refresh_error) lines.push(tr("Update failed. Showing the last available values."));
+  if (u.offline) lines.push(tr("Machine is offline."));
   if (!u.windows.length && !u.balances.length) lines.push(stateText(u));
-  lines.push("Updates every 5 minutes. Open account details.");
+  lines.push(tr("Updates every 5 minutes. Open account details."));
   return lines.join("\n");
 }
 
@@ -210,7 +203,7 @@ export function limitRecoveryNotice(u: Usage, failureAt: number, now: number) {
     week ||= p.minutes === 10080;
   }
   return session && week
-    ? "Latest account usage is below the limit. Answer any open usage-limit choice in Activity or Terminal, then send a message to continue."
+    ? tr("Latest account usage is below the limit. Answer any open usage-limit choice in Activity or Terminal, then send a message to continue.")
     : "";
 }
 
@@ -220,12 +213,12 @@ export function exhausted(u: Usage, now: number) {
   for (const p of u.windows) {
     if (p.used < 100) continue;
     const w = fromProjected(p, now);
-    lines.push(!current(w) ? `${period(w)} limit window ended; refresh usage`
-      : p.resets_at !== null ? `${period(w)} limit reached. Resets in ${remaining(w.resetsIn)}`
-      : `${period(w)} limit reached. Reset time is unavailable`);
+    lines.push(!current(w) ? tr("%1 limit window ended; refresh usage", period(w))
+      : p.resets_at !== null ? tr("%1 limit reached. Resets in %2", period(w), remaining(w.resetsIn))
+      : tr("%1 limit reached. Reset time is unavailable", period(w)));
   }
   const text = lines.join("\n");
-  return text && (u.offline || u.refresh_error) ? `Last reported usage: ${text}. Refresh to check current limits.` : text;
+  return text && (u.offline || u.refresh_error) ? tr("Last reported usage: %1. Refresh to check current limits.", text) : text;
 }
 
 export interface ExhaustedSummary { label: string; shortLabel: string; remaining: string }
@@ -240,8 +233,8 @@ export function exhaustedSummary(u: Usage, now: number): ExhaustedSummary | unde
     reached = true;
     if (p.resets_at !== null && (nearest === undefined || p.resets_at < nearest)) nearest = p.resets_at;
   }
-  if (reached) return { label: "Limit reached", shortLabel: "Limit", remaining: nearest === undefined ? "" : remaining((nearest - now) / 60) };
-  return ended ? { label: "Refresh usage", shortLabel: "Limit", remaining: "" } : undefined;
+  if (reached) return { label: tr("Limit reached"), shortLabel: tr("Limit"), remaining: nearest === undefined ? "" : remaining((nearest - now) / 60) };
+  return ended ? { label: tr("Refresh usage"), shortLabel: tr("Limit"), remaining: "" } : undefined;
 }
 
 /** The mockup's usage chip shows the highest current percentage from 50%. */

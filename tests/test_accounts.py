@@ -230,6 +230,19 @@ class Accounts(unittest.TestCase):
         self.add(); self.assertEqual((self.config/'accounts.json').stat().st_mode & 0o777,0o600)
         self.assertEqual((self.config/'accounts/work').stat().st_mode & 0o777,0o700)
         self.assertNotIn('auth',json.loads((self.config/'accounts.json').read_text())['profiles']['work'])
+    def test_terminal_setup_refuses_stale_catalog_before_any_provider_effect(self):
+        self.assertTrue(self.ls()['setup_revision'])
+        before=self.ls()['revision']; self.add()
+        for op,account in [('login','work'),('install','codex'),('start','native-opencode')]:
+            result=self.run_hgs('account',op,account,'--revision',before,'--dry-run',ok=False)
+            self.assertIn(b'Accounts changed on this machine',result.stderr)
+        current=self.ls()['revision']
+        login=json.loads(self.run_hgs('account','login','work','--revision',current,'--dry-run').stdout)
+        self.assertEqual(login['provider'],'codex')
+        install=json.loads(self.run_hgs('account','install','codex','--revision',current,'--dry-run').stdout)
+        self.assertTrue(install['dry_run'])
+        self.assert_opencode_only_asked_its_version()
+
     def test_stale_revision_and_duplicate_rejected(self):
         before=self.ls()['revision']; self.add()
         self.run_hgs('account','add','other','--provider','kimi','--revision',before,ok=False)
@@ -634,6 +647,68 @@ sys.exit(0 if signed_in else 1)
         self.assertNotIn('notify',(copied/'config.toml').read_text())
         self.assertEqual((copied/'auth.json').stat().st_mode & 0o777,0o600)
         self.run_hgs('account','copy','native-codex','--to','@local','--as','copied',ok=False)
+    def test_guarded_copy_pins_both_catalogs_machines_and_source_sign_in(self):
+        self.fake_auth()
+        listing=self.ls(); self.assertTrue(listing['copy_revision'])
+        machine=json.loads(self.run_hgs('swarm','get').stdout)['node_id']
+        source=next(p for p in listing['profiles'] if p['id']=='native-codex')
+        def guards(revision,auth=None,source_machine=None):
+            return ['--source-machine',source_machine or machine,'--destination-machine',machine,
+                    '--source-revision',revision,'--destination-revision',revision,
+                    '--source-auth-revision',auth or source['auth_revision']]
+        before=listing['revision']
+        self.run_hgs('account','copy','native-codex','--to','@local','--as','wrong-machine',*guards(before,source_machine='11111111-1111-4111-8111-111111111111'),ok=False)
+        self.run_hgs('account','copy','native-codex','--to','@local','--as','wrong-auth',*guards(before,auth='changed'),ok=False)
+        receipt=self.run_hgs('account','copy','native-codex','--to','@local','--as','guarded',*guards(before))
+        self.assertTrue(json.loads(receipt.stdout)['ok'])
+        self.assertNotIn(b'TEMPORARY-TEST-KEY',receipt.stdout+receipt.stderr)
+        self.run_hgs('account','copy','native-codex','--to','@local','--as','stale',*guards(before),ok=False)
+        for name in ('wrong-machine','wrong-auth','stale'):
+            self.assertFalse((self.config/'accounts'/name).exists())
+        self.assertEqual((self.config/'accounts/guarded/auth.json').read_bytes(),(self.home/'.codex/auth.json').read_bytes())
+        self.assertIn(b'Account transfer ABI: revision-copy-v1',self.run_hgs('--help').stdout)
+
+    def test_guarded_remote_copy_sends_no_credential_bytes_before_destination_admission(self):
+        self.fake_auth(); self.env['HGS_PEERS']='remote'
+        peer=self.root/'peer'; home=peer/'home'; home.mkdir(parents=True)
+        config=home/'.config/hgs'; config.mkdir(parents=True)
+        env={'PATH':self.env['PATH'],'LANG':'C.UTF-8','HOME':str(home),'HGS_CONFIG_DIR':str(config),
+             'HGS_STATE_DIR':str(peer/'state'),'HGS_SELF':'peer','HGS_PEERS':'','HGS_TAB':'0'}
+        for key in ('STATE','CONFIG','DATA','CACHE'):
+            folder=peer/('xdg-'+key.lower()); folder.mkdir(); env['XDG_'+key+'_HOME']=str(folder)
+        auth=home/'.codex'; auth.mkdir(); (auth/'auth.json').write_text('{"OPENAI_API_KEY":"TEMPORARY-PEER-KEY"}')
+        def call_peer(*args):
+            result=subprocess.run([HGS,*args],env=env,cwd=self.root,capture_output=True,timeout=15)
+            self.assertEqual(result.returncode,0,result.stderr); return json.loads(result.stdout)
+        peer_catalog=call_peer('account','ls'); peer_id=call_peer('swarm','get')['node_id']
+        local_catalog=self.ls(); local_id=json.loads(self.run_hgs('swarm','get').stdout)['node_id']
+        source=next(p for p in peer_catalog['profiles'] if p['id']=='native-codex')
+        observer=self.root/'observe-import'; count=self.root/'import-bytes.json'
+        script=self.bin/'ssh'
+        script.write_text('#!/usr/bin/env python3\nimport json,os,shlex,subprocess,sys\n'
+            +'from pathlib import Path\nargs=shlex.split(sys.argv[-1]); assert args[0]=="~/.local/bin/hgs"\n'
+            +'program='+repr(HGS)+'; env='+repr(env)+'\n'
+            +'if "_import" in args and Path('+repr(str(observer))+').exists():\n'
+            +' child=subprocess.run([program,*args[1:]],env=env,stdin=sys.stdin.buffer,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)\n'
+            +' os.close(1)\n data=sys.stdin.buffer.read()\n'
+            +' Path('+repr(str(count))+').write_text(json.dumps({"bytes":len(data)}))\n sys.exit(child.returncode)\n'
+            +'os.execve(program,[program,*args[1:]],env)\n')
+        script.chmod(0o755)
+        args=['--source-machine',peer_id,'--destination-machine',local_id,
+              '--source-revision',peer_catalog['revision'],'--destination-revision',local_catalog['revision'],
+              '--source-auth-revision',source['auth_revision']]
+        result=self.run_hgs('account','copy','native-codex','--from','remote','--to','@local','--as','remote-copy',*args)
+        self.assertNotIn(b'TEMPORARY-PEER-KEY',result.stdout+result.stderr)
+        self.assertEqual((self.config/'accounts/remote-copy/auth.json').read_bytes(),(auth/'auth.json').read_bytes())
+        observer.touch(); local_catalog=self.ls()
+        source=next(p for p in local_catalog['profiles'] if p['id']=='native-codex')
+        args=['--source-machine',local_id,'--destination-machine','11111111-1111-4111-8111-111111111111',
+              '--source-revision',local_catalog['revision'],'--destination-revision',peer_catalog['revision'],
+              '--source-auth-revision',source['auth_revision']]
+        self.run_hgs('account','copy','native-codex','--from','@local','--to','remote','--as','wrong-destination',*args,ok=False)
+        self.assertEqual(json.loads(count.read_text())['bytes'],0)
+        self.assertFalse((config/'accounts/wrong-destination').exists())
+
     def test_kimi_only_auth_and_provider_config_copied(self):
         d=self.home/'.kimi-code'; (d/'credentials').mkdir(parents=True)
         (d/'config.toml').write_text('default_model="test"\nnotify=["evil"]\n[[hooks]]\ncommand="evil"\n[providers.test]\ntype="openai"\napi_key="TEMPORARY"\n[models.test]\nprovider="test"\nmodel="test"\n')

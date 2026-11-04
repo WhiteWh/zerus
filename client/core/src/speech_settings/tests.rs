@@ -235,8 +235,8 @@ fn an_earlier_refresh_answers_nothing() {
         now(),
     );
     assert_eq!(
-        providers.view().statistics,
-        "Loading this computer's voice statistics…"
+        providers.view().statistics.map(|t| t.english()).as_deref(),
+        Some("Loading this computer's voice statistics…")
     );
     providers.answered(CallId::List(generation(&second)), listing(json!([])), now());
     let view = providers.view();
@@ -757,10 +757,12 @@ fn statistics_read_as_qt_writes_them() {
             "uncertain": 0, "audio_ms": 90000, "processing_ms": 4250},
     })));
     assert_eq!(
-        text,
+        text.english(),
         "This computer (last 30 days)\n4 recordings, 3 completed, 1 failed, 0 cancelled, 0 uncertain\n1.5 minutes of audio, 4.2 seconds processing\nThese counters stay on the speech computer and contain no audio or recognized text."
     );
-    assert!(statistics_text(&Map::new()).starts_with("This computer (last 90 days)\n0 recordings"));
+    assert!(statistics_text(&Map::new())
+        .english()
+        .starts_with("This computer (last 90 days)\n0 recordings"));
 }
 
 #[test]

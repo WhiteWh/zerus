@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ACTIVITY_CANDIDATE_CAP,
   DEFAULT_PLAN,
@@ -68,6 +68,32 @@ describe("scroll scenario skips", () => {
 
   it("keeps the missing container reason", async () => {
     expect((await runScenario("activity-scroll", targets(null, null), stage, plan)).skipped).toBe("no scroll container");
+  });
+});
+
+describe("Activity content growth diagnostics", () => {
+  it("records counts around every run without adding per-frame geometry reads", async () => {
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      queueMicrotask(() => callback(performance.now()));
+      return 1;
+    });
+    const queries = vi.fn((selector: string) => ({ length: selector === '[id^="item-"]' ? 7 : 11 }));
+    const activity = {
+      scrollHeight: 1500, clientHeight: 500, scrollTop: 0,
+      addEventListener: () => {}, removeEventListener: () => {}, querySelectorAll: queries,
+    } as unknown as HTMLElement;
+    const events = vi.fn().mockReturnValueOnce(100).mockReturnValueOnce(200).mockReturnValueOnce(300).mockReturnValueOnce(400);
+    const targets: DiagnosticsTargets = { scrollList: () => null, scrollActivity: () => activity, activityEvents: events, openSession: async () => {} };
+    try {
+      const plan: Plan = { ...DEFAULT_PLAN, hz: 60, hzSource: "manual", warmupMs: 0, runMs: 0, runs: 1 };
+      const result = await runScenario("activity-scroll", targets, null as never, plan);
+      expect(result.runs[0]).toMatchObject({
+        activity_before: { scroll_height: 1500, activity_rows: 7, dom_nodes: 11, events: 300 },
+        activity_after: { scroll_height: 1500, activity_rows: 7, dom_nodes: 11, events: 400 },
+      });
+      expect(events).toHaveBeenCalledTimes(4);
+      expect(queries).toHaveBeenCalledTimes(8);
+    } finally { vi.unstubAllGlobals(); }
   });
 });
 

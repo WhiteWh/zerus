@@ -15,6 +15,9 @@ const FAMILIES: &[&str] = &[
     "task-preferences",
     "termination-default",
     "project-vivid",
+    "window-geometry",
+    "session-splitter",
+    "project-folder-splitter",
 ];
 
 #[derive(Default, Serialize, Deserialize)]
@@ -255,13 +258,37 @@ fn matches(family: &str, key: &str) -> bool {
         "row-density" => key == crate::row_preferences::KEY,
         "termination-default" => key == "workspace/removeWorktreeAfterTermination",
         "task-preferences" => key == "tasks/onlySession",
+        "window-geometry" => key == "sessions/geometry",
+        "session-splitter" => key == "workspace/splitter",
+        "project-folder-splitter" => key == "workspace/projectFolderSplit",
         _ => false,
+    }
+}
+
+fn target(key: &str) -> &str {
+    match key {
+        "sessions/geometry" => super::geometry::KEY,
+        "workspace/splitter" => "workspace/sessionsWidth",
+        _ => key,
     }
 }
 
 fn converted(key: &str, value: &QtValue) -> Result<Value, &'static str> {
     if key == crate::row_preferences::KEY {
         return crate::row_preferences::from_qt(value).ok_or("invalid packed row-density keys");
+    }
+    if key == "sessions/geometry" {
+        return super::qt_layout::geometry(value)
+            .map(|geometry| Value::String(serde_json::to_string(&geometry).unwrap()))
+            .ok_or("invalid Qt window geometry");
+    }
+    if matches!(key, "workspace/splitter" | "workspace/projectFolderSplit") {
+        let orientation = if key == "workspace/splitter" { 1 } else { 2 };
+        let size = super::qt_layout::splitter(value, orientation).ok_or("invalid Qt splitter")?;
+        return Ok(super::effective(
+            super::find(target(key)).unwrap().kind,
+            Some(&json!(size)),
+        ));
     }
     let kind = super::find(key).ok_or("invalid preference identity")?.kind;
     if key.starts_with("machines/colors/") {
@@ -379,9 +406,11 @@ pub(super) fn apply(
                 // not candidates. Malformed unused Qt values cannot turn a
                 // deliberate Next choice into an import/retry requirement.
                 .filter(|(key, _)| {
-                    !contents.values.contains_key(*key) && !handled_keys.contains(*key)
+                    !contents.values.contains_key(target(key))
+                        && !handled_keys.contains(*key)
+                        && !handled_keys.contains(target(key))
                 })
-                .map(|(key, value)| converted(key, value).map(|v| ((*key).clone(), v)))
+                .map(|(key, value)| converted(key, value).map(|v| (target(key).to_owned(), v)))
                 .collect()
         };
         let mut record = json!({

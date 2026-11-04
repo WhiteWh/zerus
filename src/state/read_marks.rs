@@ -2,6 +2,7 @@
 //! source of truth: desktops and phones read them from `hgs ls --json` and
 //! write them with `hgs [@host] read`.
 use super::*;
+pub(super) mod observation;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::time::{Duration, Instant};

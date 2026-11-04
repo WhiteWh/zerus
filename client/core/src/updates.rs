@@ -2,6 +2,7 @@
 //! All parsing and comparisons are pure; network, process and filesystem work
 //! belongs to the Tauri update service.
 
+use crate::text::Text;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -63,7 +64,8 @@ pub struct Feed {
     pub macos_dmg_url: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Installation {
     pub kind: String,
     pub package: String,
@@ -74,10 +76,11 @@ pub struct Installation {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallationGuide {
-    pub ownership: String,
-    pub command: String,
-    pub copy_name: String,
-    pub instructions: String,
+    pub ownership: Text,
+    /// The update command line with its kind; the copy action copies the bare command.
+    pub command: Option<Text>,
+    pub copy_name: Option<Text>,
+    pub instructions: Option<Text>,
 }
 
 fn integer(value: &Value, low: u64, high: u64) -> Option<u64> {
@@ -657,41 +660,47 @@ pub fn installation_guide(
     feed: &Feed,
     app_version: &str,
 ) -> InstallationGuide {
+    let version = || installation.version.clone();
     let mut guide = InstallationGuide {
         ownership: match installation.kind.as_str() {
-        "package" => format!("Package: {}\nInstalled package: {}", installation.package, if installation.version.is_empty() { "unconfirmed" } else { &installation.version }),
-        "homebrew-cask" => format!("Homebrew cask: {}\nInstalled version: {}", installation.package, installation.version),
-        "macos-bundle" => format!("macOS app installed from a download\nInstalled version: {}", installation.version),
-        "source" => "Local build in a Git checkout; update and rebuild deliberately.".into(),
-        "checking" => "Checking installation ownership…".into(),
-        "portable" if installation.package == WINGET => format!("winget package {WINGET}\nPortable Windows build {app_version}"),
-        "portable" => format!("Portable Windows build {app_version}. Download newer builds from the release page."),
-        "installer" => format!("Windows build {app_version}, installed for this user by the Zerus installer. It does not update itself yet; download newer builds from the release page."),
-        _ => "Local / manually installed build; package ownership unconfirmed.".into(),
+        "package" => crate::text!("Package: %1\nInstalled package: %2", installation.package.clone(), if installation.version.is_empty() { crate::text!("unconfirmed") } else { crate::text::Text::verbatim(version()) }),
+        "homebrew-cask" => crate::text!("Homebrew cask: %1\nInstalled version: %2", installation.package.clone(), version()),
+        "macos-bundle" => crate::text!("macOS app installed from a download\nInstalled version: %1", version()),
+        "source" => crate::text!("Local build in a Git checkout; update and rebuild deliberately."),
+        "checking" => crate::text!("Checking installation ownership…"),
+        "portable" if installation.package == WINGET => crate::text!("winget package %1\nPortable Windows build %2", WINGET, app_version.to_owned()),
+        "portable" => crate::text!("Portable Windows build %1. Download newer builds from the release page.", app_version.to_owned()),
+        "installer" => crate::text!("Windows build %1, installed for this user by the Zerus installer. It does not update itself yet; download newer builds from the release page.", app_version.to_owned()),
+        _ => crate::text!("Local / manually installed build; package ownership unconfirmed."),
         }, ..Default::default()
     };
     if installation.arch {
-        guide.ownership.push_str("\nSystem: Arch-based Linux");
+        guide.ownership = crate::text!(
+            "%1\n%2",
+            guide.ownership,
+            crate::text!("System: Arch-based Linux")
+        );
     }
     if macos_installation(installation) {
         if !feed.valid {
-            guide.instructions =
+            guide.instructions = Some(crate::text!(
                 "Check for updates to see the available macOS build and update instructions."
-                    .into();
+            ));
             return guide;
         }
         if feed.macos_zip_url.is_empty() {
-            guide.instructions =
-                "No macOS build is published in this channel yet. Choose another channel.".into();
+            guide.instructions = Some(crate::text!(
+                "No macOS build is published in this channel yet. Choose another channel."
+            ));
             return guide;
         }
         if installation.kind == "macos-bundle" {
-            guide.instructions = if feed.macos_dmg_url.is_empty() {
-                "Download and extract the ZIP.".into()
+            let first = if feed.macos_dmg_url.is_empty() {
+                crate::text!("Download and extract the ZIP.")
             } else {
-                "Download and open the DMG.".into()
+                crate::text!("Download and open the DMG.")
             };
-            guide.instructions.push_str(" Quit Zerus from its menu, move the new Zerus app into Applications and confirm replacing it, then open Zerus again. Your agents and tmux sessions keep running.");
+            guide.instructions = Some(crate::text!("%1 %2", first, crate::text!("Quit Zerus from its menu, move the new Zerus app into Applications and confirm replacing it, then open Zerus again. Your agents and tmux sessions keep running.")));
             return guide;
         }
     }
@@ -700,9 +709,9 @@ pub fn installation_guide(
         if value.is_empty() {
             return guide;
         }
-        guide.command = format!("Homebrew: {value}");
-        guide.copy_name = "Copy Homebrew command".into();
-        guide.instructions = "Run this in Terminal. Homebrew replaces Zerus.app without quitting Zerus, agents or tmux; then choose Restart to finish update.".into();
+        guide.command = Some(crate::text!("Homebrew: %1", value));
+        guide.copy_name = Some(crate::text!("Copy Homebrew command"));
+        guide.instructions = Some(crate::text!("Run this in Terminal. Homebrew replaces Zerus.app without quitting Zerus, agents or tmux; then choose Restart to finish update."));
         return guide;
     }
     if windows_build(installation) {
@@ -710,37 +719,33 @@ pub fn installation_guide(
             return guide;
         }
         if value.is_empty() {
-            guide.instructions = "winget carries stable releases only. Choose the stable channel for its update command.".into();
+            guide.instructions = Some(crate::text!("winget carries stable releases only. Choose the stable channel for its update command."));
             return guide;
         }
-        guide.command = format!("winget: {value}");
-        guide.copy_name = "Copy winget command".into();
-        guide.instructions = "Quit Zerus from its notification area menu, then run this in PowerShell or Command Prompt. winget lists a release once its manifest is accepted, which can take a while after GitHub. Agents and local sessions keep running.".into();
+        guide.command = Some(crate::text!("winget: %1", value));
+        guide.copy_name = Some(crate::text!("Copy winget command"));
+        guide.instructions = Some(crate::text!("Quit Zerus from its notification area menu, then run this in PowerShell or Command Prompt. winget lists a release once its manifest is accepted, which can take a while after GitHub. Agents and local sessions keep running."));
         return guide;
     }
     let optional = installation.kind != "package";
     if !value.is_empty() {
-        guide.command = format!(
-            "{}{value}",
-            if optional {
-                "Optional AUR installation: "
-            } else {
-                "Full system update: "
-            }
-        );
-        guide.copy_name = if optional {
-            "Copy optional installation command".into()
+        guide.command = Some(if optional {
+            crate::text!("Optional AUR installation: %1", value)
         } else {
-            "Copy update command".into()
-        };
-        guide.instructions = if optional {
-            "This installs an AUR package; the current local build remains separate. Review the full system upgrade and your executable path.".into()
+            crate::text!("Full system update: %1", value)
+        });
+        guide.copy_name = Some(if optional {
+            crate::text!("Copy optional installation command")
         } else {
-            "Run this through your AUR helper and review the full system upgrade before confirming."
-                .into()
-        };
+            crate::text!("Copy update command")
+        });
+        guide.instructions = Some(if optional {
+            crate::text!("This installs an AUR package; the current local build remains separate. Review the full system upgrade and your executable path.")
+        } else {
+            crate::text!("Run this through your AUR helper and review the full system upgrade before confirming.")
+        });
     } else if installation.arch {
-        guide.instructions = "No supported update command is available for this installation. See the installation instructions.".into();
+        guide.instructions = Some(crate::text!("No supported update command is available for this installation. See the installation instructions."));
     }
     guide
 }
@@ -987,88 +992,91 @@ pub fn comparison_message(
     comparison: i32,
     compared: bool,
     platform: &str,
-) -> String {
+) -> Text {
     if !feed.valid {
-        return "No verified release catalog yet.".into();
+        return crate::text!("No verified release catalog yet.");
     }
     if windows_build(installation) {
         if feed.build_number > 0 {
-            return "Dev builds do not include a Windows build yet. Choose the stable or nightly channel to hear about newer Windows builds.".into();
+            return crate::text!("Dev builds do not include a Windows build yet. Choose the stable or nightly channel to hear about newer Windows builds.");
         }
         if stable_version(&feed.version) {
             if portable_update_available(app_version, feed) {
                 return if installation.package == WINGET {
-                    format!(
-                        "Zerus {} is available. Quit Zerus, then update it with winget.",
-                        feed.version
+                    crate::text!(
+                        "Zerus %1 is available. Quit Zerus, then update it with winget.",
+                        feed.version.clone()
                     )
                 } else {
-                    format!(
-                        "Zerus {} is available. Download its Windows zip from the release page.",
-                        feed.version
+                    crate::text!(
+                        "Zerus %1 is available. Download its Windows zip from the release page.",
+                        feed.version.clone()
                     )
                 };
             }
             if !stable_has_windows_build(&feed.version)
                 && plain_stable_is_newer(app_version, &feed.version)
             {
-                return format!("Zerus {} has no Windows build; stable releases after it carry one. Until then, choose the nightly channel to hear about newer Windows builds.", feed.version);
+                return crate::text!("Zerus %1 has no Windows build; stable releases after it carry one. Until then, choose the nightly channel to hear about newer Windows builds.", feed.version.clone());
             }
             return if installation.kind == "installer" {
-                "This Windows build does not update itself yet, and no newer stable release is published.".into()
+                crate::text!("This Windows build does not update itself yet, and no newer stable release is published.")
             } else {
-                "Portable Windows build: there is no self-update, and no newer stable release is published.".into()
+                crate::text!("Portable Windows build: there is no self-update, and no newer stable release is published.")
             };
         }
         if portable_update_available(app_version, feed) {
-            return format!(
-                "Zerus nightly {} is available. Download its Windows zip from the release page.",
-                feed.version
+            return crate::text!(
+                "Zerus nightly %1 is available. Download its Windows zip from the release page.",
+                feed.version.clone()
             );
         }
         return if installation.kind == "installer" {
-            "This Windows build does not update itself yet, and nightly builds of the same version cannot be compared. The release page has the newest Windows zip.".into()
+            crate::text!("This Windows build does not update itself yet, and nightly builds of the same version cannot be compared. The release page has the newest Windows zip.")
         } else {
-            "Portable Windows build: there is no self-update, and nightly builds of the same version cannot be compared. The release page has the newest Windows zip.".into()
+            crate::text!("Portable Windows build: there is no self-update, and nightly builds of the same version cannot be compared. The release page has the newest Windows zip.")
         };
     }
     if macos_installation(installation) {
         if feed.macos_zip_url.is_empty() {
-            return "No macOS build is published in this channel yet. Choose another channel."
-                .into();
+            return crate::text!(
+                "No macOS build is published in this channel yet. Choose another channel."
+            );
         }
         let channel = release_channel(&feed.version);
         let installed = release_channel(&installation.version);
         if channel != installed {
             return if installation.kind == "homebrew-cask" {
-                format!(
-                    "This installation follows {} builds. To switch to {}, run: {}",
+                crate::text!(
+                    "This installation follows %1 builds. To switch to %2, run: %3",
                     installed.map_or("", Channel::as_str),
                     channel.map_or("", Channel::as_str),
                     update_command(installation, channel.unwrap_or_default())
                 )
             } else {
-                format!("This installation follows {} builds. Download the {} macOS app to switch channels.", installed.map_or("", Channel::as_str), channel.map_or("", Channel::as_str))
+                crate::text!("This installation follows %1 builds. Download the %2 macOS app to switch channels.", installed.map_or("", Channel::as_str), channel.map_or("", Channel::as_str))
             };
         }
         if !macos_update_available(installation, feed) {
-            return "Installed macOS build is at least as new as this release.".into();
+            return crate::text!("Installed macOS build is at least as new as this release.");
         }
         return if installation.kind == "homebrew-cask" {
-            format!(
-                "Update available. Run {}; the Homebrew tap may still be propagating.",
+            crate::text!(
+                "Update available. Run %1; the Homebrew tap may still be propagating.",
                 update_command(installation, channel.unwrap_or_default())
             )
         } else {
-            "Update available. Download the macOS app and replace Zerus in Applications.".into()
+            crate::text!(
+                "Update available. Download the macOS app and replace Zerus in Applications."
+            )
         };
     }
     if feed.build_number > 0 {
-        return format!("Verified main build {} is published. Use its source or platform package to update this installation.", feed.build_number);
+        return crate::text!("Verified main build %1 is published. Use its source or platform package to update this installation.", feed.build_number.to_string());
     }
     if platform == "macos" {
         if feed.macos_zip_url.is_empty() {
-            return "No macOS build is published in this channel yet. This local build can be updated from source.".into();
+            return crate::text!("No macOS build is published in this channel yet. This local build can be updated from source.");
         }
         let cask = if nightly_parts(&feed.version).is_some() {
             "brew install --cask ufna/zerus/zerus@nightly"
@@ -1076,27 +1084,27 @@ pub fn comparison_message(
             "brew install --cask ufna/zerus/zerus"
         };
         if plain_stable_is_newer(app_version, &feed.version) {
-            return format!("Update available for this local build. Rebuild it, or install the Homebrew cask: {cask}");
+            return crate::text!("Update available for this local build. Rebuild it, or install the Homebrew cask: %1", cask);
         }
-        return format!("Local build: release freshness is unconfirmed. Rebuild deliberately, or install the Homebrew cask: {cask}");
+        return crate::text!("Local build: release freshness is unconfirmed. Rebuild deliberately, or install the Homebrew cask: %1", cask);
     }
     if installation.kind == "package" {
         if installation.package == "zerus-git" {
-            return "VCS package: check main through your AUR helper with --devel.".into();
+            return crate::text!("VCS package: check main through your AUR helper with --devel.");
         }
         if !compared {
-            return "No matching package version comparison available.".into();
+            return crate::text!("No matching package version comparison available.");
         }
         return if comparison > 0 {
-            "Update available. AUR publication may still be propagating.".into()
+            crate::text!("Update available. AUR publication may still be propagating.")
         } else {
-            "Installed package is at least as new as this release.".into()
+            crate::text!("Installed package is at least as new as this release.")
         };
     }
     if plain_stable_is_newer(app_version, &feed.version) {
-        return "Update available for this local build.".into();
+        return crate::text!("Update available for this local build.");
     }
-    "Local build: release freshness is unconfirmed. Update or rebuild deliberately.".into()
+    crate::text!("Local build: release freshness is unconfirmed. Update or rebuild deliberately.")
 }
 
 fn bundle_values(info_plist: &Path) -> BTreeMap<String, String> {

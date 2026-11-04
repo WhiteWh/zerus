@@ -23,6 +23,10 @@ export interface ListInput {
   compact: (key: string) => boolean;
   /** Archives never expand recorded subagents. */
   children?: boolean;
+  includeCompleted?: boolean;
+  selected?: { key?: string; subagent?: string; conversation?: string };
+  roster?: (s: Session) => Subagent[];
+  childDraft?: (parent: Session, child: Subagent) => boolean;
 }
 
 /** Qt's grouped rows (SessionsWindowRows.cpp:289-338, header counts 393-411). */
@@ -30,10 +34,16 @@ export function groupRows(input: ListInput): Row[] {
   const out: Row[] = [];
   const cards = (list: readonly Session[]) => {
     for (const s of list) {
-      const kids = input.children === false ? [] : s.subagents ?? [];
+      const kids = input.children === false ? [] : (input.roster?.(s) ?? s.subagents ?? []).filter((child) =>
+        input.includeCompleted
+        || (input.selected?.key === s.key && input.selected.subagent === child.id
+          && (!input.selected.conversation || input.selected.conversation === (s.conversationId ?? "")))
+        || (!child.group && input.childDraft?.(s, child))
+        || child.inactive === false);
       const expanded = kids.length > 0 && input.expanded(s.key);
-      out.push({ type: "card", id: s.key, session: s, expandable: kids.length > 0, expanded, compactRow: input.compact(s.key) });
-      if (expanded) kids.forEach((child, i) => out.push({ type: "child", id: `${s.key}/${child.id}`, parent: s, child, first: i === 0, last: i === kids.length - 1 }));
+      const shown = kids.length === (s.subagents ?? []).length ? s : { ...s, subagents: kids };
+      out.push({ type: "card", id: s.key, session: shown, expandable: kids.length > 0, expanded, compactRow: input.compact(s.key) });
+      if (expanded) kids.forEach((child, i) => out.push({ type: "child", id: `${s.key}/${child.id}`, parent: shown, child, first: i === 0, last: i === kids.length - 1 }));
     }
   };
   const wanted = (id: string) => !input.projects.length || input.projects.includes(id);

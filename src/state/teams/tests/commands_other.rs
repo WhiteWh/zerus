@@ -1059,7 +1059,10 @@ fn every_stdin_json_reader_drops_a_bom() {
     assert_eq!(parsed["text"], "hi");
     assert!(serde_json::from_slice::<Value>(&bom("{}")).is_err(), "serde refuses a BOM, which is the bug");
     // Streams and framed protocols that never parse JSON from stdin.
-    let streams = ["peer_channel.rs", "screen/mod.rs", "platform/windows.rs", "cli.rs", "desktop/feed/io.rs"];
+    // desktop/windows_registration/native.rs reads one length-delimited frame that
+    // only hgs itself writes to its fixed registration worker.
+    let streams = ["peer_channel.rs", "screen/mod.rs", "platform/windows.rs", "cli.rs", "desktop/feed/io.rs",
+        "desktop/windows_registration/native.rs"];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = vec![root.clone()];
     let mut missing = Vec::new();

@@ -10,6 +10,9 @@ use zerus_desktop_migration::{
 
 mod observation;
 pub use observation::{Kind, Operation, RecordedState, Scope};
+pub mod creation_clone;
+pub mod creation_worktree;
+pub mod task_message;
 pub mod task_start;
 
 pub const MAX_PAGES: usize = 64;

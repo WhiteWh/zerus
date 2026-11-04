@@ -1,4 +1,10 @@
 //! Runs one [`Invocation`] and reports how it ended as an [`Exit`].
+#[cfg(any(windows, test))]
+mod hidden;
+pub(crate) mod startup;
+#[cfg(windows)]
+pub use hidden::{HiddenError, ProcessIdentity};
+
 use crate::actions::{Exit, Invocation};
 use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
@@ -59,15 +65,48 @@ pub fn run_limited(
     parent_env: &[(&str, &str)],
     stdout_cap: usize,
 ) -> Result<Exit, TooLarge> {
-    match run_inner(
-        hgs,
+    limited(hgs, inv, parent_env, stdout_cap, Pipes::default())
+}
+
+/// Console-free Windows helper with bounded termination cleanup. A pending
+/// original child remains retained and prevents another helper in this process;
+/// an error never proves physical exit or authorizes replay. Only the supplied
+/// environment is passed to this fixed helper; the parent's profile is omitted.
+#[cfg(windows)]
+pub fn run_hidden_limited(
+    program: &Path,
+    inv: &Invocation,
+    parent_env: &[(&str, &str)],
+    stdout_cap: usize,
+) -> Result<Exit, HiddenError> {
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+    let stop = hidden::State::admit()?;
+    let result = limited(
+        program,
         inv,
         parent_env,
-        &[],
         stdout_cap,
-        None,
-        Pipes::default(),
-    ) {
+        Pipes {
+            spawn: Some(Box::new(|command| {
+                command.creation_flags(CREATE_NO_WINDOW).spawn()
+            })),
+            hidden_stop: Some(stop.clone()),
+            clear_environment: true,
+            ..Pipes::default()
+        },
+    );
+    stop.finish(result)
+}
+
+fn limited(
+    program: &Path,
+    inv: &Invocation,
+    parent_env: &[(&str, &str)],
+    stdout_cap: usize,
+    pipes: Pipes,
+) -> Result<Exit, TooLarge> {
+    match run_inner(program, inv, parent_env, &[], stdout_cap, None, pipes) {
         Ok(exit) => Ok(exit),
         Err(Stopped::TooLarge(too_large)) => Err(too_large),
         // Nothing sets a flag when there is none.
@@ -191,13 +230,32 @@ struct Pipes {
     retain_all: bool,
     stderr_cap: Option<usize>,
     child_exited: Option<Arc<AtomicBool>>,
+    clear_environment: bool,
+    #[cfg(any(windows, test))]
+    hidden_stop: Option<Arc<hidden::State>>,
 }
 
-struct ChildCharge {
+struct StopContext {
+    exited: Option<Arc<AtomicBool>>,
+    #[cfg(any(windows, test))]
+    hidden: Option<Arc<hidden::State>>,
+}
+
+pub(crate) struct ChildCharge {
     resources: Option<Arc<dyn Send + Sync>>,
     exited: Arc<AtomicBool>,
 }
 impl ChildCharge {
+    pub(crate) fn new(resources: Arc<dyn Send + Sync>) -> Self {
+        Self {
+            resources: Some(resources),
+            exited: Arc::new(AtomicBool::new(false)),
+        }
+    }
+    pub(crate) fn confirmed(&self) {
+        self.exited.store(true, Ordering::Release);
+    }
+
     fn unverified(&mut self) -> Option<Arc<dyn Send + Sync>> {
         if self.exited.load(Ordering::Acquire) {
             None
@@ -253,13 +311,31 @@ pub fn run_owned(
     spawn: impl FnOnce(&mut Command) -> std::io::Result<Child> + Send + 'static,
     resources: Arc<dyn Send + Sync>,
 ) -> Result<Vec<u8>, OwnedError> {
+    run_owned_observed(hgs, inv, parent_env, cancel, spawn, resources, |_, _| {})
+}
+
+/// The same owned exchange, with a failure-only diagnostic observer. Standard
+/// error is bounded to 16 KiB and remains untrusted: callers must select fixed
+/// codes rather than persist child text. Observation changes no result, custody
+/// or permission and never makes an uncertain exchange safe to replay.
+pub fn run_owned_observed(
+    hgs: &Path,
+    inv: &Invocation,
+    parent_env: &[(&str, &str)],
+    cancel: &AtomicBool,
+    spawn: impl FnOnce(&mut Command) -> std::io::Result<Child> + Send + 'static,
+    resources: Arc<dyn Send + Sync>,
+    observe: impl FnOnce(&OwnedError, Option<&str>),
+) -> Result<Vec<u8>, OwnedError> {
     if cancel.load(Ordering::Acquire) {
+        observe(&OwnedError::Cancelled, None);
         return Err(OwnedError::Cancelled);
     }
     if inv.stdin.as_ref().is_none_or(|bytes| bytes.len() > 1 << 20)
         || inv.timeout.is_zero()
         || inv.timeout > Duration::from_secs(30)
     {
+        observe(&OwnedError::InvalidInput, None);
         return Err(OwnedError::InvalidInput);
     }
     let child_exited = Arc::new(AtomicBool::new(false));
@@ -290,26 +366,35 @@ pub fn run_owned(
         child_exited.store(true, Ordering::Release);
     }
     if !child_exited.load(Ordering::Acquire) {
+        observe(&OwnedError::ExitUnverified, None);
         return Err(OwnedError::ExitUnverified);
     }
     // A cancellation/deadline racing completion cannot grant success.
     if cancel.load(Ordering::Acquire) {
+        observe(&OwnedError::Cancelled, None);
         return Err(OwnedError::Cancelled);
     }
     if Instant::now() >= until {
+        observe(&OwnedError::TimedOut, None);
         return Err(OwnedError::TimedOut);
     }
     match exit {
         Ok(Exit::Code {
             code: 0, stdout, ..
         }) => Ok(stdout),
-        Ok(Exit::Code { .. }) => Err(OwnedError::ChildFailed),
-        Ok(Exit::TimedOut) => Err(OwnedError::TimedOut),
-        Ok(Exit::StartFailed(_)) => Err(OwnedError::StartFailed),
-        Ok(Exit::WriteFailed) => Err(OwnedError::WriteFailed),
-        Ok(Exit::Abnormal { .. }) => Err(OwnedError::Incomplete),
-        Err(Stopped::Cancelled) => Err(OwnedError::Cancelled),
-        Err(Stopped::TooLarge(_)) => Err(OwnedError::OutputTooLarge),
+        other => {
+            let (error, stderr) = match other {
+                Ok(Exit::Code { stderr, .. }) => (OwnedError::ChildFailed, Some(stderr)),
+                Ok(Exit::TimedOut) => (OwnedError::TimedOut, None),
+                Ok(Exit::StartFailed(_)) => (OwnedError::StartFailed, None),
+                Ok(Exit::WriteFailed) => (OwnedError::WriteFailed, None),
+                Ok(Exit::Abnormal { stderr }) => (OwnedError::Incomplete, Some(stderr)),
+                Err(Stopped::Cancelled) => (OwnedError::Cancelled, None),
+                Err(Stopped::TooLarge(_)) => (OwnedError::OutputTooLarge, None),
+            };
+            observe(&error, stderr.as_deref());
+            Err(error)
+        }
     }
 }
 
@@ -348,6 +433,8 @@ pub enum DecodeError<E> {
 /// second reader group for the same source while an old group remains alive.
 /// A descendant retaining a pipe keeps the guard after cancellation/deadline;
 /// only the owned child is killed. No callback or unrelated process is killed.
+/// Unverified owned-child exit also retains the supplied group until host exit;
+/// a returned error and EOF alone cannot release that admission.
 pub fn run_decoded<T: Send + 'static, E: Send + 'static>(
     hgs: &Path,
     inv: &Invocation,
@@ -362,6 +449,7 @@ pub fn run_decoded<T: Send + 'static, E: Send + 'static>(
     if cancel.load(Ordering::Relaxed) {
         return Err(DecodeError::Cancelled);
     }
+    let child = ChildCharge::new(readers.clone());
     let stop = Arc::new(AtomicBool::new(false));
     let decoder_stop = stop.clone();
     let deadline = Instant::now() + inv.timeout;
@@ -374,10 +462,14 @@ pub fn run_decoded<T: Send + 'static, E: Send + 'static>(
         })),
         spawn: Some(Box::new(spawn)),
         readers: Some(readers),
+        child_exited: Some(child.exited.clone()),
         stop: Some(stop),
         ..Pipes::default()
     };
     let exit = run_inner(hgs, inv, parent_env, &[], STDERR_CAP, Some(cancel), pipes);
+    if matches!(exit, Ok(Exit::StartFailed(_))) {
+        child.confirmed();
+    }
     if cancel.load(Ordering::Relaxed) {
         return Err(DecodeError::Cancelled);
     }
@@ -411,25 +503,77 @@ pub(crate) fn run_streamed(
     output_cap: usize,
     input: impl FnOnce(ChildStdin) -> bool + Send + 'static,
 ) -> Result<Exit, TooLarge> {
+    streamed(hgs, inv, parent_env, output_cap, None, None, input)
+}
+
+/// The same bounded streaming exchange, retaining the caller's original source
+/// guards through the child, writer and both actual pipe readers. A timeout or
+/// cancellation does not imply those resources finished. No group is stopped.
+pub(crate) fn run_streamed_retained(
+    hgs: &Path,
+    inv: &Invocation,
+    parent_env: &[(&str, &str)],
+    output_cap: usize,
+    cancel: &AtomicBool,
+    resources: Arc<dyn Send + Sync>,
+    input: impl FnOnce(ChildStdin) -> bool + Send + 'static,
+) -> Result<Exit, TooLarge> {
+    streamed(
+        hgs,
+        inv,
+        parent_env,
+        output_cap,
+        Some(cancel),
+        Some(resources),
+        input,
+    )
+}
+
+fn streamed(
+    hgs: &Path,
+    inv: &Invocation,
+    parent_env: &[(&str, &str)],
+    output_cap: usize,
+    cancel: Option<&AtomicBool>,
+    resources: Option<Arc<dyn Send + Sync>>,
+    input: impl FnOnce(ChildStdin) -> bool + Send + 'static,
+) -> Result<Exit, TooLarge> {
     assert!(
         inv.stdin.is_none(),
         "streamed input cannot have a second body"
     );
-    match run_inner(
+    if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+        return Ok(Exit::TimedOut);
+    }
+    let child_exited = resources.as_ref().map(|_| Arc::new(AtomicBool::new(false)));
+    let _child = resources.as_ref().map(|resources| ChildCharge {
+        resources: Some(resources.clone()),
+        exited: child_exited.as_ref().unwrap().clone(),
+    });
+    let result = run_inner(
         hgs,
         inv,
         parent_env,
         &[],
         output_cap,
-        None,
+        cancel,
         Pipes {
             input: Some(Box::new(input)),
+            require_complete: resources.is_some(),
+            readers: resources,
+            child_exited: child_exited.clone(),
             ..Pipes::default()
         },
-    ) {
+    );
+    if matches!(result, Ok(Exit::StartFailed(_))) {
+        if let Some(child_exited) = &child_exited {
+            child_exited.store(true, Ordering::Release);
+        }
+    }
+    match result {
         Ok(exit) => Ok(exit),
         Err(Stopped::TooLarge(error)) => Err(error),
-        Err(Stopped::Cancelled) => unreachable!("no cancellation flag"),
+        Err(Stopped::Cancelled) => Ok(Exit::TimedOut),
     }
 }
 
@@ -442,6 +586,11 @@ fn run_inner(
     cancel: Option<&AtomicBool>,
     pipes: Pipes,
 ) -> Result<Exit, Stopped> {
+    let stop_context = StopContext {
+        exited: pipes.child_exited.clone(),
+        #[cfg(any(windows, test))]
+        hidden: pipes.hidden_stop.clone(),
+    };
     let consumed = pipes.output.is_some();
     let retain_all = pipes.require_complete || pipes.retain_all;
     let strict_outputs = pipes.input.is_some() || consumed || pipes.require_complete;
@@ -453,20 +602,28 @@ fn run_inner(
     let _cancel_output = CancelOutput(pipes.stop);
     let mut command = Command::new(hgs);
     command.args(&inv.args);
+    if pipes.clear_environment {
+        command.env_clear();
+    }
     for (key, value) in parent_env {
         command.env(key, value);
     }
     for key in remove {
         command.env_remove(key);
     }
+    if !pipes.clear_environment {
+        crate::child_environment::restore(&mut command);
+    }
     command
         .env_remove("HGS_SESSION")
         .env_remove("HGS_RUN_ID")
-        .stdin(if consumed {
-            Stdio::null()
-        } else {
-            Stdio::piped()
-        })
+        .stdin(
+            if consumed && pipes.input.is_none() && inv.stdin.is_none() {
+                Stdio::null()
+            } else {
+                Stdio::piped()
+            },
+        )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = match pipes.spawn.unwrap_or_else(|| Box::new(Command::spawn))(&mut command) {
@@ -481,7 +638,7 @@ fn run_inner(
             Exit::Abnormal {
                 stderr: "owned exchange requires all three pipes".into(),
             },
-            pipes.child_exited.as_deref(),
+            &stop_context,
         ));
     }
     let deadline = Instant::now() + inv.timeout;
@@ -572,13 +729,13 @@ fn run_inner(
             }
         }
         if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-            let _ = stop(child, Exit::TimedOut, pipes.child_exited.as_deref());
+            let _ = stop(child, Exit::TimedOut, &stop_context);
             drain(&done_rx);
             return Err(Stopped::Cancelled);
         }
         if over.load(Ordering::Relaxed) {
             // Ended for its output: the exit that gives is not reported.
-            let _ = stop(child, Exit::TimedOut, pipes.child_exited.as_deref());
+            let _ = stop(child, Exit::TimedOut, &stop_context);
             drain(&done_rx);
             return Err(too_large(&err));
         }
@@ -588,7 +745,7 @@ fn run_inner(
                 Exit::Abnormal {
                     stderr: "stdout decoder failed".into(),
                 },
-                pipes.child_exited.as_deref(),
+                &stop_context,
             );
             drain(&done_rx);
             return Ok(exit);
@@ -607,20 +764,16 @@ fn run_inner(
                     Exit::Abnormal {
                         stderr: error.to_string(),
                     },
-                    pipes.child_exited.as_deref(),
+                    &stop_context,
                 ))
             }
         }
         let now = Instant::now();
         if write_failed_until.is_some_and(|until| now >= until) {
-            return Ok(stop(
-                child,
-                Exit::WriteFailed,
-                pipes.child_exited.as_deref(),
-            ));
+            return Ok(stop(child, Exit::WriteFailed, &stop_context));
         }
         if now >= deadline {
-            let exit = stop(child, Exit::TimedOut, pipes.child_exited.as_deref());
+            let exit = stop(child, Exit::TimedOut, &stop_context);
             if consumed {
                 drain(&done_rx);
             }
@@ -720,10 +873,14 @@ fn drain(done: &Receiver<bool>) {
     }
 }
 
-fn stop(mut child: Child, exit: Exit, exited: Option<&AtomicBool>) -> Exit {
+fn stop(mut child: Child, exit: Exit, context: &StopContext) -> Exit {
+    #[cfg(any(windows, test))]
+    if let Some(state) = &context.hidden {
+        return state.stop(child, exit, context.exited.clone());
+    }
     let _ = child.kill();
     if child.wait().is_ok() {
-        if let Some(exited) = exited {
+        if let Some(exited) = &context.exited {
             exited.store(true, Ordering::Release);
         }
     }
@@ -834,6 +991,32 @@ mod stream_tests {
     }
 
     #[test]
+    fn an_explicit_helper_environment_omits_every_parent_variable() {
+        let call = Invocation {
+            args: vec![],
+            stdin: None,
+            timeout: Duration::from_secs(5),
+            request_id: None,
+        };
+        let result = run_inner(
+            Path::new("/usr/bin/env"),
+            &call,
+            &[("ZERUS_TEST_ONLY", "explicit")],
+            &[],
+            1024,
+            None,
+            Pipes {
+                clear_environment: true,
+                ..Pipes::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(result, Exit::Code { code: 0, stdout, .. } if stdout == b"ZERUS_TEST_ONLY=explicit\n")
+        );
+    }
+
+    #[test]
     fn streamed_eof_and_both_exact_output_limits_are_preserved() {
         let code = "import sys,os; assert sys.stdin.buffer.read() == b'bounded input'; assert 'HGS_SESSION' not in os.environ; sys.stdout.write('x'*16384); sys.stderr.write('y'*16384)";
         let exit = run_streamed(
@@ -892,5 +1075,221 @@ mod stream_tests {
         assert_eq!(exit, Exit::TimedOut);
         assert!(began.elapsed() < Duration::from_secs(3));
         assert!(completed.recv_timeout(Duration::from_secs(2)).unwrap());
+    }
+
+    #[test]
+    fn retained_streaming_keeps_the_original_guard_until_the_writer_really_ends() {
+        let resource = Arc::new(());
+        let weak = Arc::downgrade(&resource);
+        let (release, wait) = mpsc::channel();
+        let (done, completed) = mpsc::channel();
+        let exit = run_streamed_retained(
+            Path::new("python3"),
+            &python("pass", Duration::from_millis(250)),
+            &[],
+            1024,
+            &AtomicBool::new(false),
+            resource,
+            move |_original_pipe| {
+                let result = wait.recv_timeout(Duration::from_secs(5)).is_ok();
+                let _ = done.send(());
+                result
+            },
+        )
+        .unwrap();
+        assert!(!matches!(exit, Exit::Code { code: 0, .. }));
+        assert!(
+            weak.upgrade().is_some(),
+            "bounded return is not writer completion"
+        );
+        release.send(()).unwrap();
+        completed.recv_timeout(Duration::from_secs(2)).unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        while weak.upgrade().is_some() && Instant::now() < until {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn cancelled_retained_streaming_admits_no_child_or_writer() {
+        let resource = Arc::new(());
+        let weak = Arc::downgrade(&resource);
+        let exit = run_streamed_retained(
+            Path::new("a-helper-that-must-not-start"),
+            &python("pass", Duration::from_secs(1)),
+            &[],
+            1024,
+            &AtomicBool::new(true),
+            resource,
+            |_| panic!("cancelled source started a writer"),
+        )
+        .unwrap();
+        assert_eq!(exit, Exit::TimedOut);
+        assert!(weak.upgrade().is_none());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod hidden_tests {
+    use super::*;
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    const CASE: &str = "run::hidden_tests::hidden_helper_child";
+    const MARKER: &str = "ZERUS_TEST_HIDDEN_HELPER_CASE";
+
+    #[test]
+    #[ignore = "exact-filter hidden-helper child, launched only by its parent test"]
+    fn hidden_helper_child() {
+        // Fail before I/O or spawning if the marker was lost. This child has
+        // a different name from its parent and can never re-enter that test.
+        assert_eq!(
+            std::env::var(MARKER).as_deref(),
+            Ok(CASE),
+            "hidden-helper child requires its explicit marker"
+        );
+        use windows_sys::Win32::System::Console::GetConsoleWindow;
+        // No PowerShell startup or C# compilation runs inside this deadline.
+        // SAFETY: GetConsoleWindow has no preconditions.
+        assert!(unsafe { GetConsoleWindow() }.is_null());
+        let mut input = Vec::new();
+        std::io::stdin().take(1025).read_to_end(&mut input).unwrap();
+        assert_eq!(input, b"exact helper input");
+        println!("\n0:exact helper input");
+    }
+
+    #[test]
+    fn a_hidden_helper_has_no_console_and_receives_exact_input_through_eof() {
+        const FIXTURE_WAIT: Duration = Duration::from_secs(15);
+        let system_root = std::env::var("SystemRoot").expect("Windows has Unicode SystemRoot");
+        let program = std::path::PathBuf::from(&system_root)
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let modules = program
+            .parent()
+            .unwrap()
+            .join("Modules")
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let temp = std::env::temp_dir().to_str().unwrap().to_owned();
+        let environment = [
+            ("SystemRoot", system_root.as_str()),
+            ("WINDIR", system_root.as_str()),
+            ("PSModulePath", modules.as_str()),
+            ("TEMP", temp.as_str()),
+            ("TMP", temp.as_str()),
+        ];
+        let mut native_environment = environment.to_vec();
+        native_environment.push((MARKER, CASE));
+        let call = Invocation {
+            args: vec![
+                "--exact".into(),
+                CASE.into(),
+                "--ignored".into(),
+                "--nocapture".into(),
+                "--test-threads=1".into(),
+            ],
+            stdin: Some(b"exact helper input".to_vec()),
+            timeout: FIXTURE_WAIT,
+            request_id: None,
+        };
+        let result = run_hidden_limited(
+            &std::env::current_exe().unwrap(),
+            &call,
+            &native_environment,
+            1024,
+        )
+        .unwrap();
+        match result {
+            Exit::Code {
+                code: 0, stdout, ..
+            } => {
+                let output = String::from_utf8(stdout).unwrap();
+                assert!(output.lines().any(|line| line == "0:exact helper input"));
+                assert!(output.contains("test result: ok. 1 passed; 0 failed; 0 ignored;"));
+            }
+            other => panic!("{other:?}"),
+        }
+
+        // Exercise the original env-loss hazard through the same hidden
+        // launch path. The child must fail its guard, never invoke a parent.
+        let missing_marker =
+            run_hidden_limited(&std::env::current_exe().unwrap(), &call, &environment, 4096)
+                .unwrap();
+        match missing_marker {
+            Exit::Code {
+                code: 101,
+                stdout,
+                stderr,
+            } => {
+                let output = String::from_utf8(stdout).unwrap();
+                assert!(output.contains("test result: FAILED. 0 passed; 1 failed;"));
+                assert!(format!("{output}{stderr}")
+                    .contains("hidden-helper child requires its explicit marker"));
+            }
+            other => panic!("missing marker: {other:?}"),
+        }
+
+        let body = "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);[Console]::WriteLine($env:PSModulePath);[Console]::WriteLine($env:ZERUS_TEST_PARENT_PROFILE);[Console]::WriteLine([string]$PSModuleAutoLoadingPreference)";
+        let probe = |source: &str| Invocation {
+            args: vec![
+                "-NoLogo".into(),
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-EncodedCommand".into(),
+                STANDARD.encode(
+                    source
+                        .encode_utf16()
+                        .flat_map(u16::to_le_bytes)
+                        .collect::<Vec<_>>(),
+                ),
+            ],
+            stdin: Some(Vec::new()),
+            timeout: FIXTURE_WAIT,
+            request_id: None,
+        };
+        let inherited = run_limited(
+            &program,
+            &probe(&format!("$PSModuleAutoLoadingPreference='All';{body}")),
+            &[
+                ("PSModulePath", r"C:\Example\UserModules"),
+                ("ZERUS_TEST_PARENT_PROFILE", "inherited"),
+            ],
+            4096,
+        )
+        .unwrap();
+        let minimal = run_hidden_limited(&program, &probe(&format!(
+            "$PSModuleAutoLoadingPreference='None';$env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules');{body}"
+        )), &environment, 4096).unwrap();
+        let Exit::Code {
+            code: 0,
+            stdout: before,
+            ..
+        } = inherited
+        else {
+            panic!("inherited probe: {inherited:?}")
+        };
+        let Exit::Code {
+            code: 0,
+            stdout: after,
+            ..
+        } = minimal
+        else {
+            panic!("minimal probe: {minimal:?}")
+        };
+        let before = String::from_utf8(before).unwrap();
+        let after = String::from_utf8(after).unwrap();
+        assert!(before.contains(r"C:\Example\UserModules"));
+        assert!(before.contains("inherited"));
+        assert!(before.trim_end().ends_with("All"));
+        let after: Vec<_> = after.lines().collect();
+        assert_eq!(after.len(), 3);
+        // PathBuf retains literal '/' separators, while $PSHOME prints '\\'.
+        // Compare these known fixture paths with Windows path spelling rules.
+        assert_eq!(
+            after[0].replace('/', "\\").to_lowercase(),
+            modules.replace('/', "\\").to_lowercase()
+        );
+        assert_eq!(&after[1..], ["", "None"]);
     }
 }

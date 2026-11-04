@@ -8,11 +8,12 @@ import { setSubagentOpen, toast } from "../../store/ui";
 import { AgentBadge, MachineBadge } from "./SessionCard";
 import { listedSessionIgnoringCollapse } from "./model";
 import {
-  createSavedDrafts, draftOwnerRow, draftPresentation, draftSubagent, focusMessageEditor, listStep, modifiedText, replaceText, SECTIONS, TEXTS,
+  createSavedDrafts, draftOwnerRow, draftPresentation, draftSubagent, focusMessageEditor, listStep, modifiedText, REASONS, replaceText, SECTIONS, TEXTS,
   type RestoreTarget, type SavedDrafts,
 } from "../../store/savedDrafts";
 import type { SavedDraftItem } from "../../types";
 import type { Session } from "./types";
+import { tr, trNoop } from "../../i18n";
 
 // The Saved drafts dialog (MessageComposer.cpp:1230-1387), opened from the
 // session list's Saved drafts button (SessionsWindow.cpp:485-489). The list
@@ -39,9 +40,9 @@ export function openSavedDrafts(from: HTMLElement | undefined, handle: number | 
 
 /** "Show more" per section, below the list (a listbox holds options only). */
 export const MORE_LABEL: Record<(typeof SECTIONS)[number]["id"], string> = {
-  client: "Show more on this computer",
-  qt: "Show more from the previous Zerus app",
-  conflicts: "Show more not imported at the switch",
+  client: trNoop("Show more on this computer"),
+  qt: trNoop("Show more from the previous Zerus app"),
+  conflicts: trNoop("Show more not imported at the switch"),
 };
 
 /** A row's element id, for the list's active descendant. */
@@ -65,9 +66,13 @@ function restoreTarget(): RestoreTarget | undefined {
 }
 
 /** A footer button that stays focusable while off and names why as its tooltip. */
+/** A reason from the store's tables reads translated; a detail line from Rust stays as it came. */
+const KNOWN_REASONS = new Set<string>([...Object.values(REASONS), TEXTS.unreachable]);
+const reasonText = (reason: string) => (KNOWN_REASONS.has(reason) ? tr(reason) : reason);
+
 function Action(props: { reason: string; onClick: () => void; ref?: (el: HTMLButtonElement) => void; children: JSX.Element }) {
   return (
-    <button type="button" class="btn" ref={props.ref} aria-disabled={props.reason ? "true" : undefined} title={props.reason || undefined}
+    <button type="button" class="btn" ref={props.ref} aria-disabled={props.reason ? "true" : undefined} title={props.reason ? reasonText(props.reason) : undefined}
       onClick={() => { if (!props.reason) props.onClick(); }}>{props.children}</button>
   );
 }
@@ -110,12 +115,12 @@ function ReplaceDialog(props: { open: boolean; text: string; onCancel: () => voi
   return (
     <dialog class="dlg" ref={el} role="alertdialog" aria-labelledby="replace-draft-title" aria-describedby="replace-draft-body" style={{ width: "460px" }}
       onCancel={(e) => { e.preventDefault(); props.onCancel(); }} onClose={() => { if (!el?.open && props.open) props.onCancel(); }}>
-      <div class="dlg-head"><Icon name="triangle-alert" size={18} class="accent" /><h2 id="replace-draft-title">{TEXTS.replaceTitle}</h2></div>
+      <div class="dlg-head"><Icon name="triangle-alert" size={18} class="accent" /><h2 id="replace-draft-title">{tr(TEXTS.replaceTitle)}</h2></div>
       <div class="dlg-body"><div class="confirm-body" id="replace-draft-body" style={{ "white-space": "pre-wrap" }}>{props.text}</div></div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial onClick={props.onCancel}>Cancel</button>
-        <button type="button" class="btn solid-danger" onClick={props.onConfirm}>{TEXTS.replaceConfirm}</button>
+        <button type="button" class="btn solid-danger" onClick={props.onConfirm}>{tr(TEXTS.replaceConfirm)}</button>
+        <button type="button" class="btn primary" data-initial onClick={props.onCancel}>{tr("Cancel")}</button>
       </div>
     </dialog>
   );
@@ -165,7 +170,7 @@ export function SavedDraftsDialog() {
   };
 
   const close = () => savedDrafts.close();
-  const goToReason = () => (!savedDrafts.selected() ? "Select a draft." : owner() ? "" : TEXTS.unreachable);
+  const goToReason = () => (!savedDrafts.selected() ? trNoop("Select a draft.") : owner() ? "" : TEXTS.unreachable);
   const goTo = () => {
     const item = savedDrafts.selected();
     // The row is looked for again: the list may have changed since the selection.
@@ -199,12 +204,12 @@ export function SavedDraftsDialog() {
   const copy = () => {
     const text = savedDrafts.detail()?.text ?? "";
     if (!text) return;
-    void bridge.copyVerbatim(text).then(() => toast("Copied", "The draft's text is on the clipboard"), () => toast("Not copied", "The clipboard is unavailable", "error"));
+    void bridge.copyVerbatim(text).then(() => toast(tr("Copied"), tr("The draft's text is on the clipboard")), () => toast(tr("Not copied"), tr("The clipboard is unavailable"), "error"));
   };
 
   const detailLine = () => {
     if (!savedDrafts.selected()) return "";
-    return savedDrafts.detail()?.detail ?? TEXTS.loading;
+    return savedDrafts.detail()?.detail ?? tr(TEXTS.loading);
   };
   return (
     <dialog class="dlg saved-drafts" classList={{ "no-drafts": savedDrafts.empty() }} ref={el} aria-labelledby="saved-drafts-title" style={{ width: savedDrafts.empty() ? "480px" : "720px" }}
@@ -218,17 +223,17 @@ export function SavedDraftsDialog() {
         opener = undefined;
         if (back?.isConnected) back.focus();
       }}>
-      <div class="dlg-head"><Icon name="drafts" size={18} class="accent" /><h2 id="saved-drafts-title">{TEXTS.title}</h2></div>
+      <div class="dlg-head"><Icon name="drafts" size={18} class="accent" /><h2 id="saved-drafts-title">{tr(TEXTS.title)}</h2></div>
       <div class="dlg-body saved-drafts-body">
-        <p class="hint" id="saved-drafts-hint">{savedDrafts.empty() ? TEXTS.empty : TEXTS.hint}</p>
+        <p class="hint" id="saved-drafts-hint">{tr(savedDrafts.empty() ? TEXTS.empty : TEXTS.hint)}</p>
         <Show when={!savedDrafts.empty()}>
-          <div class="draft-list" ref={list} role="listbox" tabindex="0" aria-label={TEXTS.title} aria-describedby="saved-drafts-hint"
+          <div class="draft-list" ref={list} role="listbox" tabindex="0" aria-label={tr(TEXTS.title)} aria-describedby="saved-drafts-hint"
             aria-activedescendant={savedDrafts.selected() ? rowId(savedDrafts.selected()!) : undefined} onKeyDown={onKey}>
             <For each={SECTIONS}>{(section) => (
               <Show when={savedDrafts.sections[section.id].items.length > 0}>
                 <div class="draft-section" role="group" aria-labelledby={`draft-section-${section.id}`}>
-                  <div class="eyebrow draft-section-title" id={`draft-section-${section.id}`} role="presentation">{section.title}</div>
-                  <Show when={section.note}><p class="hint draft-section-note" role="presentation">{section.note}</p></Show>
+                  <div class="eyebrow draft-section-title" id={`draft-section-${section.id}`} role="presentation">{tr(section.title)}</div>
+                  <Show when={section.note}>{(note) => <p class="hint draft-section-note" role="presentation">{tr(note())}</p>}</Show>
                   <For each={savedDrafts.sections[section.id].items}>{(item) => <Row item={item} onOpen={goTo} />}</For>
                 </div>
               </Show>
@@ -239,29 +244,29 @@ export function SavedDraftsDialog() {
               <Show when={savedDrafts.sections[section.id].next !== null}>
                 <button type="button" class="btn small" aria-disabled={savedDrafts.sections[section.id].loading ? "true" : undefined}
                   onClick={() => { void savedDrafts.more(section.id); }}>
-                  {savedDrafts.sections[section.id].loading ? "Loading…" : MORE_LABEL[section.id]}
+                  {savedDrafts.sections[section.id].loading ? tr("Loading…") : tr(MORE_LABEL[section.id])}
                 </button>
               </Show>
             )}</For>
           </div>
-          <pre class="draft-preview mono" aria-label="Draft text" tabindex="0">{savedDrafts.detail()?.text ?? ""}</pre>
+          <pre class="draft-preview mono" aria-label={tr("Draft text")} tabindex="0">{savedDrafts.detail()?.text ?? ""}</pre>
           <p class="hint draft-detail" aria-live="polite">{detailLine()}</p>
         </Show>
         <Show when={savedDrafts.message()}>
-          {(m) => <p class="draft-message" classList={{ error: m().error }} role={m().error ? "alert" : "status"}>{m().text}</p>}
+          {(m) => <p class="draft-message" classList={{ error: m().error }} role={m().error ? "alert" : "status"}>{m().error ? m().text : tr(m().text)}</p>}
         </Show>
       </div>
       <div class="dlg-foot">
-        <Action reason={savedDrafts.copyReason()} onClick={copy}>Copy text</Action>
-        <Action reason={savedDrafts.restoreReason(restoreTarget())} ref={(b) => { restoreButton = b; }} onClick={() => { void restore(); }}>Restore in current session</Action>
-        <Action reason={goToReason()} onClick={goTo}>Go to session</Action>
+        <Action reason={savedDrafts.copyReason()} onClick={copy}>{tr("Copy text")}</Action>
+        <Action reason={savedDrafts.restoreReason(restoreTarget())} ref={(b) => { restoreButton = b; }} onClick={() => { void restore(); }}>{tr("Restore in current session")}</Action>
+        <Action reason={goToReason()} onClick={goTo}>{tr("Go to session")}</Action>
         <Show when={savedDrafts.selected()?.source === "qt"}>
           <Action reason={savedDrafts.recoverReason()} onClick={() => { void savedDrafts.recover(); }}>
-            {savedDrafts.recovering() ? "Recovering…" : "Recover"}
+            {savedDrafts.recovering() ? tr("Recovering…") : tr("Recover")}
           </Action>
         </Show>
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial onClick={close}>Close</button>
+        <button type="button" class="btn primary" data-initial onClick={close}>{tr("Close")}</button>
       </div>
       <ReplaceDialog open={!!replacing()} text={replaceText(replacing() ?? "")}
         onCancel={() => { setReplacing(undefined); restoreButton?.focus(); }}

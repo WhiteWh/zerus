@@ -36,7 +36,7 @@ test -L "$dmg_mount/Applications"
 test "$(readlink "$dmg_mount/Applications")" = /Applications
 test -d "$dmg_mount/Zerus.app"
 test ! -L "$dmg_mount/Zerus.app"
-python3 scripts/check-macos-bundle.py "$dmg_mount/Zerus.app" --version "$version" --release "$release" --team-id "$team" --selftest --source-commit "$(git rev-parse HEAD)"
+python3 scripts/check-macos-bundle.py "$dmg_mount/Zerus.app" --gui tauri --version "$version" --release "$release" --team-id "$team" --selftest --source-commit "$(git rev-parse HEAD)"
 hdiutil detach "$dmg_mount"
 rmdir "$dmg_mount"
 trap - EXIT
@@ -61,20 +61,20 @@ grep -q "^  url \"file://$asset\"$" "$tap/Casks/$cask.rb"
 brew install --cask "zerus-ci/candidate/$cask"
 app=/Applications/Zerus.app
 # Assess the installed, quarantined app before any execution or attribute change.
-python3 scripts/check-macos-bundle.py "$app" --version "$version" --release "$release" --team-id "$team"
+python3 scripts/check-macos-bundle.py "$app" --gui tauri --version "$version" --release "$release" --team-id "$team"
 # Hosted tests cannot answer the normal first-open confirmation. Clear only this
 # verified disposable installation's download attribute for unattended execution.
 # Public casks and release archives retain their normal quarantine behavior.
 xattr -dr com.apple.quarantine "$app"
-python3 scripts/check-macos-bundle.py "$app" --version "$version" --release "$release" --team-id "$team" --selftest --source-commit "$(git rev-parse HEAD)"
-home="${RUNNER_TEMP:?}/zerus-home"
-mkdir -p "$home"
-HOME="$home" "$(brew --prefix)/bin/zerus-setup"
-test "$(readlink "$home/.local/bin/hgs")" = "$app/Contents/MacOS/hgs"
-HOME="$home" "$home/.local/bin/hgs" --version
-HOME="$home" "$home/.local/bin/hgs" ls --json --local > /dev/null
-HOME="$home" "$(brew --prefix)/bin/zerus-setup" --remove
-test ! -e "$home/.local/bin/hgs"
+python3 scripts/check-macos-bundle.py "$app" --gui tauri --version "$version" --release "$release" --team-id "$team" --selftest --source-commit "$(git rev-parse HEAD)"
+fixture_home="${RUNNER_TEMP:?}/zerus-home"
+mkdir -p "$fixture_home"
+HOME="$fixture_home" "$(brew --prefix)/bin/zerus-setup"
+test "$(readlink "$fixture_home/.local/bin/hgs")" = "$app/Contents/MacOS/hgs"
+HOME="$fixture_home" "$fixture_home/.local/bin/hgs" --version
+HOME="$fixture_home" "$fixture_home/.local/bin/hgs" ls --json --local > /dev/null
+HOME="$fixture_home" "$(brew --prefix)/bin/zerus-setup" --remove
+test ! -e "$fixture_home/.local/bin/hgs"
 brew uninstall --cask "$cask"
 test ! -e "$app"
 echo "$cask $release: cask installation, Gatekeeper, setup and removal checks passed."

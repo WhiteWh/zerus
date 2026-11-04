@@ -115,7 +115,7 @@ pub(super) fn dispatch_scoped(args: &[String], dry: bool, scope: Option<&session
             }
         } else {
             drop(_guard);
-            super::worktree_lifecycle::after_archive(&archived);
+            super::worktree_lifecycle::after_archive(&archived, string(&archived, "archive_id"));
             if let Some(scope)=scope {scope.result_record(&archived);}
             else {println!("hgs: archived {name} ({})", string(&archived, "archive_id"));}
         }
@@ -143,7 +143,7 @@ pub(super) fn dispatch_scoped(args: &[String], dry: bool, scope: Option<&session
     let id = archive::save(&record)?;
     let archived = archive::read_archive(name,&id)?;
     drop(_guard);
-    super::worktree_lifecycle::after_archive(&record);
+    super::worktree_lifecycle::after_archive(&record, &id);
     if let Some(scope)=scope {scope.result_record(&archived);} else {println!("hgs: terminated and archived {name} ({id})");}
     Ok(0)
 }

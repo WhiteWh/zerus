@@ -17,6 +17,179 @@ function setup() {
 }
 
 describe("activity store", () => {
+  it("changes routing immediately but waits for the native composer before subscribing", async () => {
+    const { store, calls } = setup();
+    store.follow({ ...target, conversationId: "conversation" });
+    store.applyActivity([out("events", { events: [ev(10)], cursor: 10 })]);
+    let opened!: () => void;
+    const ready = new Promise<void>((resolve) => { opened = resolve; });
+    const next = { ...target, id: "\nrun:b", key: "run:b", conversationId: "conversation" };
+    store.follow(next, ready);
+    expect(store.target()).toBe(next);
+    expect(store.events().map(e => e.seq)).toEqual([10]);
+    expect(store.summary()).toBeUndefined();
+    expect(calls.map(call => call.key)).toEqual(["run:a"]);
+    store.loadOlder();
+    expect(calls).toHaveLength(1);
+    opened();
+    await ready;
+    expect(calls.map(call => call.key)).toEqual(["run:a", "run:b"]);
+    expect(calls[1]).toMatchObject({ after: 10, tail: 100 });
+    store.follow(undefined);
+  });
+
+  it("never subscribes an obsolete target whose composer finishes opening late", async () => {
+    const { store, calls } = setup();
+    let opened!: () => void;
+    const ready = new Promise<void>((resolve) => { opened = resolve; });
+    store.follow(target, ready);
+    const next = { ...target, id: "\nrun:b", key: "run:b" };
+    store.follow(next, Promise.resolve());
+    await Promise.resolve();
+    opened();
+    await ready;
+    expect(calls.map(call => call.key)).toEqual(["run:b"]);
+    store.follow(undefined);
+  });
+
+  it("still reads Activity after a composer open fails, without retrying the open", async () => {
+    const { store, calls } = setup();
+    const failed = Promise.reject(new Error("native open refused"));
+    store.follow(target, failed);
+    await failed.catch(() => {});
+    expect(calls.map(call => call.key)).toEqual(["run:a"]);
+    store.follow(undefined);
+  });
+
+  it("retains loaded history and its display key while the same conversation resumes", () => {
+    createRoot((dispose) => {
+      const { store, calls, unfollows } = setup();
+      store.follow({ ...target, conversationId: "conversation" });
+      const history = Array.from({ length: 100 }, (_, n) => ev(n + 101));
+      store.applyActivity([out("events", { events: history, cursor: 200 }), out("state", { value: { conversation_id: "conversation" }, rev: 9 })]);
+      const shown = store.events();
+      store.follow({ ...target, id: "\nrun:b", key: "run:b", runId: "b", conversationId: "conversation" });
+      expect(store.events()).toBe(shown);
+      expect(store.loaded()).toBe(true);
+      expect(store.displayKey()).toBe(target.id);
+      expect(store.summary()).toBeUndefined();
+      expect(unfollows).toEqual(["run:a"]);
+      expect(calls.at(-1)).toMatchObject({ key: "run:b", run_id: "b", after: 200, tail: 100 });
+      store.applyActivity([out("events", { events: [ev(999)] }), out("events", { events: [ev(201)], cursor: 201 }, "run:b"),
+        out("state", { value: { conversation_id: "conversation" }, rev: 1 }, "run:b")]);
+      expect(store.events().map(e => e.seq)).toEqual([...history.map(e => e.seq), 201]);
+      store.loadOlder();
+      expect(calls.at(-1)).toMatchObject({ key: "run:b", run_id: "b", after: 0, tail: 100 });
+      dispose();
+    });
+  });
+
+  it("keeps the old history through an empty startup window but drops it on a different native conversation", () => {
+    createRoot((dispose) => {
+      const { store } = setup();
+      store.follow({ ...target, conversationId: "conversation" });
+      store.applyActivity([out("events", { events: [ev(10)], cursor: 10 })]);
+      store.follow({ ...target, id: "\nrun:b", key: "run:b", conversationId: "conversation" });
+      store.applyActivity([out("replace", { events: [] }, "run:b")]);
+      expect(store.events().map(e => e.seq)).toEqual([10]);
+      store.applyActivity([out("events", { events: [ev(20)] }, "run:b"),
+        out("state", { value: { conversation_id: "different" }, rev: 1 }, "run:b")]);
+      expect(store.events().map(e => e.seq)).toEqual([20]);
+      expect(store.displayKey()).not.toBe(target.id);
+      dispose();
+    });
+  });
+
+  it("retains provider history for display without exposing the old run as current evidence", () => {
+    createRoot((dispose) => {
+      const { store } = setup();
+      const previous = { run_id: "a", conversation_id: "conversation", provider_messages: [{ message_id: "reply", detail: "Full historical reply" }] };
+      store.follow({ ...target, conversationId: "conversation" });
+      store.applyActivity([out("state", { value: previous, rev: 9 })]);
+      store.follow({ ...target, id: "\nrun:b", key: "run:b", conversationId: "conversation" });
+      expect(store.summary()).toBeUndefined();
+      expect(store.transcriptSummary()).toEqual(previous);
+      const current = { run_id: "b", conversation_id: "conversation", phase: "starting" };
+      store.applyActivity([out("state", { value: current, rev: 1 }, "run:b")]);
+      expect(store.summary()).toEqual(current);
+      expect(store.transcriptSummary()).toEqual(previous);
+      store.applyActivity([out("events", { events: [], cursor: 0 }, "run:b")]);
+      expect(store.transcriptSummary()).toEqual(current);
+      dispose();
+    });
+  });
+
+  it("does not promote an unconfirmed intermediate run's page or cursor on another resume", () => {
+    createRoot((dispose) => {
+      const { store, calls } = setup();
+      store.follow({ ...target, conversationId: "conversation" });
+      store.applyActivity([out("events", { events: [ev(10)], cursor: 10 })]);
+      store.follow({ ...target, id: "\nrun:b", key: "run:b", conversationId: "conversation" });
+      store.applyActivity([out("events", { events: [ev(20)] }, "run:b")]);
+      store.follow({ ...target, id: "\nrun:c", key: "run:c", conversationId: "conversation" });
+      expect(store.events().map(e => e.seq)).toEqual([10]);
+      expect(calls.at(-1)?.after).toBe(10);
+      store.applyActivity([out("events", { events: [ev(20), ev(30)] }, "run:c"),
+        out("state", { value: { conversation_id: "conversation" }, rev: 1 }, "run:c")]);
+      expect(store.events().map(e => e.seq)).toEqual([10, 20, 30]);
+      dispose();
+    });
+  });
+
+  it.each([{ computer: "peer" }, { name: "claude/sample-project/other" }, { conversationId: "different" }, { conversationId: "" }])(
+    "clears history instead of borrowing another or unknown conversation: %j", (changed) => createRoot((dispose) => {
+      const { store } = setup();
+      store.follow({ ...target, conversationId: "conversation" });
+      store.applyActivity([out("events", { events: [ev(10)], cursor: 10 })]);
+      store.follow({ ...target, id: "new", key: "run:b", conversationId: "conversation", ...changed });
+      expect(store.events()).toEqual([]);
+      expect(store.loaded()).toBe(false);
+      dispose();
+    }));
+
+  it("retains last-known activity across service loss and accepts restarted native revisions", () => {
+    createRoot((dispose) => {
+      const { store } = setup();
+      store.follow(target);
+      store.applyActivity([out("replace", { events: [ev(100)], cursor: 100 }),
+        out("state", { value: { message: "last known" }, rev: 90 })]);
+      store.loadOlder();
+      expect(store.loadingOlder()).toBe(true);
+      store.applyActivity([out("connection", { ready: false, code: "source_offline" })]);
+      expect(store.error()).toBeTruthy();
+      expect(store.loaded()).toBe(true);
+      expect(store.loadingOlder()).toBe(false);
+      expect(store.olderDone()).toBe(false);
+      expect(store.ended()).toBe(false);
+      expect(store.events().map(e => e.seq)).toEqual([100]);
+      expect(store.summary()).toEqual({ message: "last known" });
+      store.applyActivity([out("connection", { ready: true, code: "subscribed" }),
+        out("state", { value: { message: "new source" }, rev: 1 })]);
+      expect(store.error()).toBeUndefined();
+      expect(store.summary()).toEqual({ message: "new source" });
+      expect(store.events().map(e => e.seq)).toEqual([100]);
+      dispose();
+    });
+  });
+
+  it("keeps an older read pending through the service subscription fence", () => {
+    createRoot((dispose) => {
+      const { store } = setup();
+      store.follow(target);
+      store.applyActivity([out("replace", { events: [ev(100)], cursor: 100 })]);
+      store.loadOlder();
+      store.applyActivity([out("connection", { ready: false, pending: true, code: "awaiting_fence" }),
+        out("connection", { ready: true, pending: false, code: "subscribed" })]);
+      expect(store.loadingOlder()).toBe(true);
+      expect(store.error()).toBeUndefined();
+      expect(store.olderDone()).toBe(false);
+      store.applyActivity([out("events", { events: [ev(1)], cursor: 100 })]);
+      expect(store.loadingOlder()).toBe(false);
+      expect(store.events().map(e => e.seq)).toEqual([1, 100]);
+      dispose();
+    });
+  });
+
   it("follows with the tail, merges events by seq and ignores other sessions", () => {
     createRoot((dispose) => {
       const { store, calls } = setup();

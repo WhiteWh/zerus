@@ -246,9 +246,20 @@ class Machines(unittest.TestCase):
     def prepare_setup(self):
         source = self.root / 'source with spaces'
         (source / 'src').mkdir(parents=True)
-        for filename in ('Cargo.toml', 'Cargo.lock', 'build.rs', 'install.sh', 'hgs_state.py'):
+        for filename in ('Cargo.lock', 'build.rs', 'install.sh', 'hgs_state.py'):
             shutil.copy2(REPO / filename, source / filename)
-        shutil.copytree(REPO / 'scripts', source / 'scripts')
+        shutil.copytree(REPO / 'scripts', source / 'scripts', ignore=shutil.ignore_patterns('__pycache__'))
+        (source / 'Cargo.toml').write_text("[package]\nname='setup-fixture'\nversion='0.1.0'\n[dependencies]\nfixture={path='crates/fixture'}\n")
+        child = source / 'crates/fixture'
+        (child / 'src').mkdir(parents=True)
+        (child / 'Cargo.toml').write_text("[package]\nname='fixture'\nversion='0.1.0'\n[dependencies]\ncore={path='../../client/core'}\n")
+        (child / 'src/lib.rs').write_text('// fixture')
+        core = source / 'client/core'
+        (core / 'src').mkdir(parents=True)
+        (core / 'Cargo.toml').write_text("[package]\nname='core'\nversion='0.1.0'\n")
+        (core / 'src/lib.rs').write_text('// core')
+        (core / 'target').mkdir()
+        (core / 'target/private.secret').write_text('must not travel')
         (source / 'src/main.rs').write_text('// fixture source')
         (source / 'not-for-upload.secret').write_text('must not travel')
         self.script('cargo', r'''#!/usr/bin/env python3
@@ -262,6 +273,8 @@ target.mkdir(parents=True)
         remote = self.root / 'remote'
         (remote / '.local/src/hgs').mkdir(parents=True)
         (remote / '.local/src/hgs/untouched').write_text('checkout stays')
+        (remote / '.local/bin').mkdir(parents=True)
+        (remote / '.local/bin/zerus-mobile-connector').write_text('keep connector unchanged')
         return source, remote, dict(self.env, MACHINE_SSH_MODE='setup')
 
     def test_setup_native_install_uploads_only_cli_and_preserves_remote_config(self):
@@ -275,18 +288,52 @@ target.mkdir(parents=True)
         self.assertIn('Setup complete: hgs fixture-installed', result.stdout)
         self.assertTrue((remote / '.local/bin/hgs').is_file())
         self.assertTrue((remote / '.local/bin/hgs_state.py').is_file())
+        self.assertEqual((remote / '.local/bin/zerus-mobile-connector').read_text(), 'keep connector unchanged')
         self.assertFalse((remote / 'wrong-place').exists())
         self.assertEqual(existing.read_text(), 'HGS_SELF="keep-name"\nHGS_PEERS="keep-peer"\n')
         self.assertEqual((remote / '.local/src/hgs/untouched').read_text(), 'checkout stays')
         self.assertEqual(list((remote / '.local/share/hgs').glob('setup.*')), [])
         with tarfile.open(fileobj=io.BytesIO((self.root / 'bundle.tar.gz').read_bytes())) as archive:
-            names = archive.getnames()
+            names = [name.removeprefix('./') for name in archive.getnames()]
         self.assertIn('src/main.rs', names)
+        self.assertIn('crates/fixture/Cargo.toml', names)
+        self.assertIn('client/core/src/lib.rs', names)
+        self.assertNotIn('client/core/target/private.secret', names)
         self.assertIn('build.rs', names)
         self.assertIn('scripts/install-macos-session-service.py', names)
         self.assertNotIn('not-for-upload.secret', names)
         self.assertIn('BatchMode=yes', self.ssh_args())
         self.assertIn('StrictHostKeyChecking=yes', self.ssh_args())
+
+    def test_setup_revision_is_additive_and_refuses_stale_or_missing_alias_before_ssh(self):
+        source, remote, env = self.prepare_setup()
+        self.set_profile('studio', {'hostname': 'peer.invalid'})
+        expected = json.loads(self.run_machine('ls').stdout)['revision']
+        self.run_machine('setup', 'studio', '--source', str(source), '--revision', expected, env=env)
+        (self.root / 'ssh-args.json').unlink()
+        self.set_profile('studio', {'hostname': 'changed.invalid'})
+        result = self.run_machine('setup', 'studio', '--source', str(source), '--revision', expected, env=env, success=False)
+        self.assertIn('Reload the page before setup', result.stderr)
+        self.assertFalse((self.root / 'ssh-args.json').exists())
+        current = json.loads(self.run_machine('ls').stdout)['revision']
+        self.run_machine('setup', 'missing.invalid', '--source', str(source), '--revision', current, env=env, success=False)
+        self.assertFalse((self.root / 'ssh-args.json').exists())
+
+    def test_setup_rechecks_the_original_profile_after_source_packaging(self):
+        source, remote, env = self.prepare_setup()
+        self.set_profile('studio', {'hostname': 'peer.invalid'})
+        expected = json.loads(self.run_machine('ls').stdout)['revision']
+        real_tar = shutil.which('tar')
+        if not real_tar:
+            self.skipTest('tar not installed')
+        self.script('tar', f'''#!/usr/bin/python3
+import subprocess,sys,pathlib
+r=subprocess.run([{real_tar!r},*sys.argv[1:]])
+pathlib.Path({str(self.config / 'machines.local.json')!r}).write_text('{{}}\\n')
+sys.exit(r.returncode)
+''')
+        self.run_machine('setup', 'studio', '--source', str(source), '--revision', expected, env=env, success=False)
+        self.assertFalse((self.root / 'ssh-args.json').exists())
 
     def test_setup_initializes_config_only_for_new_machine(self):
         source, remote, env = self.prepare_setup()
@@ -295,7 +342,7 @@ target.mkdir(parents=True)
 
     def test_failed_build_keeps_installed_binary_and_cleans_staging(self):
         source, remote, env = self.prepare_setup()
-        (remote / '.local/bin').mkdir(parents=True)
+        (remote / '.local/bin').mkdir(parents=True, exist_ok=True)
         installed = remote / '.local/bin/hgs'
         installed.write_text('old binary')
         result = self.run_machine('setup', 'studio', '--source', str(source), env=dict(env, MACHINE_BUILD_FAIL='1'), success=False)

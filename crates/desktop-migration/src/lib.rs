@@ -342,6 +342,13 @@ pub fn canonical(path: &Path) -> io::Result<PathBuf> {
                 resolved.push(component);
             }
         }
+        // Windows separates a path's prefix from RootDir. A rooted prefix
+        // alone (notably \\?\C:) is not a complete path to open. Resolve it
+        // only once RootDir has been appended; drive-relative inputs retain
+        // their existing behavior.
+        if path.has_root() && matches!(component, Component::Prefix(_)) {
+            continue;
+        }
         match std::fs::canonicalize(&resolved) {
             Ok(path) => resolved = path,
             Err(error) if error.kind() == io::ErrorKind::NotFound => (),

@@ -8,6 +8,7 @@
 //! `startToSend`, `continueAfterStart`, `compactToSend`,
 //! `continueAfterCompact`, `pollCompactContinuations`).
 use crate::actions::{Action, Outcome};
+use crate::text::Text;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -255,52 +256,71 @@ pub enum StartChoice {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StartOption {
     pub choice: StartChoice,
-    pub label: String,
+    pub label: Text,
     pub enabled: bool,
-    pub tooltip: String,
+    pub tooltip: Option<Text>,
 }
 
 /// "Start the session to send?": Cancel is the default and the escape answer.
+/// The title already says the message is sent, so each choice names only how
+/// the session starts, and each paragraph opens with the choice it explains.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StartQuestion {
-    pub title: String,
-    pub text: String,
-    pub informative: String,
+    pub title: Text,
+    pub text: Text,
+    pub informative: Text,
     pub options: Vec<StartOption>,
 }
 
 /// The question before a stopped session takes a message. `context` is the
 /// composer's context usage text, empty when unknown.
 pub fn start_question(session: &Session, context: &str) -> StartQuestion {
-    let usage = if context.is_empty() {
-        String::new()
+    let resume = if context.is_empty() {
+        crate::text!("Resume continues the saved conversation, and the message is sent with its full context.")
     } else {
-        format!(" ({context})")
+        crate::text!(
+            "Resume continues the saved conversation, and the message is sent with its full context (%1).",
+            context
+        )
     };
-    let option = |choice, label: &str, enabled, tooltip: &str| StartOption {
+    let option = |choice, label, enabled, tooltip| StartOption {
         choice,
-        label: label.into(),
+        label,
         enabled,
-        tooltip: tooltip.into(),
+        tooltip,
     };
     StartQuestion {
-        title: "Start the session to send?".into(),
-        text: format!(
-            "{} is stopped. How should it start before your message is sent?",
-            session.name
+        title: crate::text!("Start the session to send?"),
+        text: crate::text!(
+            "%1 is stopped. How should it start before your message is sent?",
+            session.name.as_str()
         ),
-        informative: format!(
-            "Resume continues the saved conversation, and the message is sent with its full context{usage}.\n\nStart fresh begins a new conversation with the same folder, account and model. Earlier messages stay readable in Activity.\n\nResume, compact and send summarizes the saved history first. Compaction uses tokens and may omit details."
+        // The paragraphs follow the buttons' order.
+        informative: crate::text!(
+            "%1\n\n%2\n\n%3",
+            resume,
+            crate::text!("Compact and resume summarizes the saved history first, then sends the message. Compaction uses tokens and may omit details."),
+            crate::text!("Start fresh begins a new conversation with the same folder, account and model. Earlier messages stay readable in Activity."),
         ),
         options: vec![
-            option(StartChoice::Resume, "Resume and send", session.resumable, ""),
+            option(
+                StartChoice::Resume,
+                crate::text!("Resume"),
+                session.resumable,
+                None,
+            ),
             option(
                 StartChoice::ResumeCompact,
-                "Resume, compact and send",
+                crate::text!("Compact and resume"),
                 session.resumable,
-                "Resume the saved conversation, run native /compact when ready, then send this exact message after successful completion.",
+                Some(crate::text!("Resume the saved conversation, run native /compact when ready, then send this exact message after successful completion.")),
             ),
-            option(StartChoice::Fresh, "Start fresh and send", true, ""),
+            option(
+                StartChoice::Fresh,
+                crate::text!("Start fresh"),
+                true,
+                None,
+            ),
         ],
     }
 }
@@ -986,31 +1006,53 @@ mod continuation_tests {
         let question = start_question(
             &Session {
                 resumable: false,
-                ..session
+                ..session.clone()
             },
             "41% of 200K",
         );
-        assert_eq!(question.title, "Start the session to send?");
+        assert_eq!(question.title.english(), "Start the session to send?");
         assert_eq!(
-            question.text,
+            question.text.english(),
             "claude/sample-project/review is stopped. How should it start before your message is sent?"
         );
-        assert!(question.informative.starts_with(
-            "Resume continues the saved conversation, and the message is sent with its full context (41% of 200K)."
-        ));
-        let enabled: Vec<_> = question
+        // The session name stays verbatim, never a catalog lookup.
+        assert_eq!(
+            question.text.args,
+            [crate::text::Arg::Verbatim(
+                "claude/sample-project/review".into()
+            )]
+        );
+        // Each paragraph opens with the button it explains, in the buttons' order.
+        assert_eq!(
+            question.informative.english(),
+            "Resume continues the saved conversation, and the message is sent with its full context (41% of 200K).\n\n\
+             Compact and resume summarizes the saved history first, then sends the message. Compaction uses tokens and may omit details.\n\n\
+             Start fresh begins a new conversation with the same folder, account and model. Earlier messages stay readable in Activity."
+        );
+        let options: Vec<_> = question
             .options
             .iter()
-            .map(|o| (o.choice, o.enabled))
+            .map(|o| (o.choice, o.label.english(), o.enabled, o.tooltip.is_some()))
             .collect();
         assert_eq!(
-            enabled,
+            options,
             [
-                (StartChoice::Resume, false),
-                (StartChoice::ResumeCompact, false),
-                (StartChoice::Fresh, true)
+                (StartChoice::Resume, "Resume".to_owned(), false, false),
+                (
+                    StartChoice::ResumeCompact,
+                    "Compact and resume".to_owned(),
+                    false,
+                    true
+                ),
+                (StartChoice::Fresh, "Start fresh".to_owned(), true, false)
             ]
         );
+        assert!(start_question(&session, "")
+            .informative
+            .english()
+            .starts_with(
+                "Resume continues the saved conversation, and the message is sent with its full context.\n\n"
+            ));
     }
 
     #[test]

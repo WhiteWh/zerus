@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-mod directory;
+pub(super) mod directory;
 #[cfg(unix)]
 mod worker;
 #[cfg(unix)]
@@ -14,6 +14,43 @@ pub(super) fn git_worker(args: &[String]) -> Result<i32> {
 }
 
 const MAX_RECEIPT_BYTES: u64 = 16_384;
+
+/// New external steps are separately checked by the admitted desktop actor.
+/// Writing an original result after cancellation records facts; it starts no work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Step {
+    Reserve,
+    Create,
+    Clone,
+    Verify,
+}
+impl Step {
+    #[cfg(unix)]
+    pub(crate) fn ordinal(self) -> usize {
+        match self {
+            Self::Reserve => 0,
+            Self::Create => 1,
+            Self::Clone => 2,
+            Self::Verify => 3,
+        }
+    }
+}
+
+/// The service supplies its actual per-step actor check and original custody.
+/// This is not constructed from CLI arguments or imported recovery records.
+pub(crate) struct Control<'a> {
+    pub before: &'a dyn Fn(Step) -> Result<()>,
+    #[cfg(unix)]
+    pub cancelled: &'a std::sync::atomic::AtomicBool,
+    #[cfg(unix)]
+    pub custody: &'a std::sync::Arc<zerus_client_core::run::custody::InheritedLock>,
+}
+fn before(control: Option<&Control<'_>>, step: Step) -> Result<()> {
+    if let Some(control) = control {
+        (control.before)(step)?;
+    }
+    Ok(())
+}
 
 const USAGE: &str = "usage: hgs repository check|clone --url URL --parent PATH --name NAME [--request-id UUID] --json; hgs repository status --request-id UUID --json";
 
@@ -133,12 +170,20 @@ fn validate(url: &str, parent: &str, name: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn git(directory: &directory::Directory, args: &[&str], seconds: u64) -> Result<Vec<u8>> {
+fn git(
+    directory: &directory::Directory,
+    args: &[&str],
+    seconds: u64,
+    control: Option<&Control<'_>>,
+) -> Result<Vec<u8>> {
     directory.verify()?;
     #[cfg(unix)]
-    let result = worker::run(directory, args, seconds);
+    let result = worker::run(directory, args, seconds, control);
     #[cfg(windows)]
-    let result = run_git(Some(directory), args, seconds, &|| false);
+    let result = {
+        let _ = control; // The first admitted service clone leaf is POSIX-only.
+        run_git(Some(directory), args, seconds, &|| false)
+    };
     directory.verify()?;
     result
 }
@@ -149,7 +194,23 @@ fn run_git(
     seconds: u64,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<u8>> {
-    let mut cmd = Command::new("git");
+    #[cfg(unix)]
+    let program = {
+        let found = crate::platform::which("git").ok_or("Cannot find Git")?;
+        let path = crate::platform::canonical(&found).map_err(|e| e.to_string())?;
+        if crate::platform::file_identity(&path)
+            .zip(crate::platform::image_identity())
+            .is_some_and(|(git, running)| git == running)
+        {
+            return Err("Git resolves to the running hgs image".into());
+        }
+        found
+    };
+    #[cfg(windows)]
+    let program = "git";
+    let mut cmd = Command::new(program);
+    #[cfg(unix)]
+    cmd.env(worker::CONTEXT, "1");
     if let Some(directory) = directory {
         directory.anchor(&mut cmd)?;
     }
@@ -197,17 +258,39 @@ fn token(id: &str) -> Result<()> {
     }
     Ok(())
 }
-fn receipt_path(id: &str) -> PathBuf {
-    root().join("repository-clones").join(format!("{id}.json"))
+fn receipt_path(state: &Path, id: &str) -> PathBuf {
+    state.join("repository-clones").join(format!("{id}.json"))
 }
-fn read_receipt(id: &str) -> Result<Value> {
-    let p = receipt_path(id);
-    let meta =
+pub(crate) fn read_receipt(state: &Path, id: &str) -> Result<Value> {
+    use std::io::Read;
+    token(id)?;
+    let p = receipt_path(state, id);
+    let before =
         std::fs::symlink_metadata(&p).map_err(|e| format!("Clone receipt unavailable: {e}"))?;
+    if !before.is_file() || before.file_type().is_symlink() || before.len() > MAX_RECEIPT_BYTES {
+        return Err("Invalid clone receipt".into());
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    crate::platform::no_follow(&mut options);
+    #[cfg(windows)]
+    crate::platform::refuse_link(&mut options);
+    let file = options
+        .open(&p)
+        .map_err(|e| format!("Clone receipt unavailable: {e}"))?;
+    let meta = file.metadata().map_err(|e| e.to_string())?;
     if !meta.is_file() || meta.len() > MAX_RECEIPT_BYTES {
         return Err("Invalid clone receipt".into());
     }
-    serde_json::from_slice(&std::fs::read(p).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+    let mut bytes = Vec::new();
+    file.take(MAX_RECEIPT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_RECEIPT_BYTES {
+        return Err("Invalid clone receipt".into());
+    }
+    serde_json::from_slice(&bytes).map_err(|e| e.to_string())
 }
 
 fn bounded_receipt(value: &Value) -> Result<Value> {
@@ -252,13 +335,47 @@ fn bounded_receipt(value: &Value) -> Result<Value> {
     Ok(value)
 }
 
-fn write_receipt(id: &str, value: &Value) -> Result<Value> {
+fn write_receipt(state: &Path, id: &str, value: &Value) -> Result<Value> {
     let value = bounded_receipt(value)?;
-    atomic(&receipt_path(id), &value.to_string())?;
+    atomic(&receipt_path(state, id), &value.to_string())?;
     Ok(value)
 }
 
 pub(super) fn dispatch(args: &[String]) -> Result<i32> {
+    println!("{}", execute(args, &root(), None)?);
+    Ok(0)
+}
+
+#[cfg(unix)]
+pub(crate) fn clone_owned(
+    state: &Path,
+    id: &str,
+    url: &str,
+    parent: &str,
+    name: &str,
+    control: &Control<'_>,
+) -> Result<Value> {
+    execute(
+        &[
+            "clone",
+            "--request-id",
+            id,
+            "--url",
+            url,
+            "--parent",
+            parent,
+            "--name",
+            name,
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>(),
+        state,
+        Some(control),
+    )
+}
+
+fn execute(args: &[String], state: &Path, control: Option<&Control<'_>>) -> Result<Value> {
     let action = args.first().map(String::as_str).ok_or(USAGE)?;
     let mut options = std::collections::HashMap::new();
     let mut i = 1;
@@ -284,8 +401,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         }
         let id = get("--request-id")?;
         token(id)?;
-        println!("{}", read_receipt(id)?);
-        return Ok(0);
+        return read_receipt(state, id);
     }
     if !matches!(action, "check" | "clone")
         || options.len() != if action == "clone" { 4 } else { 3 }
@@ -310,7 +426,8 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     // A per-request lock prevents duplicate clones without serializing unrelated
     // repositories. Status never waits on a long-running clone.
     let _guard = if action == "clone" {
-        let lock_path = receipt_path(id).with_extension("lock");
+        before(control, Step::Reserve)?;
+        let lock_path = receipt_path(state, id).with_extension("lock");
         private_dir(lock_path.parent().ok_or("Invalid receipt directory")?)?;
         let file = lock_file(&lock_path)?;
         match fs2::FileExt::try_lock_exclusive(&file) {
@@ -325,13 +442,16 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     } else {
         None
     };
-    if action == "clone" && receipt_path(id).try_exists().map_err(|e| e.to_string())? {
-        let saved = read_receipt(id)?;
+    if action == "clone"
+        && receipt_path(state, id)
+            .try_exists()
+            .map_err(|e| e.to_string())?
+    {
+        let saved = read_receipt(state, id)?;
         if saved["fingerprint"] != fingerprint {
             return Err("Request ID already belongs to a different clone".into());
         }
-        println!("{saved}");
-        return Ok(0);
+        return Ok(saved);
     }
     let canonical = validate(url, parent, name)?;
     let destination = canonical.join(name);
@@ -342,17 +462,14 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         );
     }
     if action == "check" {
-        git(&parent_directory, &["--version"], 5)?;
+        git(&parent_directory, &["--version"], 5, control)?;
         git(
             &parent_directory,
             &["ls-remote", "--symref", "--", url, "HEAD"],
             20,
+            control,
         )?;
-        println!(
-            "{}",
-            json!({"status":"ready","parent":canonical,"path":destination,"name":name})
-        );
-        return Ok(0);
+        return Ok(json!({"status":"ready","parent":canonical,"path":destination,"name":name}));
     }
     let mut receipt = json!({"status":"unconfirmed","request_id":id,"fingerprint":fingerprint,
         "parent":canonical,"path":destination,"name":name});
@@ -362,13 +479,16 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     {
         receipt["staging_path"] = json!(canonical.join(&staging));
     }
-    write_receipt(id, &receipt)?;
+    write_receipt(state, id, &receipt)?;
     let result: Result<()> = (|| {
+        before(control, Step::Create)?;
         let owned = parent_directory.create(name, &staging)?;
-        git(&owned, &["clone", "--quiet", "--", url, "."], 600)?;
+        before(control, Step::Clone)?;
+        git(&owned, &["clone", "--quiet", "--", url, "."], 600, control)?;
         parent_directory.verify()?;
         owned.verify()?;
-        let top = git(&owned, &["rev-parse", "--show-toplevel"], 5)?;
+        before(control, Step::Verify)?;
+        let top = git(&owned, &["rev-parse", "--show-toplevel"], 5, control)?;
         let top = crate::platform::canonical(String::from_utf8_lossy(&top).trim())
             .map_err(|e| e.to_string())?;
         if top != destination {
@@ -385,14 +505,157 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
             receipt["detail"] = json!(error);
         }
     }
-    let receipt = write_receipt(id, &receipt)?;
-    println!("{receipt}");
-    Ok(0)
+    write_receipt(state, id, &receipt)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::fs;
+
+    #[cfg(unix)]
+    fn owned_fixture() -> (
+        PathBuf,
+        std::sync::Arc<zerus_client_core::run::custody::InheritedLock>,
+    ) {
+        let folder = std::env::temp_dir().join(format!("hgs-owned-clone-{}", uuid::Uuid::new_v4()));
+        private_dir(&folder).unwrap();
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(folder.join("custody.lock"))
+            .unwrap();
+        let custody = zerus_client_core::run::custody::InheritedLock::try_lock(file).unwrap();
+        (folder, custody)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn actor_refusal_precedes_clone_receipt_or_directory_creation() {
+        let (folder, custody) = owned_fixture();
+        let state = folder.join("selected-state");
+        let calls = std::sync::Mutex::new(Vec::new());
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let check = |step| {
+            calls.lock().unwrap().push(step);
+            Err("creation_lease_revoked".into())
+        };
+        let error = clone_owned(
+            &state,
+            "11111111-1111-4111-8111-111111111111",
+            "https://example.invalid/project.git",
+            folder.to_str().unwrap(),
+            "checkout",
+            &Control {
+                before: &check,
+                cancelled: &cancelled,
+                custody: &custody,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error, "creation_lease_revoked");
+        assert_eq!(*calls.lock().unwrap(), [Step::Reserve]);
+        assert!(!state.exists());
+        assert!(!folder.join("checkout").exists());
+        drop(custody);
+        fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn clone_step_refusal_records_only_the_original_selected_receipt() {
+        let (folder, custody) = owned_fixture();
+        let state = folder.join("selected-state");
+        let calls = std::sync::Mutex::new(Vec::new());
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let check = |step| {
+            calls.lock().unwrap().push(step);
+            if step == Step::Create {
+                Err("creation_lease_revoked".into())
+            } else {
+                Ok(())
+            }
+        };
+        let id = "22222222-2222-4222-8222-222222222222";
+        let receipt = clone_owned(
+            &state,
+            id,
+            "https://example.invalid/project.git",
+            folder.to_str().unwrap(),
+            "checkout",
+            &Control {
+                before: &check,
+                cancelled: &cancelled,
+                custody: &custody,
+            },
+        )
+        .unwrap();
+        assert_eq!(receipt["status"], "failed");
+        assert_eq!(receipt["detail"], "creation_lease_revoked");
+        assert_eq!(*calls.lock().unwrap(), [Step::Reserve, Step::Create]);
+        assert!(!folder.join("checkout").exists());
+        assert_eq!(read_receipt(&state, id).unwrap(), receipt);
+        // Inspection neither creates a new selected state nor repairs receipts.
+        let other = folder.join("other-state");
+        assert!(read_receipt(&other, id).is_err());
+        assert!(!other.exists());
+        drop(custody);
+        fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn exact_clone_gate_refusal_never_enters_the_git_worker() {
+        let (folder, custody) = owned_fixture();
+        let state = folder.join("selected-state");
+        let calls = std::sync::Mutex::new(Vec::new());
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let check = |step| {
+            calls.lock().unwrap().push(step);
+            if step == Step::Clone {
+                Err("creation_lease_revoked".into())
+            } else {
+                Ok(())
+            }
+        };
+        let starts = worker::STARTS.with(std::cell::Cell::get);
+        let id = "33333333-3333-4333-8333-333333333333";
+        let receipt = clone_owned(
+            &state,
+            id,
+            "https://example.invalid/project.git",
+            folder.to_str().unwrap(),
+            "checkout",
+            &Control {
+                before: &check,
+                cancelled: &cancelled,
+                custody: &custody,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            worker::STARTS.with(std::cell::Cell::get),
+            starts,
+            "a refused Clone must not start even the original Git worker"
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [Step::Reserve, Step::Create, Step::Clone]
+        );
+        assert_eq!(receipt["status"], "failed");
+        assert_eq!(receipt["detail"], "creation_lease_revoked");
+        assert!(
+            folder.join("checkout").is_dir(),
+            "keep the original partial checkout"
+        );
+        assert!(!folder.join("checkout/.git").exists());
+        assert_eq!(read_receipt(&state, id).unwrap(), receipt);
+        drop(custody);
+        fs::remove_dir_all(folder).unwrap();
+    }
+
     #[test]
     fn accepts_only_repository_addresses() {
         for url in [

@@ -7,6 +7,7 @@ import { notify } from "./actions";
 import { sessionIdentity, type Task } from "../ui/screens/tasks-ui";
 import { canDrag, writingTask, setWritingTask } from "./taskBoard";
 import type { Session } from "../ui/sessions/types";
+import { tr } from "../i18n";
 
 export const TASK_MIME = "application/x-zerus-task";
 export const [draggedTask, setDraggedTask] = createSignal<{ project: string; uuid: string }>();
@@ -23,12 +24,12 @@ export async function assign(project: string, task: Task, row?: Session, mode: "
   if (assigningTask()) return;
   const freshTask = tasks.project() === project ? tasks.tasks().find((t) => t.uuid === task.uuid) : undefined;
   const freshRow = row ? catalog.rows[row.key] : undefined;
-  if (!freshTask || !canAssign(freshTask, project, freshRow) || row && (!freshRow || sessionIdentity(freshRow) !== sessionIdentity(row) || freshRow.runId !== row.runId || freshRow.conversationId !== row.conversationId)) { notify("error", "The task or session changed. Nothing was changed."); return; }
+  if (!freshTask || !canAssign(freshTask, project, freshRow) || row && (!freshRow || sessionIdentity(freshRow) !== sessionIdentity(row) || freshRow.runId !== row.runId || freshRow.conversationId !== row.conversationId)) { notify("error", tr("The task or session changed. Nothing was changed.")); return; }
   // Snapshot before awaiting: the catalog reconciles its rows in place.
   const target = freshRow ? { computer: freshRow.computer, name: freshRow.name, run_id: freshRow.runId ?? "", conversation_id: freshRow.conversationId ?? "" } : null;
   const key = freshRow?.catalogKey ?? null, id = freshRow ? sessionIdentity(freshRow) : null;
   setAssigningTask(task.uuid);
-  try { if (mode === "session") await assignTask(project, task.uuid, target, key, id); else { if (!target) throw new Error("Choose a parent with a confirmed computer and session identity."); await assignTask(project, task.uuid, target, key, id, mode); } notify("info", target ? `Task assigned to ${target.name}` : "Task assigned to Any session"); }
+  try { if (mode === "session") await assignTask(project, task.uuid, target, key, id); else { if (!target) throw new Error("Choose a parent with a confirmed computer and session identity."); await assignTask(project, task.uuid, target, key, id, mode); } notify("info", target ? tr("Task assigned to %1", target.name) : tr("Task assigned to Any session")); }
   catch (error) { notify("error", String(error)); }
   finally { setAssigningTask(undefined); }
 }

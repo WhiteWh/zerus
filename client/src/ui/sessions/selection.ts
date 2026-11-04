@@ -1,6 +1,7 @@
 import type { Action } from "../../types";
 import { allowedOp, forgetsBindingOnly, snapshotOf, type ActionRow } from "./actions-ui";
 import type { Session } from "./types";
+import { trNoop, tr } from "../../i18n";
 
 // What a multi-selection can do, after the Qt SessionSelection.cpp:
 // selectionActionText, selectionActionApplies, sameInstance, forgetsBinding,
@@ -15,23 +16,23 @@ export type WriteAction = Extract<SelectionAction, "pause" | "resume" | "archive
 export const SELECTION_ACTIONS: readonly SelectionAction[] = ["compact", "expand", "mark_read", "review_later", "pause", "resume", "archive", "move", "forget", "terminate"];
 
 /** Move to project waits for the organisation stream's move (zerus-5wmh.18). */
-export const MOVE_LATER = "Arrives with project organisation.";
+export const MOVE_LATER = trNoop("Arrives with project organisation.");
 
 const TEXT: Record<SelectionAction, string> = {
-  mark_read: "Mark as read",
-  review_later: "Mark needs attention",
-  compact: "Compact session rows",
-  expand: "Expand session rows",
+  mark_read: trNoop("Mark as read"),
+  review_later: trNoop("Mark needs attention"),
+  compact: trNoop("Compact session rows"),
+  expand: trNoop("Expand session rows"),
   pause: "Pause",
   resume: "Resume / restore",
-  archive: "Move to archive",
+  archive: trNoop("Move to archive"),
   forget: "Forget",
   terminate: "Terminate",
-  move: "Move to project",
+  move: trNoop("Move to project"),
 };
 
 /** Qt's selectionActionText. */
-export const selectionText = (a: SelectionAction) => TEXT[a];
+export const selectionText = (a: SelectionAction) => tr(TEXT[a]);
 
 /** A selected row: the action fields plus what Needs attention reads. A catalog row is one. */
 export type SelectionRow = ActionRow & Pick<Session, "status" | "reviewLater">;
@@ -115,8 +116,8 @@ export function confirmationCopy(a: "forget" | "terminate", targets: readonly Ac
   const action = selectionText(a);
   let text = clearArchive
     ? clearArchive.paged
-      ? `Remove ${n} loaded archived sessions in the current date and machine scope? Unloaded entries are kept.`
-      : `Remove ${n} archived sessions from HGS on the selected machines?`
+      ? tr("Remove %1 loaded archived sessions in the current date and machine scope? Unloaded entries are kept.", n)
+      : tr("Remove %1 archived sessions from HGS on the selected machines?", n)
     : `${action} ${n} selected sessions?`;
   const bindings = a === "forget" ? targets.filter(forgetsBinding).length : 0;
   if (a === "terminate") text += "\n\nRunning processes will stop. Tracked Codex, Claude and Kimi conversations are kept in Archive; native conversation history is kept.";
@@ -128,10 +129,10 @@ export function confirmationCopy(a: "forget" | "terminate", targets: readonly Ac
   if (bindings) text += "\n\nOpenCode sessions: only Zerus forgets them; their conversations stay in OpenCode.";
   if (selected !== n) text += `\n\n${selected - n} unavailable or inapplicable sessions will be left as they are.`;
   return {
-    title: clearArchive ? "Clear archive" : action,
+    title: clearArchive ? tr("Clear archive") : action,
     text,
     details: targets.map((t) => `${t.machine} / ${t.name}`),
-    confirm: clearArchive ? "Clear archive" : `${action} ${n} sessions`,
+    confirm: clearArchive ? tr("Clear archive") : `${action} ${n} sessions`,
   };
 }
 
@@ -171,10 +172,13 @@ export const restoreLimitText = (s: Pick<ActionRow, "name">) => `${s.name}: earl
 export const SHOWN_ERRORS = 3;
 
 /** The end notice; sticky (and an error) when any item failed. */
-export function summaryText(a: SelectionAction, done: number, total: number, failed: number, errors: readonly string[]): { text: string; failed: boolean } {
+export function summaryText(a: SelectionAction, done: number, total: number, failed: number, errors: readonly string[], unknown = 0): { text: string; failed: boolean } {
   let text = `${selectionText(a)}: ${done} of ${total} completed.`;
-  if (failed) text += ` ${failed} failed or changed; refresh before retrying.\n${errors.slice(0, SHOWN_ERRORS).join("\n")}`;
-  return { text, failed: failed > 0 };
+  if (failed || unknown) {
+    const counts = [failed ? `${failed} failed or changed` : "", unknown ? `${unknown} unknown` : ""].filter(Boolean).join(", ");
+    text += ` ${counts}; refresh before retrying.\n${errors.slice(0, SHOWN_ERRORS).join("\n")}`;
+  }
+  return { text, failed: failed + unknown > 0 };
 }
 
 /** Mark as read and Mark needs attention: sticky when not every target changed. */

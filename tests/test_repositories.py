@@ -15,6 +15,16 @@ REPO = Path(__file__).resolve().parents[1]
 HGS = Path(os.environ.get("HGS_TEST_BIN", REPO / "hgs")).resolve()
 
 
+def bounded_run(argv, **kwargs):
+    """Retain and reap the original subtree even when the CLI/test fails."""
+    seconds = kwargs.pop('timeout', 30)
+    if sys.platform.startswith('linux'):
+        argv = [sys.executable, str(Path(__file__).with_name('bounded_process.py')),
+                '--seconds', str(seconds), '--max-processes', '32', '--', *map(str, argv)]
+        seconds += 5
+    return subprocess.run(argv, timeout=seconds, **kwargs)
+
+
 def image_proof(executable):
     stat = executable.stat()
     seconds, nanos = divmod(stat.st_mtime_ns, 1_000_000_000)
@@ -33,6 +43,11 @@ class Repositories(unittest.TestCase):
                         GIT_CONFIG_GLOBAL=str(self.root / "gitconfig"),
                         GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
                         GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
+        help_result = bounded_run([str(HGS), '--help'], env=self.env, cwd=self.root,
+                                  capture_output=True, text=True, timeout=5)
+        self.assertEqual(help_result.returncode, 0, help_result.stderr)
+        self.assertIn('repository-clone-v1', help_result.stdout,
+                      'repository fixtures require the actual CLI, never a libtest image')
         self.source = self.root / "source"
         self.source.mkdir()
         self.git("init", "-b", "main")
@@ -48,7 +63,7 @@ class Repositories(unittest.TestCase):
                               capture_output=True, text=True, check=True, timeout=10)
 
     def hgs(self, *args, rc=0):
-        result = subprocess.run([str(HGS), *args], env=self.env, cwd=self.root,
+        result = bounded_run([str(HGS), *args], env=self.env, cwd=self.root,
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, rc, result.stdout + result.stderr)
         return json.loads(result.stdout) if rc == 0 else result
@@ -62,7 +77,7 @@ class Repositories(unittest.TestCase):
 
     def mobile(self, argv, machine, rc=0):
         envelope = {"schema": 1, "target_machine_id": machine, "argv": argv, "payload": None}
-        result = subprocess.run([str(HGS), "swarm", "__mobile-peer-local", "--json"],
+        result = bounded_run([str(HGS), "swarm", "__mobile-peer-local", "--json"],
                                 input=json.dumps(envelope), env=self.env, cwd=self.root,
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, rc, result.stdout + result.stderr)
@@ -317,6 +332,85 @@ class Repositories(unittest.TestCase):
         receipt = self.hgs("repository", "status", "--request-id", token, "--json")
         self.assertEqual(receipt["status"], "unconfirmed")
         self.assertEqual(self.operation("clone", token=token), receipt)
+
+    @unittest.skipIf(os.name == "nt", "Unix worker's independent deadline")
+    def test_git_cannot_resolve_to_the_running_hgs_image(self):
+        git = self.root / '.local/bin/git'
+        git.parent.mkdir(parents=True, exist_ok=True)
+        git.symlink_to(HGS)
+        result = bounded_run([str(HGS), '__state', 'repository-git-worker', '5',
+                              image_proof(HGS), '--version'], env=self.env, cwd=self.root,
+                             input='', capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Git resolves to the running hgs image', json.loads(result.stdout)['Err'])
+
+    @unittest.skipIf(os.name == "nt", "Unix worker context guard")
+    @unittest.skipUnless(shutil.which('cc'), 'native argv[0] shim fixture requires cc')
+    def test_git_symlink_keeps_its_dispatch_name(self):
+        manager = self.root / 'tool-manager'
+        source = ('#include <stdio.h>\n#include <string.h>\n'
+                  'int main(int argc, char **argv) { (void)argc; '
+                  'const char *name = strrchr(argv[0], \'/\'); '
+                  'if (strcmp(name ? name + 1 : argv[0], "git")) return 64; '
+                  'puts("git shim"); return 0; }\n')
+        subprocess.run(['cc', '-x', 'c', '-o', str(manager), '-'], input=source,
+                       capture_output=True, text=True, check=True, timeout=10)
+        git = self.root / '.local/bin/git'
+        git.parent.mkdir(parents=True, exist_ok=True)
+        git.symlink_to(manager)
+        result = self.worker_with_lifeline()
+        self.assertEqual(json.loads(result)['Ok'], list(b'git shim\n'))
+
+    @unittest.skipIf(os.name == "nt", "Unix worker context guard")
+    def test_git_descendant_cannot_reenter_the_repository_worker(self):
+        self.synthetic_git("(root / 'git-called').touch()\n")
+        self.env['HGS_REPOSITORY_GIT_WORKER'] = '1'
+        result = bounded_run([str(HGS), '__state', 'repository-git-worker', '5',
+                              image_proof(HGS), '--version'], env=self.env, cwd=self.root,
+                             input='', capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn('Nested repository Git workers are refused', result.stderr)
+        self.assertFalse((self.root / 'git-called').exists())
+
+    @unittest.skipIf(os.name == "nt", "Unix worker's independent deadline")
+    def test_actual_git_wrapper_cannot_reinvoke_the_worker(self):
+        # Even a missing production guard remains bounded: the wrapper refuses
+        # its own second visit instead of recursively spawning another worker.
+        self.synthetic_git(
+            "import json\n"
+            "visits = root / 'worker-visits'\n"
+            "if visits.exists():\n"
+            "    visits.write_text('2')\n"
+            "    sys.exit(0)\n"
+            "visits.write_text('1')\n"
+            f"nested = subprocess.run([{str(HGS)!r}, '__state', 'repository-git-worker', '1', {image_proof(HGS)!r}, '--version'], "
+            "input='', capture_output=True, text=True, timeout=3)\n"
+            "(root / 'nested-result').write_text(json.dumps([nested.returncode,nested.stderr]))\n"
+            "sys.exit(1)\n"
+        )
+        self.worker_with_lifeline()
+        code, error = json.loads((self.root / 'nested-result').read_text())
+        self.assertEqual(code, 1, error)
+        self.assertIn('Nested repository Git workers are refused', error)
+        self.assertEqual((self.root / 'worker-visits').read_text(), '1')
+
+    def worker_with_lifeline(self):
+        command = [str(HGS), '__state', 'repository-git-worker', '5', image_proof(HGS), '--version']
+        if sys.platform.startswith('linux'):
+            command = [sys.executable, str(Path(__file__).with_name('bounded_process.py')),
+                       '--seconds', '6', '--max-processes', '16', '--', *command]
+        process = subprocess.Popen(command, env=self.env, cwd=self.root, stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            # Keep the original lifeline open while the real Git wrapper runs.
+            process.wait(timeout=11)
+            output, error = process.stdout.read(), process.stderr.read()
+            self.assertEqual(process.returncode, 0, output + error)
+            return output
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=3)
 
     @unittest.skipIf(os.name == "nt", "Unix worker's independent deadline")
     def test_worker_deadline_stops_git_without_wrapper_cancellation(self):

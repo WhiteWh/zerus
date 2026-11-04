@@ -2,6 +2,7 @@
 //! approval authority, clock or frontend lives here. Read intent is in `reads`. The actor
 //! must verify current delegation and lease freshness before calling `reserve`.
 //! A returned existing reservation never authorizes another delivery.
+pub mod native;
 pub mod operations;
 pub mod reads;
 
@@ -108,7 +109,11 @@ impl Identity {
                 run,
                 conversation,
             } => {
-                text(computer, 255)?;
+                // The desktop/watch protocol uses the empty alias for this
+                // computer. Remote aliases retain the original validation.
+                if !computer.is_empty() {
+                    text(computer, 255)?;
+                }
                 text(run, 1024)?;
                 text(conversation, 1024)?;
                 ensure!(
@@ -132,6 +137,11 @@ impl Identity {
         }
         json(self, 4096)
     }
+}
+
+/// Canonical lookup key without creating or changing a durable intent.
+pub fn intent_id(identity: &Identity) -> Result<String> {
+    Ok(hash(identity.encoded()?.as_bytes()))
 }
 
 /// Baselines/imports may be stored while passive. This records intent only and
@@ -334,12 +344,33 @@ const COLUMNS: &str = "seq,request_id,intent_id,revision,state";
 pub struct Reservation {
     pub fresh: bool,
     pub attempt: Attempt,
+    // Only the original successful commit creates this process-local origin.
+    // Public response data and later indexed reads cannot reconstruct it.
+    origin: Option<ReservationOrigin>,
+}
+struct ReservationOrigin {
+    request: Reserve,
+    seq: i64,
+    withdrawal: bool,
 }
 
 /// Commit before native input. An exact duplicate, a crash, a cancelled worker
 /// or an unknown outcome never returns fresh. Only an explicit retry of the
 /// latest confirmed pre-delivery refusal can create another attempt.
 pub fn reserve(db: &mut Connection, request: &Reserve) -> Result<Reservation> {
+    reserve_scoped(db, request, false)
+}
+/// Cleanup only: the still-owned actor may remove one exact confirmed native
+/// delivery after revocation. It cannot post, change writer epochs or replay an
+/// unknown withdrawal. Original native owner/lease custody stays a caller duty.
+pub fn reserve_withdrawal(db: &mut Connection, request: &Reserve) -> Result<Reservation> {
+    ensure!(
+        request.retry_of.is_none(),
+        "cleanup never retries a native effect"
+    );
+    reserve_scoped(db, request, true)
+}
+fn reserve_scoped(db: &mut Connection, request: &Reserve, withdrawal: bool) -> Result<Reservation> {
     for id in [
         &request.request_id,
         &request.epoch,
@@ -389,11 +420,12 @@ pub fn reserve(db: &mut Connection, request: &Reserve) -> Result<Reservation> {
         return Ok(Reservation {
             fresh: false,
             attempt,
+            origin: None,
         });
     }
     let allowed: bool = tx.query_row(
-        "SELECT revoked=0 AND epoch=?1 AND service_epoch=?2 FROM desktop_writer WHERE id=1",
-        params![request.epoch, request.service_epoch],
+        "SELECT (revoked=0 OR ?3) AND epoch=?1 AND service_epoch=?2 FROM desktop_writer WHERE id=1",
+        params![request.epoch, request.service_epoch, withdrawal],
         |r| r.get(0),
     )?;
     ensure!(allowed, "desktop writer is revoked or stale");
@@ -408,6 +440,11 @@ pub fn reserve(db: &mut Connection, request: &Reserve) -> Result<Reservation> {
     )?;
     ensure!(!blocked, "historic or suppressed effect cannot be posted");
     let identity: Identity = serde_json::from_str(&encoded)?;
+    if withdrawal {
+        let payload:String=tx.query_row("SELECT CASE WHEN length(CAST(payload AS BLOB))<=?2 THEN payload END FROM desktop_intents WHERE id=?1",
+            params![request.intent_id,PAYLOAD_BYTES as i64],|r|r.get(0))?;
+        withdrawal_source(&tx, &identity, &payload)?;
+    }
     let latest = if matches!(identity.kind, Kind::Post | Kind::Withdrawal) {
         tx.query_row(&format!("SELECT {COLUMNS} FROM desktop_attempts WHERE intent_id=?1 ORDER BY seq DESC LIMIT 1"),[&request.intent_id],row).optional()?
     } else {
@@ -422,6 +459,7 @@ pub fn reserve(db: &mut Connection, request: &Reserve) -> Result<Reservation> {
             return Ok(Reservation {
                 fresh: false,
                 attempt,
+                origin: None,
             });
         }
         ensure!(
@@ -442,8 +480,89 @@ pub fn reserve(db: &mut Connection, request: &Reserve) -> Result<Reservation> {
     tx.commit()?;
     Ok(Reservation {
         fresh: true,
+        origin: Some(ReservationOrigin {
+            request: request.clone(),
+            seq: attempt.seq,
+            withdrawal,
+        }),
         attempt,
     })
+}
+
+/// Verify cleanup against the original indexed delivery, in the caller's SAME
+/// transaction. Snapshot inspection repeats this proof after the fresh commit.
+fn withdrawal_source(db: &Connection, identity: &Identity, payload: &str) -> Result<()> {
+    ensure!(
+        identity.kind == Kind::Withdrawal,
+        "cleanup cannot reserve a post or device effect"
+    );
+    let mut post = identity.clone();
+    post.kind = Kind::Post;
+    let post_id = intent_id(&post)?;
+    type Delivery = (
+        String,
+        i64,
+        u64,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+    );
+    let (request, seq, revision, epoch, service, adapter, lease, payload_post, receipt): Delivery =
+        db.query_row(
+            "SELECT a.request_id,a.seq,a.revision,a.epoch,a.service_epoch,a.adapter,a.lease,
+         CASE WHEN length(CAST(i.payload AS BLOB))<=?2 THEN i.payload END,
+         CASE WHEN length(CAST(a.receipt AS BLOB))<=?3 THEN a.receipt END
+         FROM desktop_intents i JOIN desktop_attempts a ON a.intent_id=i.id
+         WHERE i.id=?1 AND a.revision=i.revision AND a.state='delivered' AND i.blocked=0
+         ORDER BY a.seq DESC LIMIT 1",
+            params![post_id, PAYLOAD_BYTES as i64, RECEIPT_BYTES as i64],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                ))
+            },
+        )?;
+    let (cleanup, post, receipt): (Value, Value, Value) = (
+        serde_json::from_str(payload)?,
+        serde_json::from_str(&payload_post)?,
+        serde_json::from_str(&receipt)?,
+    );
+    ensure!(
+        cleanup.as_object().is_some_and(|v| v.len() == 3)
+            && cleanup["op"] == "withdraw"
+            && post["op"] == "post"
+            && cleanup["token"].as_str().is_some_and(|s| !s.is_empty())
+            && cleanup["token"] == post["token"]
+            && receipt["outcome"]["state"] == "delivered"
+            && !cleanup["native_id"].is_null()
+            && cleanup["native_id"] == receipt["outcome"]["native_id"]
+            && receipt["binding"]["intent_id"] == post_id,
+        "withdrawal does not match the original delivered mapping"
+    );
+    let binding = &receipt["binding"];
+    let session = &binding["session"];
+    ensure!(
+        binding["request_id"] == request
+            && binding["seq"] == seq
+            && binding["revision"] == revision
+            && session["writer_epoch"] == epoch
+            && session["service_epoch"] == service
+            && session["adapter"] == adapter
+            && session["lease"] == lease,
+        "withdrawal receipt is not the original post binding"
+    );
+    Ok(())
 }
 
 /// Receipts settle already-reserved work, including after revocation. The actor

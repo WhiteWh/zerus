@@ -2,7 +2,7 @@
 use super::*;
 use std::fs::{File, OpenOptions};
 
-pub(super) struct Directory {
+pub(in crate::state) struct Directory {
     pub path: PathBuf,
     file: File,
     #[cfg(windows)]
@@ -10,6 +10,48 @@ pub(super) struct Directory {
 }
 
 impl Directory {
+    /// Existing-directory reads share acquisition's pinned, no-link walk.
+    /// No directory, lock or file is created by these methods.
+    pub(in crate::state) fn private(&self) -> Result<bool> {
+        crate::platform::verify_private_directory(&self.file).map_err(|e| e.to_string())
+    }
+
+    pub(in crate::state) fn read_private(&self, name: &str) -> Result<File> {
+        if name.is_empty() || name.contains(['/', '\\', ':']) || name == "." || name == ".." {
+            return Err("Invalid existing file name".into());
+        }
+        #[cfg(unix)]
+        let file = {
+            use std::os::fd::{AsRawFd, FromRawFd};
+            let name = c_name(std::ffi::OsStr::new(name))?;
+            // SAFETY: the parent is pinned; name is one NUL-free component.
+            let fd = unsafe {
+                libc::openat(
+                    self.file.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY
+                        | libc::O_NOFOLLOW
+                        | libc::O_NONBLOCK
+                        | libc::O_NOCTTY
+                        | libc::O_CLOEXEC,
+                )
+            };
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+            // SAFETY: this call owns the new descriptor.
+            unsafe { File::from_raw_fd(fd) }
+        };
+        #[cfg(windows)]
+        let file = crate::platform::no_follow(OpenOptions::new().read(true))
+            .open(self.path.join(name))
+            .map_err(|e| e.to_string())?;
+        if !crate::platform::verify_private_file(&file).map_err(|e| e.to_string())? {
+            return Err("The existing file must be private and regular".into());
+        }
+        Ok(file)
+    }
+
     pub fn verify(&self) -> Result<()> {
         let current = Self::open(&self.path)?;
         let identity = |file: &File| {

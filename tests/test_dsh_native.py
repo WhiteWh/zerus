@@ -143,6 +143,20 @@ class NativeHarness(unittest.TestCase):
             time.sleep(.1)
         self.fail('Native event did not arrive')
 
+    def test_leading_absolute_path_is_literal_message_text(self):
+        b = self.create()
+        text = '/help/fixture/capture.png\nWhat is shown in this screenshot?'
+        request = self.payload(b, text=text, attachments=[])
+        receipt = self.cli('send', b, request)
+        self.assertEqual(receipt['status'], 'submitted')
+        data = self.wait(lambda: (d if d.get('reply_id') and any(e['type'] == 'AgentMessage' for e in d['events']) else None)
+                         if (d := self.cli('inspect', b)) else None)
+        self.assertEqual([e['detail'] for e in data['events'] if e['type'] == 'UserPromptSubmit'], [text])
+        self.assertTrue(any(text in e['detail'] for e in data['events'] if e['type'] == 'AgentMessage'))
+        self.assertEqual(self.cli('send', b, request), receipt)
+        after = self.cli('inspect', b)
+        self.assertEqual([e['detail'] for e in after['events'] if e['type'] == 'UserPromptSubmit'], [text])
+
     def test_real_history_goals_private_reasoning_and_idempotent_send(self):
         b = self.create()
         request = self.payload(b, text='Hello native harness', attachments=[])

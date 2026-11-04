@@ -73,6 +73,10 @@ pub enum Action {
     /// `hgs kill NAME`: Terminate for a live session without an HGS archive
     /// (`killSession`; `SessionsWindow::terminateSession` picks it).
     Kill,
+    /// A confirmation-bound, untracked shell terminal. Never falls back to Kill.
+    TerminateShell {
+        identity: crate::untracked_shell::Identity,
+    },
     /// `hgs send NAME --json` (`requestSendMessage`): the message and its
     /// files go only to standard input. Built in Rust from the held draft:
     /// webview JSON cannot produce it, so no attachment bytes cross the IPC.
@@ -217,6 +221,25 @@ pub struct WorktreeCleanup {
     pub common_dir: String,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<Box<crate::termination_cleanup::ArchiveIdentity>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<Value>,
+    #[serde(default)]
+    pub details_omitted: bool,
+}
+
+impl WorktreeCleanup {
+    /// A complete bounded row for this exact reported folder. It describes
+    /// the earlier check; it never establishes current removal authority.
+    pub fn review_row(&self) -> Option<&Value> {
+        self.review.as_ref().filter(|row| {
+            row.is_object()
+                && row["path"].as_str() == Some(self.path.as_str())
+                && row["kind"] == "linked"
+                && serde_json::to_vec(row).is_ok_and(|bytes| bytes.len() <= 60 * 1024)
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -256,16 +279,18 @@ fn done(receipt: Value, cleanup: Option<WorktreeCleanup>) -> Outcome {
 /// accepted, None when it is. `hgs rename` enforces the same rule.
 pub fn tag_problem(tag: &str) -> Option<&'static str> {
     if tag.is_empty() {
-        return Some("Enter a session name.");
+        return Some(crate::source!("Enter a session name."));
     }
     if tag.trim() != tag {
-        return Some("Remove spaces at the beginning or end.");
+        return Some(crate::source!("Remove spaces at the beginning or end."));
     }
     if tag
         .chars()
         .any(|c| matches!(c, '/' | ':' | '.') || c.is_control())
     {
-        return Some("Names cannot contain /, : or . or control characters.");
+        return Some(crate::source!(
+            "Names cannot contain /, : or . or control characters."
+        ));
     }
     None
 }
@@ -481,7 +506,13 @@ pub fn invocation(
             }
             (args, None, 45, 60, None)
         }
+        Action::TerminateShell { identity } => {
+            return shell_termination_invocation(target, identity, request_id)
+        }
         // A local kill is a tmux kill-session; a peer's goes through SSH.
+        Action::Kill if target.run_id.is_empty() => {
+            return Err(crate::untracked_shell::UNVERIFIED.into())
+        }
         Action::Kill | Action::Forget => (vec!["kill".to_owned(), name], None, 5, 15, None),
         Action::Send {
             text,
@@ -695,7 +726,10 @@ pub fn invocation(
             )
         }
         Action::ForgetBinding => {
-            return scoped_lifecycle_invocation(target, "forget", request_id, 15, 45)
+            if target.conversation_id.is_empty() {
+                return Err("the session has no run or conversation to forget".into());
+            }
+            return scoped_lifecycle_invocation(target, "forget", request_id, 15, 45);
         }
     };
     let peer_call = prepend_alias(&mut args, &target.computer);
@@ -709,6 +743,30 @@ pub fn invocation(
 
 /// Shared native lifecycle envelope. The operation is chosen in Rust; this is
 /// not a webview-selected command or a handoff/execution permission.
+pub(crate) fn shell_termination_invocation(
+    target: &Target,
+    identity: &crate::untracked_shell::Identity,
+    request_id: &str,
+) -> Result<Invocation, String> {
+    if !target.run_id.is_empty()
+        || !target.conversation_id.is_empty()
+        || target.name.is_empty()
+        || !identity.valid()
+        || !crate::creation::canonical_uuid(request_id)
+    {
+        return Err(crate::untracked_shell::UNVERIFIED.into());
+    }
+    let mut args = vec![
+        "session-action".into(),
+        target.name.clone(),
+        "--json".into(),
+    ];
+    let peer = prepend_alias(&mut args, &target.computer);
+    Ok(Invocation { args, stdin: Some(serde_json::to_vec(&json!({
+        "request_id":request_id,"action":"terminate_shell","expected_run_id":"","expected_conversation_id":"","terminal_identity":identity
+    })).map_err(|e| e.to_string())?), timeout: Duration::from_secs(if peer { 60 } else { 45 }), request_id: Some(request_id.into()) })
+}
+
 pub(crate) fn scoped_lifecycle_invocation(
     target: &Target,
     operation: &str,
@@ -716,8 +774,8 @@ pub(crate) fn scoped_lifecycle_invocation(
     local: u64,
     peer: u64,
 ) -> Result<Invocation, String> {
-    if target.run_id.is_empty() || target.conversation_id.is_empty() {
-        return Err("the session has no run or conversation to forget".into());
+    if target.run_id.is_empty() {
+        return Err("the session has no identified run".into());
     }
     let input = json!({"request_id":request_id,"action":operation,"expected_run_id":target.run_id,"expected_conversation_id":target.conversation_id});
     let mut args = vec![
@@ -1154,6 +1212,12 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
         }
         Action::MarkRead { .. } => classify_read(target, exit),
         Action::Archive | Action::Terminate => classify_write(exit, true),
+        Action::TerminateShell { .. } => crate::end_action::Captured {
+            target: target.clone(),
+            action: action.clone(),
+            state: "running".into(),
+        }
+        .completed(invocation, exit),
         _ => classify_write(exit, false),
     }
 }

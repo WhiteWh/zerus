@@ -25,11 +25,14 @@ use zerus_client_core::{Change, ComputerId};
 const PARK: Duration = Duration::from_millis(100);
 const FLUSH: Duration = Duration::from_secs(2);
 const STOPPED: &str = "Session creation stopped.";
+const CAPTURE_PAUSED: &str = "Session creation is paused while its original journal is preserved.";
 fn interrupted(detail: &str) -> String {
     format!("{}\n{detail}", creation::INTERRUPTED)
 }
 
 type Job = Box<dyn FnOnce() + Send>;
+type ServiceClone =
+    Arc<dyn Fn(&str, &Value, bool, bool, &AtomicBool) -> creation::Answer + Send + Sync>;
 type JournalWriter = Arc<dyn Fn(&Path, &[u8]) -> bool + Send + Sync>;
 type LaunchSession = Arc<dyn Fn(&Value) -> Result<(), String> + Send + Sync>;
 type ReadBinding = Arc<dyn Fn(&ComputerId) -> Result<BindingListing, String> + Send + Sync>;
@@ -150,6 +153,7 @@ struct Services {
     ids: Arc<dyn Fn() -> String + Send + Sync>,
     write: JournalWriter,
     call: Arc<dyn Fn(&creation::Call) -> creation::Answer + Send + Sync>,
+    service_clone: Option<ServiceClone>,
     launch: LaunchSession,
     binding: ReadBinding,
     watch: WatchBinding,
@@ -174,7 +178,7 @@ enum Input {
     Catalog,
     Flush(SyncSender<()>),
     #[cfg(all(test, unix))]
-    Barrier(SyncSender<()>),
+    Barrier(Job, SyncSender<()>),
 }
 
 enum Done {
@@ -204,6 +208,13 @@ pub struct CreationHost(Arc<Shared>);
 
 impl CreationHost {
     fn new(file: PathBuf, services: Services) -> Self {
+        Self::new_with_capture(file, services, None)
+    }
+    fn new_with_capture(
+        file: PathBuf,
+        services: Services,
+        capture: Option<Arc<zerus_client_core::migration::preload::Capture>>,
+    ) -> Self {
         let services = Arc::new(services);
         let (input, received) = mpsc::sync_channel(128);
         let (done, finished) = mpsc::channel();
@@ -264,20 +275,42 @@ impl CreationHost {
                     pending: BTreeMap::new(),
                     shutdown: quitting,
                     quitting: false,
+                    loaded: false,
+                    fresh_creations: BTreeSet::new(),
+                    #[cfg(all(test, unix))]
+                    barrier: None,
                 };
-                let effects = worker.queue.load(load(&file));
-                // Loaded bound records intentionally emit no Changed event,
-                // but remain readable by ID. Populate this cache once at load.
-                let loaded: Vec<_> = worker
-                    .queue
-                    .operations()
-                    .keys()
-                    .map(|id| Effect::Changed { id: id.clone() })
-                    .collect();
-                worker.refresh_cache(&loaded);
-                worker.effects(effects);
+                // The ORIGINAL owner is the only worker allowed to open the
+                // live journal after the immutable pre-load archive is durable.
+                let load_once = |worker: &mut Worker| {
+                    worker.stop_if_requested();
+                    if worker.loaded || worker.quitting {
+                        return;
+                    }
+                    if let Some(capture) = &capture {
+                        if !capture.take_retry() || capture.prepare().is_err() {
+                            return;
+                        }
+                    }
+                    worker.stop_if_requested();
+                    if worker.quitting {
+                        return;
+                    }
+                    worker.loaded = true;
+                    let effects = worker.queue.load(load(&file));
+                    let loaded: Vec<_> = worker
+                        .queue
+                        .operations()
+                        .keys()
+                        .map(|id| Effect::Changed { id: id.clone() })
+                        .collect();
+                    worker.refresh_cache(&loaded);
+                    worker.effects(effects);
+                };
+                load_once(&mut worker);
                 loop {
                     worker.stop_if_requested();
+                    load_once(&mut worker);
                     while let Ok(done) = finished.try_recv() {
                         worker.stop_if_requested();
                         if !worker.quitting {
@@ -292,12 +325,19 @@ impl CreationHost {
                             break;
                         }
                     }
-                    if !worker.quitting {
+                    if !worker.quitting && worker.loaded {
                         // Catalog wakeups coalesce; reads and reconciliation are
                         // bounded by the 128-operation queue, never the full fleet.
                         let changed = worker.catalog.swap(false, Ordering::AcqRel);
                         worker.reconcile_pending(changed);
                         worker.poll(changed);
+                    }
+                    // A fixture phase ends after this pass's reconciliation,
+                    // then after its ordered journal writes. An input reply
+                    // alone precedes reconciliation and is not such a fence.
+                    #[cfg(all(test, unix))]
+                    if let Some(answer) = worker.barrier.take() {
+                        let _ = worker.writer.send(Write::Flush(answer));
                     }
                 }
             })
@@ -411,8 +451,20 @@ impl CreationHost {
 
     #[cfg(all(test, unix))]
     fn flush_journal_for_test(&self) -> bool {
+        self.arrange_for_test(|| {})
+    }
+
+    /// Publish one fixture phase inside the original queue worker's turn,
+    /// before it reads readiness or consumes the coalesced catalog wake.
+    #[cfg(all(test, unix))]
+    fn arrange_for_test(&self, arrange: impl FnOnce() + Send + 'static) -> bool {
         let (send, answer) = mpsc::sync_channel(1);
-        if self.0.input.send(Input::Barrier(send)).is_err() {
+        if self
+            .0
+            .input
+            .send(Input::Barrier(Box::new(arrange), send))
+            .is_err()
+        {
             return false;
         }
         answer.recv_timeout(Duration::from_secs(2)).is_ok()
@@ -462,6 +514,10 @@ struct Worker {
     pending: BTreeMap<String, PendingBinding>,
     shutdown: Arc<AtomicBool>,
     quitting: bool,
+    loaded: bool,
+    fresh_creations: BTreeSet<String>,
+    #[cfg(all(test, unix))]
+    barrier: Option<SyncSender<()>>,
 }
 
 struct Placement(Resolve);
@@ -478,6 +534,7 @@ impl Worker {
             self.quitting = true;
             self.queue.quit();
             self.pending.clear();
+            self.fresh_creations.clear();
         }
     }
 
@@ -485,10 +542,15 @@ impl Worker {
         self.stop_if_requested();
         match message {
             Input::Submit(plan, id, answer) => {
-                let (result, effects) = if self.quitting || !self.services.allowed {
+                // Reserved task/import identities are not direct native Start
+                // consent for this creation leaf. They retain their own kind.
+                let direct = id.is_none();
+                let (result, effects) = if self.quitting || !self.loaded || !self.services.allowed {
                     (
                         Err(if self.quitting {
                             STOPPED
+                        } else if !self.loaded {
+                            CAPTURE_PAUSED
                         } else {
                             crate::newsession::REPLAY_NEEDS_HGS
                         }
@@ -501,6 +563,11 @@ impl Worker {
                         None => self.queue.submit(plan),
                     }
                 };
+                if direct && self.services.service_clone.is_some() {
+                    if let Ok(id) = &result {
+                        self.fresh_creations.insert(id.clone());
+                    }
+                }
                 self.effects(effects);
                 let _ = answer.send(match result {
                     Ok(admitted) => Admission::Admitted { admitted },
@@ -508,6 +575,10 @@ impl Worker {
                 });
             }
             Input::Action(id, action, answer) => {
+                if !self.loaded {
+                    let _ = answer.send(Err(CAPTURE_PAUSED.into()));
+                    return;
+                }
                 if self.quitting
                     || self
                         .queue
@@ -541,8 +612,9 @@ impl Worker {
                 let _ = answer.send(Ok(()));
             }
             #[cfg(all(test, unix))]
-            Input::Barrier(answer) => {
-                let _ = self.writer.send(Write::Flush(answer));
+            Input::Barrier(arrange, answer) => {
+                arrange();
+                self.barrier = Some(answer);
             }
             Input::Catalog => {}
             Input::Flush(answer) => {
@@ -572,6 +644,9 @@ impl Worker {
     }
 
     fn effects(&mut self, effects: Vec<Effect>) {
+        if !self.loaded {
+            return;
+        }
         if effects.is_empty() {
             return;
         }
@@ -592,6 +667,7 @@ impl Worker {
                     }
                 }
                 Effect::Removed { id } => {
+                    self.fresh_creations.remove(&id);
                     self.pending.remove(&id);
                     let mut cache = lock(&self.cache);
                     cache.operations.remove(&id);
@@ -606,12 +682,56 @@ impl Worker {
                     let shutdown = Arc::clone(&self.shutdown);
                     let services = Arc::clone(&self.services);
                     let done = self.done.clone();
+                    let clone_call = self.services.service_clone.as_ref().and_then(|sender| {
+                        let creation::Call::Repository {
+                            action, request_id, ..
+                        } = &call
+                        else {
+                            return None;
+                        };
+                        if !matches!(
+                            action,
+                            zerus_client_core::repository::Action::Clone
+                                | zerus_client_core::repository::Action::Status
+                        ) {
+                            return None;
+                        }
+                        let mut originals =
+                            self.queue.operations().iter().filter(|(_, value)| {
+                                value["clone_id"].as_str() == Some(request_id)
+                            });
+                        let original = originals
+                            .next()
+                            .map(|(id, value)| (id.clone(), value.clone()));
+                        if originals.next().is_some() {
+                            return Some(Err(()));
+                        }
+                        let Some((id, value)) = original else {
+                            return Some(Err(()));
+                        };
+                        let wait = *action == zerus_client_core::repository::Action::Clone;
+                        // Consume BEFORE scheduling any helper. Even a lost
+                        // response or later Resume never sends this ID again.
+                        let fresh = wait && self.fresh_creations.remove(&id);
+                        Some(Ok((sender.clone(), id, value, fresh, wait)))
+                    });
                     (self.services.spawn)(Box::new(move || {
                         if shutdown.load(Ordering::Acquire) {
                             return;
                         }
                         let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            (services.call)(&call)
+                            match clone_call {
+                                Some(Ok((sender, id, operation, fresh, wait))) => {
+                                    sender(&id, &operation, fresh, wait, &shutdown)
+                                }
+                                Some(Err(())) => creation::Answer {
+                                    ok: false,
+                                    data: Value::Null,
+                                    error: zerus_client_core::repository::UNCONFIRMED_OPERATION
+                                        .into(),
+                                },
+                                None => (services.call)(&call),
+                            }
                         }))
                         .unwrap_or_else(|_| creation::Answer {
                             ok: false,
@@ -1089,6 +1209,23 @@ fn detached(hgs: &Path, invocation: &zerus_client_core::Invocation) -> Result<()
 /// The app's host: settings, the one organization Controller, real guarded
 /// calls and the same terminal launcher Qt's New session uses.
 pub fn start(app: &AppHandle, dir: &Path, replay: bool, allowed: bool) -> CreationHost {
+    let clone_app = app.clone();
+    let service_clone = crate::desktop_service::mode().then(|| {
+        Arc::new(
+            move |id: &str, operation: &Value, fresh: bool, wait: bool, shutdown: &AtomicBool| {
+                crate::desktop_service::creation_clone::call(
+                    clone_app
+                        .state::<crate::commands::AppState>()
+                        .desktop_service(),
+                    id,
+                    operation,
+                    fresh,
+                    wait,
+                    shutdown,
+                )
+            },
+        ) as ServiceClone
+    });
     let hgs = zerus_client_core::default_hgs();
     let call_hgs = hgs.clone();
     let binding_hgs = hgs.clone();
@@ -1108,7 +1245,12 @@ pub fn start(app: &AppHandle, dir: &Path, replay: bool, allowed: bool) -> Creati
     let launcher = Arc::new(Mutex::new(
         zerus_client_core::terminal_launch::Launcher::new(Default::default()),
     ));
-    CreationHost::new(
+    let capture = app.state::<crate::commands::AppState>().creation_capture();
+    let construct = |file, services| match capture {
+        Some(capture) => CreationHost::new_with_capture(file, services, Some(capture)),
+        None => CreationHost::new(file, services),
+    };
+    construct(
         dir.join(if replay {
             "creations-replay.json"
         } else {
@@ -1122,6 +1264,7 @@ pub fn start(app: &AppHandle, dir: &Path, replay: bool, allowed: bool) -> Creati
                 zerus_client_core::fsx::write_private_atomic(file, bytes, true).is_ok()
             }),
             call: Arc::new(move |call| creation::run_call(&call_hgs, call)),
+            service_clone,
             binding: Arc::new(move |computer| {
                 creation::binding_listing(
                     zerus_client_core::run_limited(
@@ -1363,6 +1506,7 @@ mod tests {
                     zerus_client_core::fsx::write_private_atomic(file, bytes, true).is_ok()
                 }),
                 call: Arc::new(move |step| creation::run_call(&call, step)),
+                service_clone: None,
                 launch: Arc::new(move |operation| detached(&launch, &launch_invocation(operation))),
                 binding: Arc::new(move |_| {
                     binding.reads.fetch_add(1, Ordering::SeqCst);
@@ -1614,6 +1758,151 @@ mod tests {
         fake.stop(host);
     }
 
+    fn repository_plan() -> Value {
+        let mut selected = choices();
+        selected.project.clear();
+        selected.repository = Some(launch::RepositoryChoice {
+            url: "https://example.invalid/repo.git".into(),
+            parent: "/srv".into(),
+            name: "repo".into(),
+            destination: "/srv/repo".into(),
+            new_project: true,
+            project_name: "Repository".into(),
+            ..Default::default()
+        });
+        serde_json::to_value(launch::plan(&selected)).unwrap()
+    }
+    fn service_clone_probe(fake: &Fake, calls: Arc<Mutex<Vec<bool>>>) -> Services {
+        let mut services = fake.services();
+        let journal = fake.dir.join("creations.json");
+        services.service_clone = Some(Arc::new(move |id, operation, fresh, _, _| {
+            // The exact reducer checkpoint is durable before the original
+            // service intent. Presentation/recovery never supplies fresh Start.
+            let saved: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+            if fresh {
+                assert_eq!(saved["operations"][id], *operation);
+            } else {
+                assert_eq!(saved["operations"][id]["clone_id"], operation["clone_id"]);
+            }
+            assert_eq!(
+                operation["repository_action"],
+                if fresh { "clone" } else { "status" }
+            );
+            lock(&calls).push(fresh);
+            creation::Answer {
+                ok: false,
+                data: Value::Null,
+                error: zerus_client_core::repository::UNCONFIRMED_OPERATION.into(),
+            }
+        }));
+        services
+    }
+    #[test]
+    fn service_clone_uses_only_direct_start_once_after_durable_checkpoint_and_checks_without_replay(
+    ) {
+        let fake = Fake::new();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let host = CreationHost::new(
+            fake.dir.join("creations.json"),
+            service_clone_probe(&fake, calls.clone()),
+        );
+        let id = admitted(&host, repository_plan());
+        state(&host, &id, "unknown");
+        assert_eq!(*lock(&calls), [true]);
+        host.action(id.clone(), CreationAction::Check).unwrap();
+        wait("service clone lookup", || lock(&calls).len() == 2);
+        state(&host, &id, "unknown");
+        assert_eq!(*lock(&calls), [true, false]);
+        assert!(!fake
+            .log()
+            .iter()
+            .any(|args| args.first().is_some_and(|v| v == "repository")
+                && args
+                    .get(1)
+                    .is_some_and(|v| matches!(v.as_str(), "clone" | "status"))));
+        fake.stop(host);
+        let host = CreationHost::new(
+            fake.dir.join("creations.json"),
+            service_clone_probe(&fake, calls.clone()),
+        );
+        state(&host, &id, "recover");
+        host.action(id.clone(), CreationAction::Resume).unwrap();
+        assert!(host.flush_journal_for_test());
+        assert_eq!(
+            lock(&calls).len(),
+            2,
+            "Resume cannot restart an unknown clone"
+        );
+        host.action(id.clone(), CreationAction::Check).unwrap();
+        wait("recovered service clone lookup", || lock(&calls).len() == 3);
+        state(&host, &id, "unknown");
+        assert_eq!(*lock(&calls), [true, false, false]);
+        fake.stop(host);
+    }
+    #[test]
+    fn a_definitely_unsent_service_clone_fails_with_its_original_identity() {
+        let fake = Fake::new();
+        let mut services = fake.services();
+        services.service_clone = Some(Arc::new(|_, operation, fresh, _, _| {
+            assert!(fresh);
+            creation::Answer {
+                ok: true,
+                error: String::new(),
+                data: json!({"status":"failed", "request_id":operation["clone_id"],
+                    "path":operation["target"], "detail":crate::desktop_service::creation_clone::UNAVAILABLE}),
+            }
+        }));
+        let host = CreationHost::new(fake.dir.join("creations.json"), services);
+        let id = admitted(&host, repository_plan());
+        state(&host, &id, "failed");
+        let value = operation(&host, &id);
+        assert_eq!(value["failed_stage"], "cloning");
+        assert!(!text(&value, "clone_id").is_empty());
+        assert_eq!(
+            value["error"],
+            crate::desktop_service::creation_clone::UNAVAILABLE
+        );
+        fake.stop(host);
+    }
+
+    #[test]
+    fn task_reserved_creation_identity_cannot_authorize_a_fresh_service_clone() {
+        let fake = Fake::new();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut services = service_clone_probe(&fake, calls.clone());
+        // A reserved original still has a clone checkpoint, but never a native
+        // direct-Start capability. Its first service contact is read-only.
+        let journal = fake.dir.join("creations.json");
+        let captured = calls.clone();
+        services.service_clone = Some(Arc::new(move |id, operation, fresh, _, _| {
+            let saved: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+            assert_eq!(saved["operations"][id], *operation);
+            assert!(!fresh);
+            lock(&captured).push(fresh);
+            creation::Answer {
+                ok: false,
+                data: Value::Null,
+                error: zerus_client_core::repository::UNCONFIRMED_OPERATION.into(),
+            }
+        }));
+        let host = CreationHost::new(fake.dir.join("creations.json"), services);
+        let id = "88888888-8888-4888-8888-888888888888".to_owned();
+        assert!(matches!(
+            host.submit_reserved(repository_plan(), id.clone()).unwrap(),
+            Admission::Admitted { .. }
+        ));
+        state(&host, &id, "unknown");
+        assert_eq!(*lock(&calls), [false]);
+        assert!(!fake
+            .log()
+            .iter()
+            .any(|args| args.first().is_some_and(|v| v == "repository")
+                && args
+                    .get(1)
+                    .is_some_and(|v| matches!(v.as_str(), "clone" | "status"))));
+        fake.stop(host);
+    }
+
     #[test]
     fn a_failed_journal_write_sends_no_call_and_keeps_the_save_failure_text() {
         let fake = Fake::new();
@@ -1630,6 +1919,168 @@ mod tests {
         assert!(lock(&fake.probe.remembered).is_empty());
         assert_eq!(fake.probe.reads.load(Ordering::SeqCst), 0);
         fake.stop(host);
+    }
+
+    fn saved_creation(fake: &Fake) -> (String, Vec<u8>) {
+        let mut services = fake.services();
+        services.spawn = Arc::new(|_| {});
+        let host = CreationHost::new(fake.dir.join("creations.json"), services);
+        let id = admitted(&host, plan());
+        state(&host, &id, "checking");
+        fake.stop(host);
+        (id, std::fs::read(fake.dir.join("creations.json")).unwrap())
+    }
+
+    #[test]
+    fn original_preload_capture_precedes_recovery_and_every_later_journal_write() {
+        let fake = Fake::new();
+        let (id, original) = saved_creation(&fake);
+        let capture =
+            zerus_client_core::migration::preload::Capture::new(fake.dir.canonicalize().unwrap());
+        let mut services = fake.services();
+        services.allowed = false;
+        let captured_path = fake.dir.join("creation-preload-v1/original.bin");
+        let expected = original.clone();
+        let writes = Arc::new(AtomicUsize::new(0));
+        let count = writes.clone();
+        services.write = Arc::new(move |file, bytes| {
+            assert_eq!(std::fs::read(&captured_path).unwrap(), expected);
+            count.fetch_add(1, Ordering::SeqCst);
+            zerus_client_core::fsx::write_private_atomic(file, bytes, true).is_ok()
+        });
+        let host = CreationHost::new_with_capture(
+            fake.dir.join("creations.json"),
+            services,
+            Some(capture.clone()),
+        );
+        state(&host, &id, "recover");
+        assert!(!capture.status().paused);
+        host.action(id, CreationAction::Hide).unwrap();
+        assert!(host.flush_journal_for_test());
+        assert!(writes.load(Ordering::SeqCst) > 0);
+        let zerus_client_core::migration::preload::Prepared::Snapshot(snapshot) =
+            capture.prepare().unwrap()
+        else {
+            panic!("missing original")
+        };
+        assert_eq!(snapshot.bytes().unwrap(), original);
+        assert!(fake.log().is_empty());
+        fake.stop(host);
+    }
+
+    #[test]
+    fn failed_original_capture_fences_all_mutating_inputs_and_retry_keeps_its_identity() {
+        use std::os::unix::fs::PermissionsExt;
+        let fake = Fake::new();
+        let (id, original) = saved_creation(&fake);
+        let path = fake.dir.join("creations.json");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let capture =
+            zerus_client_core::migration::preload::Capture::new(fake.dir.canonicalize().unwrap());
+        let mut services = fake.services();
+        services.allowed = true;
+        services.spawn = Arc::new(|_| {});
+        let writes = Arc::new(AtomicUsize::new(0));
+        let count = writes.clone();
+        services.write = Arc::new(move |_, _| {
+            count.fetch_add(1, Ordering::SeqCst);
+            false
+        });
+        let host = CreationHost::new_with_capture(path.clone(), services, Some(capture.clone()));
+        assert!(host.flush_journal_for_test());
+        assert!(capture.status().paused);
+        let capture_id = capture.status().capture_id.unwrap();
+        for action in [
+            CreationAction::Hide,
+            CreationAction::Show,
+            CreationAction::Stop,
+            CreationAction::Resume,
+            CreationAction::Check,
+        ] {
+            assert!(host
+                .action(id.clone(), action)
+                .unwrap_err()
+                .contains("paused"));
+        }
+        assert!(
+            matches!(host.submit(plan()).unwrap(),Admission::Refused{refused} if refused.contains("paused"))
+        );
+        host.catalog_changed();
+        assert!(host.flush_journal_for_test());
+        assert!(host.view().is_empty());
+        assert_eq!(writes.load(Ordering::SeqCst), 0);
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(fake.log().is_empty());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        capture.request_retry();
+        host.catalog_changed();
+        state(&host, &id, "recover");
+        assert!(!capture.status().paused);
+        assert_eq!(
+            capture.status().capture_id.as_deref(),
+            Some(capture_id.as_str())
+        );
+        assert_eq!(writes.load(Ordering::SeqCst), 0);
+        fake.stop(host);
+    }
+
+    #[test]
+    fn quit_during_the_original_capture_never_loads_or_writes_after_completion() {
+        let fake = Fake::new();
+        let (_, original) = saved_creation(&fake);
+        let capture =
+            zerus_client_core::migration::preload::Capture::new(fake.dir.canonicalize().unwrap());
+        let (entered, answer) = mpsc::sync_channel(1);
+        let (release, resume) = mpsc::sync_channel(1);
+        let resume = Mutex::new(resume);
+        capture.hook(Arc::new(move || {
+            entered.send(()).unwrap();
+            lock(&resume).recv().unwrap();
+        }));
+        // Existing fixture events belong to the earlier native-mode load.
+        lock(&fake.probe.events).clear();
+        let mut services = fake.services();
+        services.write = Arc::new(|_, _| panic!("quitting source wrote"));
+        let host = CreationHost::new_with_capture(
+            fake.dir.join("creations.json"),
+            services,
+            Some(capture),
+        );
+        answer.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(!host.flush(Duration::from_millis(1)));
+        release.send(()).unwrap();
+        fake.stop(host);
+        assert_eq!(
+            std::fs::read(fake.dir.join("creations.json")).unwrap(),
+            original
+        );
+        assert!(fake.log().is_empty());
+        assert!(
+            lock(&fake.probe.events).is_empty(),
+            "late load emitted a recovered creation"
+        );
+    }
+
+    #[test]
+    fn unsupported_capture_is_visible_and_quit_keeps_original_bytes_without_a_write() {
+        let fake = Fake::new();
+        let path = fake.dir.join("creations.json");
+        let original = br#"{"schema":999,"operations":{}}"#;
+        zerus_client_core::fsx::write_private_durable(&path, original).unwrap();
+        let capture =
+            zerus_client_core::migration::preload::Capture::new(fake.dir.canonicalize().unwrap());
+        let mut services = fake.services();
+        services.write = Arc::new(|_, _| panic!("paused capture wrote a journal"));
+        let host = CreationHost::new_with_capture(path.clone(), services, Some(capture.clone()));
+        assert!(host.flush_journal_for_test());
+        assert_eq!(capture.status().code, "creation_source_unsupported");
+        fake.stop(host);
+        assert_eq!(std::fs::read(path).unwrap(), original);
+        assert_eq!(
+            std::fs::read(fake.dir.join("creation-preload-v1/original.bin")).unwrap(),
+            original
+        );
+        assert!(fake.log().is_empty());
     }
 
     #[test]
@@ -2283,6 +2734,7 @@ mod tests {
             digest: "fixture-digest".into(),
             base: catalog.clone(),
             versions: json!({}),
+            ..Default::default()
         };
         organization.set_source(Arc::new(move || Some(snapshot.clone())));
         let change = Change::Organization {
@@ -2455,6 +2907,15 @@ mod tests {
 
     #[test]
     fn bound_edits_wait_once_for_readiness_then_once_for_the_member_without_journal_or_notice() {
+        bound_edits_phases(true);
+    }
+
+    #[test]
+    fn bound_edits_coalesce_readiness_and_member_arrival_without_a_second_retry() {
+        bound_edits_phases(false);
+    }
+
+    fn bound_edits_phases(separate_member: bool) {
         let fake = Fake::new();
         let pump = crate::pump::Pump::default();
         let organization = organization_fixture(&fake, &pump, true);
@@ -2505,24 +2966,38 @@ mod tests {
                 reason: None,
             });
         }
-        // Two worker messages prove a pass occurred while readiness was unchanged.
-        let _ = host.action(id.clone(), CreationAction::Show);
-        let _ = host.action(id.clone(), CreationAction::Show);
+        // Drain the complete unchanged-readiness pass, rather than treating
+        // an Action reply (sent before reconciliation) as its completion.
+        assert!(host.flush_journal_for_test());
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
-        let change = ready_organization(&organization);
-        host.observe(&change);
-        wait("one attempt after ready", || {
-            attempts.load(Ordering::SeqCst) == 2
-        });
-        let change = row_for_binding(&pump);
-        host.observe(&change);
+        let org = organization.clone();
+        let rows = pump.clone();
+        let wake = host.clone();
+        assert!(host.arrange_for_test(move || {
+            let change = ready_organization(&org);
+            wake.observe(&change);
+            if !separate_member {
+                let change = row_for_binding(&rows);
+                wake.observe(&change);
+            }
+        }));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        if separate_member {
+            let rows = pump.clone();
+            let wake = host.clone();
+            assert!(host.arrange_for_test(move || {
+                let change = row_for_binding(&rows);
+                wake.observe(&change);
+            }));
+        }
         wait("the exact member moved", || {
             !pump.members_of("p").is_empty()
         });
         let settled = attempts.load(Ordering::SeqCst);
-        assert!(
-            matches!(settled, 2 | 3),
-            "readiness and member arrival may share one wake"
+        assert_eq!(
+            settled,
+            if separate_member { 3 } else { 2 },
+            "one attempt per explicitly completed fixture phase"
         );
         assert!(host.flush_journal_for_test());
         assert_eq!(
@@ -2579,6 +3054,7 @@ mod tests {
             },
         );
         state(&host, &id, "bound");
+        assert!(host.flush_journal_for_test());
         assert_eq!(text(&operation(&host, &id), "error"), "");
         assert!(lock(&fake.probe.events)
             .iter()

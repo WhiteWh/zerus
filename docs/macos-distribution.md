@@ -45,31 +45,170 @@ See [DMG installation](installation.md#macos-dmg) for CLI and local-session setu
 
 | Path | Content |
 | --- | --- |
-| `Contents/MacOS/hgs-tray` | GUI; the executable keeps its name |
+| `Contents/MacOS/hgs-tray` | Zerus Next (Tauri); the executable keeps its name |
 | `Contents/MacOS/hgs` | CLI, linked by the cask into Homebrew's `bin` |
 | `Contents/MacOS/zerus-mobile-connector` | Rust mobile connector, signed with the other code; its LaunchAgent is opt-in through `zerus-setup --mobile-connector install` |
-| `Contents/Frameworks`, `Contents/PlugIns` | Qt frameworks and plugins deployed by `macdeployqt` |
 | `Contents/Resources/bin/zerus-setup` | Per-user setup, linked by the cask |
-| `Contents/Resources/setup` | `hgs_state.py`, the three LaunchAgent installers with their `launchd_agent.py` helper, the mobile connector's service installer and the tray LaunchAgent template |
-| `Contents/Resources/licenses` | Zerus, libvterm, md4c, Codex and Cargo notices; `qt/` holds LGPL-3.0, GPL-3.0, Qt's SPDX documents including Chromium components, and the Qt source location |
+| `Contents/Resources/setup` | `hgs_state.py`, the desktop/session/recovery/swarm LaunchAgent installers, `launchd_agent.py`, the mobile connector's service installer and the tray LaunchAgent template |
+| `Contents/Resources/licenses` | Zerus and Codex notices, CLI/connector Cargo notices in `rust/`, Tauri Cargo notices in `client-rust/`, and locked frontend notices in `frontend/` |
 
 The bundle ID stays `com.hgdev.hgs-tray`, so settings, drafts and LaunchAgent
 labels are shared with source installations. `CFBundleShortVersionString` is the
-product version; `ZerusReleaseVersion` holds the stable or nightly release version,
+product version; `ZerusReleaseVersion` holds the stable, nightly or numbered Dev release version,
 which the GUI compares to offer **Restart to finish update** after an upgrade, even
 between nightlies of one product version. `CFBundleName` is `Zerus` and
 `LSMinimumSystemVersion` is 14.0, the desktop deployment floor in
-`tray/CMakeLists.txt`. Every Mach-O file is arm64 only.
+`client/src-tauri/tauri.switch.conf.json`. Every Mach-O file is arm64 only.
 `scripts/check-macos-bundle.py` enforces the layout, notices, `Info.plist`
 identity, minimum macOS version and that every library reference resolves inside
-the bundle or the system.
+the bundle or the system. Public jobs use `--gui tauri --release RELEASE`, which
+checks the bundled CLI, connector and all three dependency-notice inventories
+and refuses Qt. Next uses the system WebKit and AVFoundation frameworks.
 
-The cask has no `postflight`, `uninstall quit:`, `uninstall launchctl:` or
-`auto_updates`: an upgrade must not quit the GUI or unload agents. `zap` removes
-only logs, saved window state and the five Zerus LaunchAgents, the mobile
-connector's included; never `connector.json` or the connector's journal in
-`~/.local/state/hgs/mobile-connector`, whose tombstones keep phone requests from
-running twice.
+The casks have no install/uninstall hooks or `zap` action: upgrades and removal
+never quit the GUI, unload agents or write to user homes. Per-user setup and
+removal stay explicit through `zerus-setup` and `zerus-setup --remove`. Existing
+settings, drafts, logs and connector journals remain on disk.
+
+Explicit `zerus-setup` also registers `com.hgdev.hgs-desktop` in the current
+user's Aqua session. It consumes the selected CLI's `desktop registration
+--json` definition and checks the lifecycle ABI, configuration and loaded actor
+PID before reporting IPC ready. A missing Aqua session saves the registration
+for next login and reports readiness as unverified. IPC readiness does not mean
+that background workers have started. Unmarked or linked files and definitions
+for another configuration are kept. A marker for the same configuration and
+service label identifies an owned registration even when its old CLI path or definition differs. The
+installer checks a loaded job against that old argv before replacing or
+removing it.
+
+Native frontend requests, including ownership Grant/Rearm, and explicit service
+mode changes share one macOS ancestry check. Every own-user process keeps its
+full native identity, executable, environment and agent-marker checks. Foreign
+ancestors are classified using short BSD metadata and the native executable
+path: full BSD metadata can be inaccessible for root-owned processes.
+
+The root-owned `/usr/bin/login` used by Terminal is only a bridge. It must be
+the protected system image, have effective and saved UID zero, real UID equal
+to the desktop user, and matching PID, process group and session ID. The walk
+checks the original child-parent generation identities and continues through
+Terminal; an agent above the bridge still refuses. It ends only at the verified
+root `/sbin/launchd` PID 1 with parent 0. Native process generations, executable
+UUIDs, versions, credentials and protected image metadata are re-read after the
+walk, including the bridge and Terminal. Changed or unavailable evidence and
+every other foreign ancestor refuse. In particular, an SSH ancestry containing
+a root `sshd-session` is unsupported; use the actual installed frontend or a
+foreground Terminal outside Zerus. Linux keeps its separate per-user-manager
+boundary.
+
+Identity comparisons include only the fixed SYSTEM, LP64, PSUGID and EXEC
+flags. App Nap, scheduling/resource-control flags and live scheduler states may
+change between reads. Tracing is a separate explicit refusal on both the first
+and final read; unavailable identities and zombie processes still refuse.
+This checks current ancestry: a same-user process reparented to launchd with its
+own controlling terminal is outside its scope, as on Linux.
+
+The Darwin caller fixture prints a bounded PID/UID/real-UID/path/session topology
+before its positive case. Only on GitHub-hosted macOS may an observed unsupported
+foreign ancestor skip that fixture with an explicit reason. Unreadable metadata
+and failures of the recognized login/launchd checks still fail; the diagnostic
+never grants native permission or establishes installed acceptance.
+Agent-marker, agent-named executable and checker-impersonation refusal cases
+run before that hosted-only skip is considered.
+
+Source `install.sh` reloads a PATH-backed desktop service when its CLI bytes
+change. An owned service with a separate runner keeps its registered backend;
+the CLI-only install refreshes its ordinary runner without selecting a different
+service image. After rollback to an existing unpaired app, a missing bundled CLI
+and absent pair record restore the ordinary stable-CLI registration. A remaining
+pair record, present-but-broken helper, missing app or link still refuses.
+That repair preserves the owned service mode; it does not select passive mode
+or create a new background grant.
+Recovery, swarm and voice retain their existing installer/update rules.
+`tray/install.sh` preflights it before the GUI swap and retains an
+unchanged active backend during GUI-only updates.
+
+### Explicit desktop service mode
+
+Fresh LaunchAgent registration is passive. Start the maintained Next frontend
+in service mode and complete its authenticated Grant against that passive
+actor first; a retained revoke requires explicit Rearm. Then use the maintained
+helper from a foreground terminal **outside Zerus** in the current Aqua login:
+
+```sh
+python3 scripts/install-macos-desktop-service.py "$APP/Contents/MacOS/hgs" \
+  --runner-hgs "$RUNNER_HGS" --mode background --json
+python3 scripts/install-macos-desktop-service.py "$APP/Contents/MacOS/hgs" --status --json
+```
+
+`APP` and `RUNNER_HGS` are the exact installed paired app and independent runner,
+not a build or guessed sibling. Optional absolute `--config-dir` and `--state-dir`
+select the same configuration as the frontend. Registration is rendered by the
+signed bundled service CLI before the ordinary runner override is applied. A
+mode change preserves that service/runner split; ordinary GUI installs and
+CLI-only `--refresh-runner` also preserve the selected mode. The GUI's own
+`--hgs` selection is unchanged.
+
+The native shared caller guard requires the actual controlling foreground TTY
+or installed frontend ancestor and rejects agent ancestry, including stripped
+child environments. `HGS_SESSION`/`HGS_RUN_ID` in terminals opened inside Zerus
+also refuse. A missing/stale native ownership grant, no Aqua session, custom
+plist controls or an unknown original transition refuses. The helper does not
+create a grant, clear revoke, change defaults or restart the GUI. It reloads
+only the owned `com.hgdev.hgs-desktop` LaunchAgent; other services and agents
+remain under their own lifecycle.
+
+For rollback, use the same selections with `--mode passive --json`. The helper
+checks the selected CLI's `desktop-revoke-hold-v1` help marker before recording
+one original rollback UUID or offering its revoke. Before any unload or rewrite,
+it requires that exact durable checkpointed runtime/resource drain and acquires
+the original native hold child. Its stdin writer stays private and open through
+bootout, plist/record writes, bootstrap and passive readiness. While held, every
+manager and CLI command checks that same child before and after; manager children receive
+DEVNULL stdin and cannot inherit the writer. Success requires its matching
+release frame, actual exit and both pipe EOFs before clearing the transition.
+See [the original hold contract](desktop-revoke-hold.md). An uncertain
+result retains `transition.request_id`; inspect `--status --json` and resume only
+the same passive transition. Do not replace the UUID or switch to background
+while rollback is pending. After success `last_revoke_request_id`
+identifies that original receipt. Returning to background needs authenticated
+frontend Rearm. `selected_mode`, `running_mode` and `pending_restart` are separate
+status fields; they do not grant permission or prove individual workers ready.
+Mode changes require an already owned registration and the current Aqua login.
+Fresh setup is passive; headless refresh preserves the existing selection and
+does not establish active-background acceptance.
+
+If a newer authenticated Grant/Rearm won before the hold, the old UUID refuses.
+A pending record can also remain if the helper stopped before its original
+revoke took effect. With a verified current Service grant, the owner can cancel
+only that registration metadata using the original UUID:
+
+```sh
+python3 scripts/install-macos-desktop-service.py "$APP/Contents/MacOS/hgs" \
+  --runner-hgs "$RUNNER_HGS" --cancel-rollback --request-id ORIGINAL_UUID --json
+```
+
+Cancellation repeats the native caller and current-grant checks under the same
+installer lock, keeps the plist, selected mode, native grants/revoke receipts and
+manager unchanged, and records `last_cancelled_rollback_request_id`. It performs
+no launchctl operation. A later `--mode passive` is a separate explicit intent
+with a new UUID; unknown originals are never automatically resent or rotated.
+Do not delete records or the database to recover.
+
+The signed app's fixed `--desktop-notification-host` entry keeps
+`com.hgdev.hgs-tray` without a window, Dock tile or ordinary GUI instance.
+Its sealed `HGSDesktopNotificationHostABI` capability lets the desktop service
+refuse older apps before attempting that entry. This is an internal entry:
+it requires the factory's inherited connected socket and private owner lock,
+then verifies its own paired bundle and the actual service peer before reading
+commands. A command-line invocation cannot establish that ownership. Native
+completion blocks and outgoing receipts retain the original work until their
+actual teardown; a timeout never starts a replacement host. Service activation
+and signed native delivery acceptance remain separate from shipping this entry.
+
+A custom or foreign `com.hgdev.hgs-desktop.plist` makes this preflight refuse
+the GUI update before replacing the app. Review or migrate that definition
+deliberately, then rerun the installer; it does not overwrite another
+configuration's LaunchAgent to complete an update.
 
 `zerus-setup --mobile-connector install` writes the
 `com.hgdev.zerus-mobile-connector` LaunchAgent for the bundled connector
@@ -89,7 +228,10 @@ identifier and team satisfy. This was rehearsed on 2026-10-17 with a signed main
 build under a fixture label, on a Mac where Zerus already had that consent, and
 no prompt appeared (`zerus-nbzl.23`).
 
-## Pinned Qt
+## Legacy Qt bundles
+
+The release, Nightly and Dev bundle jobs build Zerus Next without Qt. The
+pinned Qt tooling below remains for legacy builds and their regression checks.
 
 `packaging/macos/qt.json` pins official Qt **6.11.2** (`qtbase`, `qtsvg`,
 `qtmultimedia`, `qttools`, `qtdeclarative`) by archive size and SHA-256. `qttools`
@@ -144,16 +286,17 @@ The same three stages remain required. Stable/Nightly start them after full
 verification. Dev overlaps only the credential-free bundle with its core gate;
 `macos-cask.yml` reuses that exact run's checked artifact and waits for both before
 signing. An unsigned version from another Dev run is refused before key import.
-The bundle packages the Release app already exercised by its pinned-Qt test build,
-so it no longer compiles the same GUI again with `BUILD_TESTING=OFF`:
+The unsigned job builds the Release Tauri switch app with voice and video, then
+packages that same output for all channels:
 
 1. **macOS bundle** (`macos-15`, no secrets) selects the release version (the
    product version, the nightly version computed exactly like
-   `prepare-nightly.py`, or `DEV_VERSION-dev.<CI run_number>`), installs the pinned Qt and runs
-   `scripts/ci/macos-bundle.sh`. It builds the CLI and GUI with a macOS 14.0 target,
-   runs every Qt suite against the bundled Qt, assembles the production bundle,
+   `prepare-nightly.py`, or `DEV_VERSION-dev.<CI run_number>`), installs the locked
+   npm toolchain and runs `scripts/ci/macos-bundle.sh`. It builds the CLI, connector
+   and Next with a macOS 14.0 target, runs frontend and Rust regression tests
+   (only numbered Dev may opt out), and assembles the production bundle,
    runs the bundle checks and self-tests and uploads `Zerus-unsigned.zip`.
-   Dev passes the same CI sequence to CMake. The unsigned, mounted and installed
+   Dev passes the same CI sequence to the Tauri build. The unsigned, mounted and installed
    apps report their embedded build identity through `--build-info`; validation
    requires the expected version, Dev sequence and clean source commit.
    Bundle and installation runners install `tmux` explicitly. Self-tests use a
@@ -200,13 +343,17 @@ that would need JIT.
 The Arch assembly job then adds the signed ZIP, DMG and rendered cask through
 `prepare-release.py --macos` (`homebrew/zerus.rb`) or `prepare-nightly.py --macos`
 (`homebrew/zerus@nightly.rb`). The candidate records release-info schema 2: every
-schema 1 field is unchanged, plus `macos` (asset, Qt version, Team ID, notarization
+schema 1 field is unchanged, plus `macos` (asset, legacy `qt_version`, Team ID, notarization
 ID, minimum macOS, and `dmg: {asset, notarization_id}`) and `homebrew_casks`
 (`["zerus"]` or `["zerus@nightly"]`). Older schema-2 releases without `dmg`
-remain valid; all new signed builds require both formats.
-`SHA256SUMS` covers both assets, and validation requires the cask to equal its template
-in `packaging/homebrew/` with only the version, digest and, for a nightly, the
-immutable `nightly-RUN_ID` tag substituted.
+remain valid; all new signed builds require both formats. The `qt_version`
+field remains a semantic-version compatibility marker for existing Qt and Next
+feed parsers; it does not indicate a Qt dependency in Next.
+`SHA256SUMS` covers both assets. New casks use the templates in
+`packaging/homebrew/` with only the version, digest and, for a nightly, the
+immutable `nightly-RUN_ID` tag substituted. Sealed-candidate validation also
+accepts the exact reviewed pre-Next templates in `packaging/homebrew/previous/`
+so publication retries preserve the original candidate without rebuilding it.
 The cask continues to download the ZIP. Deploy DMG-aware `update_feed.py` on
 the website mirror before publishing the first DMG candidate: both macOS files
 remain on GitHub and are excluded from the existing desktop catalog artifact kinds.
@@ -322,15 +469,12 @@ checkout with retained Cargo and CMake build directories keeps subsequent
 iterations incremental. Use the CI sequence of that exact main push as
 `ZERUS_DEV_BUILD_NUMBER`; do not wait for its result.
 
-From that clean checkout on the Mac, configure the GUI without test targets,
-then use the maintained installers:
+From that clean checkout on the Mac, use the maintained installers. The default
+GUI is Zerus Next; Node/npm and Rust must be installed:
 
 ```sh
 export ZERUS_DEV_BUILD_NUMBER=NUMBER_FROM_THIS_MAIN_PUSH
 export HGS_MOBILE_CONNECTOR=0
-cmake -S tray -B tray/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
-  -DZERUS_DEV_BUILD_NUMBER="$ZERUS_DEV_BUILD_NUMBER" \
-  -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
 bash install.sh
 bash tray/install.sh
 ```
@@ -357,8 +501,9 @@ a local evaluation build, not a public update channel or a main publication.
 Before returning the checkout to main, clear `ZERUS_LOCAL_PREVIEW_LABEL` and set
 the exact main CI sequence again. Build labels must never hide dirty sources.
 
-`tray/install.sh` copies the raw bundle to a disposable staging directory and
-signs that copy through `tray/sign-local-macos.py` before replacing or restarting
+For Next, `tray/install.sh` prepares a disposable app/CLI pair through
+`tray/prepare-local-macos.py`, then signs it through `tray/sign-local-macos.py`
+before replacing or restarting
 the installed application. Only after selecting a compatible certificate does the helper promote
 the staged copy to the installed `com.hgdev.hgs-tray` identifier; failed preparation
 restores the local identifier and the installer removes its temporary copy.
@@ -367,6 +512,45 @@ application-signing identity already in the local keychain; it never imports or
 unlocks credentials and never falls back to ad hoc signing. `mac-install.sh`
 uses the destination Mac's keychain and forwards the optional
 `HGS_MACOS_SIGN_IDENTITY` exact certificate name or SHA-1 selector.
+
+The paired copy contains exactly the app and `Contents/MacOS/hgs`. The signer
+signs the CLI first with identifier `hgs`, then seals it and
+`Contents/Resources/zerus-local-pair.json` into the app. The record contains the
+unsigned build artifact's SHA-256 and the signed CLI's SHA-256. Both signatures
+must be genuine Apple application signatures from the same team, with stable
+designated requirements; both retain mutual continuity with an existing pair.
+Unexpected nested Mach-O files, links and special files refuse preparation.
+The signer's default single-executable mode remains available for the explicit
+`HGS_MAC_GUI=qt` fallback.
+
+The independent `~/.local/bin/hgs` remains the ordinary CLI for agents, hooks and
+session recipes. Before building or replacing the GUI, the installer requires
+its bytes to equal the root build artifact. A mismatch asks you to run
+`./install.sh` (or `mac-install.sh`) from the same checkout first. A custom Cargo
+output can be selected with `HGS_MAC_CLI_BUILD=/absolute/path/to/release/hgs`;
+`mac-install.sh` passes its retained native artifact explicitly. Signing changes
+only the private bundle copy, never that artifact or the stable CLI.
+
+After the app swap, the owned desktop LaunchAgent selects the signed bundled
+CLI as its executable and sets `HGS_EXECUTABLE` to the independent stable CLI
+for ordinary descendants. A changed backend reloads only this desktop service;
+an unchanged backend stays running. The GUI keeps its explicit `--hgs` stable
+CLI selection. The desktop-service client selects the bundled CLI only through
+fresh native running-self and sealed-pair verification; a purported pair that
+fails stays unavailable. Unpaired/source launches keep ordinary CLI discovery.
+The read-only service client verifies once per connection, then checks the fixed
+generation metadata before each CLI exchange; catalog pages do not rehash the
+whole app. Changed generations refuse until an explicit reconnect verifies again.
+Ancestors are compared by identity, mode and ownership, so unrelated home-folder
+updates do not invalidate the app. The bundle directory's ctime is excluded
+because last-used xattrs change it; code, plist and seal files keep full stamps.
+The shared `desktop::relay::select` API also supplies the bundled service image
+for the authenticated frontend-request sender; that still-unavailable sender is
+a separate UI integration. The stable runner is not native authority.
+Native host entry/cutover is a separate
+change: pairing alone enables neither notifications nor a new permission.
+`update-installed.py` still saves drafts, checks native processes and keeps one
+rollback app; an old Qt copy continues to use the stable CLI.
 
 When a certificate-signed app is already installed, selection follows its team
 and signing class. A local rebuild of the published app therefore needs a
@@ -436,7 +620,7 @@ On the owner's decision of 2026-10-28, the Tauri client (`client/`) replaces the
 
 ### The switch bundle
 
-`client/scripts/switch-config.py` writes `client/src-tauri/target/switch.conf.json` from `client/src-tauri/tauri.switch.conf.json` and `VERSION`; `tauri build --config` with it produces `Zerus.app`:
+`client/scripts/switch-config.py` writes `client/src-tauri/target/switch.conf.json` from `client/src-tauri/tauri.switch.conf.json` and `VERSION`, plus a generated Info.plist with `ZerusReleaseVersion`. `--release` selects the distribution release; local numbered Dev builds derive it from `DEV_VERSION` and `ZERUS_DEV_BUILD_NUMBER`. The source template stays unchanged. `tauri build --config` with it produces `Zerus.app`:
 
 - **Identity.** It has the executable `hgs-tray` and the build identifier `com.hgdev.hgs-tray.local`; `tray/sign-local-macos.py` promotes its signed copy to `com.hgdev.hgs-tray`, as for Qt's raw bundles.
 - **Info.plist.** `Info.switch.plist` adds Qt's keys:
@@ -455,7 +639,7 @@ The client behaves as Qt does at the points other tools rely on:
 - **Notifications.** It posts Qt's attention notifications under the same identifiers (`zerus.attention.<token>`). Qt's saved `attention.observed` seeds the client's state once, so banners Qt delivered are withdrawn and stay clickable. Qt's update notices ("Zerus update available") are not ported yet (`zerus-5wmh.12.4`).
 - **Main-thread watchdog.** Qt's: a main thread silent for 30 s aborts the client, so launchd's `KeepAlive Crashed` restarts it, with a hold around sleep and dark wakes. The menu and modal panels do not stop its heartbeat.
 
-The client keeps its own data in `~/Library/Application Support/com.hgdev.hgs-tray/`: read marks, `attention-observed.json`, `menubar.json` and its drafts root, `drafts/`. It reads Qt's settings domain, `~/.config/hgs/tray.conf` and Qt's drafts, and never writes them. Its settings are seeded once, at its first start, from Qt's values (coordinator ruling: "Seed it once from Qt's values with Qt's types and defaults, and never write Qt's store"). The seed reads Qt's domain read-only through `defaults export`, records itself in `settings.json` (source, time, keys) and never runs again, so a later Qt edit is not imported. Three exceptions: the client's own `client/…` settings start at their defaults; the microphone (`speech/microphone`) must be chosen again, because Qt keeps a device id the client cannot use; and automatic approvals stay off, since Qt's choice is kept only as `automaticApprovals/qtEnabledAtSwitch` so the page can say Qt had them on (`zerus-5wmh.54`). Read marks start fresh, since the hosts' read state is authoritative; the one-time draft import (`zerus-5wmh.13.1`) copies Qt's drafts and the dev app's drafts into its drafts root, reading both read-only. AppKit writes its own keys into the shared defaults domain: the status item's position and visibility (`NSStatusItem …`) and, where used, window and panel state (`NSWindow Frame …`, `NSNav…`). The updater reports them after each client update.
+The client keeps its own data in `~/Library/Application Support/com.hgdev.hgs-tray/`: read marks, `attention-observed.json`, `menubar.json` and its drafts root, `drafts/`. It reads Qt's settings domain, `~/.config/hgs/tray.conf` and Qt's drafts, and never writes them. Its settings are seeded once, at its first start, from Qt's values (coordinator ruling: "Seed it once from Qt's values with Qt's types and defaults, and never write Qt's store"). The seed reads Qt's domain read-only through `defaults export`, records itself in `settings.json` (source, time, keys) and never runs again, so a later Qt edit is not imported. Three exceptions: the client's own `client/…` settings start at their defaults; the microphone (`speech/microphone`) must be chosen again, because Qt keeps a device id the client cannot use; and automatic approvals start off: Qt's choice is kept only as historical `automaticApprovals/qtEnabledAtSwitch`, never as consent. Next requires its own explicit confirmation before its automatic-approval worker runs (`zerus-5wmh.54`). Read marks start fresh, since the hosts' read state is authoritative; the one-time draft import (`zerus-5wmh.13.1`) copies Qt's drafts and the dev app's drafts into its drafts root, reading both read-only. AppKit writes its own keys into the shared defaults domain: the status item's position and visibility (`NSStatusItem …`) and, where used, window and panel state (`NSWindow Frame …`, `NSNav…`). The updater reports them after each client update.
 
 ### Building and installing
 
@@ -463,10 +647,10 @@ Numbered Dev installs need a clean checkout of the exact main commit, as for Qt:
 
 ```sh
 export ZERUS_DEV_BUILD_NUMBER=NUMBER_FROM_THIS_MAIN_PUSH
-HGS_MAC_GUI=client bash tray/install.sh
+bash tray/install.sh
 ```
 
-- **Choosing the GUI.** `HGS_MAC_GUI=client` chooses the client; later runs keep whichever GUI is installed (`HGS_MAC_GUI=qt` chooses Qt again). `mac-install.sh` ships the client sources and forwards `HGS_MAC_GUI`, but its tarball has no Git metadata and cannot make a numbered build.
+- **Choosing the GUI.** Fresh installs and upgrades use Zerus Next, including when Qt is installed. `HGS_MAC_GUI=client` selects it explicitly; `HGS_MAC_GUI=qt` selects the temporary Qt fallback until Mac acceptance. A later install without that override selects Next again. `mac-install.sh` ships the client sources and forwards the same choice, but its tarball has no Git metadata and cannot make a numbered build. The maintained updater keeps Qt as the rollback copy after the switch.
 - **The build.** It needs npm and Rust 1.99.1 on the Mac. With the `media` feature present, the build enables it. It always builds into `client/src-tauri/target`, whatever `CARGO_TARGET_DIR` says, since the installer takes the bundle from there, and the installer's job count bounds Cargo as it bounds the Qt build (`CARGO_BUILD_JOBS` overrides it).
 - **The updater at the switch.** `tray/update-installed.py`:
   1. quits Qt as its Quit action does, so Qt saves its drafts: SIGTERM, which current builds handle, or the quit Apple Event for an older one;

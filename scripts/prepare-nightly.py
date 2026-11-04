@@ -12,6 +12,7 @@ from macos_release import add_macos
 from nightly_common import PACKAGE, ROOT, nightly_version, render_recipe, windows_asset
 from release_common import require, sha256
 import windows_portable
+import windows_installer_release
 
 
 def main():
@@ -22,6 +23,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--run-id", type=int, required=True)
     parser.add_argument("--run-number", type=int, required=True)
+    parser.add_argument("--windows-installer", type=Path, required=True, help="tested installer from the same CI run")
+    parser.add_argument("--windows-installer-info", type=Path, required=True, help="the installer CI build metadata")
     parser.add_argument("--macos", type=Path, help="signed and notarized macOS artifact from the macos-signing job")
     args = parser.parse_args()
     require(args.run_id > 0, "Invalid nightly run ID.")
@@ -29,9 +32,8 @@ def main():
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     count = int(subprocess.check_output(["git", "rev-list", "--count", "HEAD"], cwd=ROOT, text=True))
     version = nightly_version(product, count, commit, args.run_number)
-    # Reads only the zip directory, build-info.json and the pinned ConPTY pair
-    # (checked in memory); never extracts or runs it.
-    windows_portable.require_build(args.windows_zip, commit, product)
+    installer_build = windows_installer_release.require_build(
+        args.windows_installer, args.windows_zip, args.windows_installer_info, version, product, commit)
     args.output.mkdir(parents=True, exist_ok=True)
     require(not any(args.output.iterdir()), "Use an empty nightly output directory.")
     with tempfile.TemporaryDirectory(prefix="zerus-nightly-") as temporary:
@@ -50,6 +52,7 @@ def main():
     # The tested CI bytes under their nightly name: renamed, never rebuilt.
     info["windows_portable"] = windows_asset(version)
     shutil.copyfile(args.windows_zip, args.output / info["windows_portable"])
+    windows_installer_release.add(args.output, args.windows_installer, installer_build, version, info)
     recipe = args.output / "aur" / PACKAGE
     recipe.mkdir(parents=True)
     (recipe / "PKGBUILD").write_text(render_recipe(info, sha256(binary)))

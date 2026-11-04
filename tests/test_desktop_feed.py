@@ -119,6 +119,39 @@ class Feed(unittest.TestCase):
             self.assertFalse(result['accepted'])
         self.assertFalse((self.root / 'unexpected-tool').exists())
 
+    def test_shared_counts_follow_publication_offline_and_service_restart(self):
+        service, status = self.serve()
+        _, hello, notifications = self.watch()
+        self.assertIsNone(hello['value']['attention_counts']['aggregate']['attention'])
+        process, _, frames = self.feed()
+        self.send(process, frames, self.begin(rows=1))
+        row = self.item(0)
+        row['row'].update(tracked=True, activity='busy', phase='input', attention_signature='sig')
+        self.send(process, frames, dict(t='legacy_page', computer='peer', generation=1, index=0, items=[row]))
+        self.send(process, frames, dict(t='legacy_complete', computer='peer', generation=1))
+        change = [notifications.get(timeout=5) for _ in range(3)][-1]
+        counts = change['value']['attention_counts']
+        self.assertEqual(counts['epoch'], status['epoch'])
+        self.assertEqual(counts['revision'], change['seq'])
+        self.assertEqual(counts['projection_generation'], status['generation'])
+        self.assertEqual(counts['scope'], 'shared_host_state')
+        self.assertFalse(counts['local_marks_included'])
+        self.assertFalse(counts['authority'])
+        self.assertEqual(counts['aggregate']['attention'], 1)
+        process.stdin.close()
+        process.wait(timeout=5)
+        self.until(lambda: not self.status()['producer_connected'] and not self.status()['retiring'])
+        counts = self.cli('desktop', 'status', '--json')['attention_counts']
+        self.assertIsNone(counts['aggregate']['attention'])
+        self.assertFalse(counts['aggregate']['complete'])
+        self.assertEqual(counts['computers'][0]['total'], 1)
+        self.assertFalse(counts['computers'][0]['online'])
+        self.stop(service)
+        _, restarted = self.serve()
+        self.assertNotEqual(restarted['epoch'], status['epoch'])
+        self.assertIsNone(restarted['attention_counts']['aggregate']['attention'])
+        self.assertFalse(restarted['attention_counts']['aggregate']['complete'])
+
     def test_exclusion_eof_retirement_and_new_incarnation(self):
         self.serve()
         first, hello, frames = self.feed()

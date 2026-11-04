@@ -282,6 +282,10 @@ mod tests {
         assert_eq!(view.projects[0].folders[1].machine_id, "m-4");
         assert_eq!(view.unconnected, ["build-01"]);
         assert_eq!(
+            serde_json::to_value(&view).unwrap()["unconnected"],
+            json!(["build-01"])
+        );
+        assert_eq!(
             view.notice.as_deref(),
             Some("Session connections for build-01 do not share project catalogs yet. Preview the other catalog, match projects, then explicitly join to share their grouping.")
         );

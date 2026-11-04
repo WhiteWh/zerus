@@ -4,6 +4,7 @@ import type { CreationCard, GroupingOut, HeaderOut } from "../../types";
 import type { ListInput, Row } from "./model";
 import type { Session } from "./types";
 import { acceptsAccount, sameFolderForCreation, type FolderScope } from "./scope-filters";
+import { trNoop, tr } from "../../i18n";
 
 // The creation cards' view rules, which Qt keeps in its Sessions window
 // (SessionsWindow.cpp 463-480, 3729-3756; SessionsWindowRows.cpp 259-341,
@@ -20,15 +21,15 @@ export const NOTICE_LIMIT = 128;
 /** A heading before every further 50 entries of the status menu (471, D6). */
 export const MENU_PAGE = 50;
 
-export const PREPARING = "Preparing the session in the background";
-export const HIDE_LAUNCH_STATUS = "Hide launch status";
-export const OLDER = "Older creations…";
-export const RESOLVED = "This creation has already been resolved.";
-export const NO_PENDING = "No pending session creations";
-export const PROGRESS = "Session creation progress";
+export const PREPARING = trNoop("Preparing the session in the background");
+export const HIDE_LAUNCH_STATUS = trNoop("Hide launch status");
+export const OLDER = trNoop("Older creations…");
+export const RESOLVED = trNoop("This creation has already been resolved.");
+export const NO_PENDING = trNoop("No pending session creations");
+export const PROGRESS = trNoop("Session creation progress");
 export const BUTTON = {
-  resume: "Continue setup", check: "Check result", stop: "Stop creating", stopAfter: "Stop after preparation",
-  edit: "Edit choices…", hide: "Hide status", back: "Return to filters",
+  resume: trNoop("Continue setup"), check: trNoop("Check result"), stop: trNoop("Stop creating"), stopAfter: trNoop("Stop after preparation"),
+  edit: trNoop("Edit choices…"), hide: trNoop("Hide status"), back: trNoop("Return to filters"),
 } as const;
 
 /** A creation's row key in the list. */
@@ -56,7 +57,7 @@ export const accessibleText = (c: CreationCard) => `${c.tag}, ${computerOf(c)}, 
 
 /** The row's detail line: the error, else "Preparing the session in the background" only before the first stage writes the error field (384). */
 export function rowDetail(c: Pick<CreationCard, "error" | "caption" | "state">): string {
-  const detail = c.error || (c.state === "saving" ? PREPARING : "");
+  const detail = c.error || (c.state === "saving" ? tr(PREPARING) : "");
   if (detail === c.caption) return "";
   return detail.startsWith(`${c.caption}: `) ? detail.slice(c.caption.length + 2) : detail;
 }
@@ -131,10 +132,10 @@ export const panelStatus = (c: CreationCard, now: number) => `${c.caption} (${el
 export function statusMenu(cards: readonly CreationCard[], choose: (id: string) => void): MenuEntry[] {
   const out: MenuEntry[] = [];
   cards.forEach((c, i) => {
-    if (i && i % MENU_PAGE === 0) out.push({ heading: OLDER });
+    if (i && i % MENU_PAGE === 0) out.push({ heading: tr(OLDER) });
     out.push({ label: `${c.tag}: ${c.caption}`, action: () => choose(c.id) });
   });
-  return out.length ? out : [{ label: NO_PENDING, disabled: true }];
+  return out.length ? out : [{ label: tr(NO_PENDING), disabled: true }];
 }
 
 /** The footer's creations (474-479): after the sessions' text ", 1 creation", alone "1 creation"; "" without one. */
@@ -147,7 +148,7 @@ export function footerText(count: number, afterSessions: boolean): string {
 /** The sticky notice for a failed, unknown or unsaved creation (1579-1585), and the memory key it is shown once for. */
 export function noticeOf(c: CreationCard): { key: string; text: string } | undefined {
   if (c.state !== "failed" && c.state !== "unknown" && c.state !== "storage_error") return undefined;
-  return { key: `${c.state}\n${c.error}`, text: `Creation ${c.tag}: ${c.caption}\n${c.error}` };
+  return { key: `${c.state}\n${c.error}`, text: tr("Creation %1: %2\n%3", c.tag, c.caption, c.error) };
 }
 
 /** What the list's filters and organization are (model.ts `listRows`). */

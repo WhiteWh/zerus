@@ -4,6 +4,7 @@ import { composing } from "../lib/keys";
 import { platform } from "../../store/shortcuts";
 import { FolderBrowser, browserEnter, listMenu, promptEnter, type BrowserPlace, type FolderBrowserCalls, type FolderPrompt, type PromptPlace } from "./folder-browser";
 import "../styles/folder-browser.css";
+import { tr } from "../../i18n";
 
 // The folder browser of another computer (tray/src/DirectoryDialog.cpp, the
 // peer branch), from the prototype's layout (design/webui/src/dialogs/setup/
@@ -43,14 +44,14 @@ function PromptDialog(props: { prompt: () => FolderPrompt; onName(name: string):
       <div class="dlg-body">
         <p class="fb-text">{props.prompt().text}</p>
         <div class="form-row">
-          <label for="fb-prompt-name">Folder name</label>
-          <input id="fb-prompt-name" ref={name} class="field" aria-label="New folder name" value={props.prompt().name} onInput={(e) => props.onName(e.currentTarget.value)} />
+          <label for="fb-prompt-name">{tr("Folder name")}</label>
+          <input id="fb-prompt-name" ref={name} class="field" aria-label={tr("New folder name")} value={props.prompt().name} onInput={(e) => props.onName(e.currentTarget.value)} />
         </div>
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" ref={cancel} class="btn" onClick={() => props.onCancel()}>Cancel</button>
-        <button type="button" ref={create} class="btn primary" disabled={!props.prompt().createEnabled} onClick={() => props.onCreate()}>Create folder</button>
+        <button type="button" ref={cancel} class="btn" onClick={() => props.onCancel()}>{tr("Cancel")}</button>
+        <button type="button" ref={create} class="btn primary" disabled={!props.prompt().createEnabled} onClick={() => props.onCreate()}>{tr("Create folder")}</button>
       </div>
     </dialog>
   );
@@ -182,31 +183,31 @@ export function FolderBrowserDialog(props: { computer: string; start: string; ca
         }}>
         <div class="dlg-head"><h2 id="fb-title">{v().title}</h2></div>
         <div class="dlg-body fb-body">
-          <h3 class="section-title">Choose a folder</h3>
+          <h3 class="section-title">{tr("Choose a folder")}</h3>
           <p class="muted fb-machine">{v().machine}</p>
           <div class="row fb-nav">
-            <button type="button" class="btn" disabled={!v().controlsEnabled} onClick={() => model.up()}>Up</button>
-            <button type="button" class="btn" disabled={!v().controlsEnabled} onClick={() => model.home()}>Home</button>
-            <input class="field mono grow" data-role="path" aria-label="Directory path" value={v().path} disabled={!v().controlsEnabled}
+            <button type="button" class="btn" disabled={!v().controlsEnabled} onClick={() => model.up()}>{tr("Up")}</button>
+            <button type="button" class="btn" disabled={!v().controlsEnabled} onClick={() => model.home()}>{tr("Home")}</button>
+            <input class="field mono grow" data-role="path" aria-label={tr("Directory path")} value={v().path} disabled={!v().controlsEnabled}
               onInput={(e) => model.editPath(e.currentTarget.value)} />
-            <button type="button" class="btn" disabled={!v().controlsEnabled} onClick={() => model.go()}>Go</button>
+            <button type="button" class="btn" disabled={!v().controlsEnabled} onClick={() => model.go()}>{tr("Go")}</button>
           </div>
-          <input class="field fb-filter" type="search" placeholder="Filter folders in this directory…" value={v().filter} disabled={!v().controlsEnabled}
+          <input class="field fb-filter" type="search" placeholder={tr("Filter folders in this directory…")} value={v().filter} disabled={!v().controlsEnabled}
             onInput={(e) => model.setFilter(e.currentTarget.value)}
             onKeyDown={(e) => {
               // Escape is the dialog's, as in Qt: WebKit's search field would only clear itself.
               if (e.key === "Escape") { e.preventDefault(); close(); }
             }} />
-          <ul class="fb-list" ref={list} role="listbox" aria-label="Directories" tabindex={v().listEnabled ? 0 : -1} aria-disabled={!v().listEnabled}
+          <ul class="fb-list" ref={list} role="listbox" aria-label={tr("Directories")} tabindex={v().listEnabled ? 0 : -1} aria-disabled={!v().listEnabled}
             aria-activedescendant={v().selected !== undefined ? `fb-o-${v().entries.findIndex((e) => e.path === v().selected)}` : undefined}
             onKeyDown={listKey} onContextMenu={contextMenu}>
             <Show when={v().inline}>{(row) => (
               <li class="fb-inline">
                 <Icon name="folder" size={14} class="fb-icon" />
-                <input ref={inline} class="field grow" placeholder="Folder name" aria-label="New folder name" value={row().name}
+                <input ref={inline} class="field grow" placeholder={tr("Folder name")} aria-label={tr("New folder name")} value={row().name}
                   onInput={(e) => model.setInlineName(e.currentTarget.value)} />
-                <button type="button" class="btn small" disabled={!row().createEnabled} onClick={() => model.createInline()}>Create</button>
-                <button type="button" class="btn small" aria-label="Cancel new folder" data-tip="Cancel new folder" onClick={cancelInline}>Cancel</button>
+                <button type="button" class="btn small" disabled={!row().createEnabled} onClick={() => model.createInline()}>{tr("Create")}</button>
+                <button type="button" class="btn small" aria-label={tr("Cancel new folder")} data-tip={tr("Cancel new folder")} onClick={cancelInline}>{tr("Cancel")}</button>
               </li>
             )}</Show>
             <For each={v().entries}>{(entry, index) => (
@@ -222,15 +223,15 @@ export function FolderBrowserDialog(props: { computer: string; start: string; ca
               Show hidden folders
             </label>
             <span class="grow" />
-            <button type="button" class="btn small" disabled={!v().newFolderEnabled} onClick={newFolder}>New folder</button>
-            <button type="button" class="btn small" aria-label="New folder dialog…" data-tip="New folder dialog…" disabled={!v().dialogEnabled}
-              onClick={() => model.newFolderDialog()}>Dialog…</button>
+            <button type="button" class="btn small" disabled={!v().newFolderEnabled} onClick={newFolder}>{tr("New folder")}</button>
+            <button type="button" class="btn small" aria-label={tr("New folder dialog…")} data-tip={tr("New folder dialog…")} disabled={!v().dialogEnabled}
+              onClick={() => model.newFolderDialog()}>{tr("Dialog…")}</button>
           </div>
           <p class="fb-status" role="status">{v().status}</p>
         </div>
         <div class="dlg-foot">
           <span class="spacer" />
-          <button type="button" class="btn" disabled={!v().controlsEnabled} onClick={close}>Cancel</button>
+          <button type="button" class="btn" disabled={!v().controlsEnabled} onClick={close}>{tr("Cancel")}</button>
           <button type="button" class="btn primary" disabled={!v().chooseEnabled} onClick={choose}>{v().chooseText}</button>
         </div>
         <Show when={menu()}>{(at) => (

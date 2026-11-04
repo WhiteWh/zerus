@@ -139,6 +139,13 @@ class WingetManifestTests(unittest.TestCase):
         self.assertIn(PREFIX.replace("0.44.0", "0.42.3") + "ufna.Zerus.yaml",
                       winget_manifest.manifests("0.42.3", HASH, "2026-10-14"))
 
+    def test_webview2_is_an_external_prerequisite_and_the_portable_layout_is_unchanged(self):
+        files = winget_manifest.manifests("0.44.0", HASH, "2026-10-16")
+        installer = files[PREFIX + "ufna.Zerus.installer.yaml"]
+        self.assertIn("Dependencies:\n  PackageDependencies:\n  - PackageIdentifier: Microsoft.EdgeWebView2Runtime\n", installer)
+        self.assertIn("- RelativeFilePath: zerus-windows-x86_64/hgs-tray.exe\n", installer)
+        self.assertIn("ArchiveBinariesDependOnPath: true\n", installer)
+
 
 class PublishedZipTests(unittest.TestCase):
     def test_hash_must_match_sums_and_github_digest(self):

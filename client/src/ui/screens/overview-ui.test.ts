@@ -7,7 +7,7 @@ import { emptyAccounts, type Account } from "../../types";
 
 const account = (extra: Partial<Account> = {}): Account => ({
   key: "k", label: "Work", provider: "claude", installed: true, machines: ["workstation"], members: [], usage: usageOf(),
-  permission: "Default", identity_lines: [], identity_note: "", ...extra,
+  permission: { source: "Default" }, identity_lines: [], identity_note: null, ...extra,
 });
 
 describe("overview cards", () => {

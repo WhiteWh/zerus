@@ -52,6 +52,15 @@ describe("the Mobile connection page", () => {
     expect(h.calls).toHaveLength(1);
   });
 
+  it("a known effect receipt reads recovery status even before the busy=false event", async () => {
+    const h = harness(); h.page.open();
+    h.calls[0].reply.resolve(view({version:3,workspace_busy:true})); await settle();
+    h.page.refreshWorkspace(true);
+    expect(h.calls.map(c=>c.name)).toEqual(["open","workspace"]);
+    h.calls[1].reply.resolve(view({version:5,workspace_busy:false})); await settle();
+    expect(h.shown().view?.workspace_busy).toBe(false);
+  });
+
   it("offers no choice while the timing could not be read", async () => {
     const h = harness();
     h.page.open();

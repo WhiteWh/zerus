@@ -137,6 +137,9 @@ pub struct Batch {
     /// The ordered project headers and whether edits can run, when they changed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grouping: Option<GroupingOut>,
+    /// Present only for the default-off desktop-service frontend mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_service: Option<crate::desktop::service::Snapshot>,
 }
 
 impl Batch {
@@ -152,6 +155,7 @@ impl Batch {
             && self.organizations.is_empty()
             && self.groups.is_empty()
             && self.grouping.is_none()
+            && self.desktop_service.is_none()
     }
 }
 
@@ -185,6 +189,7 @@ type SessionKey = (ComputerId, String);
 /// [`PENDING_EVENTS`] per followed session.
 #[derive(Debug, Default)]
 pub struct Coalescer {
+    posters: crate::video_posters::Posters,
     computers: BTreeMap<ComputerId, ComputerStatus>,
     machines: BTreeMap<ComputerId, MachineMeta>,
     replaces: BTreeMap<ComputerId, BTreeMap<String, ViewRow>>,
@@ -198,6 +203,19 @@ pub struct Coalescer {
 }
 
 impl Coalescer {
+    /// A retained JPEG only; no hgs call, file read or JSON encoding.
+    pub fn poster(
+        &self,
+        computer: &ComputerId,
+        key: &str,
+        message: &str,
+    ) -> Option<std::sync::Arc<[u8]>> {
+        self.posters.get(computer, key, message)
+    }
+
+    pub fn strip_posters(&mut self, computer: &ComputerId, key: &str, value: &mut Value) {
+        self.posters.strip(computer, key, value);
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -239,6 +257,7 @@ impl Coalescer {
             Change::Computer { computer, status } => {
                 if status == ComputerStatus::Ended {
                     self.machines.remove(&computer);
+                    self.posters.forget(&computer, None);
                 }
                 self.computers.insert(computer, status);
             }
@@ -335,7 +354,19 @@ impl Coalescer {
             let Some(updates) = activity.remove(&id) else {
                 continue;
             };
-            for update in updates {
+            for mut update in updates {
+                match &mut update {
+                    ActivityUpdate::Events { events, .. }
+                    | ActivityUpdate::Replace { events, .. } => {
+                        for event in events {
+                            self.posters.strip(&id.0, &id.1, event);
+                        }
+                    }
+                    ActivityUpdate::Event { event, .. } => self.posters.strip(&id.0, &id.1, event),
+                    ActivityUpdate::State { value, .. } => self.posters.strip(&id.0, &id.1, value),
+                    ActivityUpdate::Ended => self.posters.forget(&id.0, Some(&id.1)),
+                    ActivityUpdate::Connection { .. } => (),
+                }
                 let (kind, payload) = out(update);
                 batch.activity.push(ActivityOut {
                     computer: id.0.clone(),
@@ -444,10 +475,16 @@ impl Coalescer {
 }
 
 fn fold(list: &mut Vec<ActivityUpdate>, update: ActivityUpdate) {
-    // Updates before an end belong to the ended subscription.
+    // Transport replacement can restart native revisions. Never fold a new
+    // state backwards across that boundary into an earlier route's position.
     let start = list
         .iter()
-        .rposition(|old| matches!(old, ActivityUpdate::Ended))
+        .rposition(|old| {
+            matches!(
+                old,
+                ActivityUpdate::Ended | ActivityUpdate::Connection { .. }
+            )
+        })
         .map_or(0, |index| index + 1);
     match update {
         ActivityUpdate::Ended => {
@@ -490,6 +527,15 @@ fn fold(list: &mut Vec<ActivityUpdate>, update: ActivityUpdate) {
                 }),
             }
             bound(list);
+        }
+        ActivityUpdate::Connection { .. } => {
+            // Keep transport transitions ordered with the native payloads.
+            // Repeated statuses without data need only their newest value.
+            if matches!(list.last(), Some(ActivityUpdate::Connection { .. })) {
+                *list.last_mut().unwrap() = update;
+            } else {
+                list.push(update);
+            }
         }
         ActivityUpdate::State { .. } => {
             match list[start..]
@@ -549,6 +595,14 @@ fn out(update: ActivityUpdate) -> (&'static str, Value) {
             ("event", json!({"id": id, "rev": rev, "event": event}))
         }
         ActivityUpdate::State { value, rev } => ("state", json!({"value": value, "rev": rev})),
+        ActivityUpdate::Connection {
+            ready,
+            pending,
+            code,
+        } => (
+            "connection",
+            json!({"ready":ready,"pending":pending,"code":code}),
+        ),
         ActivityUpdate::Ended => ("ended", Value::Null),
     }
 }
@@ -1153,5 +1207,41 @@ mod tests {
             ..Batch::default()
         };
         assert!(!batch.is_empty());
+    }
+    #[test]
+    fn a_new_transport_state_stays_after_its_revision_reset() {
+        let mut out = Coalescer::new();
+        out.push(activity(
+            "run:a",
+            ActivityUpdate::State {
+                value: json!({"old":true}),
+                rev: 90,
+            },
+        ));
+        out.push(activity(
+            "run:a",
+            ActivityUpdate::Connection {
+                ready: true,
+                pending: false,
+                code: "subscribed".into(),
+            },
+        ));
+        out.push(activity(
+            "run:a",
+            ActivityUpdate::State {
+                value: json!({"new":true}),
+                rev: 1,
+            },
+        ));
+        let batch = out.take();
+        assert_eq!(
+            batch
+                .activity
+                .iter()
+                .map(|a| a.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["state", "connection", "state"]
+        );
+        assert_eq!(batch.activity[2].payload["rev"], 1);
     }
 }

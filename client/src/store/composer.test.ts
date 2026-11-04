@@ -11,7 +11,7 @@ const SESSION: SessionRef = { computer: "studio", key: "run:run-1", name: "claud
 const view = (extra: Partial<ComposerView> = {}): ComposerView => ({
   handle: 1, key: KEY, loaded: true, rev: 0, text_epoch: 1, text: "", position: 0, anchor: 0, question: null, input_visible: true, queue: null,
   attachments: [], removed: null, attaching: false, sending: false, waiting: null, uncertain: false, status: "", status_error: false,
-  can_send: true, send_label: "Send", available: true, unavailable_reason: "", block_reason: null, attachments_available: true,
+  can_send: true, send_label: { source: "Send" }, available: true, unavailable_reason: "", block_reason: null, attachments_available: true,
   attachments_reason: "", session_status: "", session_status_error: false, session_blocks_input: false, inspect_error: false,
   cache: { visible: false, tone: "quiet", label: "", short_label: "" }, cache_warning: "", cache_details: "",
   context: { visible: false, text: "", tooltip: "", warning: false, tone: "quiet", percent: null, accessible_name: "" }, local: [],
@@ -81,6 +81,14 @@ function held<T>() {
   return { call: () => new Promise<T>((resolve) => { waiting.push(resolve); }), answer: (value: T) => waiting.shift()?.(value), count: () => waiting.length };
 }
 const images = (width: number, height: number): Images => ({ size: async () => ({ width, height }), png: async () => new Uint8Array([1, 2, 3]) });
+
+describe("child draft identity", () => {
+  it("uses Qt's four-part child key without changing main or archive keys", () => {
+    expect(draftKey(SESSION)).toBe(KEY);
+    expect(draftKey({ ...SESSION, archive_id: "archive-1" })).toBe(`${KEY}\narchive-1`);
+    expect(draftKey({ ...SESSION, subagent: { agent_id: "agent-7", parent_conversation_id: "conv-1" } })).toBe(`${KEY}\nconv-1\nagent-7`);
+  });
+});
 
 describe("composer exit flush", () => {
   it("flushes pending debounce and waits for the edit before returning", async () => {
@@ -433,7 +441,7 @@ describe("composer store", () => {
   });
 
   it("an open question locks the editor and keeps the epoch: closing it unlocks", async () => {
-    const f = fakes({ kind: "start", token: 3, question: { title: "Start the session to send?", text: "", informative: "", options: [] } });
+    const f = fakes({ kind: "start", token: 3, question: { title: { source: "Start the session to send?" }, text: { source: "" }, informative: { source: "" }, options: [] } });
     await createRoot(async () => {
       const c = createComposer(f.port, f.timers);
       c.apply(view());
@@ -649,7 +657,7 @@ describe("composer store", () => {
   });
 
   it("the editor stays locked while an answer is on its way", async () => {
-    const f = fakes({ kind: "start", token: 12, question: { title: "Start the session to send?", text: "", informative: "", options: [] } });
+    const f = fakes({ kind: "start", token: 12, question: { title: { source: "Start the session to send?" }, text: { source: "" }, informative: { source: "" }, options: [] } });
     const answer = held<SendReply>();
     const port: ComposerPort = { ...f.port, answer: (token, a) => { f.calls.push(`answer ${token} ${JSON.stringify(a)}`); return answer.call(); } };
     await createRoot(async () => {
@@ -1084,6 +1092,46 @@ describe("suggestion dismissal", () => {
       c.apply(view({ text: "blocked", text_epoch: 4, sending: false, available: false }));
       await c.send();
       expect(dismissed).toHaveLength(2);
+    });
+  });
+});
+
+describe("Clear session grace integration", () => {
+  it("closes confirmation, permits a send during grace and Undo calls no Clear writer", async () => {
+    const f = fakes(), gate = held<SendReply | undefined>();
+    await createRoot(async (dispose) => {
+      const c = createComposer(f.port, f.timers, undefined, f.notify, undefined, async (session, control) => {
+        expect(session?.name).toBe(SESSION.name); expect(control.run).toBe("run-1"); return gate.call();
+      });
+      await c.open(SESSION); c.openClear(); const job = c.confirmClear();
+      expect(c.dialog()).toBeUndefined(); expect(c.locked()).toBe(false);
+      c.input("message during grace", 20, 20); await c.send();
+      expect(f.calls.some((line) => line.includes("message during grace"))).toBe(true);
+      c.apply(view({ text_epoch: 2 }));
+      gate.answer(undefined); await job;
+      expect(f.calls.some((line) => line.startsWith("clear "))).toBe(false);
+      dispose();
+    });
+  });
+});
+
+
+describe("confirmed Clear target", () => {
+  it("keeps the original clear after switching to another composer during Undo", async () => {
+    const f = fakes(), gate = held<void>();
+    await createRoot(async (dispose) => {
+      const c = createComposer(f.port, f.timers, undefined, f.notify, undefined, async (...args) => {
+        // Selection is not a target-validity condition for a confirmed action.
+        expect(args).toHaveLength(3);
+        await gate.call();
+        return args[2]({ id: "confirmed-clear", index: 0 }, "clear");
+      });
+      await c.open(SESSION); c.openClear(); const job = c.confirmClear();
+      c.apply(view({ handle: 2, key: "studio\nclaude/example/other", text: "other draft" }));
+      gate.answer(); await job;
+      expect(f.calls.filter((line) => line.startsWith("clear "))).toEqual(["clear run-1 conv-1 false"]);
+      expect(c.text()).toBe("other draft");
+      dispose();
     });
   });
 });

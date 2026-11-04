@@ -1,6 +1,7 @@
 import { For, Show, type JSX } from "solid-js";
 import { Icon } from "../../lib/icons";
 import { fieldValue } from "./number-field";
+import { tr } from "../../../i18n";
 
 // The rows Settings sections are built from, from the approved mockup
 // (design/webui/src/screens/settings/ui.tsx). They stand in for the Qt widgets
@@ -10,23 +11,23 @@ import { fieldValue } from "./number-field";
 export function SectionHead(props: { title: string; intro?: JSX.Element }) {
   return (
     <header class="set-head">
-      <h2>{props.title}</h2>
+      <h2>{tr(props.title)}</h2>
       <Show when={props.intro}><p class="set-intro">{props.intro}</p></Show>
     </header>
   );
 }
 
-export function Group(props: { title?: string; hint?: JSX.Element; aside?: JSX.Element; children: JSX.Element }) {
+export function Group(props: { title?: string; hint?: JSX.Element; aside?: JSX.Element; children: JSX.Element; class?:string }) {
   return (
-    <section class="set-group">
+    <section class={props.class?`set-group ${props.class}`:"set-group"}>
       <Show when={props.title || props.aside}>
         <div class="set-group-head">
-          <Show when={props.title}><h3>{props.title}</h3></Show>
+          <Show when={props.title}><h3>{tr(props.title!)}</h3></Show>
           <span class="grow" />
           {props.aside}
         </div>
       </Show>
-      <Show when={props.hint}><p class="set-group-hint">{props.hint}</p></Show>
+      <Show when={typeof props.hint === "string" ? tr(props.hint) : props.hint}><p class="set-group-hint">{typeof props.hint === "string" ? tr(props.hint) : props.hint}</p></Show>
       {props.children}
     </section>
   );
@@ -50,9 +51,9 @@ export function Table<T>(props: {
 }) {
   return (
     <div class={`set-table-wrap ${props.class ?? ""}`}>
-      <table class="set-table" aria-label={props.label}>
+      <table class="set-table" aria-label={typeof props.label === "string" ? tr(props.label) : props.label}>
         <thead>
-          <tr><For each={props.columns}>{(c) => <th class={c.class} scope="col">{c.label}</th>}</For></tr>
+          <tr><For each={props.columns}>{(c) => <th class={c.class} scope="col">{tr(c.label)}</th>}</For></tr>
         </thead>
         <tbody>
           <For each={props.rows} fallback={<tr class="set-table-empty"><td colspan={props.columns.length}>{props.empty}</td></tr>}>
@@ -79,8 +80,8 @@ export function Row(props: { label: JSX.Element; hint?: JSX.Element; children?: 
   return (
     <div class="set-row" classList={{ disabled: props.disabled, wide: props.wide, stack: props.stack }}>
       <div class="set-row-text">
-        <label class="set-label" for={props.for}>{props.label}</label>
-        <Show when={props.hint}><div class="set-hint">{props.hint}</div></Show>
+        <label class="set-label" for={props.for}>{typeof props.label === "string" ? tr(props.label) : props.label}</label>
+        <Show when={props.hint}><div class="set-hint">{typeof props.hint === "string" ? tr(props.hint) : props.hint}</div></Show>
       </div>
       <Show when={props.children}><div class="set-row-control">{props.children}</div></Show>
     </div>
@@ -90,15 +91,15 @@ export function Row(props: { label: JSX.Element; hint?: JSX.Element; children?: 
 export function Switch(props: { checked: boolean; onChange: (on: boolean) => void; label: string; disabled?: boolean; id?: string }) {
   return (
     <button id={props.id} type="button" role="switch" class="set-switch switch" classList={{ on: props.checked }} aria-checked={props.checked}
-      aria-label={props.label} disabled={props.disabled} onClick={() => props.onChange(!props.checked)} />
+      aria-label={typeof props.label === "string" ? tr(props.label) : props.label} disabled={props.disabled} onClick={() => props.onChange(!props.checked)} />
   );
 }
 
 export function ToggleRow(props: { label: string; hint?: JSX.Element; checked: boolean; onChange: (on: boolean) => void; disabled?: boolean }) {
   const id = `t-${props.label.replace(/\W+/g, "-").toLowerCase()}`;
   return (
-    <Row label={props.label} hint={props.hint} for={id} disabled={props.disabled}>
-      <Switch id={id} checked={props.checked} onChange={props.onChange} label={props.label} disabled={props.disabled} />
+    <Row label={typeof props.label === "string" ? tr(props.label) : props.label} hint={typeof props.hint === "string" ? tr(props.hint) : props.hint} for={id} disabled={props.disabled}>
+      <Switch id={id} checked={props.checked} onChange={props.onChange} label={typeof props.label === "string" ? tr(props.label) : props.label} disabled={props.disabled} />
     </Row>
   );
 }
@@ -108,7 +109,7 @@ export function Check(props: { label: JSX.Element; checked: boolean; onChange: (
     <div class="set-check" classList={{ disabled: props.disabled }}>
       <label class="check">
         <input type="checkbox" checked={props.checked} disabled={props.disabled} onChange={(e) => props.onChange(e.currentTarget.checked)} />
-        <span>{props.label}</span>
+        <span>{typeof props.label === "string" ? tr(props.label) : props.label}</span>
       </label>
     </div>
   );
@@ -118,9 +119,9 @@ export interface Option { value: string; label: string }
 
 export function Select(props: { value: string; options: Option[]; onChange: (value: string) => void; label?: string; id?: string; disabled?: boolean }) {
   return (
-    <select id={props.id} class="field set-select" value={props.value} aria-label={props.label} disabled={props.disabled}
+    <select id={props.id} class="field set-select" value={props.value} aria-label={typeof props.label === "string" ? tr(props.label) : props.label} disabled={props.disabled}
       onChange={(e) => props.onChange(e.currentTarget.value)}>
-      <For each={props.options}>{(o) => <option value={o.value} selected={o.value === props.value}>{o.label}</option>}</For>
+      <For each={props.options}>{(o) => <option value={o.value} selected={o.value === props.value}>{tr(o.label)}</option>}</For>
     </select>
   );
 }
@@ -138,14 +139,14 @@ export function Slider(props: {
   let input!: HTMLInputElement;
   return (
     <div class="set-slider" classList={{ disabled: props.disabled }}>
-      <input ref={input} type="range" min={props.min} max={props.max} step={props.step} value={props.value} disabled={props.disabled} aria-label={props.label}
+      <input ref={input} type="range" min={props.min} max={props.max} step={props.step} value={props.value} disabled={props.disabled} aria-label={typeof props.label === "string" ? tr(props.label) : props.label}
         aria-valuetext={props.format(props.value)}
         style={{ "--fill": `${((props.value - props.min) / (props.max - props.min)) * 100}%` }}
         onInput={(e) => props.onInput(Number(e.currentTarget.value))}
         onChange={(e) => props.onCommit(Number(e.currentTarget.value))}
         onPointerUp={() => props.onEnd?.()} onBlur={() => props.onEnd?.()} />
       <span class="set-slider-value tabular">{props.format(props.value)}</span>
-      <button class="icon-btn small set-reset" classList={{ hidden: props.disabled || props.value === props.defaultValue }} title={props.resetLabel} aria-label={props.resetLabel}
+      <button class="icon-btn small set-reset" classList={{ hidden: props.disabled || props.value === props.defaultValue }} title={tr(props.resetLabel)} aria-label={tr(props.resetLabel)}
         onClick={() => { input.focus(); props.onCommit(props.defaultValue); }}>
         <Icon name="rotate-ccw" size={13} />
       </button>
@@ -180,7 +181,7 @@ export function NumberField(props: {
   return (
     <span class="set-number" classList={{ disabled: props.disabled }}>
       <input id={props.id} class="field tabular" type="number" min={props.min} max={props.max} step={props.step ?? 1}
-        value={props.value.toFixed(props.decimals ?? 0)} disabled={props.disabled} aria-label={props.label}
+        value={props.value.toFixed(props.decimals ?? 0)} disabled={props.disabled} aria-label={typeof props.label === "string" ? tr(props.label) : props.label}
         onChange={(e) => {
           const kept = clamp(Number(e.currentTarget.value) || props.min);
           // Shown as kept even when the kept value did not change.

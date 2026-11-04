@@ -21,6 +21,8 @@ import { SessionUsageChip, UsageLimitChip } from "./UsageChips";
 import { moveFocusOff } from "./composer-ui";
 import { focusTranscript, following, jumpToLatest, unseen } from "./Activity";
 import type { ChipTone } from "../../types";
+import { tr } from "../../i18n";
+import { trText } from "../../text";
 
 // The message composer (Qt MessageComposer, 300-366), after the mockup's
 // structure: an edge grip, the 34 px toolbar, the editor (76-720 px) and the
@@ -51,10 +53,10 @@ const resetEditorHeight = () => {
 /** Below this width the toolbar shortens its chips (Qt's ComposerToolbar fit: short labels first). */
 const COMPACT_WIDTH = 600;
 
-const USUAL_STOP = "Interrupt the current turn, like Escape in Terminal. The session stays open; queued messages follow the agent's native behavior.";
-const USUAL_CACHE_CLEAR = "Clear this agent’s conversation, like /clear in Terminal. Your unsent message stays here.";
-const CANCEL_SEND = "Cancel the pending send and unlock the message for editing. Compaction or startup continues; use Stop to interrupt the agent.";
-const ATTACH = "Attach files, paste an image, or drop files onto this session";
+const USUAL_STOP = () => tr("Interrupt the current turn, like Escape in Terminal. The session stays open; queued messages follow the agent's native behavior.");
+const USUAL_CACHE_CLEAR = () => tr("Clear this agent’s conversation, like /clear in Terminal. Your unsent message stays here.");
+const CANCEL_SEND = () => tr("Cancel the pending send and unlock the message for editing. Compaction or startup continues; use Stop to interrupt the agent.");
+const ATTACH = () => tr("Attach files, paste an image, or drop files onto this session");
 
 const toneClass = (tone: ChipTone) => (tone === "danger" ? "danger" : tone === "warning" ? "warn" : tone === "success" ? "ok" : "");
 
@@ -96,7 +98,7 @@ function ResizeHandle(props: { edge?: boolean; hidden?: boolean }) {
   };
   return (
     <div class="cmp-resize" classList={{ dragging: dragging(), edge: props.edge, gap: !props.edge }} hidden={props.hidden} tabindex={props.edge ? -1 : 0} role="separator" aria-orientation="horizontal"
-      aria-label="Message field height" aria-valuemin={EDITOR.min} aria-valuemax={EDITOR.max} aria-valuenow={editorHeight()}
+      aria-label={tr("Message field height")} aria-valuemin={EDITOR.min} aria-valuemax={EDITOR.max} aria-valuenow={editorHeight()}
       onPointerDown={down} onDblClick={resetEditorHeight} onKeyDown={key}>
       <Show when={!props.edge}><i class="cmp-grip" /></Show>
     </div>
@@ -132,7 +134,7 @@ function CacheChip(props: { compact: boolean }) {
           {props.compact ? v().cache.short_label : v().cache.label}
         </button>
         <Show when={open()}>
-          <div class="att-pop cache-pop" ref={pop} tabindex="-1" role="dialog" aria-label="Prompt cache" data-shortcut-context="none"
+          <div class="att-pop cache-pop" ref={pop} tabindex="-1" role="dialog" aria-label={tr("Prompt cache")} data-shortcut-context="none"
             style={{ left: `${pos().left}px`, bottom: `${pos().bottom}px` }}
             onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(true); } }}>
             <Show when={v().cache_warning}><p class="cache-warning">{v().cache_warning}</p></Show>
@@ -140,8 +142,8 @@ function CacheChip(props: { compact: boolean }) {
             <div class="cache-actions">
               {/* Shown with a warning only (3793); enabled by the cache rule, not Clear session's (3794). */}
               <Show when={v().cache_warning}>
-                <button type="button" class="btn small" disabled={!v().clear.cache_enabled} title={v().clear.cache_reason || USUAL_CACHE_CLEAR}
-                  onClick={() => { close(); composer.openClear(); }}>Clear context</button>
+                <button type="button" class="btn small" disabled={!v().clear.cache_enabled} title={v().clear.cache_reason || USUAL_CACHE_CLEAR()}
+                  onClick={() => { close(); composer.openClear(); }}>{tr("Clear context")}</button>
               </Show>
             </div>
           </div>
@@ -156,6 +158,7 @@ export function Composer() {
   const v = () => composer.view();
   const voice = createVoice(voicePort);
   onCleanup(() => { void voice.close(); });
+  const child = () => !!v()?.subagent;
   const online = () => !computerOffline(s().computer);
   const details = createMemo(() => detailsFor(s(), online(), followedFor(s().key)));
   createEffect(() => {
@@ -170,17 +173,17 @@ export function Composer() {
   // offline host, a failed read or a session not running reads as unavailable).
   const compacting = createMemo(() => {
     const state = followedFor(s().key).value ?? {};
-    return s().tracked && online() && !v()?.inspect_error && s().state === "running" && state.phase === "compacting" && state.runtime_state === "live"
+    return !child() && s().tracked && online() && !v()?.inspect_error && s().state === "running" && state.phase === "compacting" && state.runtime_state === "live"
       && state.process_state === "running" && state.state !== "archived";
   });
   createEffect(() => {
     const row = s(), state = followedFor(row.key).value ?? {};
     const raw = state.prompt_suggestion as { text?: unknown; at?: unknown } | undefined;
     const phase = typeof state.phase === "string" ? state.phase : row.phase;
-    const active = phase === "idle" && online() && row.state === "running";
+    const active = !child() && phase === "idle" && online() && row.state === "running";
     suggestions.set(row.catalogKey, active && typeof raw?.text === "string" ? raw.text : "", typeof raw?.at === "number" ? raw.at : 0);
   });
-  const suggestion = () => suggestions.get(s().catalogKey, !!v()?.sending || !!v()?.waiting);
+  const suggestion = () => child() ? undefined : suggestions.get(s().catalogKey, !!v()?.sending || !!v()?.waiting);
   const [compact, setCompact] = createSignal(false);
   let root!: HTMLDivElement;
   let editor!: HTMLTextAreaElement;
@@ -200,6 +203,7 @@ export function Composer() {
   }));
 
   const stopTurn = () => {
+    if (child()) return false;
     const stop = act().stop;
     if (!stop.shown || stop.disabled) return false;
     void composer.interrupted().then(() => stop.action());
@@ -208,7 +212,7 @@ export function Composer() {
   const onKey = (e: KeyboardEvent) => {
     if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "Tab" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
-      const next = suggestedInput(composer.text(), suggestion(), composer.locked());
+      const next = suggestedInput(composer.text(), suggestion() ?? "", composer.locked());
       if (next) {
         e.preventDefault();
         editor.value = next;
@@ -258,7 +262,7 @@ export function Composer() {
     const text = status().text, session = v()?.session_status ?? "";
     return session && session !== text ? `${text}\n${session}` : text;
   };
-  const jumpCaption = () => (unseen() > 0 ? `Jump to latest activity (${unseen()} new)` : "Jump to latest activity");
+  const jumpCaption = () => (unseen() > 0 ? tr("Jump to latest activity (%1 new)", unseen()) : tr("Jump to latest activity"));
   const editorTip = () => v()?.waiting ?? (v()?.session_blocks_input ? v()!.session_status : undefined);
   // A required question card stands in for the editor, its grip and the action row; the toolbar stays (setInputVisible, 1126-1131).
   // They stay mounted and only hide, as Qt's setVisible: the editor's command, observer and flush need it.
@@ -269,68 +273,70 @@ export function Composer() {
       <div class="cmp-toolbar">
         <AttachmentsChip compact={compact()} />
         <VoiceToolbar voice={voice} compact={compact()} />
-        <Show when={mark().active}>
-          <button type="button" class="tchip accent" classList={{ icon: compact() }} title={mark().detail} aria-label="Mark as read"
+        <Show when={!child() && mark().active}>
+          <button type="button" class="tchip accent" classList={{ icon: compact() }} title={mark().detail} aria-label={tr("Mark as read")}
             onClick={(e) => {
               // The chip goes once read: its focus moves on first (composer-ui.ts moveFocusOff).
               if (document.activeElement === e.currentTarget) moveFocusOff(focusTranscript, editor);
               runMarkRead(snapshotOf(s()));
             }}>
-            <Icon name="check-check" size={13} /><Show when={!compact()}>Mark as read</Show>
+            <Icon name="check-check" size={13} /><Show when={!compact()}>{tr("Mark as read")}</Show>
           </button>
         </Show>
         <Show when={!following()}>
           <button type="button" class="tchip icon" title={jumpCaption()} aria-label={jumpCaption()}
             onClick={(e) => { if (document.activeElement === e.currentTarget) moveFocusOff(focusTranscript, editor); jumpToLatest(); }}><Icon name="chevrons-down" size={14} /></button>
         </Show>
-        <Show when={compacting()}>
-          <span class="tchip cmp-compaction" title="The agent is compressing conversation context." role="status">
-            <span class="cmp-progress" aria-label="Compacting context" />Compacting context…
+        <Show when={!child() && compacting()}>
+          <span class="tchip cmp-compaction" title={tr("The agent is compressing conversation context.")} role="status">
+            <span class="cmp-progress" aria-label={tr("Compacting context")} />{tr("Compacting context…")}
           </span>
         </Show>
-        <Show when={v()?.cancel_send}>
-          <button type="button" class="tchip link" title={CANCEL_SEND} onClick={() => { void composer.cancelSend(); editor.focus(); }}>Cancel send</button>
+        <Show when={!child() && v()?.cancel_send}>
+          <button type="button" class="tchip link" title={CANCEL_SEND()} onClick={() => { void composer.cancelSend(); editor.focus(); }}>{tr("Cancel send")}</button>
         </Show>
         <ResizeHandle hidden={!input()} />
         <Show when={!input()}><span class="grow" /></Show>
-        <RecoveryChip session={s()} compact={compact()} />
-        <UsageLimitChip session={s()} compact={compact()} />
-        <Show when={v()}><CacheChip compact={compact()} /></Show>
+        <Show when={!child()}>
+          <RecoveryChip session={s()} compact={compact()} />
+          <UsageLimitChip session={s()} compact={compact()} />
+          <Show when={v()}><CacheChip compact={compact()} /></Show>
+        </Show>
         <SessionUsageChip />
       </div>
       <VoicePreview voice={voice} />
-      <textarea ref={editor} class="cmp-editor" hidden={!input()} style={{ height: `${editorHeight() * contentScale()}px` }} aria-label="Message to selected agent"
-        placeholder={suggestion() || "Message this agent…"} readOnly={composer.locked()} disabled={!v()} value={composer.text()} title={editorTip()}
+      <textarea ref={editor} class="cmp-editor" hidden={!input()} style={{ height: `${editorHeight() * contentScale()}px` }} aria-label={tr("Message to selected agent")}
+        placeholder={suggestion() || tr("Message this agent…")} readOnly={composer.locked()} disabled={!v()} value={composer.text()} title={editorTip()}
         onInput={(e) => { const c = caret(); composer.input(e.currentTarget.value, c.anchor, c.position); }}
         onSelect={remember} onKeyUp={remember} onMouseUp={remember}
         onBlur={() => { void composer.flush(); }} onKeyDown={onKey} onPaste={onPaste} />
       <Show when={input() && composer.hint()}><div class="cmp-hint" role="status">{composer.hint()}</div></Show>
       <div class="cmp-actions" hidden={!input()}>
         <span class="cmp-files">
-          <button type="button" class="icon-btn cmp-attach" disabled={!v() || composer.locked() || !v()!.attachments_available} aria-label="Attach files to message"
-            title={v()?.attachments_available === false ? v()!.attachments_reason : ATTACH}
+          <button type="button" class="icon-btn cmp-attach" disabled={!v() || composer.locked() || !v()!.attachments_available} aria-label={tr("Attach files to message")}
+            title={v()?.attachments_available === false ? v()!.attachments_reason : ATTACH()}
             onClick={() => { void composer.attachFiles(); }}><Icon name="paperclip" size={17} /></button>
-          <button type="button" class="icon-btn cmp-attach" disabled aria-label="Reference an existing file" title="Arrives with file references."><Icon name="file-text" size={16} /></button>
+          <button type="button" class="icon-btn cmp-attach" disabled aria-label={tr("Reference an existing file")} title={tr("Arrives with file references.")}><Icon name="file-text" size={16} /></button>
         </span>
         <Show when={status().text}>
           <span class="cmp-status ell" classList={{ error: status().error, waiting: !status().error && !!v()?.waiting }} title={statusDetail()} aria-label={status().text}>{status().text}</span>
         </Show>
         <span class="grow" />
         <Show when={v()?.session_status && v()!.session_status_error}>
-          <button type="button" class="icon-btn cmp-attach" aria-label="Refresh this session" title={`Refresh this session\n${v()!.session_status}`}
+          <button type="button" class="icon-btn cmp-attach" aria-label={tr("Refresh this session")} title={`${tr("Refresh this session")}\n${v()!.session_status}`}
             disabled={composer.operationLocked()} onClick={() => { void composer.refresh(); }}><Icon name="refresh-cw" size={17} /></button>
         </Show>
         <Show when={v()?.uncertain && !composer.operationLocked()}>
-          <button type="button" class="btn ghost" title="Check the terminal before sending again to avoid a duplicate message"
-            onClick={() => { void composer.allowRetry(); editor.focus(); }}><Icon name="refresh-cw" size={13} />Allow retry</button>
+          <button type="button" class="btn ghost" title={tr("Check the terminal before sending again to avoid a duplicate message")}
+            onClick={() => { void composer.allowRetry(); editor.focus(); }}><Icon name="refresh-cw" size={13} />{tr("Allow retry")}</button>
         </Show>
-        <ModelSettingsButton />
-        <Show when={act().stop.shown}>
-          <button type="button" class="btn" aria-label="Stop current turn" title={act().stop.hint ?? USUAL_STOP} disabled={act().stop.disabled}
-            onClick={() => { stopTurn(); }}><Icon name="square" size={12} />Stop</button>
+        <Show when={!child()}><ModelSettingsButton /></Show>
+        <Show when={!child() && act().stop.shown}>
+          <button type="button" class="btn" aria-label={tr("Stop current turn")} title={act().stop.hint ?? USUAL_STOP()} disabled={act().stop.disabled}
+            onClick={() => { stopTurn(); }}><Icon name="square" size={12} />{tr("Stop")}</button>
         </Show>
-        <button type="button" class="btn primary" aria-label="Send" disabled={!composer.sendEnabled()} title={v()?.waiting ?? undefined}
-          onClick={() => { void composer.send(); }}>{v()?.send_label ?? "Send"}<Icon name="arrow-up" size={13} /></button>
+        <button type="button" class="btn primary" aria-label={tr("Send")} disabled={!composer.sendEnabled()} title={v()?.waiting ?? undefined}
+          onClick={() => { void composer.send(); }}>{v() ? trText(v()!.send_label) : tr("Send")}<Icon name="arrow-up" size={13} /></button>
       </div>
     </div>
   );

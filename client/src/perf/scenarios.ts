@@ -12,6 +12,8 @@ import { frameBudget, passes, recordFrames, stats, worstRun, type PacingStats, t
 export interface DiagnosticsTargets {
   scrollList: () => HTMLElement | null;
   scrollActivity: () => HTMLElement | null;
+  /** Only counts are recorded, so retained content growth is visible across runs. */
+  activityEvents?: () => number;
   /** Opens the session at `index` of the visible list and resolves once its Activity is in the DOM. */
   openSession: (index: number) => Promise<void>;
 }
@@ -71,12 +73,21 @@ export interface Summary {
   max: number;
 }
 
+export interface ActivityContent {
+  scroll_height: number;
+  activity_rows: number;
+  dom_nodes: number;
+  events: number;
+}
+
 export interface PacingRun {
   frames: number;
   interval_ms: PacingStats & { max: number };
   verdict: PacingVerdict;
   /** Intervals between scroll events (scroll scenarios). */
   scroll_event_ms?: Summary;
+  activity_before?: ActivityContent;
+  activity_after?: ActivityContent;
 }
 
 export interface TimingRun {
@@ -244,9 +255,11 @@ async function pacingRuns(
   plan: Plan,
   start: () => (() => void) | void,
   scrollTarget?: HTMLElement,
+  activityContent?: () => ActivityContent,
 ): Promise<PacingRun[]> {
   const T = frameBudget(plan.hz);
   const once = async (ms: number): Promise<PacingRun> => {
+    const before = activityContent?.();
     const scrollTimes: number[] = [];
     const onScroll = () => scrollTimes.push(performance.now());
     scrollTarget?.addEventListener("scroll", onScroll, { passive: true });
@@ -260,6 +273,7 @@ async function pacingRuns(
       stop?.();
       scrollTarget?.removeEventListener("scroll", onScroll);
     }
+    const after = activityContent?.();
     const s = stats(deltas, T);
     const run: PacingRun = {
       frames: deltas.length,
@@ -267,6 +281,7 @@ async function pacingRuns(
       verdict: passes(s, T),
     };
     if (scrollTarget) run.scroll_event_ms = summarize(scrollTimes.slice(1).map((t, i) => t - scrollTimes[i]));
+    if (before && after) { run.activity_before = before; run.activity_after = after; }
     return run;
   };
   await once(plan.warmupMs);
@@ -430,7 +445,13 @@ export async function runScenario(id: ScenarioId, targets: DiagnosticsTargets, s
       if (range < plan.stepPx * 4) return skipped(id, "pacing", "interval_ms", `nothing to scroll (${Math.max(0, Math.floor(range))} px)`);
       const top = element.scrollTop;
       try {
-        return pacingResult(id, plan, await pacingRuns(plan, () => undefined, element));
+        const content = id === "activity-scroll" ? (): ActivityContent => ({
+          scroll_height: element.scrollHeight,
+          activity_rows: element.querySelectorAll('[id^="item-"]').length,
+          dom_nodes: element.querySelectorAll("*").length,
+          events: targets.activityEvents?.() ?? -1,
+        }) : undefined;
+        return pacingResult(id, plan, await pacingRuns(plan, () => undefined, element, content));
       } finally {
         element.scrollTop = top;
       }

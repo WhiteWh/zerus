@@ -65,7 +65,7 @@
   .btn.primary:hover { background: var(--z-color-accent-hover); }
   .btn.danger { color: var(--z-color-danger); border-color: color-mix(in srgb, var(--z-color-danger) 45%, transparent); }
   .btn.danger:hover { background: var(--z-color-danger-bg); }
-  .btn.solid-danger { background: var(--z-color-danger); border-color: var(--z-color-danger); color: #fff; }
+  .btn.solid-danger { background: var(--z-color-danger); border-color: var(--z-color-danger); color: var(--z-color-danger-text); font-weight: 600; }
   .btn.ghost { border-color: transparent; background: transparent; }
   .btn.ghost:hover { background: var(--z-color-hover); }
   .btn.small { height: calc(var(--control-h) - 6px); padding: 0 8px; font-size: var(--fs-xs); }
@@ -163,7 +163,7 @@
     position: fixed; z-index: 50; min-width: 200px; max-width: 320px; padding: 4px;
     background: var(--z-color-raised); border: 1px solid var(--z-color-border); border-radius: var(--z-radius-lg);
     box-shadow: var(--z-shadow-popover); font-size: var(--fs-sm);
-    animation: drop var(--z-motion-fast) var(--ease) both;
+    /* Menus appear at their measured final geometry on the first paint. */
   }
   .menu-agent { flex: none; display: inline-grid; place-items: center; width: 14px; height: 14px; }
   .menu-item {
@@ -191,8 +191,16 @@
   .dlg-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 10px; }
   .dlg-head h2 { font-size: var(--fs-lg); font-weight: 600; }
   .dlg-body { padding: 4px 16px 12px; overflow: auto; min-height: 0; }
-  .dlg-foot { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--z-color-divider); }
+  /* Actions never leave the dialog: a row that does not fit wraps its last
+     buttons (Cancel stays last) onto right-aligned rows below. A spacer or
+     .grow item takes the free space, so a row that fits looks as before. */
+  .dlg-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--z-color-divider); }
   .dlg-foot .spacer { flex: 1; }
+  /* A hint wraps its own text beside the actions; they move below it only when its longest word would not fit. */
+  .dlg-foot > .hint { flex: 1 1 0; }
+  .dlg-foot > .hint + .spacer { flex: none; }
+  /* A label wider than the whole dialog wraps inside its button. */
+  .dlg-foot > .btn { max-width: 100%; height: auto; min-height: var(--control-h); white-space: normal; overflow-wrap: anywhere; text-align: center; }
 
   /* Form rows */
   .form-row { display: grid; grid-template-columns: 140px 1fr; gap: 10px; align-items: center; margin: 8px 0; }
@@ -232,6 +240,8 @@
   .toast.warn { border-color: var(--z-color-border); }
   .toast .dismiss { float: right; margin: -4px -6px 0 8px; pointer-events: auto; }
   .toast .note { white-space: pre-line; }
+  .toast-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+  .toast-actions button { pointer-events: auto; }
   .dlg-input { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--z-color-border); border-radius: var(--z-radius-sm); background: var(--z-color-pane); }
   .dlg-error { margin-top: 6px; color: var(--z-color-danger); font-size: var(--fs-sm); }
   .dlg-detail { margin-top: 8px; color: var(--z-color-dim); font-size: var(--fs-sm); }
@@ -291,4 +301,25 @@
    scrollbars beneath it go; overlay scrollbars take no space, so nothing moves. */
 @layer variants {
   :root[data-platform="linux"]:has(dialog:modal) :not(dialog, dialog *) { scrollbar-width: none; }
+}
+
+/* Without accelerated compositing (the shared-memory renderer), WebKitGTK paints
+   every overlay scrollbar in a last pass over the whole page, so no z-index,
+   stacking context, layer or top layer keeps a menu or popover above one. While
+   a popup is open, the scroll containers outside it hide their scrollbars, as
+   under a modal: they still scroll, and overlay scrollbars take no space, so
+   nothing moves. (A transparent scrollbar-color would leave Adwaita's thumb
+   border.) The rule names the scroll containers, so a popup restyles only them,
+   not the whole document; popups.test.ts keeps both lists complete. */
+@layer variants {
+  :root[data-platform="linux"]:has(:is(.menu, .att-pop, .archive-pop, .acct-more, .ns-choice-list, .tk-tip, .goto-scrim, dialog.ns-model-pop[open], :popover-open))
+    :is(.dlg-body, .set-scroll, .perf-host, .content-search-list, .act-scroll, .act-table-wrap, .act-code, .act-queue-text,
+      .insp-scroll, .insp-tabs, .proc-list, .proc-output, .draft-list, .draft-preview, .qcard-scroll, .fb-list, .goto-list,
+      .shortcut-help-list, .mach-page, .mach-log, .acct-scroll, .acct-main-scroll, .acct-more-list, .atm-list, .atm-results,
+      .ns-accounts, .wt-tree, .ocm-list, .wtp-tree, .su-page, .proj-list, .su-tablewrap, .ip-summary, .ip-body, .ip-diff,
+      .bc-details, .sp-scroll, .strip-scroll, .set-nav, .set-table-wrap, .voice-list, .an-detail, .an-json, .sw-clist,
+      .sw-review, .tasks-list, .tasks-detail, .tk-scroll, .tv-scroll, .tk-assign-list, .wto-tree, .xterm-viewport):not(
+      :is(.menu, .att-pop, .archive-pop, .acct-more, .ns-choice-list, .tk-tip, .goto-scrim, dialog.ns-model-pop[open], :popover-open) *) {
+    scrollbar-width: none;
+  }
 }

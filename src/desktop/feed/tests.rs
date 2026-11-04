@@ -15,6 +15,86 @@ fn fixture() -> (tempfile::TempDir, Store, Broker) {
 fn role() -> Value {
     json!({"abi":ABI,"producer":uuid::Uuid::new_v4().to_string(),"mode":"display_only"})
 }
+
+#[test]
+fn failed_internal_observation_invalidates_only_its_original_generation() {
+    let (_temp, mut store, mut broker) = fixture();
+    let producer = broker.claim_internal().unwrap();
+    broker.apply(&mut store, &producer, &begin(1)).unwrap();
+    assert!(broker.available("peer"));
+    broker.invalidate(&producer, &begin(1));
+    assert!(!broker.available("peer"));
+    broker.apply(&mut store, &producer, &begin(2)).unwrap();
+    assert!(broker.available("peer"));
+    broker.invalidate(&producer, &begin(1));
+    assert!(
+        broker.available("peer"),
+        "late failure must not invalidate replacement"
+    );
+}
+
+#[test]
+fn expected_aliases_are_bounded_and_an_older_listing_keeps_the_previous_set() {
+    let (_temp, mut store, mut broker) = fixture();
+    let producer = broker.claim_internal().unwrap();
+    for (generation, metadata) in [
+        (1, json!({"peers":["pending"]})),
+        (2, json!({"host":"older-local"})),
+    ] {
+        broker
+            .apply(
+                &mut store,
+                &producer,
+                &Packet::LegacyBegin {
+                    computer: String::new(),
+                    generation,
+                    metadata,
+                    rows: 0,
+                    pages: 1,
+                },
+            )
+            .unwrap();
+        broker
+            .apply(
+                &mut store,
+                &producer,
+                &Packet::LegacyPage {
+                    computer: String::new(),
+                    generation,
+                    index: 0,
+                    items: vec![],
+                },
+            )
+            .unwrap();
+        broker
+            .apply(
+                &mut store,
+                &producer,
+                &Packet::LegacyComplete {
+                    computer: String::new(),
+                    generation,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            broker.expected(),
+            Some(&BTreeSet::from([String::new(), "pending".into()]))
+        );
+        let counts = super::super::counts::projection(
+            &store.db,
+            &broker.epoch,
+            |c| broker.available(c),
+            broker.expected(),
+        )
+        .unwrap();
+        assert_eq!(counts["aggregate"]["attention"], Value::Null);
+    }
+    assert!(expected_peers(&json!({"peers":"bad"})).is_err());
+    assert!(expected_peers(&json!({"peers":["@bad"]})).is_err());
+    let peers: Vec<_> = (0..64).map(|n| format!("peer-{n}")).collect();
+    assert!(expected_peers(&json!({"peers":peers})).is_err());
+    assert_eq!(broker.expected().unwrap().len(), 2);
+}
 fn begin(generation: u64) -> Packet {
     Packet::LegacyBegin {
         computer: "peer".into(),

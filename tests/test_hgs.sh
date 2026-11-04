@@ -892,7 +892,11 @@ fi
 
 # --- guards ---
 out="$(TMUX=/tmp/fake,1,0 "$HGS" claude sample-project 2>&1)"; rc=$?
-if [ "$rc" = 2 ] && printf '%s\n' "$out" | grep -q "inside tmux"; then pass=$((pass+1)); echo "ok   nested tmux refused"; else fail=$((fail+1)); echo "FAIL nested tmux refused (rc=$rc)"; printf '%s\n' "$out"; fi
+if [ "$rc" = 2 ] && printf '%s\n' "$out" | grep -q "inside tmux.*; use --new -d or open a new tab"; then pass=$((pass+1)); echo "ok   nested tmux refused"; else fail=$((fail+1)); echo "FAIL nested tmux refused (rc=$rc)"; printf '%s\n' "$out"; fi
+# A detached launch from inside a session starts beside it: no tab, no attach.
+out="$(TMUX=/tmp/fake,1,0 "$HGS" --dry-run claude sample-project --new -n nested -d 2>&1)"; rc=$?
+if [ "$rc" = 0 ] && printf '%s\n' "$out" | grep -q -- "^tmux -u new-session -d .* -s claude/sample-project/nested " \
+   && ! printf '%s\n' "$out" | grep -qE "^tab |attach-session"; then pass=$((pass+1)); echo "ok   nested detached launch"; else fail=$((fail+1)); echo "FAIL nested detached launch (rc=$rc)"; printf '%s\n' "$out"; fi
 check "no args -> usage rc 1"         1 "^usage:"
 check "help"                          0 "^usage:" -h
 check "ls with no server"             0 "no sessions" ls

@@ -8,6 +8,7 @@ import type { ComputerId } from "../../types";
 import { composing } from "../lib/keys";
 import { createFolderLaunch, type LaunchFolder } from "./folder-launch";
 import type { AccountRow, ComputerRow, FolderRow, ProjectRow } from "./newsession-ui";
+import { trNoop, tr } from "../../i18n";
 
 // The New session dialog's entry points and the logic its view keeps
 // (NewSessionDialog.tsx renders it): every place Qt opens the dialog, the
@@ -86,7 +87,7 @@ export const folderMenuEntry = (state: FolderLaunch) => ({ disabled: !!state.pro
 
 /** The Folders "New session…" button (520-522): its tooltip names the folder and its computer, or the problem. */
 export const folderButton = (state: FolderLaunch, machine: string) =>
-  ({ disabled: !!state.problem, tip: state.problem || `New session in ${state.shown} on ${machine}` });
+  ({ disabled: !!state.problem, tip: state.problem || tr("New session in %1 on %2", state.shown, machine) });
 
 // The shortcut.
 
@@ -101,12 +102,12 @@ export const newSessionFromShortcut = () => open((loaded) => ({ computer: loaded
 
 // The local Windows-session warning (LocalLaunchWarning.h 18-28).
 
-export const WARNING_TITLE = "Launch in another Windows session?";
+export const WARNING_TITLE = trNoop("Launch in another Windows session?");
 
 /** Its buttons in order: Cancel is the default and has the focus; Escape is Cancel. */
 export const WARNING_BUTTONS = [
-  { label: "Launch anyway", answer: true, initial: false },
-  { label: "Cancel", answer: false, initial: true },
+  { label: trNoop("Launch anyway"), answer: true, initial: false },
+  { label: trNoop("Cancel"), answer: false, initial: true },
 ] as const;
 
 /**

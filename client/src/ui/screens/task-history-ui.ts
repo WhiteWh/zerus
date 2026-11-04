@@ -1,5 +1,6 @@
 import type { TaskEntry } from "../../store/taskDetails";
 import { STAGE_LABEL, type Stage } from "./tasks-ui";
+import { tr } from "../../i18n";
 
 /** TaskDialogs::taskHistoryAction and TaskInspector's discussion receipts. */
 export function historyAction(e: TaskEntry): string {
@@ -11,12 +12,12 @@ export function historyAction(e: TaskEntry): string {
 }
 export function deliveryText(e: TaskEntry, worker: string): string {
   const d = e.delivery;
-  return e.kind === "comment" || d.state === "note" ? "Saved note — not sent" : d.state === "queued" ? "Waiting for Start"
-    : d.state === "submitted" ? d.mode === "queue" ? "Included in Start request" : worker ? "Submitted to coordinator — child receipt unavailable" : "Submitted to executor"
-    : d.state === "failed" ? "Saved in task — not sent" : "Saved in task — delivery unconfirmed";
+  return e.kind === "comment" || d.state === "note" ? tr("Saved note — not sent") : d.state === "queued" ? tr("Waiting for Start")
+    : d.state === "submitted" ? d.mode === "queue" ? tr("Included in Start request") : worker ? tr("Submitted to coordinator — child receipt unavailable") : tr("Submitted to executor")
+    : d.state === "failed" ? tr("Saved in task — not sent") : tr("Saved in task — delivery unconfirmed");
 }
 export function deliveryError(e: TaskEntry): string {
   return /execution changed|identity changed|conversation changed|dispatch receipt|dispatched run/.test(e.delivery.error)
-    ? "Your comment is saved here. The task’s previous executor could not be verified, so it was not sent. Open executor Activity to continue the discussion, or return the task to To do and start it with the current executor."
+    ? tr("Your comment is saved here. The task’s previous executor could not be verified, so it was not sent. Open executor Activity to continue the discussion, or return the task to To do and start it with the current executor.")
     : e.delivery.error;
 }

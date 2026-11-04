@@ -81,3 +81,13 @@ describe("the window's notice bus", () => {
     });
   });
 });
+
+
+it("a background notice or key clear cannot remove a pending Undo", () => {
+  const bus = createNoticeBus();
+  const id = bus.notify("info", "session", true, "session-end", "Archiving session", { dismissible: false });
+  bus.notify("warn", "Earlier cleanup result", true, "session-end");
+  bus.clearNotice("session-end");
+  expect(bus.notices()).toMatchObject([{ id, dismissible: false }]);
+  bus.dismiss(id); expect(bus.notices()).toEqual([]);
+});

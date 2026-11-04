@@ -5,6 +5,7 @@ import type { ComputerId, MachineMeta } from "../types";
 import type { Session } from "../ui/sessions/types";
 import type { MachineState } from "../ui/components/MachineTile";
 import type { OsKind } from "../ui/lib/os-icons";
+import { tr } from "../i18n";
 
 // The Overview's selectors (DashboardPage::render, DashboardPage.cpp:401-456).
 // The Overview screen creates them, so they cost nothing on other pages; each
@@ -17,10 +18,10 @@ export interface Connection { tile: MachineState; text: string; fresh: boolean }
 export function connectionOf(status: string | undefined): Connection {
   switch (status) {
     case "live": return { tile: "online", text: "Connected", fresh: true };
-    case "polled": return { tile: "online", text: "Update hgs", fresh: true };
+    case "polled": return { tile: "online", text: tr("Update hgs"), fresh: true };
     case "probing": return { tile: "connecting", text: "Connecting", fresh: false };
     case "reconnecting": return { tile: "connecting", text: "Reconnecting", fresh: false };
-    case "unsupported": return { tile: "offline", text: "Update hgs", fresh: false };
+    case "unsupported": return { tile: "offline", text: tr("Update hgs"), fresh: false };
     default: return { tile: "offline", text: "Offline", fresh: false };
   }
 }
@@ -46,7 +47,7 @@ export function fleetCards(computers: Record<ComputerId, ComputerState>, cards: 
   const localMeta = cards[""];
   if ((computers[""] || localMeta) && localMeta?.local_sessions !== false) {
     out.push({
-      computer: "", name: localMeta?.host || "This machine", filter: localMeta?.host || "this computer", local: true,
+      computer: "", name: localMeta?.host || tr("This machine"), filter: localMeta?.host || "this computer", local: true,
       platform: osOf(localMeta?.platform), connection: connectionOf(computers[""]?.status), meta: localMeta,
     });
   }

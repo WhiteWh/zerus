@@ -28,9 +28,8 @@ cp packaging/aur/zerus-git/PKGBUILD "$package_build/PKGBUILD"
 rm -f "$package_build"/*.pkg.tar.zst artifacts/zerus-git-*.pkg.tar.zst
 # Only this disposable copy uses a local source; the distributable recipe keeps
 # its anonymous upstream URL. No token or personal checkout path enters AUR.
-python3 - "$package_build/PKGBUILD" "$repo_root" "$build_only" <<'PY'
+python3 - "$package_build/PKGBUILD" "$repo_root" <<'PY'
 from pathlib import Path
-import re
 import sys
 path=Path(sys.argv[1])
 upstream="source=('zerus::git+https://github.com/ufna/zerus.git#branch=main')"
@@ -39,11 +38,6 @@ assert text.count(upstream)==1
 uri=Path(sys.argv[2]).as_uri()
 assert "'" not in uri
 text=text.replace(upstream,"source=('zerus::git+"+uri+"')")
-assert sys.argv[3] in ('true', 'false')
-if sys.argv[3]=='true':
-    # The public recipe is untouched; only this disposable build disables Qt tests.
-    text,count=re.subn(r'(?<![\w-])-DBUILD_TESTING=(?:ON|OFF)(?!\w)', '-DBUILD_TESTING=OFF', text)
-    assert count==1, 'Expected one explicit package CMake testing setting'
 path.write_text(text)
 PY
 makepkg_args=(--cleanbuild --force --noconfirm)

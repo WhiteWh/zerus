@@ -1,13 +1,14 @@
 """Windows portable zip contracts: packaging, layout checks, the pinned ConPTY
 pair and size limits.
 
-Packaging runs with a synthetic Qt installation, windeployqt, MSVC runtime and
+Packaging runs with a synthetic Tauri executable, MSVC runtime and
 ConPTY pair, so these checks need no Windows tools or network and never execute
 bundled programs. The synthetic pair passes as the pinned build because the
 cases replace the pinned digests (`pinned`); `ConptyPinTests` checks the real pin.
 """
 import copy
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -415,60 +416,24 @@ class SbomLicenseTests(unittest.TestCase):
             portable.sbom_licenses("PackageCopyrightText: <text>open\n")
 
 
-@unittest.skipIf(os.name == "nt", "the synthetic windeployqt is a POSIX script; Windows CI packages the real bundle")
 class PackageTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="zerus-windows-package-")
         self.addCleanup(self.temporary.cleanup)
         base = self.directory = Path(self.temporary.name)
-        self.qt = base / "Qt" / QT_VERSION / "msvc2022_64"
-        version_file = self.qt / "lib/cmake/Qt6Core/Qt6CoreConfigVersionImpl.cmake"
-        version_file.parent.mkdir(parents=True)
-        version_file.write_text(f'set(PACKAGE_VERSION "{QT_VERSION}")\n')
-        (self.qt / "sbom").mkdir()
-        for name in ("qtbase", "qtsvg", "qtmultimedia"):
-            (self.qt / "sbom" / f"{name}-{QT_VERSION}.spdx").write_text(f"SPDXVersion: SPDX-2.3\nName: {name}\n")
-        (self.qt / "sbom" / f"qtbase-{QT_VERSION}.spdx").write_text("\n".join([
-            "SPDXVersion: SPDX-2.3", "PackageName: BundledLibjpeg", "PackageLicenseConcluded: IJG AND BSD-3-Clause",
-            "PackageLicenseConcluded: LGPL-3.0-only OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
-            "PackageLicenseConcluded: LicenseRef-Qt-Commercial", "LicenseID: LicenseRef-Qt-Commercial",
-            "ExtractedText: <text>Licensees holding valid commercial Qt licenses",
-            "may use this file in accordance with the commercial license agreement.</text>", ""]))
-        (self.qt / "sbom" / f"qtmultimedia-{QT_VERSION}.spdx").write_text("\n".join([
-            "SPDXVersion: SPDX-2.3", "PackageName: QtMultimedia",
-            "PackageLicenseConcluded: Unlicense OR MIT-0",
-            "PackageName: FFmpeg",
-            "PackageLicenseConcluded: LGPL-2.1-or-later AND BSD-Source-Code AND ISC", ""]))
-        (self.qt / "sbom" / f"qtbase-{QT_VERSION}.source.spdx").write_text("source\n")
-        self.windeployqt = base / "windeployqt"
-        self.windeployqt.write_text(f"#!{sys.executable}\n" + "\n".join([
-            "import json, pathlib, sys",
-            "target = pathlib.Path(sys.argv[-1])",
-            "pathlib.Path(__file__).with_name('arguments.json').write_text(json.dumps(sys.argv[1:]))",
-            # It also copies the System32 ICU forwarder that Qt6Core imports and,
-            # unless told not to, Microsoft's Direct3D shader compilers.
-            f"names = {QT_RUNTIME + ['icuuc.dll']!r}",
-            "if '--no-system-d3d-compiler' not in sys.argv: names.append('D3Dcompiler_47.dll')",
-            "if '--no-system-dxc-compiler' not in sys.argv: names += ['dxcompiler.dll', 'dxil.dll']",
-            "for name in names:",
-            "    path = target.parent / name",
-            "    path.parent.mkdir(parents=True, exist_ok=True)",
-            "    path.write_bytes(b'qt ' + name.encode())",
-        ]) + "\n")
-        self.windeployqt.chmod(0o755)
         self.crt = base / "Microsoft.VC143.CRT"
         self.crt.mkdir()
         for name in ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "concrt140.dll"):
             (self.crt / name).write_bytes(name.encode())
         self.rust = base / "rust-licenses"
-        (self.rust / "serde-1.0.0").mkdir(parents=True)
-        (self.rust / "serde-1.0.0" / "LICENSE-MIT").write_text("MIT\n")
-        (self.rust / "inventory.json").write_text(json.dumps({"target": "x86_64-pc-windows-msvc", "packages": [{}]}))
-        (base / "hgs.exe").write_bytes(b"tested cli")
-        (base / "hgs-tray.exe").write_bytes(b"tested gui")
-        (base / "zerus-mobile-connector.exe").write_bytes(b"tested connector")
-        # As scripts/fetch-conpty.py leaves it, with the synthetic pair pinned in
-        # this process and in the scripts below.
+        self.frontend = base / "frontend-licenses"
+        for folder in (self.rust, self.rust / "desktop", self.frontend):
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "inventory.json").write_text("[]")
+            (folder / "LICENSE-MIT").write_text("MIT\n")
+        for name, data in {"hgs.exe": b"tested cli", "hgs-tray.exe": b"tested tauri gui",
+                           "zerus-mobile-connector.exe": b"tested connector"}.items():
+            (base / name).write_bytes(data)
         self.conpty = base / "conpty"
         self.conpty.mkdir()
         for name, data in PAIR.items():
@@ -477,153 +442,119 @@ class PackageTests(unittest.TestCase):
         use_pin(self, self.pin)
 
     def run_script(self, name, *arguments, **options):
-        """`python scripts/<name> ARGUMENTS` with the synthetic pair pinned."""
         command = [sys.executable, "-c", WITH_PIN, json.dumps(self.pin), str(ROOT / "scripts" / name), *arguments]
         return subprocess.run(command, capture_output=True, text=True, **options)
 
     def package(self, output, **overrides):
-        arguments = {"--connector": self.directory / "zerus-mobile-connector.exe", "--cli": self.directory / "hgs.exe", "--gui": self.directory / "hgs-tray.exe",
-                     "--output": output, "--qt-root": self.qt, "--windeployqt": self.windeployqt,
-                     "--crt-dir": self.crt, "--rust-licenses": self.rust, "--conpty": self.conpty, **overrides}
-        command = []
-        for key, value in arguments.items():
-            command += [key, str(value)]
+        arguments = {"--connector": self.directory / "zerus-mobile-connector.exe", "--cli": self.directory / "hgs.exe",
+                     "--gui": self.directory / "hgs-tray.exe", "--output": output, "--crt-dir": self.crt,
+                     "--rust-licenses": self.rust, "--frontend-licenses": self.frontend, "--conpty": self.conpty, **overrides}
+        command = [part for key, value in arguments.items() for part in (key, str(value))]
         environment = {key: value for key, value in os.environ.items() if not key.startswith(("QT_", "HGS_"))}
         environment["SOURCE_DATE_EPOCH"] = "1760000000"
         return self.run_script("package-windows.py", *command, cwd=self.directory, env=environment)
 
-    def check(self, path, *arguments):
-        return self.run_script("check-windows-portable.py", str(path), *arguments)
-
-    def test_multimedia_notices_are_required(self):
-        (self.qt / "sbom" / f"qtmultimedia-{QT_VERSION}.spdx").unlink()
-        output = self.directory / "missing-multimedia.zip"
-        result = self.package(output)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("lacks its SBOM notices", result.stderr)
-        self.assertFalse(output.exists())
-
-    def test_bundle_holds_tested_binaries_runtime_notices_and_provenance(self):
+    def test_next_bundle_keeps_exact_binaries_notices_and_conpty_without_qt(self):
         output = self.directory / "out" / "zerus-windows-x86_64.zip"
         result = self.package(output)
         self.assertEqual(result.returncode, 0, result.stderr)
         head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         info = portable.inspect(output)
-        self.assertEqual(info, {**manifest(), "source_commit": head, "mobile_connector_bundled": True})
-        arguments = json.loads((self.directory / "arguments.json").read_text())
-        self.assertEqual(arguments[:-1], ["--release", "--no-compiler-runtime", "--no-opengl-sw",
-                                          "--no-system-d3d-compiler", "--no-system-dxc-compiler",
-                                          "--include-plugins", "qsvg,qsvgicon",
-                                          "--skip-plugin-types", "qmltooling,generic",
-                                          "--exclude-plugins", "qtposition_nmea"])
-        self.assertTrue(arguments[-1].endswith("hgs-tray.exe"))
+        self.assertEqual(info["desktop"], "tauri")
+        self.assertEqual(info["webview2_runtime"], "evergreen")
+        self.assertEqual(info["source_commit"], head)
+        self.assertNotIn("qt_version", info)
         with zipfile.ZipFile(output) as archive:
-            names = [entry.filename for entry in archive.infolist()]
+            names = archive.namelist()
             self.assertEqual(names, sorted(names))
             self.assertTrue(all(name.startswith(portable.TOP + "/") for name in names))
-            self.assertEqual(archive.read(f"{portable.TOP}/hgs.exe"), b"tested cli")
-            self.assertEqual(archive.read(f"{portable.TOP}/zerus-mobile-connector.exe"), b"tested connector")
-            self.assertEqual(archive.read(f"{portable.TOP}/hgs-tray.exe"), b"tested gui")
-            self.assertEqual(archive.read(f"{portable.TOP}/concrt140.dll"), b"concrt140.dll")
-            self.assertEqual(archive.read(f"{portable.TOP}/LICENSE"), (ROOT / "LICENSE").read_bytes())
-            self.assertEqual(archive.read(f"{portable.TOP}/licenses/qt/LGPL-3.0-only.txt"),
-                             (ROOT / "packaging/windows/licenses/LGPL-3.0-only.txt").read_bytes())
-            for name in portable.QT_LICENSE_TEXTS:
-                self.assertIn(f"{portable.TOP}/licenses/qt/{name}.txt", names)
-            self.assertFalse([name for name in names if "icu" in name.lower() and name.endswith(".dll")])
-            self.assertFalse([name for name in names if portable.FORBIDDEN.search(name)])
-            self.assertNotIn(f"{portable.TOP}/licenses/qt/README.md", names)
-            self.assertIn(f"{portable.TOP}/licenses/qt/sbom/qtmultimedia-{QT_VERSION}.spdx", names)
-            self.assertNotIn(f"{portable.TOP}/licenses/qt/sbom/qtbase-{QT_VERSION}.source.spdx", names)
-            self.assertIn(f"{portable.TOP}/licenses/rust/serde-1.0.0/LICENSE-MIT", names)
-            # The pinned ConPTY pair next to hgs.exe, its license and notices,
-            # and nothing else of its package.
-            for name, data in PAIR.items():
-                self.assertEqual(archive.read(f"{portable.TOP}/{name}"), data)
-            for name in ("conpty-LICENSE.txt", "conpty-NOTICE.md"):
-                self.assertEqual(archive.read(f"{portable.TOP}/licenses/{name}"),
-                                 (ROOT / "docs/licenses" / name).read_bytes())
-            self.assertEqual([name for name in names if "conpty" in name.lower() or "openconsole" in name.lower()],
-                             [f"{portable.TOP}/{name}" for name in ("OpenConsole.exe", "conpty.dll",
-                                                                     "licenses/conpty-LICENSE.txt",
-                                                                     "licenses/conpty-NOTICE.md")])
+            for name, expected in {"hgs.exe": b"tested cli", "hgs-tray.exe": b"tested tauri gui",
+                                   "zerus-mobile-connector.exe": b"tested connector", **PAIR}.items():
+                self.assertEqual(archive.read(f"{portable.TOP}/{name}"), expected)
+            self.assertFalse([name for name in names if portable.NEXT_FORBIDDEN.search(name)])
+            for name in ("licenses/frontend/inventory.json", "licenses/rust/desktop/inventory.json"):
+                self.assertIn(f"{portable.TOP}/{name}", names)
             readme = archive.read(f"{portable.TOP}/README.txt").decode()
-            self.assertIn(f"Zerus {VERSION} for Windows", readme)
+            self.assertIn("WebView2 Evergreen", readme)
             self.assertIn(head, readme)
-            self.assertIn("Microsoft.Windows.Console.ConPTY 1.25.260930003, under the MIT license", readme)
-            # The archive keeps every Qt release; official_releases drops superseded ones.
-            self.assertIn("https://download.qt.io/archive/qt/6.10/6.10.3/single/qt-everywhere-src-6.10.3.tar.xz",
-                          readme)
-            self.assertIn("Git tags v6.10.3 in the Qt Project repositories", readme)
-            self.assertNotIn("official_releases", readme)
             self.assertNotRegex(readme, r"@[A-Z_]+@")
             self.assertNotRegex(readme, r"[^\r]\n")
-        # Equal inputs give equal bytes, so a rebuilt zip can be compared.
         again = self.directory / "again.zip"
         self.assertEqual(self.package(again).returncode, 0)
         self.assertEqual(again.read_bytes(), output.read_bytes())
-        report = self.check(output)
+        report = self.run_script("check-windows-portable.py", str(output))
         self.assertEqual(report.returncode, 0, report.stderr)
-        self.assertIn("files", report.stdout)
-        self.assertNotEqual(self.check(output, "--commit", "b" * 40).returncode, 0)
-        # The checker refuses another binary under a ConPTY name, and the
-        # repository pin refuses the synthetic pair.
-        head_bundle = {**manifest(), "source_commit": head}
-        tampered = bundle(self.directory / "tampered.zip", files=complete(**{"OpenConsole.exe": b"another console"}),
-                          info=head_bundle)
-        report = self.check(tampered)
-        self.assertEqual(report.returncode, 1)
-        self.assertIn("OpenConsole.exe is not the pinned Microsoft.Windows.Console.ConPTY", report.stderr)
-        report = subprocess.run([sys.executable, str(ROOT / "scripts/check-windows-portable.py"), str(output)],
-                                capture_output=True, text=True)
-        self.assertEqual(report.returncode, 1)
-        self.assertIn("conpty.dll is not the pinned Microsoft.Windows.Console.ConPTY 1.25.260930003 build",
-                      report.stderr)
+        self.assertNotEqual(self.run_script("check-windows-portable.py", str(output), "--commit", "b" * 40).returncode, 0)
 
-    def test_a_conpty_pair_other_than_the_pinned_one_leaves_no_bundle(self):
-        output = self.directory / "zerus-windows-x86_64.zip"
-        (self.conpty / "OpenConsole.exe").write_bytes(b"another console")
-        result = self.package(output)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("is not the OpenConsole.exe of the pinned Microsoft.Windows.Console.ConPTY", result.stderr)
-        (self.conpty / "OpenConsole.exe").unlink()
-        result = self.package(output)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("OpenConsole.exe is missing; run scripts/fetch-conpty.py", result.stderr)
-        self.assertEqual(sorted(path.name for path in self.directory.glob("*.zip*")), [])
+    def test_shared_frontend_collector_keeps_vite_notice_in_the_windows_zip(self):
+        spec = importlib.util.spec_from_file_location("shared_notices", ROOT / "client/scripts/collect-notices.py")
+        collector = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(collector)
+        client = self.directory / "client"
+        vite = client / "node_modules/vite"
+        vite.mkdir(parents=True)
+        (client / "package-lock.json").write_text(json.dumps({"packages": {
+            "node_modules/vite": {"version": "8.3.4", "dev": True}}}))
+        (vite / "package.json").write_text(json.dumps(dict(name="vite", version="8.3.4", license="MIT")))
+        (vite / "LICENSE").write_text("Vite MIT runtime notice\n")
+        frontend = self.directory / "shared-notices"
+        collector.collect(client, frontend)
+        output = self.directory / "shared.zip"
+        result = self.package(output, **{"--frontend-licenses": frontend})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with zipfile.ZipFile(output) as archive:
+            self.assertEqual(archive.read(f"{portable.TOP}/licenses/frontend/vite-8.3.4/LICENSE"),
+                             b"Vite MIT runtime notice\n")
+            inventory = json.loads(archive.read(f"{portable.TOP}/licenses/frontend/inventory.json"))
+            self.assertEqual(inventory["packages"][0]["name"], "vite")
 
-    def test_a_license_without_its_text_leaves_no_bundle(self):
-        sbom = self.qt / "sbom" / f"qtsvg-{QT_VERSION}.spdx"
-        sbom.write_text("SPDXVersion: SPDX-2.3\nPackageName: Bundled\nPackageLicenseConcluded: MIT AND Made-Up-1.0\n"
-                        "PackageLicenseDeclared: LicenseRef-Undefined\n")
-        output = self.directory / "zerus-windows-x86_64.zip"
-        result = self.package(output)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn(f"qtsvg-{QT_VERSION}.spdx: LicenseRef-Undefined, qtsvg-{QT_VERSION}.spdx: Made-Up-1.0",
-                      result.stderr)
-        self.assertEqual(sorted(path.name for path in self.directory.glob("*.zip*")), [])
+    def test_wrong_conpty_or_missing_runtime_and_notices_leave_no_bundle(self):
+        for path in [self.conpty / "OpenConsole.exe", self.crt / "vcruntime140_1.dll",
+                     self.rust / "desktop/inventory.json", self.frontend / "inventory.json"]:
+            with self.subTest(path=path):
+                original = path.read_bytes()
+                path.unlink()
+                output = self.directory / "refused.zip"
+                self.assertNotEqual(self.package(output).returncode, 0)
+                self.assertFalse(output.exists())
+                path.write_bytes(original)
 
-    def test_a_deployed_direct3d_compiler_leaves_no_bundle(self):
-        # A windeployqt that ignores --no-system-d3d-compiler fails packaging.
-        script = self.windeployqt.read_text()
-        self.windeployqt.write_text(script.replace("if '--no-system-d3d-compiler' not in sys.argv:", "if True:"))
-        output = self.directory / "zerus-windows-x86_64.zip"
+    def test_accidental_qt_runtime_in_input_cannot_be_shipped(self):
+        (self.crt / "Qt6Core.dll").write_bytes(b"old Qt")
+        output = self.directory / "refused.zip"
         result = self.package(output)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn(f"must not contain {portable.TOP}/D3Dcompiler_47.dll", result.stderr)
-        self.assertEqual(sorted(path.name for path in self.directory.glob("*.zip*")), [])
+        self.assertIn("must not contain Qt", result.stderr)
+        self.assertFalse(output.exists())
 
-    def test_missing_runtime_or_qt_notices_leave_no_bundle(self):
-        (self.crt / "vcruntime140_1.dll").unlink()
-        output = self.directory / "zerus-windows-x86_64.zip"
-        result = self.package(output)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("vcruntime140_1.dll", result.stderr)
-        (self.crt / "vcruntime140_1.dll").write_bytes(b"restored")
-        (self.qt / "sbom" / f"qtbase-{QT_VERSION}.spdx").unlink()
-        result = self.package(output)
-        self.assertIn("SBOM", result.stderr)
-        self.assertEqual(sorted(path.name for path in self.directory.glob("*.zip*")), [])
+
+class NextInspectTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="zerus-next-zip-")
+        self.addCleanup(self.temporary.cleanup)
+        self.directory = Path(self.temporary.name)
+        use_pin(self, pinned())
+        self.files = {name: PAIR.get(name, b"x") for name in portable.NEXT_REQUIRED}
+        self.info = manifest(desktop="tauri", webview2_runtime="evergreen", mobile_connector_bundled=True)
+        del self.info["qt_version"]
+
+    def test_next_layout_is_checked_without_requiring_qt(self):
+        self.assertEqual(portable.inspect(bundle(self.directory / "ok.zip", self.files, self.info)), self.info)
+        for name in portable.NEXT_REQUIRED:
+            if name == "build-info.json": continue
+            with self.subTest(name=name):
+                files = {key: data for key, data in self.files.items() if key != name}
+                with self.assertRaises(ValueError):
+                    portable.inspect(bundle(self.directory / "missing.zip", files, self.info))
+
+    def test_runtime_mode_unknown_backend_and_qt_payloads_are_refused(self):
+        for update in [{"desktop": "unknown"}, {"desktop": {}}, {"webview2_runtime": "fixed"},
+                       {"webview2_runtime": None}, {"qt_version": QT_VERSION}]:
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                portable.inspect(bundle(self.directory / "bad.zip", self.files, {**self.info, **update}))
+        for name in ["Qt6Core.dll", "platforms/qwindows.dll", "licenses/qt/LGPL-3.0-only.txt"]:
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                portable.inspect(bundle(self.directory / "bad.zip", {**self.files, name: b"Qt"}, self.info))
 
 
 if __name__ == "__main__":

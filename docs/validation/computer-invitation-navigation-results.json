@@ -1,0 +1,57 @@
+{
+  "beads": [
+    "zerus-5wmh.24.9",
+    "zerus-5wmh.24.11"
+  ],
+  "reference": "design/webui/src/screens/settings/Mobile.tsx ws-invite",
+  "environment": "embedded built app; private D-Bus/Xvfb/HOME/XDG/TMPDIR/TMUX_TMPDIR, child environment from scratch; fake hgs and connector only",
+  "checks": {
+    "tsc": "pass",
+    "vitest_passed": 2254,
+    "vitest_existing_skip": 1,
+    "build": "pass",
+    "entry_bytes": 459442,
+    "budget_bytes": 500000,
+    "phase4_steps": 18,
+    "source_privacy_findings": 0
+  },
+  "walk": {
+    "return_restores_cancel_without_copy": true,
+    "give_does_not_issue_a_duplicate": true,
+    "late_issue_retains_metadata_only": true,
+    "in_flight_flag_survives_navigation": true,
+    "expired_away_drops_cancel_without_renewing": true,
+    "effects": {
+      "invite": 3,
+      "cancel": 2,
+      "check": 0
+    },
+    "checks_while_away": 0,
+    "codes_issued_in_ram": 3,
+    "private_files_scanned": 40,
+    "code_leak_findings": 0
+  },
+  "scope": "Frontend only. No Rust, IPC, connector protocol, background poller, persistent store or live services changed. Codes and handles are never included in the proof; captures contain synthetic data only.",
+  "captures": [
+    {
+      "file": "computer-invitation-navigation-returned.png",
+      "sha256": "d86b0caa56e14983f06bf648b62ec53e4a32d3dd07b608af9c107b422799ec9b"
+    },
+    {
+      "file": "computer-invitation-navigation-returningbusy.png",
+      "sha256": "f6eff3d210ef97e4e05e336a5117d196ca4d7974f24d54eba1ddba81629771ae"
+    },
+    {
+      "file": "computer-invitation-navigation-returninglate.png",
+      "sha256": "4d7b394e0b7ff8093e5490fb34b9e5e01e6dc3ddf22b5030f303886b02575f23"
+    },
+    {
+      "file": "computer-invitation-navigation-canceled.png",
+      "sha256": "4495de4857812e931797422828695653a3db4ccc5e75f854349f532fc9f95e40"
+    },
+    {
+      "file": "computer-invitation-navigation-expiredreturn.png",
+      "sha256": "37c59acb68fcc041b3fcaa125e6ac0d81023ef1b6fa8f6d5da5c562d633618bc"
+    }
+  ]
+}

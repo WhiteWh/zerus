@@ -59,9 +59,10 @@ pub type Clock = Arc<dyn Fn() -> f64 + Send + Sync>;
 pub type Rows = Arc<dyn Fn(&str, &str, &str) -> Option<(ViewRow, bool)> + Send + Sync>;
 /// (computer, name) -> the session's write, for the send rules.
 pub type Facts = Arc<dyn Fn(&str, &str) -> Option<WriteKind> + Send + Sync>;
-/// One `hgs inspect` of the session (with its archive id); blocking. The
-/// error is Qt's detail for "Could not refresh activity: %1" (`send::inspection`).
-pub type Inspect = Arc<dyn Fn(&Target, Option<&str>) -> Result<Value, String> + Send + Sync>;
+/// One `hgs inspect` of the parent or exact child (archive id, then agent id); blocking.
+/// The error is Qt's detail for "Could not refresh activity: %1" (`send::inspection`).
+pub type Inspect =
+    Arc<dyn Fn(&Target, Option<&str>, Option<&str>) -> Result<Value, String> + Send + Sync>;
 /// Nudges the existing source's offline retry for one computer; nonblocking.
 pub type Reconnect = Arc<dyn Fn(&str) + Send + Sync>;
 /// One guarded call (`actions::dispatch_as`); blocking. The String is the
@@ -150,15 +151,36 @@ pub fn dev_stores(own: &Path, dev: Vec<PathBuf>) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The session a composer belongs to, as the webview opened it.
+/// One exact native child of a parent conversation.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentRef {
+    pub agent_id: String,
+    pub parent_conversation_id: String,
+}
+
+impl SubagentRef {
+    pub(crate) fn valid(&self) -> bool {
+        !self.agent_id.is_empty()
+            && self.agent_id.len() <= 160
+            && !self.agent_id.contains(['/', '\\'])
+            && !self.agent_id.chars().any(char::is_control)
+            && !self.parent_conversation_id.is_empty()
+            && self.parent_conversation_id.len() <= 1024
+            && !self.parent_conversation_id.chars().any(char::is_control)
+    }
+}
+
+/// The session or child a composer belongs to, as the webview opened it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRef {
     pub computer: String,
-    /// The catalog key (`run:...` or `name:...`).
+    /// The parent catalog key (`run:...` or `name:...`).
     pub key: String,
     pub name: String,
     #[serde(default)]
     pub archive_id: Option<String>,
+    #[serde(default)]
+    pub subagent: Option<SubagentRef>,
 }
 
 impl SessionRef {
@@ -182,12 +204,31 @@ pub fn archived_row(key: &str, name: &str) -> Option<ViewRow> {
     })
 }
 
-/// Qt's draft key: `machine\nsession[\narchive]` (`SessionsWindow.cpp:438`).
+/// Qt's main/archive draft key: `machine\nsession[\narchive]`.
 pub fn draft_key(computer: &str, name: &str, archive: Option<&str>) -> String {
     match archive.filter(|id| !id.is_empty()) {
         Some(archive) => format!("{computer}\n{name}\n{archive}"),
         None => format!("{computer}\n{name}"),
     }
+}
+
+/// Qt's child key is `machine\nsession\nparent conversation\nagent ID`.
+pub fn session_draft_key(session: &SessionRef) -> String {
+    session.subagent.as_ref().map_or_else(
+        || {
+            draft_key(
+                &session.computer,
+                &session.name,
+                session.archive_id.as_deref(),
+            )
+        },
+        |child| {
+            format!(
+                "{}\n{}\n{}\n{}",
+                session.computer, session.name, child.parent_conversation_id, child.agent_id
+            )
+        },
+    )
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -201,12 +242,22 @@ pub struct AttachmentView {
     pub path: String,
     /// The first lines of a text file, for the preview.
     pub excerpt: Option<String>,
+    pub image_size: Option<attachments::image::Size>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct SubagentView {
+    pub agent_id: String,
+    pub send_supported: bool,
+    pub hint: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ComposerView {
     pub handle: u64,
     pub key: String,
+    /// Present only for a child composer; its target is still the parent run/conversation plus this agent ID.
+    pub subagent: Option<SubagentView>,
     pub loaded: bool,
     pub rev: u64,
     pub text_epoch: u64,
@@ -224,7 +275,8 @@ pub struct ComposerView {
     pub status: String,
     pub status_error: bool,
     pub can_send: bool,
-    pub send_label: String,
+    /// Interface prose; the webview translates it (`client/src/text.ts`).
+    pub send_label: zerus_client_core::text::Text,
     /// The session takes messages: no block reason (`setAvailability`).
     pub available: bool,
     pub unavailable_reason: String,
@@ -618,9 +670,7 @@ impl Composers {
     /// catalog row under a new name is a rename: its draft moves (`renameDraft`).
     pub fn open(&self, session: Option<SessionRef>) -> Option<ComposerView> {
         let mut hub = self.lock();
-        let next = session
-            .as_ref()
-            .map(|s| draft_key(&s.computer, &s.name, s.archive_id.as_deref()));
+        let next = session.as_ref().map(session_draft_key);
         self.push_selection(&mut hub, next.as_deref());
         let Some(session) = session else {
             hub.open = None;
@@ -633,11 +683,8 @@ impl Composers {
             self.changed();
             return None;
         };
-        let key = draft_key(
-            &session.computer,
-            &session.name,
-            session.archive_id.as_deref(),
-        );
+        let key = session_draft_key(&session);
+        let child_open = session.subagent.is_some();
         let renamed = hub
             .open
             .as_ref()
@@ -645,9 +692,15 @@ impl Composers {
                 old.computer == session.computer
                     && old.key == session.key
                     && old.name != session.name
+                    && old.subagent == session.subagent
             })
             .and_then(|_| hub.open_key.clone());
-        if hub.followed.computer != session.computer || hub.followed.key != session.key {
+        let child_changed =
+            hub.open.as_ref().and_then(|old| old.subagent.as_ref()) != session.subagent.as_ref();
+        if hub.followed.computer != session.computer
+            || hub.followed.key != session.key
+            || child_changed
+        {
             hub.followed = Followed {
                 computer: session.computer.clone(),
                 key: session.key.clone(),
@@ -678,6 +731,9 @@ impl Composers {
         drop(hub);
         self.sync_questions();
         self.changed();
+        if child_open {
+            self.refresh_details();
+        }
         view
     }
 
@@ -1312,7 +1368,15 @@ impl Composers {
             }
         }
         let followed = hub.followed.computer == computer && hub.followed.key == key;
-        if followed && new_events {
+        let child = hub.open.as_ref().and_then(|open| open.subagent.clone());
+        let allowed = |details: &Value| {
+            child.as_ref().is_none_or(|child| {
+                details["agent_id"].as_str() == Some(child.agent_id.as_str())
+                    && details["parent_conversation_id"].as_str()
+                        == Some(child.parent_conversation_id.as_str())
+            })
+        };
+        if followed && child.is_none() && new_events {
             let kept = &mut hub.followed.events;
             if replaced {
                 kept.clear();
@@ -1322,15 +1386,17 @@ impl Composers {
                 kept.pop_front();
             }
         }
-        let accepted_details = followed && matches!(update, Some(Some(_)));
+        let accepted_details =
+            followed && matches!(update, Some(Some((ref details, _))) if allowed(details));
         let state_changed = match update.filter(|_| followed) {
-            Some(Some((details, expiry))) => {
+            Some(Some((details, expiry))) if allowed(&details) => {
                 hub.followed.details = Some(details);
                 hub.followed.expiry = expiry;
                 hub.followed.inspect_error = None;
                 hub.followed.streamed = true;
                 true
             }
+            Some(Some(_)) => false,
             // The follow ended: the details stay and an inspect reads them
             // anew at once (Qt's `activityEnded`, `SessionsWindow.cpp:1880-1883`).
             // An inspect still under way is dropped by its number, so it
@@ -1422,7 +1488,12 @@ impl Composers {
     pub(crate) fn view_of(&self, hub: &Hub, key: &str) -> Option<ComposerView> {
         let composer = hub.composers.get(key)?;
         let session = send::session_view(self, hub, composer);
-        let (question, input_visible) = self.question_part(hub);
+        let (question, question_input) = self.question_part(hub);
+        let input_visible = question_input
+            && session
+                .subagent
+                .as_ref()
+                .is_none_or(|child| child.send_supported);
         let attachments_blocked =
             !composer.draft.attachments.is_empty() && !session.attachments_available;
         let too_long = composer.draft.text.len() > MAX_TEXT_BYTES;
@@ -1461,6 +1532,7 @@ impl Composers {
         Some(ComposerView {
             handle: composer.handle,
             key: composer.key.clone(),
+            subagent: session.subagent.clone(),
             loaded: composer.loaded && !composer.renaming,
             rev: composer.rev,
             text_epoch: composer.text_epoch,
@@ -1489,6 +1561,7 @@ impl Composers {
                             composer.handle, composer.attachments_rev
                         ),
                         excerpt: excerpt(a),
+                        image_size: attachments::image::dimensions(&a.bytes),
                     })
                     .collect()
             },
@@ -1508,13 +1581,12 @@ impl Composers {
                 && !locked
                 && !composer.uncertain,
             send_label: if composer.sending {
-                "Sending…"
+                zerus_client_core::text!("Sending…")
             } else if composer.waiting.is_some() {
-                "Waiting to send…"
+                zerus_client_core::text!("Waiting to send…")
             } else {
-                "Send"
-            }
-            .into(),
+                zerus_client_core::text!("Send")
+            },
             available: session.available,
             unavailable_reason: session.unavailable_reason,
             block_reason: session.block_reason,
@@ -1804,7 +1876,7 @@ pub(crate) mod tests {
                 rows: Arc::new(|_, _, _| None),
                 facts: Arc::new(|_, _| None),
                 reconnect: Arc::new(|_| {}),
-                inspect: Arc::new(|_, _| Err("timed out".into())),
+                inspect: Arc::new(|_, _, _| Err("timed out".into())),
                 dispatch: Arc::new(|_, _, _| Err("no call in these tests".into())),
             },
         );
@@ -1821,6 +1893,7 @@ pub(crate) mod tests {
             key: "run:run-1".into(),
             name: "claude/sample-project/review".into(),
             archive_id: None,
+            subagent: None,
         }
     }
 

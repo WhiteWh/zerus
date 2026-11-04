@@ -1,0 +1,63 @@
+{
+  "bead": "zerus-5wmh.25.2.2",
+  "reference": "Approved mockup Accounts.tsx controls and SettingsDialogs.tsx RenameDialog (420px) and accounts-remove Confirm (460px), compared in a private headless browser. Qt AccountsPage::rename/renameNext, default and remove semantics.",
+  "fixture": "Normal embedded-assets Tauri app, fresh private D-Bus/Xvfb/HOME/XDG/TMPDIR/TMUX_TMPDIR and child environment built from scratch; native hgs fixture with local workstation and peer studio profiles sharing a verified account identity. No real accounts, credentials, agents or services changed.",
+  "walk": {
+    "rename": "Escape cancels without an effect. Confirm renames the captured local and peer profiles once each with revision r1 and exact machine guards. An unchanged name closes without a write.",
+    "default": "Peer studio becomes default at revision r2; local profile remains non-default.",
+    "remove": "Cancel makes no write. Confirm removes only studio profile at revision r3; local remains listed.",
+    "stale": "A separately changed private catalog (r100) refuses the old dialog after its fresh read. Four total mutation calls remain; no replay. Explicit Refresh shows the outside change.",
+    "focus": "Rename input starts selected; Cancel is focused for removal, Escape returns to the original action.",
+    "effects": [
+      {
+        "computer": "local",
+        "operation": "rename",
+        "revision": "r1"
+      },
+      {
+        "computer": "studio",
+        "operation": "rename",
+        "revision": "r1"
+      },
+      {
+        "computer": "studio",
+        "operation": "default",
+        "revision": "r2"
+      },
+      {
+        "computer": "studio",
+        "operation": "rm",
+        "revision": "r3"
+      }
+    ],
+    "phase4": "18/18 steps pass, exit 0",
+    "success_placement": "Passing captions appear inside the existing selected account card, as the mockup accountNotice Status; failures use the existing sticky notice bus. Selecting an account/machine clears the passing caption."
+  },
+  "checks": {
+    "frontend": "Type check, full Vitest 2115 passed plus 1 skipped, production build",
+    "entry_bytes": 463971,
+    "budget_bytes": 500000,
+    "core": "All-target Clippy; 2 pure binding/argument tests and 3 real fake-CLI integration tests",
+    "tauri": "All-target Clippy default/media/video/no-default-features and Windows MSVC media cross-Clippy; 39 screens tests pass (including 7 account edit tests)",
+    "privacy": "0 findings",
+    "separators": "pass"
+  },
+  "contracts": [
+    "Native-only snapshots retain the account group and exact profile/machine/catalog revision. Eight pending handles maximum; handles are consumed before an effect and never retried.",
+    "Fresh guarded catalog read verifies profile provider, home and credential revision; the mutation repeats the physical machine guard and hgs revision CAS.",
+    "A failed rename stops the remaining group queue as Qt does. Multiple profiles on one machine advance only through this plan\u2019s confirmed revisions; external changes still refuse.",
+    "Edits borrow the existing screens catalog slot. Mutations and list reads share completion, queued refresh and New session waiter notification; mutation errors use the notice bus."
+  ],
+  "scope": {
+    "root_src_changed": false,
+    "new_poller": false,
+    "new_filesystem_or_credential_writer": false,
+    "slice": "Rename/default/remove only. Permissions/model and add/auth/install remain next."
+  },
+  "captures": [
+    "account-catalog-rename.png",
+    "account-catalog-remove.png",
+    "account-catalog-removed.png",
+    "account-catalog-success.png"
+  ]
+}

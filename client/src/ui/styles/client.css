@@ -6,7 +6,7 @@
      Estimated content-visibility sizes shift earlier rows as items unskip. */
   /* zerus-5wmh.83: live appends must be visible when the end pin follows them.
      A tall new row starting at opacity zero blanks the whole transcript. */
-  .act-col > [id^="item-"] { animation: none; }
+  .act-col [id^="item-"] { animation: none; }
   .act-older { padding: 4px 2px; text-align: center; }
   /* Groups that hold an approval or a failure read in the warning colour, as in Qt. */
   .act-tools.warn .act-tools-head b { color: var(--z-color-warn); }

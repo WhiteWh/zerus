@@ -243,7 +243,11 @@ One tokio `current_thread` runtime runs two loops, as Python's two tasks do:
   follows one `hgs watch --json` (`watch_listing.rs`) and takes the listing
   from its catalog rows and `catalog.meta`, composed as
   `ls --json --local --no-archives` prints them, while the stream is live
-  (a frame within 30 s). Before then, after the stream ends (restarted after
+  (a frame within 30 s). Presence durations age from the last metadata frame,
+  independently of stream heartbeats and session deltas. Presence is omitted
+  when missing or malformed, or when metadata is older than 120 s; the other
+  live listing fields remain available. This does not change the relay's historical last-activity
+  timer for `away_N`. Before then, after the stream ends (restarted after
   5, 15 and 60 s, then every 5 minutes), for peers and for requests routed to
   this computer, it runs `ls` as before. Windows hosts keep `ls`.
 - **Requests**: upload undelivered receipts, then long-poll

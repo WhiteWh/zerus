@@ -69,7 +69,11 @@
   .inspector { flex-shrink: 0; }
   .inspector.floating { position: absolute; z-index: 12; top: 0; right: 0; bottom: 0; box-shadow: var(--z-shadow-popover); }
   .insp-tabs { flex: none; min-width: 0; overflow-x: auto; }
-  .insp-tabs .tab { flex: none; white-space: nowrap; }
+  /* Longer (translated) names shrink the other tabs with an ellipsis; the
+     selected tab and the collapse button stay whole. Full names are in title. */
+  .insp-tabs .tab { flex: 0 1 auto; min-width: 3.2em; white-space: nowrap; }
+  .insp-tabs .tab.on, .insp-tabs > .icon-btn { flex-shrink: 0; }
+  .insp-tabs .tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .insp-resize > i { position: absolute; top: 35%; bottom: 35%; width: 3px; border-radius: 2px; background: var(--z-color-accent); opacity: 0; }
   .inspector .usage { user-select: text; }
   .work-main { min-width: min(360px, 100%); }

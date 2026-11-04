@@ -8,14 +8,16 @@
 //! alias stops its stream: its rows leave and it reports
 //! [`ComputerStatus::Ended`](crate::ComputerStatus::Ended). Every change goes to
 //! the caller's sink, which a [`Coalescer`](crate::Coalescer) usually drains.
-use crate::stream::{self, StreamEvent, StreamHandle, Timing};
+use crate::stream::{self, StreamEvent, Timing};
 use crate::{Change, ComputerId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 use zerus_watch_protocol::{Control, SessionRef};
+mod resources;
 
 pub use crate::stream::FollowError;
 
@@ -34,7 +36,8 @@ struct Shared {
     timing: Timing,
     /// Whether the peers the local listing names get streams.
     peers: bool,
-    streams: Mutex<BTreeMap<ComputerId, StreamHandle>>,
+    streams: Mutex<BTreeMap<ComputerId, resources::Stream>>,
+    resources: Option<resources::Graph>,
     /// The peers the local listing last named; None until one names them.
     listed: Mutex<Option<BTreeSet<String>>>,
     /// None once the fleet stops: no stream starts after that.
@@ -48,12 +51,40 @@ fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Shared {
-    fn start(&self, streams: &mut BTreeMap<ComputerId, StreamHandle>, computer: ComputerId) {
+    fn start(
+        &self,
+        streams: &mut BTreeMap<ComputerId, resources::Stream>,
+        computer: ComputerId,
+    ) -> bool {
         let Some(events) = guard(&self.events).clone() else {
-            return;
+            return false;
         };
-        let handle = stream::spawn(&self.hgs, &computer, self.timing.clone(), events);
-        streams.insert(computer, handle);
+        let resources = match &self.resources {
+            Some(graph) => match graph.admit() {
+                Some(held) => Some(held),
+                None => {
+                    let _ = events.send(StreamEvent::Change(Change::Computer {
+                        computer,
+                        status: crate::ComputerStatus::Reconnecting { attempt: 1 },
+                    }));
+                    return false;
+                }
+            },
+            None => None,
+        };
+        let handle = match &resources {
+            Some(held) => stream::spawn_accounted(
+                &self.hgs,
+                &computer,
+                self.timing.clone(),
+                events,
+                held.clone(),
+            )
+            .expect("start an accounted stream supervisor"),
+            None => stream::spawn(&self.hgs, &computer, self.timing.clone(), events),
+        };
+        streams.insert(computer, resources::Stream { handle, resources });
+        true
     }
 
     /// Starts the new peers and stops the removed ones (on their own threads,
@@ -85,13 +116,43 @@ pub struct Fleet {
     router: Option<JoinHandle<()>>,
 }
 
+/// Non-owning stop request. Keeping this control never charges a finished graph.
+#[derive(Clone)]
+pub struct FleetControl(Weak<Shared>);
+impl FleetControl {
+    pub fn request_stop(&self) {
+        let Some(shared) = self.0.upgrade() else {
+            return;
+        };
+        guard(&shared.events).take();
+        if let Some(graph) = &shared.resources {
+            graph.close();
+        }
+        for stream in guard(&shared.streams).values() {
+            stream.request_stop();
+        }
+    }
+}
+
 impl Fleet {
+    pub fn control(&self) -> FleetControl {
+        FleetControl(Arc::downgrade(&self.shared))
+    }
     /// Bypasses one offline source's retry delay. Repeated pending requests,
     /// online computers and computers without a source do nothing.
     pub fn reconnect(&self, computer: &ComputerId) -> bool {
-        guard(&self.shared.streams)
-            .get(computer)
-            .is_some_and(StreamHandle::reconnect)
+        let mut streams = guard(&self.shared.streams);
+        if let Some(stream) = streams.get(computer) {
+            return stream.reconnect();
+        }
+        if self.shared.resources.is_some()
+            && guard(&self.shared.listed)
+                .as_ref()
+                .is_some_and(|peers| peers.contains(&computer.0))
+        {
+            return self.shared.start(&mut streams, computer.clone());
+        }
+        false
     }
 
     /// Follows this computer and the peers it lists through `hgs` (a path or
@@ -101,20 +162,44 @@ impl Fleet {
     }
 
     pub fn start_with(hgs: PathBuf, sink: Sender<Change>, timing: Timing) -> Self {
-        Self::launch(hgs, sink, timing, true)
+        Self::launch(hgs, sink, timing, true, None)
     }
 
     /// Follows this computer only, without streams for its peers.
     pub fn start_local(hgs: PathBuf, sink: Sender<Change>, timing: Timing) -> Self {
-        Self::launch(hgs, sink, timing, false)
+        Self::launch(hgs, sink, timing, false, None)
     }
 
-    fn launch(hgs: PathBuf, sink: Sender<Change>, timing: Timing, peers: bool) -> Self {
+    /// Account the existing graph without adding a reader or pump. The host
+    /// must retain this same span through its sink consumer and callbacks.
+    pub fn start_accounted(
+        hgs: PathBuf,
+        sink: Sender<Change>,
+        timing: Timing,
+        resources: Arc<dyn Send + Sync>,
+    ) -> Self {
+        Self::launch(
+            hgs,
+            sink,
+            timing,
+            true,
+            Some(resources::Graph::new(resources)),
+        )
+    }
+
+    fn launch(
+        hgs: PathBuf,
+        sink: Sender<Change>,
+        timing: Timing,
+        peers: bool,
+        resources: Option<resources::Graph>,
+    ) -> Self {
         let (tx, rx) = mpsc::channel();
         let shared = Arc::new(Shared {
             hgs,
             timing,
             peers,
+            resources,
             streams: Mutex::new(BTreeMap::new()),
             listed: Mutex::new(None),
             events: Mutex::new(Some(tx)),
@@ -212,7 +297,7 @@ impl Fleet {
     pub fn followed_processes(&self, computer: &ComputerId) -> Vec<String> {
         guard(&self.shared.streams)
             .get(computer)
-            .map(StreamHandle::followed_processes)
+            .map(|stream| stream.followed_processes())
             .unwrap_or_default()
     }
 
@@ -254,7 +339,7 @@ impl Fleet {
     pub fn followed_tasks(&self, computer: &ComputerId) -> Vec<String> {
         guard(&self.shared.streams)
             .get(computer)
-            .map(StreamHandle::followed_tasks)
+            .map(|stream| stream.followed_tasks())
             .unwrap_or_default()
     }
 
@@ -271,7 +356,7 @@ impl Fleet {
     pub fn unfollow_organization(&self, computer: &ComputerId) -> bool {
         guard(&self.shared.streams)
             .get(computer)
-            .is_some_and(StreamHandle::unfollow_organization)
+            .is_some_and(|stream| stream.unfollow_organization())
     }
 
     /// The organization the view shows and the versions observed with it, for
@@ -282,7 +367,7 @@ impl Fleet {
     ) -> Option<crate::OrganizationSnapshot> {
         guard(&self.shared.streams)
             .get(computer)
-            .and_then(StreamHandle::organization_snapshot)
+            .and_then(|stream| stream.organization_snapshot())
     }
 
     /// Writes a control line (a `ping`, say) to one computer's stream.
@@ -308,8 +393,19 @@ impl Fleet {
     pub fn followed(&self, computer: &ComputerId) -> Vec<String> {
         guard(&self.shared.streams)
             .get(computer)
-            .map(StreamHandle::followed)
+            .map(|stream| stream.followed())
             .unwrap_or_default()
+    }
+
+    /// Diagnostic for the dormant host barrier; poison never becomes drain.
+    pub fn accounting_available(&self) -> bool {
+        self.shared
+            .resources
+            .as_ref()
+            .is_some_and(resources::Graph::available)
+            && !self.shared.events.is_poisoned()
+            && !self.shared.streams.is_poisoned()
+            && !self.shared.listed.is_poisoned()
     }
 
     /// Ends every stream (each reports `Ended` with no rows) and waits for them.
@@ -318,21 +414,38 @@ impl Fleet {
     }
 
     fn shutdown(&mut self) {
-        guard(&self.shared.events).take();
-        let handles: Vec<StreamHandle> = std::mem::take(&mut *guard(&self.shared.streams))
+        if self.shared.resources.is_some() {
+            self.control().request_stop();
+        } else {
+            guard(&self.shared.events).take();
+        }
+        let handles: Vec<resources::Stream> = std::mem::take(&mut *guard(&self.shared.streams))
             .into_values()
             .collect();
         let stops: Vec<_> = handles
             .into_iter()
             .map(|handle| thread::spawn(move || handle.stop()))
             .collect();
+        let deadline = Instant::now() + Duration::from_secs(1);
         for stop in stops {
-            let _ = stop.join();
+            finish(stop, self.shared.resources.is_some(), deadline);
         }
         if let Some(router) = self.router.take() {
-            let _ = router.join();
+            finish(router, self.shared.resources.is_some(), deadline);
         }
     }
+}
+
+fn finish(thread: JoinHandle<()>, bounded: bool, deadline: Instant) {
+    if bounded {
+        while !thread.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if !thread.is_finished() {
+            return;
+        } // The actual worker still retains its resource span.
+    }
+    let _ = thread.join();
 }
 
 impl Drop for Fleet {

@@ -1,5 +1,7 @@
 use super::*;
 use crate::readmarks::ReadMark;
+#[cfg(unix)]
+use std::fs::OpenOptions;
 use std::path::PathBuf;
 
 struct Temp(PathBuf);
@@ -217,7 +219,7 @@ fn initial_row_bounds_count_original_entries_before_key_coalescing() {
     assert_eq!(std::fs::read(temp.path()).unwrap(), bytes);
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 #[test]
 fn unsupported_platform_refuses_before_creating_any_checkpoint_state() {
     let temp = Temp::new();

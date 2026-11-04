@@ -9,7 +9,10 @@ use std::io::{self, Read};
 use std::path::Path;
 
 mod presentation;
+pub mod windows_folders;
+mod windows_import;
 pub use presentation::{qt_presentation, PresentationSeed};
+pub use windows_import::{qt_windows_folders, WindowsFoldersContext, WindowsFoldersSeed};
 
 /// The space between neighbouring ranks; an insert takes the middle.
 pub const GAP: u64 = 1 << 20;
@@ -186,6 +189,9 @@ impl Layout {
             {
                 return Err("the project layout has an invalid run identity");
             }
+        }
+        if let Some(family) = saved.extra.get(windows_folders::KEY) {
+            windows_folders::validate(family)?;
         }
         Ok(Self::from_saved(saved))
     }

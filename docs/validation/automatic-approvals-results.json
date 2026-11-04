@@ -1,0 +1,53 @@
+{
+  "scope": "zerus-5wmh.54, explicit dangerous opt-in",
+  "isolation": [
+    "private Xvfb",
+    "private D-Bus",
+    "fresh HOME and XDG/TMPDIR/TMUX_TMPDIR",
+    "child env built from scratch",
+    "synthetic local and peer watch sources"
+  ],
+  "journal": "Existing real hgs approval-log in private state; provider inspect/answer are fake, no real agent or host touched",
+  "fixture": "client/core/tests/support/fake_hgs_automatic_approvals.py",
+  "before_confirmation": {
+    "reservations": 0,
+    "answers": 0,
+    "Enter_on_Cancel": "no change"
+  },
+  "after_confirmation": {
+    "targets": 6,
+    "providers": [
+      "claude",
+      "opencode",
+      "dsh"
+    ],
+    "computers": 2,
+    "answer_commands": 6,
+    "durable_prepared_record_verified_before_each_answer": true,
+    "outcomes": {
+      "approved": 5,
+      "unknown": 1
+    },
+    "journal_mode": "0600",
+    "directory_mode": "0700"
+  },
+  "after_restart": {
+    "answer_commands": 6,
+    "unknown_replayed": false
+  },
+  "after_disable": {
+    "answer_commands": 6,
+    "saved_opt_in": false
+  },
+  "mockup": [
+    "design/webui/src/screens/settings/Policies.tsx",
+    "design/webui/src/dialogs/SettingsDialogs.tsx:649"
+  ],
+  "feature_gates_before_integration_rebase": {
+    "core_lib": 1075,
+    "tauri_media_lib": 1032,
+    "frontend": 2262,
+    "phase4_steps": 18,
+    "entry_bytes": 459505
+  }
+}

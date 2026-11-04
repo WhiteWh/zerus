@@ -6,6 +6,8 @@ export interface ReadingRows {
   visible(): readonly ReadingAnchor[];
   offset(key: string): number | undefined;
   adjust(delta: number): void;
+  /** Accepted browser position, which may change before its DOM scroll event. */
+  scrollTop?(): number;
 }
 
 /**
@@ -16,9 +18,24 @@ export interface ReadingRows {
 export function createActivityAnchor(rows: ReadingRows, released: () => boolean, frames: AnimationFrames = animationFrames, canWrite: () => boolean = () => true) {
   let corrected: ReadingAnchor | undefined;
   let anchors: readonly ReadingAnchor[] = [], frame: number | undefined, disposed = false;
+  let observedTop: number | undefined;
   const cancel = () => { if (frame !== undefined) frames.cancel(frame); frame = undefined; };
+  const remember = () => {
+    if (disposed || !released()) return;
+    anchors = rows.visible().slice(0, 8);
+    corrected = undefined;
+    observedTop = rows.scrollTop?.();
+  };
   const correct = () => {
     if (disposed || !released() || !canWrite()) return;
+    const top = rows.scrollTop?.();
+    if (top !== undefined && observedTop !== undefined && Math.abs(top - observedTop) > .01) {
+      // A source/measurement callback can beat the browser's queued scroll
+      // event. Adopt its accepted position before restoring any named row.
+      // This uses neither total content height nor an estimated scroll delta.
+      remember();
+      return;
+    }
     for (const anchor of anchors) {
       const offset = rows.offset(anchor.key);
       if (offset === undefined) continue;
@@ -27,6 +44,7 @@ export function createActivityAnchor(rows: ReadingRows, released: () => boolean,
       // unrepresentable fraction on every streamed event or verify frame.
       if (Math.abs(delta) > .01 && (corrected?.key !== anchor.key || Math.abs(corrected.offset - offset) > .01)) {
         rows.adjust(delta);
+        observedTop = rows.scrollTop?.();
         corrected = { key: anchor.key, offset: rows.offset(anchor.key) ?? offset };
       }
       return;
@@ -40,11 +58,11 @@ export function createActivityAnchor(rows: ReadingRows, released: () => boolean,
   };
   return {
     /** Keep a few visible successors only as fallbacks if a row is removed. */
-    remember() { if (!disposed && released()) { anchors = rows.visible().slice(0, 8); corrected = undefined; } },
+    remember,
     /** Run before reconciliation, so back-to-back changes cannot adopt drift. */
     beforeChange: correct,
     changed,
-    reset() { cancel(); anchors = []; corrected = undefined; },
+    reset() { cancel(); anchors = []; corrected = undefined; observedTop = undefined; },
     dispose() { cancel(); anchors = []; disposed = true; },
   };
 }
@@ -55,7 +73,7 @@ export function activityReadingRows(scroller: HTMLElement): ReadingRows {
   return {
     visible() {
       const column = scroller.querySelector(".act-col");
-      const rows = column?.querySelectorAll<HTMLElement>(":scope > [id^='item-']");
+      const rows = column?.querySelectorAll<HTMLElement>("[id^='item-']");
       if (!rows?.length) return [];
       const edge = top(), bottom = edge + scroller.clientHeight;
       let lo = 0, hi = rows.length;
@@ -69,5 +87,6 @@ export function activityReadingRows(scroller: HTMLElement): ReadingRows {
     },
     offset(key) { const row = scroller.ownerDocument.getElementById(key); return row && scroller.contains(row) ? row.getBoundingClientRect().top - top() : undefined; },
     adjust(delta) { scroller.scrollTo({ top: scroller.scrollTop + delta, behavior: "instant" }); },
+    scrollTop: () => scroller.scrollTop,
   };
 }

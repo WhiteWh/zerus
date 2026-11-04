@@ -1,0 +1,79 @@
+{
+  "bead": "zerus-5wmh.24.8",
+  "reference": "design/webui/src/screens/settings/Mobile.tsx LegacyRelay and WindowsMobile; Qt RelayConfiguration, RelaySettings, WindowsMobileSettings",
+  "environment": "built embedded Linux app; private D-Bus/Xvfb/HOME/XDG/TMPDIR/TMUX_TMPDIR; child env from scratch; fake hgs, connector and systemctl only",
+  "checks": {
+    "core_lib_passed": 1054,
+    "core_lib_existing_ignored": 4,
+    "legacy_unix_and_service": 9,
+    "windows_manager_protocol": 5,
+    "native_mobile": 24,
+    "frontend_passed": 2249,
+    "frontend_existing_skip": 1,
+    "phase4_steps": 18,
+    "entry_bytes": 459442,
+    "limit_bytes": 500000,
+    "clippy": "core, Tauri default/media/video/no-live, Windows MSVC all-targets",
+    "source_privacy_findings": 0
+  },
+  "walk": {
+    "save_and_reload": true,
+    "stale_save_refused": true,
+    "credential_field_cleared_after_submit": true,
+    "new_binding_private_directory": true,
+    "old_receipt_preserved": true,
+    "unknown_config_fields_preserved": true,
+    "service_reads": 5,
+    "service_effects": 0,
+    "restart_hidden_for_unsafe_kill_mode": true,
+    "protection_copy_toast": true,
+    "encrypted_config_refused_and_disclosure_closed": true,
+    "credential_inputs": 3,
+    "credential_leak_findings_outside_intended_private_configuration": 0,
+    "validation_refusal_keeps_fields_and_ready": true,
+    "private_file_error_matches_qt": true
+  },
+  "limitations": [
+    "Windows management protocol was exercised with a fake manager on Linux and cross-compiled; no native Windows runtime claim.",
+    "No live connector, unit, configuration or relay was modified or deployed."
+  ],
+  "captures": [
+    {
+      "file": "legacy-relay-open.png",
+      "sha256": "9016c1d6938ca831a6c7f3d8a934bf29819f238dd97ef57af204be25ea632d94"
+    },
+    {
+      "file": "legacy-relay-saved.png",
+      "sha256": "372281554bc6afa9117e922119386278202a62c8d714cedd42012a2e2cd4b7a6"
+    },
+    {
+      "file": "legacy-relay-stale.png",
+      "sha256": "11f50c844e7b9e64c070c56a9413dd0605a3f70c3f98d26cf51b8f4bff75965e"
+    },
+    {
+      "file": "legacy-relay-new-binding.png",
+      "sha256": "6c45d488fc74126dcb4ae046d7a39d433b7d79423a1198243fab366be57d671f"
+    },
+    {
+      "file": "legacy-relay-protection.png",
+      "sha256": "9770948fa98dda6ca59181df9bb3ad7da07eea5f943a66114876b13f98ed4526"
+    },
+    {
+      "file": "legacy-relay-copy.png",
+      "sha256": "da126fdd8a0f3fe31e1ef5e470d329d0ab0fbf6f8b19a83a969fd11ed06100f2"
+    },
+    {
+      "file": "legacy-relay-encrypted.png",
+      "sha256": "dfa43bf6324e53f6258b69311bb776c0a2ceff0bf86d426ca5841cf83dd2cc9e"
+    },
+    {
+      "file": "legacy-relay-validation.png",
+      "sha256": "22c1fce5f47a9ca91033e12fb24616e7752b8101db4491fee5915bc6de22f26f"
+    },
+    {
+      "file": "legacy-relay-private-file.png",
+      "sha256": "a63f6c993c9d33d2322c6a21576146b844857d70ff70ad23d50d7d84d089701b"
+    }
+  ],
+  "review_delta": "R1 disclosure left alignment; R2 Windows status/drain placement; R3 status kinds; R4 typed validation refusal re-arms the same snapshot, uncertain/changed stays locked; R5 exact private-file/read/JSON errors."
+}

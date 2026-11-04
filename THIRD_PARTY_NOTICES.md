@@ -80,7 +80,7 @@ The desktop client in `client/` locks its Rust dependencies in
 from crates.io, where its source code is available; its bundles carry the notices
 of every crate they ship, from the crates or from `packaging/rust-licenses`.
 
-The GUI links Qt 6 (Widgets, Network and Multimedia), and on Linux the KDE
+The legacy Qt GUI links Qt 6 (Widgets, Network and Multimedia), and on Linux the KDE
 Frameworks KStatusNotifierItem, KWindowSystem and KIdleTime. These retain their
 own licenses. On Linux, the optional embedded DeepSeek native UI plugin
 (`libhgs-tray-native-ui.so`) links Qt WebEngine, which includes Chromium and
@@ -88,15 +88,17 @@ additional third-party components. See the
 [Qt WebEngine licensing documentation](https://doc.qt.io/qt-6.8/qtwebengine-licensing.html)
 and the notices supplied by the exact Qt distribution used to build the application.
 
-The Arch package links Qt/KDE dynamically and requires their system packages; it
-does not bundle Qt, KDE or Chromium. Qt WebEngine is an optional dependency used
-only by the native UI plugin. Their distribution supplies their notices
-and corresponding source. `scripts/collect-licenses.py` collects the exact
-host-target Cargo dependency license texts and inventory into the package,
-alongside the Zerus and vendored libvterm and md4c licenses. A missing dependency notice
-fails packaging. Review notices and any source/relinking obligations again if
-the linkage or bundled components change. MIT licensing of Zerus itself does
-not relicense its dependencies.
+The Arch package ships Zerus Next and dynamically links system GTK3,
+WebKitGTK 4.1, JavaScriptCoreGTK, ALSA and GStreamer. It does not bundle those
+libraries, Qt/KDE or Chromium; their system distributions supply notices and
+corresponding source. The Linux Qt source-build fallback is kept separately
+until Linux acceptance and is not part of the Arch package.
+`scripts/collect-licenses.py` includes the host-target Cargo notices for `hgs`,
+the connector, and the client with its media/video features, together with
+Zerus MIT and the Codex data notice. Its client/media and client/core locks
+supplement `client/src-tauri/Cargo.lock`. A missing dependency notice fails
+packaging. Review source/relinking obligations when linkage or bundled
+components change. MIT licensing of Zerus does not relicense its dependencies.
 
 The Windows portable zip is different: it bundles Qt 6 for MSVC, including Qt
 Multimedia with its audio runtime, next to the application. It contains no Qt

@@ -92,7 +92,7 @@ fn entry(key: String, value: QtValue) -> SourceResult<Value> {
 
 /// Qt pending/previous checkpoints and remembered parent, preserving original
 /// private fields without status, retirement, clone, checkout or launch effects.
-/// Next has no separate pending-clone store outside its creation journal.
+/// Next's later Settings extension is retained by `next_repository_clones`.
 pub fn qt_repository_clones(snapshot: &QtSnapshot) -> SourceResult<SourceStream> {
     if !["qt-ini", "qt-plist", "qt-defaults"].contains(&snapshot.source) {
         return Err(SourceError::UnsupportedSource);
@@ -130,6 +130,45 @@ pub fn qt_repository_clones(snapshot: &QtSnapshot) -> SourceResult<SourceStream>
         std::iter::once(Ok(header)).chain(pages(
             records.into_iter().map(|(key, value)| entry(key, value)),
         )),
+    ))
+}
+
+/// Next Projects Clone's native-only Settings extension. Only the original
+/// `repository_clones` JSON crosses this boundary; unrelated settings do not.
+/// Opaque scope hashes, pending/previous requests, whitespace and order remain
+/// byte-exact, without choosing an endpoint or constructing a live Clone.
+pub fn next_repository_clones(bytes: &[u8]) -> SourceResult<SourceStream> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let raw = crate::settings::repository::snapshot(bytes).map_err(|reason| match reason {
+        crate::settings::SnapshotError::TooLarge => SourceError::TooLarge,
+        crate::settings::SnapshotError::Unsupported => SourceError::UnsupportedSource,
+    })?;
+    let source = SourceRecord {
+        family: "next-repository-clones".into(),
+        schema: 1,
+        format: "settings-json-v1".into(),
+        sha256: zerus_desktop_migration::sha256(bytes),
+        build: None,
+    };
+    let header = json!({"kind":"clone-header","present":raw.is_some(),
+        "field":"repository_clones","bytes":raw.as_ref().map(|r|r.get().len()),"encoding":"base64"});
+    let mut offset = 0;
+    let chunks = std::iter::from_fn(move || {
+        let bytes = raw.as_ref()?.get().as_bytes();
+        if offset == bytes.len() {
+            return None;
+        }
+        // Half a MiB before base64 leaves room inside the existing 1 MiB
+        // private snapshot cap, even when a UTF-8 codepoint spans chunks.
+        let end = (offset + (512 << 10)).min(bytes.len());
+        let chunk = json!({"kind":"clone-checkpoint-bytes","offset":offset,
+            "base64":STANDARD.encode(&bytes[offset..end])});
+        offset = end;
+        Some(Ok(chunk))
+    });
+    Ok(SourceStream::new(
+        source,
+        std::iter::once(Ok(header)).chain(chunks),
     ))
 }
 

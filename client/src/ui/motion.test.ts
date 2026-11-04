@@ -22,6 +22,11 @@ describe("motionAttributes", () => {
     expect(motionAttributes({ ...base, hidden: true })).toEqual({ pageHidden: "1" });
     expect(motionAttributes({ animateActivity: false, reduceMotion: true, systemReduced: false, hidden: true })).toEqual({ animateActivity: "0", reduceMotion: "1", pageHidden: "1" });
   });
+
+  it("marks Linux focus loss separately so visible entrances keep running", () => {
+    expect(motionAttributes({ ...base, unfocused: true })).toEqual({ motionUnfocused: "1" });
+    expect(motionAttributes({ ...base, hidden: true, unfocused: true })).toEqual({ pageHidden: "1", motionUnfocused: "1" });
+  });
 });
 
 describe("applyMotionAttributes", () => {

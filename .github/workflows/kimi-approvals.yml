@@ -96,14 +96,14 @@ jobs:
         run: |
           rustup toolchain install 1.99.1 --profile minimal
           cargo +1.99.1 build --locked --bin hgs -j 2
-      - name: macOS seven Bash, four CreateGoal and one ExitPlanMode approval cases on one official latest release
+      - name: macOS seven Bash, eight CreateGoal and one ExitPlanMode approval cases on one official latest release
         if: runner.os == 'macOS'
         shell: bash
         run: |
           python -s -B scripts/ci/kimi-approvals.py --source-sha "$SOURCE_SHA" \
             --hgs "$CARGO_TARGET_DIR/debug/hgs" --tmux "$RUNNER_TEMP/kimi-approvals-tmux/bin/tmux" \
             --output "$GITHUB_WORKSPACE/artifacts/test-results/kimi-approvals" </dev/null
-      - name: Windows layout preflight, then seven Bash, four CreateGoal and one ExitPlanMode approval cases on one official latest release
+      - name: Windows layout preflight, then seven Bash, eight CreateGoal and one ExitPlanMode approval cases on one official latest release
         if: runner.os == 'Windows'
         shell: pwsh
         run: |

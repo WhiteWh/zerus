@@ -186,7 +186,9 @@ class NativeClaudeApprovalChannel(unittest.TestCase):
         name = self._testMethodName
         safety = '_rm_' in name
         self.command = ((':\n' * 90 if '_clipped_' in name else '')
-                        + ('T=$(pwd); test "$T" = ' + shlex.quote(str(work)) + ' && rm -f $T/*.jsonl $T/*.port && ' if safety else '')
+                        # Keep the variable-path warning and exact directory
+                        # fence in syntax Claude 2.1.317 accepts on Bash 3.2.
+                        + ('T=$PWD; test . -ef ' + shlex.quote(str(work)) + ' && rm -f $T/*.jsonl $T/*.port && ' if safety else '')
                         + ('sleep 6; ' if '_terminal_' in name else '') + 'printf approved > approved.txt')
         self.tool_input = dict(command=self.command, description='Create a fixture file after approval')
         # Two Reads of one file name in different folders, outside the project.

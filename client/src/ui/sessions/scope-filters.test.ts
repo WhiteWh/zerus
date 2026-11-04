@@ -9,7 +9,7 @@ const row = (host: string, id: string, extra: Partial<ViewRow> = {}) => toSessio
   name: id, agent: "claude", machine: host || "workstation", account_id: id, cwd_canonical: "/srv/example/app", git_root: "/srv/example/app", ...extra,
 });
 const account = (key: string, members: { host: string; id: string; home: string }[], label = "Work"): Account => ({
-  key, label, provider: "claude", installed: true, machines: [], members: members as Profile[], usage: emptyUsage(), permission: "", identity_lines: [], identity_note: "",
+  key, label, provider: "claude", installed: true, machines: [], members: members as Profile[], usage: emptyUsage(), permission: { source: "" }, identity_lines: [], identity_note: null,
 });
 const evidence = (accounts: Account[]): BindingEvidence[] => accounts.flatMap((a) => a.members.map((p) => ({ host: p.host, provider: a.provider, id: p.id, home: p.home, group: a.key })));
 const empty: SessionScopes = { machines: [], projects: [], accounts: [] };

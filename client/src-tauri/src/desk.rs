@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -36,7 +36,10 @@ use zerus_client_core::menubar::{
 };
 use zerus_client_core::readmarks::ReadMark;
 use zerus_client_core::shell;
-use zerus_client_core::{Change, ComputerId};
+use zerus_client_core::text::Text;
+use zerus_client_core::{text, Change, ComputerId};
+
+use crate::native_text::render;
 
 /// The status item is offered at most this often.
 pub const PACE: Duration = Duration::from_millis(250);
@@ -51,6 +54,10 @@ pub const SWEEP: Duration = Duration::from_secs(10);
 pub const ATTENTION_FILE: &str = "attention-observed.json";
 /// Banners for optional questions (`QuestionNotificationSettings.h`).
 pub const OPTIONAL_QUESTIONS: &str = "notifications/optionalQuestions";
+
+mod attention_barrier;
+pub(crate) mod observers;
+pub use attention_barrier::InputSender;
 
 pub enum DeskInput {
     Change(Box<Change>),
@@ -69,11 +76,26 @@ pub enum DeskInput {
         token: String,
         activation: String,
     },
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    ServiceClicked(Box<crate::desktop_service::activation::Delivery>),
+    /// Public launch/instance navigation data, not callback/writer authority.
+    #[cfg(target_os = "linux")]
+    Navigate {
+        target: zerus_client_core::desktop::activation::Target,
+        activation: Option<String>,
+    },
     /// A delivery failed (`AttentionNotifier::failed`).
     Failed {
         token: String,
         detail: String,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExactSession {
+    pub run: String,
+    pub conversation: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +106,8 @@ pub struct OpenSession {
     /// (`SessionsWindow::showAttentionSession`, `SessionsWindow.cpp:2837-2842`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub attention: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected: Option<ExactSession>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,7 +202,8 @@ impl Inbox {
 
 /// Kept in the app state.
 pub struct DeskState {
-    sender: Mutex<Sender<DeskInput>>,
+    sender: Mutex<InputSender>,
+    _attention_owner: attention_barrier::Owner,
     mode: Mutex<OpenMode>,
     dir: PathBuf,
     inbox: Mutex<Inbox>,
@@ -220,7 +245,9 @@ pub fn terminal_settings(dir: &Path) -> zerus_client_core::terminal_launch::Sett
     };
     zerus_client_core::terminal_launch::Settings {
         template: value("terminal"),
-        open_mode: if cfg!(target_os = "macos") {
+        open_mode: if cfg!(windows) {
+            load_windows_mode(dir, conf.as_deref()).config().into()
+        } else if cfg!(target_os = "macos") {
             serde_json::to_value(load_mode(dir, conf.as_deref()))
                 .ok()
                 .and_then(|value| value.as_str().map(str::to_owned))
@@ -242,6 +269,25 @@ pub fn load_linux_mode(dir: &Path, tray_conf: Option<&str>) -> OpenMode {
             tray_conf
                 .and_then(|text| tray_conf_value(text, "open-mode"))
                 .and_then(|value| OpenMode::from_linux_config(&value))
+        })
+        .unwrap_or(OpenMode::Automatic)
+}
+
+/// Windows uses Qt's auto/tab/window/console/clipboard modes.
+pub fn load_windows_mode(dir: &Path, tray_conf: Option<&str>) -> OpenMode {
+    std::fs::read(dir.join(MODE_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Saved>(&bytes).ok())
+        .map(|saved| saved.open_mode)
+        .filter(|mode| OpenMode::WINDOWS.contains(mode))
+        .or_else(|| {
+            tray_conf
+                .and_then(|text| tray_conf_value(text, "open-mode"))
+                .and_then(|value| {
+                    OpenMode::WINDOWS
+                        .into_iter()
+                        .find(|mode| mode.config() == value.trim())
+                })
         })
         .unwrap_or(OpenMode::Automatic)
 }
@@ -307,7 +353,8 @@ pub fn start(
     mode: OpenMode,
     attention: Option<LoadAttention>,
 ) {
-    let (sender, inputs) = mpsc::channel();
+    let (sender, inputs, owner) = attention_barrier::channel(attention.is_some());
+    let attention = attention.map(|load| owner.track(load));
     let tap = sender.clone();
     pump.tap(Box::new(move |change: &Change| {
         if menu_bar_change(change) {
@@ -317,7 +364,7 @@ pub fn start(
     // The marks reach the desk the moment they change, from the window's
     // commands or a settled read mark, so the menu bar follows a click in the
     // window at once.
-    let marks = |sender: &Sender<DeskInput>| -> crate::actions::Listener {
+    let marks = |sender: &InputSender| -> crate::actions::Listener {
         let sender = sender.clone();
         Box::new(move || {
             let _ = sender.send(DeskInput::Marks);
@@ -332,6 +379,7 @@ pub fn start(
     let focused = Arc::new(AtomicBool::new(false));
     app.manage(DeskState {
         sender: Mutex::new(sender),
+        _attention_owner: owner,
         mode: Mutex::new(mode),
         dir,
         inbox: Mutex::new(Inbox::default()),
@@ -345,7 +393,7 @@ pub fn start(
 }
 
 /// The desk thread's input, for the notifier's clicks and failures.
-pub fn sender(app: &AppHandle) -> Option<Sender<DeskInput>> {
+pub fn sender(app: &AppHandle) -> Option<InputSender> {
     app.try_state::<DeskState>()
         .map(|state| lock(&state.sender).clone())
 }
@@ -363,14 +411,18 @@ pub fn set_focused(app: &AppHandle, focused: bool) {
 pub struct Attention {
     pub tracker: Tracker,
     pub path: PathBuf,
+    checkpoint: zerus_client_core::attention_store::Observation,
+    // Last: the sole source/tracker value drops before its lifetime charge.
+    lifetime: Option<attention_barrier::Lifetime>,
 }
 
 impl Attention {
     /// The tracker with its saved state: the client's own file; only when
     /// there is none, Qt's `attention/observed` from `qt` (Decision 11).
     pub fn load(path: PathBuf, qt: impl FnOnce() -> Option<Vec<u8>>) -> Self {
-        let saved = match std::fs::read(&path) {
-            Ok(bytes) => attention::seed(Some(&bytes), None),
+        let bytes = std::fs::read(&path);
+        let saved = match &bytes {
+            Ok(bytes) => attention::seed(Some(bytes), None),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 attention::seed(None, qt().as_deref())
             }
@@ -379,22 +431,42 @@ impl Attention {
                 Map::new()
             }
         };
+        let checkpoint = zerus_client_core::attention_store::Observation::loaded(&bytes, &saved);
         Self {
             tracker: Tracker::new(saved),
             path,
+            checkpoint,
+            lifetime: None,
         }
     }
 
-    fn save(&self) {
-        let written = serde_json::to_vec(self.tracker.state())
+    fn save(&mut self) {
+        let serialized = serde_json::to_vec(self.tracker.state())
             .map_err(std::io::Error::other)
-            .and_then(|bytes| write_private(&self.path, &bytes));
-        if let Err(error) = written {
+            .and_then(|bytes| {
+                write_private(&self.path, &bytes)?;
+                Ok(bytes)
+            });
+        if let Ok(bytes) = &serialized {
+            self.checkpoint.saved(bytes);
+        } else {
+            self.checkpoint.failed();
+        }
+        if let Err(error) = serialized {
             eprintln!(
                 "zerus-client: could not save {}: {error}",
                 self.path.display()
             );
         }
+    }
+
+    /// Internal ordered-barrier checkpoint; no production controller calls it.
+    /// Retain the actual worker through sync after an outer timeout/disconnect.
+    pub(crate) fn checkpoint(
+        &mut self,
+    ) -> std::io::Result<zerus_client_core::attention_store::Checkpoint> {
+        self.checkpoint
+            .checkpoint(&self.path, self.tracker.state(), write_private)
     }
 }
 
@@ -471,6 +543,36 @@ pub fn observe_round(
 struct Click {
     target: Map<String, Value>,
     deadline: Instant,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    service: Option<Box<crate::desktop_service::activation::Delivery>>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    exact: Option<zerus_client_core::desktop::activation::Target>,
+}
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn resolve_service(
+    target: &zerus_client_core::desktop::activation::Target,
+    desk: &Desk,
+    expired: bool,
+) -> Resolution {
+    let computer = ComputerId(target.computer.clone());
+    let state = desk.computers().get(&computer);
+    if let Some((key, _)) = state.and_then(|state| {
+        state.rows.iter().find(|(_, row)| {
+            row.state != "archived"
+                && row.run_id.as_deref() == Some(&target.run)
+                && row.conversation_id.as_deref() == Some(&target.conversation)
+        })
+    }) {
+        return Resolution::Open {
+            computer,
+            key: key.clone(),
+        };
+    }
+    if expired || state.is_some_and(|state| state.fresh()) {
+        Resolution::Gone(target.run.clone())
+    } else {
+        Resolution::Waiting
+    }
 }
 
 /// What one round reads from the app, and the status item it offers.
@@ -501,6 +603,10 @@ pub struct Outcome {
     pub show: bool,
     #[cfg(target_os = "linux")]
     pub activation: Option<String>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    completion: Option<crate::desktop_service::activation::Completion>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    expected: Option<ExactSession>,
     /// Banners to withdraw, then post.
     pub changes: Changes,
     /// The clicked notification's session.
@@ -520,6 +626,8 @@ pub struct DeskLoop {
     pub attention: Option<Attention>,
     click: Option<Click>,
     swept: Instant,
+    observing_attention: bool,
+    attention_completions: bool,
 }
 
 impl DeskLoop {
@@ -530,6 +638,8 @@ impl DeskLoop {
             attention,
             click: None,
             swept: now,
+            observing_attention: true,
+            attention_completions: true,
         }
     }
 
@@ -537,7 +647,7 @@ impl DeskLoop {
     /// until a clicked notification's wait ends.
     pub fn wait(&self, now: Instant) -> Duration {
         let mut wait = SWEEP;
-        if self.attention.is_some() {
+        if self.attention.is_some() && self.observing_attention {
             wait = (self.swept + SWEEP).saturating_duration_since(now);
         }
         if let Some(click) = &self.click {
@@ -593,36 +703,89 @@ impl DeskLoop {
                         outcome.publish = true;
                     }
                 }
-                DeskInput::Clicked(token) => {
+                DeskInput::Clicked(token) if self.attention_completions => {
                     // A token that does not decode opens nothing (`TrayAgent.cpp:176-179`).
                     if let Some(target) = attention::target(&token) {
                         self.click = Some(Click {
                             target,
                             deadline: cx.now + CLICK_WAIT,
+                            #[cfg(any(target_os = "linux", target_os = "macos"))]
+                            service: None,
+                            #[cfg(any(target_os = "linux", target_os = "macos"))]
+                            exact: None,
                         });
                         outcome.show = true;
                     }
                 }
                 #[cfg(target_os = "linux")]
-                DeskInput::LinuxClicked { token, activation } => {
+                DeskInput::LinuxClicked { token, activation } if self.attention_completions => {
                     if let Some(target) = attention::target(&token) {
                         self.click = Some(Click {
                             target,
                             deadline: cx.now + CLICK_WAIT,
+                            #[cfg(target_os = "linux")]
+                            service: None,
+                            #[cfg(target_os = "linux")]
+                            exact: None,
                         });
                         outcome.show = true;
                         outcome.activation = (!activation.is_empty()).then_some(activation);
                     }
                 }
-                DeskInput::Failed { token, detail } => {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                DeskInput::ServiceClicked(delivery)
+                    if self.attention_completions && delivery.current() =>
+                {
+                    let open = delivery.open();
+                    let target =
+                        attention::target(&open.token).expect("validated activation token");
+                    #[cfg(target_os = "linux")]
+                    {
+                        outcome.activation = open.platform_context.as_ref().map(|context| match context {
+                            zerus_client_core::desktop::notifications::PlatformContext::Wayland { activation_token } => activation_token.clone(),
+                        });
+                    }
+                    outcome.completion = Some(delivery.completion());
+                    outcome.show = true;
+                    self.click = Some(Click {
+                        target,
+                        deadline: cx.now + CLICK_WAIT,
+                        exact: Some(delivery.open().target.clone()),
+                        service: Some(delivery),
+                    });
+                }
+                #[cfg(target_os = "linux")]
+                DeskInput::Navigate { target, activation }
+                    if self.attention_completions && target.valid() =>
+                {
+                    outcome.show = true;
+                    outcome.activation = activation;
+                    self.click = Some(Click {
+                        target: Map::new(),
+                        deadline: cx.now + CLICK_WAIT,
+                        service: None,
+                        exact: Some(target),
+                    });
+                }
+                DeskInput::Failed { token, detail }
+                    if self.attention_completions
+                        || zerus_client_core::updates::is_update_token(&token) =>
+                {
                     eprintln!("Zerus: notification: {detail}");
-                    if let Some(attention) = self.attention.as_mut() {
-                        attention.tracker.delivery_failed(&token, cx.unix);
+                    if self.attention_completions {
+                        if let Some(attention) = self.attention.as_mut() {
+                            attention.tracker.delivery_failed(&token, cx.unix);
+                        }
                     }
                     outcome
                         .window_notices
                         .push(format!("System notification was not delivered: {detail}"));
                 }
+                DeskInput::Clicked(_) | DeskInput::Failed { .. } => {}
+                #[cfg(target_os = "linux")]
+                DeskInput::LinuxClicked { .. } | DeskInput::Navigate { .. } => {}
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                DeskInput::ServiceClicked(_) => {}
             }
         }
         // Read once however many changes were announced.
@@ -638,11 +801,11 @@ impl DeskLoop {
             (cx.publish)(&self.desk, self.mode);
         }
         if let Some(attention) = self.attention.as_mut() {
-            if cx.now >= self.swept + SWEEP {
+            if self.observing_attention && cx.now >= self.swept + SWEEP {
                 self.swept = cx.now;
                 dirty.extend(self.desk.computers().keys().cloned());
             }
-            if !dirty.is_empty() {
+            if self.observing_attention && !dirty.is_empty() {
                 // Qt reads the setting at each observation (`TrayAgent.cpp:554`).
                 attention
                     .tracker
@@ -662,13 +825,43 @@ impl DeskLoop {
         }
         // A live stream is the current listing Qt asks for at the click; a
         // stale one waits for its rows up to `CLICK_WAIT` (`TrayAgent.cpp:188-192`).
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if self
+            .click
+            .as_ref()
+            .and_then(|click| click.service.as_ref())
+            .is_some_and(|delivery| !delivery.current())
+        {
+            self.click = None;
+        }
         if let Some(click) = &self.click {
-            match attention::resolve(&click.target, &self.desk, cx.now >= click.deadline) {
+            let resolution =
+                attention::resolve(&click.target, &self.desk, cx.now >= click.deadline);
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let resolution = click.exact.as_ref().map_or(resolution, |target| {
+                resolve_service(target, &self.desk, cx.now >= click.deadline)
+            });
+            match resolution {
                 Resolution::Open { computer, key } => {
                     outcome.open = Some((computer, key));
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    if let Some(delivery) = &click.service {
+                        outcome.completion = Some(delivery.completion());
+                    }
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    if let Some(target) = &click.exact {
+                        outcome.expected = Some(ExactSession {
+                            run: target.run.clone(),
+                            conversation: target.conversation.clone(),
+                        });
+                    }
                     self.click = None;
                 }
                 Resolution::Gone(name) => {
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    if let Some(delivery) = &click.service {
+                        outcome.completion = Some(delivery.completion());
+                    }
                     outcome.notices.push(attention::gone_text(&name));
                     self.click = None;
                 }
@@ -725,7 +918,7 @@ fn optional_questions(app: &AppHandle) -> bool {
 
 fn run(
     app: AppHandle,
-    inputs: Receiver<DeskInput>,
+    inputs: Receiver<attention_barrier::Message>,
     mode: OpenMode,
     attention: Option<LoadAttention>,
     focused: Arc<AtomicBool>,
@@ -742,11 +935,18 @@ fn run(
             Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => return,
         };
-        let batch = first
-            .into_iter()
-            .chain(std::iter::from_fn(|| inputs.try_recv().ok()));
+        // A barrier at the head must run before any timer observation. One
+        // encountered during a lazy batch runs after that batch's apply().
+        let first = match first {
+            Some(attention_barrier::Message::Barrier(command)) => {
+                command.run(&mut state);
+                continue;
+            }
+            other => other,
+        };
+        let mut batch = attention_barrier::Batch::new(first, &inputs);
         let outcome = state.round(
-            batch,
+            &mut batch,
             &mut Context {
                 publish: &mut |desk, mode| publish(&app, desk, mode),
                 now: Instant::now(),
@@ -758,6 +958,9 @@ fn run(
             },
         );
         apply(&app, outcome);
+        if let Some(command) = batch.barrier {
+            command.run(&mut state);
+        }
         std::thread::sleep(PACE);
     }
 }
@@ -772,27 +975,63 @@ fn apply(app: &AppHandle, outcome: Outcome) {
     deliver(app, outcome.changes);
     if outcome.show {
         let handle = app.clone();
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let completion = outcome.completion.clone();
         let _ = app.run_on_main_thread(move || {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            if completion
+                .as_ref()
+                .is_some_and(|completion| !completion.current())
+            {
+                return;
+            }
             #[cfg(target_os = "linux")]
             crate::platform::linux_tray::present(&handle, outcome.activation.as_deref());
             #[cfg(not(target_os = "linux"))]
-            if let Err(error) = crate::lifecycle::show_main(&handle) {
+            if let Err(error) = crate::lifecycle::request_main(&handle) {
                 eprintln!("zerus-client: could not open the window: {error}");
             }
         });
     }
     if let Some((computer, key)) = outcome.open {
-        open(
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let completion = outcome.completion.clone();
+        open_if(
             app,
             OpenSession {
                 computer: computer.0,
                 key,
                 attention: true,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                expected: outcome.expected,
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                expected: None,
+            },
+            move || {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                if completion
+                    .as_ref()
+                    .is_some_and(|completion| !completion.current())
+                {
+                    return false;
+                }
+                true
             },
         );
     }
     for text in outcome.notices {
-        window_notice(app, "Zerus", &text);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let completion = outcome.completion.clone();
+        window_notice_if(app, "Zerus", &text, move || {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            if completion
+                .as_ref()
+                .is_some_and(|completion| !completion.current())
+            {
+                return false;
+            }
+            true
+        });
     }
     if crate::main_window(app).is_some() {
         for text in outcome.window_notices {
@@ -816,7 +1055,9 @@ fn deliver(app: &AppHandle, changes: Changes) {
     }
     #[cfg(target_os = "linux")]
     crate::platform::linux_notify::deliver(app, changes.cleared, changes.raised);
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    crate::platform::windows::tray::deliver(app, changes.cleared, changes.raised);
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     let _ = (app, changes);
 }
 
@@ -825,20 +1066,32 @@ fn publish(app: &AppHandle, desk: &Desk, mode: OpenMode) {
     crate::platform::linux_tray::offer(
         app,
         desk.face(),
-        desk.tooltip(),
+        crate::native_text::lines(&desk.tooltip()),
         desk.menu(mode),
         desk.badge(),
     );
     #[cfg(target_os = "macos")]
     {
-        let (face, tooltip, menu, badge) =
-            (desk.face(), desk.tooltip(), desk.menu(mode), desk.badge());
+        let (face, tooltip, menu, badge) = (
+            desk.face(),
+            crate::native_text::lines(&desk.tooltip()),
+            desk.menu(mode),
+            desk.badge(),
+        );
         let handle = app.clone();
         let _ = app.run_on_main_thread(move || {
             crate::platform::macos_menubar::offer(&handle, face, tooltip, menu, badge)
         });
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    crate::platform::windows::tray::offer(
+        app,
+        desk.face(),
+        crate::native_text::lines(&desk.tooltip()),
+        desk.menu(mode),
+        desk.badge(),
+    );
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     let _ = (app, desk, mode);
 }
 
@@ -881,6 +1134,7 @@ pub fn open_session(app: &AppHandle, computer: &ComputerId, key: &str) {
             computer: computer.0.clone(),
             key: key.to_owned(),
             attention: false,
+            expected: None,
         },
     );
 }
@@ -899,9 +1153,15 @@ pub fn open_updates(app: &AppHandle) {
 }
 
 fn open(app: &AppHandle, target: OpenSession) {
+    open_if(app, target, || true);
+}
+fn open_if(app: &AppHandle, target: OpenSession, current: impl Fn() -> bool + Send + 'static) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
-        if let Err(error) = crate::lifecycle::show_main(&handle) {
+        if !current() {
+            return;
+        }
+        if let Err(error) = crate::lifecycle::request_main(&handle) {
             eprintln!("zerus-client: could not open the window: {error}");
         }
         let send = |target: OpenSession| {
@@ -912,17 +1172,31 @@ fn open(app: &AppHandle, target: OpenSession) {
             Some(state) => lock(&state.inbox).open(target, send),
             None => send(target),
         }
+        // Keep the original service delivery through the last native-main
+        // action, rather than consuming its guard before window/navigation I/O.
+        drop(current);
     });
 }
 
 /// A notice inside the window (Qt's `showNotificationNotice`).
 pub fn window_notice(app: &AppHandle, title: &str, text: &str) {
+    window_notice_if(app, title, text, || true);
+}
+fn window_notice_if(
+    app: &AppHandle,
+    title: &str,
+    text: &str,
+    current: impl Fn() -> bool + Send + 'static,
+) {
     let notice = Notice {
         title: title.to_owned(),
         text: text.to_owned(),
     };
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
+        if !current() {
+            return;
+        }
         let send = |notice: Notice| {
             let _ = handle.emit("desk-notice", notice);
         };
@@ -931,13 +1205,16 @@ pub fn window_notice(app: &AppHandle, title: &str, text: &str) {
             Some(state) => lock(&state.inbox).notice(notice, send),
             None => send(notice),
         }
+        // Keep the original service delivery through the last native-main
+        // action, rather than consuming its guard before window/navigation I/O.
+        drop(current);
     });
 }
 
 /// Qt's `TrayAgent::notify` on macOS: `osascript display notification`,
 /// shown at once without the app's own permission (`TrayAgent.cpp:796-830`).
 pub fn tray_notify(title: &str, body: &str) {
-    let spawned = std::process::Command::new("osascript")
+    let spawned = crate::child_environment::command("osascript")
         .arg("-e")
         .arg(shell::notification_script(title, body))
         .stdin(Stdio::null())
@@ -961,7 +1238,10 @@ pub fn tray_notify(title: &str, body: &str) {
 #[cfg(target_os = "linux")]
 pub use crate::platform::linux_tray::open_running;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+pub use crate::platform::windows::tray::open_running;
+
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn open_running(app: &AppHandle, computer: &ComputerId, name: &str) {
     let hgs = zerus_client_core::default_hgs();
     let command = shell::open_command(
@@ -976,9 +1256,11 @@ pub fn open_running(app: &AppHandle, computer: &ComputerId, name: &str) {
         .map(|state| *lock(&state.mode))
         .unwrap_or_default();
     let opened = match mode {
-        OpenMode::Terminal | OpenMode::Automatic | OpenMode::Tab | OpenMode::Window => {
-            open_in_terminal(&command)
-        }
+        OpenMode::Terminal
+        | OpenMode::Automatic
+        | OpenMode::Tab
+        | OpenMode::Window
+        | OpenMode::Console => open_in_terminal(&command),
         OpenMode::Clipboard => {
             use tauri_plugin_clipboard_manager::ClipboardExt;
             shell::copyable(&command)
@@ -1015,7 +1297,7 @@ fn open_in_terminal(command: &str) -> Result<(), String> {
 /// the log.
 fn detached_script(program: &str, script: &str) -> Result<(), String> {
     let home = std::env::var_os("HOME").unwrap_or_else(|| "/".into());
-    let spawned = std::process::Command::new(program)
+    let spawned = crate::child_environment::command(program)
         .arg("-e")
         .arg(script)
         .current_dir(home)
@@ -1059,7 +1341,7 @@ pub fn set_mode(app: &AppHandle, mode: OpenMode) {
     let _ = lock(&state.sender).send(DeskInput::Mode(mode));
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub fn current_mode(app: &AppHandle) -> OpenMode {
     app.try_state::<DeskState>()
         .map(|state| *lock(&state.mode))
@@ -1206,7 +1488,8 @@ impl Bar {
         self.tracking == 0 && !self.gate.is_open()
     }
 
-    /// The native items of a new menu, Qt's texts (`TrayMenu::rebuild`).
+    /// The native items of a new menu, Qt's texts (`TrayMenu::rebuild`) in
+    /// the interface language.
     pub fn layout(&mut self, entries: &[Entry]) -> Vec<Item> {
         self.layout_modes(entries, &OpenMode::ALL)
     }
@@ -1217,24 +1500,26 @@ impl Bar {
         let mut items = Vec::with_capacity(entries.len());
         for (index, entry) in entries.iter().enumerate() {
             let id = format!("zerus-{}-{index}", self.generation);
-            let mut chosen_by = |text: &str, action: MenuAction| {
+            let mut chosen_by = |text: &Text, action: MenuAction| {
                 actions.insert(id.clone(), action);
                 Item::Action {
                     id: id.clone(),
-                    text: text.to_owned(),
+                    text: render(text),
                 }
             };
             items.push(match entry {
-                Entry::Open => chosen_by("Open Zerus", MenuAction::Open),
+                Entry::Open => chosen_by(&text!("Open Zerus"), MenuAction::Open),
                 Entry::Update(version) => chosen_by(
-                    &format!("Update available: Zerus {version}"),
+                    &text!("Update available: Zerus %1", version.as_str()),
                     MenuAction::Updates,
                 ),
-                Entry::Restart => chosen_by("Restart to finish update", MenuAction::Restart),
+                Entry::Restart => {
+                    chosen_by(&text!("Restart to finish update"), MenuAction::Restart)
+                }
                 Entry::Separator => Item::Separator,
                 Entry::Label(text) => Item::Label {
                     id: id.clone(),
-                    text: text.clone(),
+                    text: render(text),
                 },
                 Entry::Session {
                     computer,
@@ -1268,8 +1553,8 @@ impl Bar {
                         modes,
                     }
                 }
-                Entry::Refresh => chosen_by("Refresh", MenuAction::Refresh),
-                Entry::Quit => chosen_by("Quit", MenuAction::Quit),
+                Entry::Refresh => chosen_by(&text!("Refresh"), MenuAction::Refresh),
+                Entry::Quit => chosen_by(&text!("Quit"), MenuAction::Quit),
             });
         }
         self.actions = Arc::new(actions);
@@ -1316,6 +1601,24 @@ mod tests {
             computer: id,
             status: ComputerStatus::Live,
         });
+    }
+
+    #[test]
+    fn windows_terminal_modes_use_saved_choice_then_qt_config() {
+        let dir = scratch("windows-modes");
+        assert_eq!(load_windows_mode(&dir, None), OpenMode::Automatic);
+        assert_eq!(
+            load_windows_mode(&dir, Some("open-mode=console\n")),
+            OpenMode::Console
+        );
+        save_mode(&dir, OpenMode::Tab).unwrap();
+        assert_eq!(
+            load_windows_mode(&dir, Some("open-mode=console\n")),
+            OpenMode::Tab
+        );
+        save_mode(&dir, OpenMode::Terminal).unwrap();
+        assert_eq!(load_windows_mode(&dir, None), OpenMode::Automatic);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1717,6 +2020,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn attention_checkpoint_observes_the_existing_round_writer_without_rewriting_it() {
+        let dir = scratch("checkpoint-round");
+        let mut thread = Thread::new(&dir);
+        thread.round(0.0, live("", vec![asking("claude/p/a")]));
+        let path = dir.join(ATTENTION_FILE);
+        let bytes = std::fs::read(&path).unwrap();
+        let checkpoint = thread
+            .state
+            .attention
+            .as_mut()
+            .unwrap()
+            .checkpoint()
+            .unwrap();
+        use sha2::{Digest, Sha256};
+        assert_eq!(checkpoint.sha256, format!("{:x}", Sha256::digest(&bytes)));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attention_checkpoint_keeps_actual_load_and_save_failures_sticky() {
+        let dir = scratch("checkpoint-failure");
+        let path = dir.join(ATTENTION_FILE);
+        std::fs::write(&path, b"broken").unwrap();
+        let mut malformed = Attention::load(path.clone(), || panic!("own source exists"));
+        malformed.save(); // Old GUI behavior still writes its empty map.
+        assert_eq!(std::fs::read(&path).unwrap(), b"{}");
+        assert!(malformed.checkpoint().is_err());
+        std::fs::remove_file(&path).unwrap();
+        let mut failed = Attention::load(path.clone(), || None);
+        std::fs::remove_dir(&dir).unwrap();
+        failed.save(); // Existing writer cannot create its absent parent.
+        std::fs::create_dir(&dir).unwrap();
+        failed.save();
+        assert_eq!(std::fs::read(&path).unwrap(), b"{}");
+        assert!(failed.checkpoint().is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn the_first_start_takes_qts_state_and_a_broken_file_starts_empty() {
         let dir = scratch("seed");
@@ -1916,6 +2261,92 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn startup_navigation_waits_for_exact_identity_and_never_creates_a_callback_receipt() {
+        let dir = scratch("startup-navigation");
+        let mut thread = Thread::new(&dir);
+        let target = zerus_client_core::desktop::activation::Target {
+            computer: "peer".into(),
+            run: "original-run".into(),
+            conversation: "original-conversation".into(),
+        };
+        let initial = thread.round(
+            0.0,
+            vec![DeskInput::Navigate {
+                target: target.clone(),
+                activation: Some("synthetic-wayland".into()),
+            }],
+        );
+        assert!(initial.show);
+        assert!(initial.open.is_none());
+        assert_eq!(initial.activation.as_deref(), Some("synthetic-wayland"));
+        assert!(initial.completion.is_none());
+        let mut row = asking("renamed/exact-target");
+        row.run_id = Some(target.run.clone());
+        row.conversation_id = Some(target.conversation.clone());
+        let resolved = thread.round(1.0, live("peer", vec![row]));
+        assert_eq!(
+            resolved.open,
+            Some((ComputerId::from("peer"), "run:renamed/exact-target".into()))
+        );
+        assert_eq!(
+            resolved.expected,
+            Some(ExactSession {
+                run: target.run,
+                conversation: target.conversation
+            })
+        );
+        assert!(resolved.completion.is_none());
+        assert!(thread.round(2.0, Vec::new()).open.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn service_click_requires_both_original_run_and_conversation_without_name_fallback() {
+        let mut desk = Desk::default();
+        let target = zerus_client_core::desktop::activation::Target {
+            computer: "peer".into(),
+            run: "original-run".into(),
+            conversation: "original-conversation".into(),
+        };
+        assert_eq!(resolve_service(&target, &desk, false), Resolution::Waiting);
+        let mut original = asking("codex/renamed/current");
+        original.run_id = Some(target.run.clone());
+        original.conversation_id = Some(target.conversation.clone());
+        let mut wrong_conversation = original.clone();
+        wrong_conversation.name = "same-run-other-conversation".into();
+        wrong_conversation.conversation_id = Some("other-conversation".into());
+        let mut wrong_run = original.clone();
+        wrong_run.name = "same-conversation-other-run".into();
+        wrong_run.run_id = Some("other-run".into());
+        listed(&mut desk, "peer", vec![wrong_conversation, wrong_run]);
+        assert!(matches!(
+            resolve_service(&target, &desk, false),
+            Resolution::Gone(_)
+        ));
+        listed(&mut desk, "other-peer", vec![original.clone()]);
+        assert!(matches!(
+            resolve_service(&target, &desk, false),
+            Resolution::Gone(_)
+        ));
+        listed(&mut desk, "peer", vec![original.clone()]);
+        assert_eq!(
+            resolve_service(&target, &desk, false),
+            Resolution::Open {
+                computer: ComputerId("peer".into()),
+                key: original.name.clone()
+            }
+        );
+        original.state = "archived".into();
+        listed(&mut desk, "peer", vec![original]);
+        assert!(matches!(
+            resolve_service(&target, &desk, false),
+            Resolution::Gone(_)
+        ));
+    }
+
     #[test]
     fn a_click_with_a_live_stream_resolves_at_once() {
         let dir = scratch("click-live");
@@ -2094,6 +2525,7 @@ mod tests {
             computer: "studio".into(),
             key: "run:a".into(),
             attention: false,
+            expected: None,
         };
         assert_eq!(
             serde_json::to_value(&open).unwrap(),
@@ -2104,6 +2536,28 @@ mod tests {
             serde_json::to_value(&open).unwrap(),
             serde_json::json!({"computer": "studio", "key": "run:a", "attention": true})
         );
+    }
+
+    #[test]
+    fn an_exact_service_target_survives_the_cold_page_inbox_and_wire() {
+        let target = OpenSession {
+            computer: "peer".into(),
+            key: "run:original".into(),
+            attention: true,
+            expected: Some(ExactSession {
+                run: "original".into(),
+                conversation: "conversation".into(),
+            }),
+        };
+        let mut inbox = Inbox::default();
+        inbox.open(target.clone(), |_| {
+            panic!("the cold page cannot receive yet")
+        });
+        let pending = inbox.take(0);
+        let decoded: Pending =
+            serde_json::from_slice(&serde_json::to_vec(&pending).unwrap()).unwrap();
+        assert_eq!(decoded.open, Some(target));
+        assert!(inbox.take(0).open.is_none());
     }
 
     fn scratch(name: &str) -> PathBuf {
@@ -2250,6 +2704,7 @@ mod tests {
             computer: "studio".into(),
             key: key.into(),
             attention: false,
+            expected: None,
         }
     }
 
@@ -2432,7 +2887,7 @@ mod tests {
             computer: ComputerId::from("studio"),
             key: key.into(),
             name: name.into(),
-            text: name.into(),
+            text: Text::verbatim(name),
             running,
             tty: String::new(),
         }
@@ -2451,7 +2906,7 @@ mod tests {
         let items = bar.layout(&[
             Entry::Open,
             Entry::Separator,
-            Entry::Label("studio".into()),
+            Entry::Label(Text::verbatim("studio")),
             session("run:a", "claude/sample-project/a", true),
             session("run:b", "codex/sample-project/b", false),
             Entry::Separator,

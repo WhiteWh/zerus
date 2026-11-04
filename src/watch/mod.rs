@@ -1221,7 +1221,13 @@ impl<'a> Watch<'a> {
                     let _ = results.send(Input::Processes(done));
                 })
             });
-            pool.run(job);
+            match pool.run(job) {
+                Ok(()) => {}
+                Err(mpsc::TrySendError::Full(job)) => self.processes.defer(job, Instant::now()),
+                Err(mpsc::TrySendError::Disconnected(job)) => {
+                    self.processes_done(processes::Done { token: job.token, key: job.key, value: Some(Err("Process inventory worker is unavailable".into())) });
+                }
+            }
         }
     }
 
@@ -1281,7 +1287,13 @@ impl<'a> Watch<'a> {
                     let _ = results.send(Input::Tasks(done));
                 })
             });
-            pool.run(job);
+            match pool.run(job) {
+                Ok(()) => {}
+                Err(mpsc::TrySendError::Full(job)) => self.tasks.defer(job, Instant::now()),
+                Err(mpsc::TrySendError::Disconnected(job)) => {
+                    self.tasks_done(tasks::Done { token: job.token, key: job.key, value: Some(Err("Task list worker is unavailable".into())) });
+                }
+            }
         }
     }
 
@@ -1347,7 +1359,13 @@ impl<'a> Watch<'a> {
                 let _ = results.send(Input::Organization(done));
             })
         });
-        pool.run(job);
+        match pool.run(job) {
+            Ok(()) => {}
+            Err(mpsc::TrySendError::Full(job)) => self.organization.defer(job, Instant::now()),
+            Err(mpsc::TrySendError::Disconnected(job)) => {
+                self.organization_done(organization::Done { token: job.token, value: Some(Err("Organization worker is unavailable".into())) });
+            }
+        }
     }
 
     fn organization_done(&mut self, done: organization::Done) {

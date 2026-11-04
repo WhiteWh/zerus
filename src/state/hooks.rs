@@ -1313,12 +1313,14 @@ fn track(name: String, token: String, mut event: Value, output: &mut impl std::i
             event["prompt"] = json!(prompt);
         }
     }
-    let sid = event
+    let session = event
         .get("session_id")
         .and_then(Value::as_str)
         .filter(|sid| !sid.is_empty() && !sid.chars().any(char::is_whitespace))
-        .ok_or("hook did not supply a valid session_id")?;
-    let kind = string(&event, "hook_event_name");
+        .ok_or("hook did not supply a valid session_id")?.to_owned();
+    let sid = session.as_str();
+    let kind_value = string(&event, "hook_event_name").to_owned();
+    let kind = kind_value.as_str();
     if let Some(refusal) = command_refusal(&event, &home().to_string_lossy()) {
         eprintln!("{} [{}]", refusal.message, refusal.rule);
         return Ok(2);
@@ -1393,9 +1395,16 @@ fn track(name: String, token: String, mut event: Value, output: &mut impl std::i
         eprintln!("hgs is pausing this session; retry after resuming");
         return Ok(2);
     }
-    let changed_conversation = kind == "SessionStart" && string(&event, "agent_id").is_empty()
-        && sid != string(&record, "conversation_id");
-    if kind == "SessionStart" && string(&event, "agent_id").is_empty() {
+    let successor = codex_clear_recovery::observe(&record, &event);
+    let main_start = (kind == "SessionStart" && string(&event, "agent_id").is_empty()) || successor.is_some();
+    let changed_conversation = main_start && sid != string(&record, "conversation_id");
+    if main_start {
+        // A previous accepted restore/clear hook may have synced the identity but
+        // failed archive cleanup. Finish that transaction before a later start
+        // can replace its durable boundary; this never resends native input.
+        if clear_context::cleanup_pending(&record) || (!string(&record,"restore_archive_id").is_empty() && string(&record,"expected_id").is_empty()) {
+            archive::confirm_restore(&mut record)?;
+        }
         if !string(&record, "fork_parent_id").is_empty() && sid == string(&record, "fork_parent_id")
         {
             record["error"] =
@@ -1416,8 +1425,9 @@ fn track(name: String, token: String, mut event: Value, output: &mut impl std::i
         if !string(&record, "expected_id").is_empty() && sid != string(&record, "expected_id")
             && !clear_context::resumed_start(&record, &event)
             && !clear_context::resumed_session(&event)
+            && successor.is_none()
         {
-            record["error"] = json!("agent resumed a different conversation");
+            record["error"] = json!(codex_clear_recovery::MISMATCH);
             record["activity"] = json!("unknown");
             write(&mut record)?;
             return Ok(0);
@@ -1448,11 +1458,14 @@ fn track(name: String, token: String, mut event: Value, output: &mut impl std::i
                 "model_source_path",
                 "model_source_offset",
             ] {
-                record.as_object_mut().unwrap().remove(key);
+                if key != "clear_context_request" || !clear_context::cleanup_pending(&record) {
+                    record.as_object_mut().unwrap().remove(key);
+                }
             }
         }
         record.as_object_mut().unwrap().remove("expected_id");
         record.as_object_mut().unwrap().remove("session_end");
+        if successor.is_some() { record.as_object_mut().unwrap().remove("error"); }
         record
             .as_object_mut()
             .unwrap()
@@ -1465,14 +1478,18 @@ fn track(name: String, token: String, mut event: Value, output: &mut impl std::i
         if !string(&event, "cwd").is_empty() {
             record["cwd"] = event["cwd"].clone();
         }
-        record["transcript"] = event["transcript_path"].clone();
+        record["transcript"] = successor.as_ref().map_or_else(|| event["transcript_path"].clone(),
+            |proof| json!(proof.transcript));
     } else if sid != string(&record, "conversation_id") {
         return Ok(0);
     }
+    let resumed_clear_end = kind == "SessionEnd" && string(&event, "agent_id").is_empty()
+        && clear_context::ending_resume(&record);
     if kind == "SessionEnd" && string(&event, "agent_id").is_empty() {
         record["session_end"] = json!({"reason": string(&event, "reason"), "at": now(),
             "run_id": record["run_id"], "conversation_id": sid});
     }
+    kimi_messages::bind_stop_turn(&record, &mut event);
     // Claude's suggested next message is no subagent and no Activity event.
     if prompt_suggestion::observe(&mut record, &event) {
         write(&mut record)?;
@@ -1483,10 +1500,23 @@ fn track(name: String, token: String, mut event: Value, output: &mut impl std::i
     tasks::observe(&mut record, &event);
     processes::observe(&mut record, &event);
     journal::update_activity(&mut record, &event);
+    if resumed_clear_end {
+        // The real main hook ended this requested clear, not its supervised
+        // process. Keep the exact deferred-start fence, never fabricate Ready.
+        record["session_end"]["clear_request_id"] = record["clear_context_request"]["request_id"].clone();
+        record["session_end"]["clear_event_at"] = record["last_event_at"].clone();
+    }
     compact_context::observe(&mut record, &event);
     questions::observe(&mut record, &event);
+    let clear_boundary = changed_conversation && record["session_clear"]["journaled"] != true;
+    if clear_boundary && successor.is_some() {
+        if let Some(mut clear) = clear_context::event(&record) {
+            clear["hook_event_name"] = json!("SessionCleared");
+            journal::log_event(&record, &clear)?;
+        }
+    }
     journal::log_event(&record, &event)?;
-    if changed_conversation && record["session_clear"]["journaled"] != true {
+    if clear_boundary && successor.is_none() {
         if let Some(mut clear) = clear_context::event(&record) {
             clear["hook_event_name"] = json!("SessionCleared");
             journal::log_event(&record, &clear)?;
@@ -1524,6 +1554,9 @@ fn track(name: String, token: String, mut event: Value, output: &mut impl std::i
             record["iron_rules_start_run"] = record["run_id"].clone();
             record["iron_rules_start_conversation"] = record["conversation_id"].clone();
         }
+    }
+    if changed_conversation && clear_context::cleanup_pending(&record) {
+        archive::reserve_clear_source(&record)?;
     }
     // The ready conversation and its proof become visible in the same atomic
     // record update; hook() performs no later proof-only binding write.

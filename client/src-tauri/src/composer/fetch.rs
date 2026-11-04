@@ -49,8 +49,9 @@ pub struct Fetched {
     pub mime: String,
     pub bytes: u64,
     /// An image a card may show a thumbnail of: its header gives its size,
-    /// at most `THUMBNAIL_PIXELS` (`AttachmentLoader::thumbnail`).
+    /// at most the shared thumbnail pixel bound (`AttachmentLoader::thumbnail`).
     pub thumbnail: bool,
+    pub image_size: Option<attachments::image::Size>,
 }
 
 /// Reads at once (`AttachmentLoader::pump`).
@@ -58,10 +59,9 @@ const RUNNING: usize = 3;
 /// Files read whose copies answer again without a read (`m_paths`).
 const REMEMBERED: usize = 256;
 /// Qt draws no thumbnail of a larger image (`AttachmentLoader::thumbnail`).
-const THUMBNAIL_PIXELS: u64 = 64_000_000;
 /// How much of a copy the size check reads: a JPEG's frame header can
 /// follow long metadata.
-const HEADER_BYTES: u64 = 256 * 1024;
+const HEADER_BYTES: u64 = attachments::image::HEADER_BYTES as u64;
 
 /// `AttachmentLoader::fetch` for a file its message saved no reference to.
 pub const NO_REFERENCE: &str = "This attachment has no saved file reference.";
@@ -299,9 +299,8 @@ impl Fetcher {
             Some(mime) if !mime.is_empty() => mime.to_owned(),
             _ => attachments::sniff(&head[..head.len().min(512)]),
         };
-        let thumbnail = image_size(&head).is_some_and(|(width, height)| {
-            width > 0 && height > 0 && u64::from(width) * u64::from(height) <= THUMBNAIL_PIXELS
-        });
+        let image_size = attachments::image::dimensions(&head);
+        let thumbnail = image_size.is_some();
         let name = match cached.metadata.get("name").and_then(|v| v.as_str()) {
             Some(name) if !name.is_empty() => name.to_owned(),
             _ => "attachment".to_owned(),
@@ -313,6 +312,7 @@ impl Fetcher {
                 mime,
                 bytes,
                 thumbnail,
+                image_size,
             },
             path,
         ))
@@ -350,62 +350,9 @@ pub(crate) fn opened(
     told(outcome, path, failed)
 }
 
-/// The width and height an image's header gives: PNG, GIF, BMP, WebP and
-/// JPEG, the types a card shows. Anything else has no thumbnail, as Qt's
-/// reader gives no size for it.
+#[cfg(test)]
 fn image_size(head: &[u8]) -> Option<(u32, u32)> {
-    let be16 = |at: usize| Some(u16::from_be_bytes(head.get(at..at + 2)?.try_into().ok()?));
-    let le16 = |at: usize| Some(u16::from_le_bytes(head.get(at..at + 2)?.try_into().ok()?));
-    let le24 = |at: usize| {
-        let b = head.get(at..at + 3)?;
-        Some(u32::from(b[0]) | u32::from(b[1]) << 8 | u32::from(b[2]) << 16)
-    };
-    let le32 = |at: usize| Some(u32::from_le_bytes(head.get(at..at + 4)?.try_into().ok()?));
-    let be32 = |at: usize| Some(u32::from_be_bytes(head.get(at..at + 4)?.try_into().ok()?));
-    if head.starts_with(b"\x89PNG\r\n\x1a\n") && head.get(12..16) == Some(b"IHDR") {
-        return Some((be32(16)?, be32(20)?));
-    }
-    if head.starts_with(b"GIF87a") || head.starts_with(b"GIF89a") {
-        return Some((u32::from(le16(6)?), u32::from(le16(8)?)));
-    }
-    if head.starts_with(b"BM") {
-        let width = le32(18)? as i32;
-        let height = le32(22)? as i32;
-        return Some((width.unsigned_abs(), height.unsigned_abs()));
-    }
-    if head.starts_with(b"RIFF") && head.get(8..12) == Some(b"WEBP") {
-        return match head.get(12..16)? {
-            b"VP8 " => Some((u32::from(le16(26)? & 0x3fff), u32::from(le16(28)? & 0x3fff))),
-            b"VP8L" => {
-                let bits = le32(21)?;
-                Some(((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1))
-            }
-            b"VP8X" => Some((le24(24)? + 1, le24(27)? + 1)),
-            _ => None,
-        };
-    }
-    if head.starts_with(&[0xff, 0xd8]) {
-        // Walk the segments to the first frame header.
-        let mut at = 2;
-        loop {
-            while head.get(at) == Some(&0xff) && head.get(at + 1) == Some(&0xff) {
-                at += 1;
-            }
-            if head.get(at) != Some(&0xff) {
-                return None;
-            }
-            let marker = *head.get(at + 1)?;
-            match marker {
-                0xd8 | 0x01 | 0xd0..=0xd7 => at += 2,
-                0xc0..=0xcf if !matches!(marker, 0xc4 | 0xc8 | 0xcc) => {
-                    return Some((u32::from(be16(at + 7)?), u32::from(be16(at + 5)?)));
-                }
-                0xd9 | 0xda => return None,
-                _ => at += 2 + usize::from(be16(at + 2)?),
-            }
-        }
-    }
-    None
+    attachments::image::dimensions(head).map(|size| (size.width, size.height))
 }
 
 /// What an open tells the person: nothing when it opened, a notice when the

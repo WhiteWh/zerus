@@ -38,6 +38,16 @@ REQUIRED = (
     "licenses/conpty-NOTICE.md", "licenses/rust/inventory.json",
     *(f"licenses/qt/{name}.txt" for name in QT_LICENSE_TEXTS),
 )
+# New packages use Tauri and the separately installed Evergreen runtime. Keep
+# legacy inspection for immutable published Qt archives; new Tauri packages
+# cannot quietly carry an old Qt runtime alongside the replacement executable.
+NEXT_REQUIRED = (
+    "hgs.exe", "hgs-tray.exe", "zerus-mobile-connector.exe", "build-info.json", "README.txt", "LICENSE", "THIRD_PARTY_NOTICES.md",
+    "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "conpty.dll", "OpenConsole.exe",
+    "licenses/conpty-LICENSE.txt", "licenses/conpty-NOTICE.md", "licenses/rust/inventory.json",
+    "licenses/rust/desktop/inventory.json", "licenses/frontend/inventory.json",
+)
+NEXT_FORBIDDEN = re.compile(r"(?i)(?:^|/)(?:qt[^/]*\.(?:dll|exe|pak)|qwindows\.dll)$|/licenses/qt/")
 # Never shipped: windeployqt copies ICU from the build machine's System32 (a
 # forwarder to icu.dll on current Windows; Qt6Core uses the system ICU), the
 # Mesa software OpenGL fallback has no notices in the bundle, and Microsoft's
@@ -82,7 +92,7 @@ def pinned_entry(archive, name, pinned):
     return conpty_pair.matches(pinned, data)
 
 
-def inspect(path, required=REQUIRED):
+def inspect(path, required=None):
     """Return build-info.json after checking every entry, the expected layout and
     the pinned ConPTY pair."""
     path = Path(path)
@@ -118,15 +128,12 @@ def inspect(path, required=REQUIRED):
             folded.add(name.casefold())
             total += entry.file_size
         require(total <= UNPACKED_LIMIT, "Windows portable bundle unpacks beyond its size limit.")
-        missing = sorted(item for item in required if f"{TOP}/{item}" not in names)
-        require(not missing, "Windows portable bundle lacks: " + ", ".join(missing))
         # `hgs session-host install` stages the pair from the folder of hgs.exe into
         # the host image, which loads conpty.dll and runs OpenConsole.exe (spec D2,
         # D6): a different binary under either name fails.
-        for name, pinned in conpty_pair.PIN["files"].items():
-            require(f"{TOP}/{name}" in names and pinned_entry(archive, name, pinned),
-                    f"Windows portable {name} is not the pinned {conpty_pair.PACKAGE} "
-                    f"{conpty_pair.PIN['version']} build.")
+        pair = {name: f"{TOP}/{name}" in names and pinned_entry(archive, name, pinned)
+                for name, pinned in conpty_pair.PIN["files"].items()}
+        require(f"{TOP}/build-info.json" in names, "Windows portable bundle lacks: build-info.json")
         info = archive.getinfo(f"{TOP}/build-info.json")
         require(info.file_size <= MANIFEST_LIMIT, "Windows portable build-info.json is too large.")
         with archive.open(info) as stream:
@@ -144,7 +151,20 @@ def inspect(path, required=REQUIRED):
         require(manifest["mobile_connector_bundled"] is True and
                 f"{TOP}/zerus-mobile-connector.exe" in names,
                 "Windows portable mobile connector declaration requires its executable.")
-    for key in ("version", "cli_version", "qt_version"):
+    desktop = manifest.get("desktop")
+    require(desktop in (None, "tauri"), "Unsupported Windows portable desktop.")
+    if desktop == "tauri":
+        require(manifest.get("webview2_runtime") == "evergreen" and "qt_version" not in manifest,
+                "Tauri portable bundles require WebView2 Evergreen, without Qt.")
+        require(not any(NEXT_FORBIDDEN.search(name) for name in names),
+                "Tauri portable bundle must not contain Qt deployment files.")
+    wanted = required if required is not None else (NEXT_REQUIRED if desktop == "tauri" else REQUIRED)
+    missing = sorted(item for item in wanted if f"{TOP}/{item}" not in names)
+    require(not missing, "Windows portable bundle lacks: " + ", ".join(missing))
+    for name, matches in pair.items():
+        require(matches, f"Windows portable {name} is not the pinned {conpty_pair.PACKAGE} "
+                f"{conpty_pair.PIN['version']} build.")
+    for key in (("version", "cli_version") if desktop == "tauri" else ("version", "cli_version", "qt_version")):
         require(isinstance(manifest.get(key), str) and VERSION.fullmatch(manifest[key]),
                 f"Invalid Windows portable {key}.")
     require(isinstance(manifest.get("source_commit"), str) and re.fullmatch(r"[0-9a-f]{40}", manifest["source_commit"]),

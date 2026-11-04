@@ -28,6 +28,38 @@ fn python() -> &'static Path {
     Path::new("python3")
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn a_gui_command_restores_the_local_webkit_environment_before_starting_hgs() {
+    let marker =
+        r#"{"version":1,"LD_LIBRARY_PATH":"2f6f726967696e616c2f6c6962","WEBKIT_EXEC_PATH":null}"#;
+    let inv = Invocation {
+        args: vec!["-c".into(), "import json, os; print(json.dumps([os.getenv('LD_LIBRARY_PATH'), os.getenv('WEBKIT_EXEC_PATH'), os.getenv('HGS_LINUX_WEBKIT_ORIGINAL_ENV')]))".into()],
+        stdin: None,
+        timeout: Duration::from_secs(5),
+        request_id: None,
+    };
+    let exit = run_with_env(
+        python(),
+        &inv,
+        &[
+            ("LD_LIBRARY_PATH", "/private/gtk:/private/webkit"),
+            ("WEBKIT_EXEC_PATH", "/private/processes"),
+            (zerus_client_core::child_environment::WEBKIT_MARKER, marker),
+        ],
+    );
+    let Exit::Code {
+        code: 0, stdout, ..
+    } = exit
+    else {
+        panic!("{exit:?}")
+    };
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&stdout).unwrap(),
+        serde_json::json!(["/original/lib", null, null])
+    );
+}
+
 fn stdout_len(exit: &Exit) -> usize {
     match exit {
         Exit::Code {

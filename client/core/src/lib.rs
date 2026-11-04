@@ -7,13 +7,16 @@
 //! `docs/superpowers/plans/2026-10-28-tauri-client-phase1.md` (Tasks 3 and 4)
 //! and the "Event stream" section of `docs/reference.md`.
 
+pub mod account_actions;
 pub mod actions;
 pub mod analytics;
 pub mod approvals;
 pub mod attachments;
 pub mod attention;
+pub mod attention_store;
 pub mod batch;
 pub mod cache;
+pub mod child_environment;
 #[cfg(windows)]
 mod conpty;
 pub mod content_search;
@@ -22,6 +25,7 @@ pub mod desktop;
 pub mod details;
 pub mod download_cache;
 pub mod drafts;
+pub mod end_action;
 pub mod external_file;
 pub mod file_download;
 pub mod fleet;
@@ -32,10 +36,14 @@ pub mod legacy;
 pub mod linux_notify;
 pub mod local_messages;
 pub mod machine;
+pub mod machine_connections;
+pub mod macos_notify;
+pub mod maintenance;
 pub mod marks;
 pub mod menubar;
 pub mod migration;
 pub mod mobile;
+pub mod native_notice;
 pub mod operation_recovery;
 pub mod organization;
 pub mod paths;
@@ -45,6 +53,7 @@ pub mod processes;
 mod pty;
 pub mod qt_lock;
 pub mod questions;
+pub mod quit_journal;
 pub mod readmarks;
 pub mod reads;
 pub mod readsync;
@@ -75,13 +84,17 @@ pub mod tasks_write;
 pub mod terminal;
 pub mod terminal_launch;
 pub mod termination_cleanup;
+pub mod text;
 pub mod trayicon;
+pub mod untracked_shell;
 pub mod updates;
+pub mod video_posters;
 pub mod view;
 pub mod views;
 pub mod voice;
 pub mod voice_composer;
 pub mod voice_driver;
+pub mod worktree_overview;
 pub mod worktree_policy;
 pub mod worktree_review;
 pub mod worktrees;
@@ -195,6 +208,13 @@ pub enum ActivityUpdate {
     Event { id: String, rev: u64, event: Value },
     /// The session's latest inspection summary, with provider messages merged.
     State { value: Value, rev: u64 },
+    /// Read transport readiness. This never declares native work finished or
+    /// replaces the last known transcript; a new route resets state revisions.
+    Connection {
+        ready: bool,
+        pending: bool,
+        code: String,
+    },
     /// The subscription ended (the session left the catalog or changed run).
     Ended,
 }

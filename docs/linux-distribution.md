@@ -1,27 +1,163 @@
-# Linux source installation and the Tauri client switch
+# Linux packages and source installation
 
-This runbook covers a source installation on the owner's Arch Linux machine.
-It does not change the AUR packages or their contents. The coordinated switch
-is performed by design-ac with the owner; implementers qualify only scratch
-installations and private headless sessions.
+The four AUR packages ship Zerus Next as `hgs-tray`, built from `client/` with
+voice and round video. Source installs use Next by default too. The coordinator
+and owner perform installed-machine acceptance; local checks use scratch
+installations and private sessions.
 
 ## What the installer preserves
 
 `tray/install.sh` keeps the executable name `hgs-tray`, the application desktop
 entry, and the `hgs-tray.service` user unit. The service starts the selected
-binary without opening a window. The desktop entry runs `hgs-tray --sessions`,
+binary. The desktop entry runs `hgs-tray --sessions`,
 which opens Sessions through the existing single-instance socket. A second
 start forwards `show` or `sessions`; it does not create another GUI.
 
-A fresh Linux installation defaults to Qt. Select the Tauri client explicitly
-with `HGS_LINUX_GUI=client`. Later runs without that variable retain whichever
-GUI is installed. `HGS_LINUX_GUI=qt` selects Qt again.
+Fresh installs and upgrades default to Zerus Next. `HGS_LINUX_GUI=client`
+selects it explicitly. `HGS_LINUX_GUI=qt` retains the Qt source-build fallback
+until Linux acceptance; it does not change what the AUR packages ship.
 
 The client uses Qt's `com.hgdev.hgs-tray` identity and data root. Its first
 start imports Qt and development-client drafts read-only and seeds its settings
 once from Qt's INI store. Qt's own drafts and settings stay in place. The
 updater snapshots both draft stores and retains native agents, tmux servers,
 hgs services, and the mobile connector.
+
+## Desktop background service
+
+`hgs-desktop.service` is separate from the UI's `hgs-tray.service`. A normal
+Next source installation registers the backend using the selected local CLI's
+`hgs desktop registration --json` definition and readiness probe. Packaged
+installations opt in as the desktop user, without sudo:
+
+```sh
+zerus-setup --desktop-service
+```
+
+The command writes this user's `hgs-desktop.service` under
+`$XDG_CONFIG_HOME/systemd/user` (default `~/.config/systemd/user`) and enables
+it for `graphical-session.target`. It imports the current login's runtime,
+D-Bus and Wayland environment before starting the service. A genuine X11
+session imports its display and clears stale Wayland data. The helper never
+imports GUI-specific library paths into the user manager. Custom units,
+drop-ins, symlinks and registrations for another configuration are kept for
+manual review. Pacman never writes user homes or starts services.
+Because the live Next source installer preflights this registration, a user
+drop-in on `hgs-desktop.service` also blocks `tray/install.sh` GUI updates until
+the customization is deliberately reviewed and removed.
+
+For a separate configuration, pass absolute `--config-dir` and `--state-dir`
+paths and optionally `--hgs /absolute/path/to/hgs`. `--check` validates the
+registration without changes. `--no-start` registers the next graphical login
+without starting a child. Without a current graphical environment, registration
+also defers startup; it never borrows stale display data from the manager.
+
+A desktop environment must import its login environment before bringing up
+`graphical-session.target`. Bare window managers need their own graphical
+session integration. After that window manager has exported its current login
+variables, run:
+
+```sh
+zerus-setup --desktop-service session
+```
+
+For a source installation, use
+`python3 ~/.local/lib/zerus/install-linux-desktop-service.py session --hgs ~/.local/bin/hgs`.
+Run this again when replacing the graphical session: importing environment into
+the manager alone cannot update an already running child. The helper restarts
+only the owned desktop backend when its session or backend changes. A UI-only
+update keeps the unchanged backend alive. `install.sh` refreshes an already
+managed registration after a deliberate CLI upgrade; a CLI-only installation
+with no registration creates no desktop service. An inactive service stays
+stopped, and an active backend upgrade without a current graphical environment
+remains pending until an explicit session refresh. Package upgrades require the
+same explicit `zerus-setup --desktop-service` step; pacman performs no refresh.
+For SSH or agent-shell CLI upgrades without a graphical session, the helper
+retains `pending_restart` and returns status 3. `install.sh` reports that notice
+after completing its connector and worker updates and exits successfully; it
+does not restart the desktop backend with stale graphical data. Other refresh
+errors still fail the installer after those independent steps have completed.
+The Next source GUI installer handles status 3 the same way and continues its
+independent, draft-preserving GUI update. The backend still needs a refresh from
+the current graphical session; other registration errors keep the GUI update
+blocked.
+
+Readiness must match the selected CLI's lifecycle ABI and configuration, with
+`lifecycle.ipc_ready=true` and the systemd main PID. This establishes IPC
+readiness only. Fresh registration runs passive `desktop serve`; an explicit,
+reversible background selection is described below. Each background component
+reports its separate status. Inspect `hgs desktop status --json` and
+`journalctl --user -u hgs-desktop.service` when startup fails. No native agent,
+tmux server, recovery, voice or mobile service is stopped by this helper.
+
+### Select the desktop service mode
+
+Use Zerus Next's maintained service-mode startup and authenticated **Grant**
+against the passive service first. After a retained revoke, use its explicit
+**Rearm** instead; changing the unit never clears a revoke. The GUI and service
+must select the same configuration. The installer cannot grant ownership.
+
+From a foreground terminal **outside Zerus**, in the current graphical login:
+
+```sh
+# Source checkout; packaged installations ship the same helper in lib/zerus.
+python3 scripts/install-linux-desktop-service.py install --hgs "$(command -v hgs)" --mode background --json
+python3 scripts/install-linux-desktop-service.py status --hgs "$(command -v hgs)" --json
+```
+
+The helper requires the actual current native ownership grant and checks the
+original caller's process ancestry. Agent callers, including terminals launched
+inside Zerus that carry `HGS_SESSION`/`HGS_RUN_ID`, are refused. The other supported
+caller is the installed frontend's native Settings action. Missing or changed
+grant, custom units/drop-ins, incomplete graphical environment and unknown
+caller identity refuse without enabling background mode. No GUI is restarted.
+
+Selection changes only the owned `hgs-desktop.service`, adding `--background`
+and restarting that service through `systemctl --user`. `status` reports
+`selected_mode`, `running_mode`, `pending_restart` and any pending transition;
+`hgs desktop status --json` reports `lifecycle.mode` independently of component
+readiness. A selected background mode does not prove every worker is ready.
+Normal installer/session refreshes and CLI upgrades preserve the selected mode;
+omitting `--mode` never changes it. `--no-start` and headless staging cannot
+perform an explicit mode transition.
+
+To return to passive service registration:
+
+```sh
+python3 scripts/install-linux-desktop-service.py install --hgs "$(command -v hgs)" --mode passive --json
+```
+
+This first checks the selected CLI's `desktop-revoke-hold-v1` help marker,
+records one original rollback revoke UUID, and requires its exact durable,
+checkpointed revoke (including runtime/resource drain). It then retains the
+original native hold child through unit replacement, the desktop-only restart
+and passive readiness. Every manager step checks that child before and after.
+Only stdin EOF releases the exclusion; the matching release frame, actual child
+exit and both output pipes must settle before the transition completes. See
+[the native hold contract](desktop-revoke-hold.md).
+
+A lost or unsettled result retains the original transition; inspect `status`
+and repeat **the same passive transition**, which retains its UUID. An
+unfinished rollback blocks background selection and ordinary refresh. If a new
+authenticated Grant/Rearm won before the hold, the old UUID correctly refuses.
+The same record can remain if the helper stopped after saving the transition
+but before the original revoke took effect; the existing Service grant can
+still be current. In either case, the owner can explicitly cancel only that
+pending registration record:
+
+```sh
+python3 scripts/install-linux-desktop-service.py cancel-rollback --hgs "$(command -v hgs)" --request-id ORIGINAL_UUID --json
+```
+
+Cancellation requires the same native caller check and a verified current
+Service grant. It changes no unit, selected mode, native receipt, revoke or
+manager state, and records `last_cancelled_rollback_request_id`. A later
+`install --mode passive` is a new explicit owner intent with a new UUID; no
+unknown operation is automatically replayed. Never delete records or the
+database to recover. Returning to background requires a fresh authenticated
+frontend Rearm. The [Mac helper](macos-distribution.md#explicit-desktop-service-mode)
+provides the corresponding LaunchAgent route. Windows mode switching remains
+separate work; all fresh registration defaults are passive.
 
 ## Qualify in a scratch prefix
 
@@ -61,7 +197,8 @@ scratch binary without `--sessions`; the desktop entry must include it.
 
 macOS enables the client's `video` feature whenever it exists. Linux enables it
 only when `pkg-config --exists gstreamer-1.0 gstreamer-app-1.0` succeeds;
-otherwise the build keeps `media` and prints that round video is not included.
+otherwise the source installer keeps `media` and prints that round video is not included.
+AUR builds always enable `video` and require the GStreamer build/runtime packages.
 Runtime video also needs the encoders and muxers listed in
 `client/media/README.md`.
 
@@ -77,8 +214,8 @@ bash -n tray/install.sh
 ```
 
 The matrix covers Qt to client, client to newer client, rollback to Qt, both
-draft stores, a missing GStreamer development package, installed-GUI
-persistence, the numbered Dev guard, and the absence of real service calls.
+draft stores, a missing GStreamer development package, the default Next upgrade and explicit Qt
+fallback, the numbered Dev guard, and the absence of real service calls.
 
 ## Switch the owner to Zerus Next
 
@@ -86,8 +223,9 @@ Work from a clean, persistent checkout of the exact main commit. Use the CI
 sequence from that exact main push, not a semantic version or an unrelated run.
 Check the running GUI's `--build-info` and
 `~/.local/share/hgs/build-provenance.json`, coordinate the time, and ask the
-owner to stop typing while Qt quits. Do not run `install.sh` or change any
-service other than the GUI's existing unit.
+owner to stop typing while Qt quits. Do not run `install.sh` as part of this
+UI-only switch. The installer also registers the selected CLI's desktop
+backend; an unchanged running backend stays alive.
 
 ```sh
 cd CLEAN_MAIN_CHECKOUT
@@ -121,7 +259,7 @@ The build must have the selected Dev number and exact clean source commit. The
 draft import marker must be complete, with no `unfinished` result. The settings
 seed must name Qt's INI source and the keys actually carried over.
 
-Design-ac and the owner then check on the real display:
+The coordinator and owner then check on the real display:
 
 - hidden login start, the desktop entry, and a second `--sessions` invocation
   produce one instance and one tray item;

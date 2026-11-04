@@ -11,6 +11,7 @@ import { groupRows, type Row } from "../ui/sessions/group-rows";
 import { machineCards } from "./machines";
 import type { ArchivePage, ArchiveRow, ComputerId, GroupingOut, GroupOut, MachineMeta, ViewRow } from "../types";
 import type { Session } from "../ui/sessions/types";
+import { trNoop, tr } from "../i18n";
 
 // The Archive view's pages, after tray/src/ArchiveBrowser.cpp: one bounded
 // page and two cursor anchors per computer, never a growing history. Older
@@ -22,7 +23,7 @@ import type { Session } from "../ui/sessions/types";
 // discarded, as Qt's cancelArchivePages. Leaving the Archive filter discards
 // the answers in flight and keeps the loaded pages (Qt's configure).
 
-export const ARCHIVE_CHANGED = "Archive changed. Refresh to start a new view.";
+export const ARCHIVE_CHANGED = trNoop("Archive changed. Refresh to start a new view.");
 export const QUERY_DELAY_MS = 300;
 /** Errors show at most this many characters; the hint has them all. */
 export const ERROR_CHARS = 240;
@@ -115,7 +116,7 @@ export function statusOf(pages: Pages, hosts: readonly PagingComputer[], valid: 
     }
     shown += p.rows.length;
   }
-  const summary = busy ? "Loading archive…" : !hosts.length ? "Loaded sessions" : hosts.length === 1 && single ? single
+  const summary = busy ? tr("Loading archive…") : !hosts.length ? tr("Loaded sessions") : hosts.length === 1 && single ? single
     : totalsKnownOf(pages, hosts) ? `${shown} loaded of ${totalOf(pages)}` : `${shown} loaded`;
   const errorHint = errors.join("\n");
   return {
@@ -301,7 +302,7 @@ export function createArchive(deps: ArchiveDeps) {
       const s = archivedSession(computer, machine, row);
       return Object.assign(s, pending?.get(s.catalogKey));
     });
-    if (!rows.length && p.rows.length) { put(computer, { ...p, request: 0, error: ARCHIVE_CHANGED }); return; }
+    if (!rows.length && p.rows.length) { put(computer, { ...p, request: 0, error: tr(ARCHIVE_CHANGED) }); return; }
     batch(() => {
       put(computer, {
         ...p, request: 0, shownRequest: id, error: "", loaded: true, rows, cursor: page.next_cursor ?? "", previous: page.previous_cursor ?? "",

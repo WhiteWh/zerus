@@ -173,6 +173,19 @@ class TaskCommands(Fixture):
         self.assertFalse(missing["target"]["resolved"])
         self.assertIn("no longer exists", self.hgs("send", task["ref"], ok=False))
 
+    def test_a_large_saved_record_still_routes_by_identity(self):
+        # A live run keeps up to 128 shell jobs with their full heredoc commands.
+        launch = str(uuid.uuid4())
+        jobs = {f"main:call-{i}": dict(command="python3 - <<'PY'\n" + "x" * 12000 + "\nPY", status="completed")
+                for i in range(128)}
+        record = agent_record(self.state, self.env, "codex/api", "run-1", launch_id=launch, shell_jobs=jobs)
+        self.assertGreater(record.stat().st_size, 1024 * 1024)
+        task = self.add("Keep the link", "--target", "codex/api")
+        self.assertEqual(task["target"]["session_id"], "launch_id:" + launch)
+        self.assertNotIn("resolved", self.hgs("get", task["ref"])["task"]["target"])
+        planned = self.hgs("target", task["ref"], "subagent", "--parent", "codex/api")["task"]
+        self.assertEqual(planned["target"]["parent"]["session_id"], "launch_id:" + launch)
+
     def test_an_agent_explicitly_starts_work_without_sending_it(self):
         queued = self.add("For later", session="codex/api")
         self.assertEqual(queued["stage"], "todo")
@@ -368,6 +381,11 @@ class TaskCommands(Fixture):
         refused = self.hgs("add", "--project", "orchard", "--target", "codex/api", "--host", "orchard-mac",
                            text="Remote work", ok=False)
         self.assertIn("orchard-mac is not a verified computer", refused)
+        self.assertIn("omit --host for this computer", refused)
+        # This computer's own name (HGS_SELF) names this computer.
+        named = self.hgs("add", "--project", "orchard", "--target", "codex/api", "--host", "test",
+                         text="Local work by name")["task"]
+        self.assertEqual((named["target"]["machine"], named["target"]["host"]), (here["target"]["machine"], ""))
         # --host names the computer of a --target session, so it needs one.
         for args in (("--host", "orchard-mac"), ("--target", "any", "--host", "orchard-mac")):
             self.assertIn("--host needs a --target session", self.hgs("add", "--project", "orchard", *args, text="x", ok=False))

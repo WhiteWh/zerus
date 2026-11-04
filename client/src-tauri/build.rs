@@ -119,5 +119,34 @@ fn embed_identity() {
 
 fn main() {
     embed_identity();
-    tauri_build::build()
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rerun-if-changed=src/macos_notification_log.c");
+        cc::Build::new()
+            .file("src/macos_notification_log.c")
+            .compile("zerus_macos_notification_log");
+    }
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        // Tauri's normal resource is linked only into application binaries.
+        // Keep its icon/version there, and link the v6 activation manifest once
+        // into every executable: rfd also imports TaskDialogIndirect in tests.
+        let attributes = tauri_build::Attributes::new()
+            .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
+        tauri_build::try_build(attributes).expect("Tauri Windows resources");
+        println!("cargo:rerun-if-changed=windows-controls.manifest");
+        let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap())
+            .join("windows-controls.manifest");
+        let resource =
+            PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("windows-controls.rc");
+        let path = manifest.to_string_lossy().replace('\\', "\\\\");
+        std::fs::write(
+            &resource,
+            format!("#pragma code_page(65001)\n1 24 \"{path}\"\n"),
+        )
+        .expect("write Common Controls resource");
+        embed_resource::compile_for_everything(resource, embed_resource::NONE)
+            .manifest_required()
+            .expect("Common Controls v6 for all Windows targets");
+    } else {
+        tauri_build::build();
+    }
 }

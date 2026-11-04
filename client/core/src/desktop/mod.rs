@@ -12,13 +12,28 @@ use std::{
 };
 use zerus_desktop_migration::canonical_uuid;
 
+pub mod activation;
+pub mod approval_audit;
+pub mod cache_maintenance;
+pub mod creation_clone;
 pub mod drain;
+pub mod notification_control;
+pub mod notifications;
+pub mod ownership;
+pub mod pending_reads;
 pub mod producer;
+pub mod profile;
+pub mod relay;
+pub mod service;
+pub mod startup;
+pub mod ui_requests;
 
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
-pub use unix::{probe_at, probe_producer_at, same_user, temporary_dir_from};
+pub use unix::{probe_at, probe_producer_at, probe_ui_request_at, same_user, temporary_dir_from};
+#[cfg(windows)]
+pub mod windows;
 
 pub const ABI: &str = "desktop-delegation-v1";
 pub const HELP_MARKER: &str = "Desktop owner ABI: desktop-delegation-v1";
@@ -102,9 +117,16 @@ pub struct Responder {
     live: bool,
     replay: bool,
     configuration: OnceLock<String>,
+    ownership_mode: OnceLock<ownership::Mode>,
     producer: Mutex<producer::Cached>,
+    ui_requests: ui_requests::Cache,
+    notification_focus: notification_control::native::Cache,
 }
 impl Responder {
+    /// Cached identity data only; no I/O, worker permission or writer grant.
+    pub fn cached_configuration(&self) -> Option<&str> {
+        self.configuration.get().map(String::as_str)
+    }
     pub fn new(
         application: String,
         build: Build,
@@ -119,13 +141,25 @@ impl Responder {
             live,
             replay,
             configuration: OnceLock::new(),
+            ownership_mode: OnceLock::new(),
             producer: Mutex::default(),
+            ui_requests: ui_requests::Cache::default(),
+            notification_focus: notification_control::native::Cache::default(),
         }
     }
     pub fn configure_once(&self, configuration: String) -> bool {
         digest(&configuration) && self.configuration.set(configuration).is_ok()
     }
+    /// Native startup only, before canonical claim and any writer creation.
+    /// This cached value is not read from a request's JSON or an environment
+    /// variable by the responder, and cannot change within an instance.
+    pub fn configure_ownership_mode_once(&self, mode: ownership::Mode) -> bool {
+        self.live && !self.replay && self.ownership_mode.set(mode).is_ok()
+    }
     pub fn reply(&self, line_without_lf: &[u8]) -> Option<Vec<u8>> {
+        if let Some(attempt) = ui_requests::query_attempt(line_without_lf) {
+            return self.ui_reply(attempt);
+        }
         if let Some(nonce) = producer::query_nonce(line_without_lf) {
             return self.producer_reply(nonce, Instant::now());
         }

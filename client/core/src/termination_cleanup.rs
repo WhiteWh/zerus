@@ -19,6 +19,8 @@ use serde_json::Value;
 
 mod capture;
 pub use capture::Capture;
+mod report;
+pub use report::{retained_notice, ArchiveIdentity};
 
 /// The Terminate dialog's removal option and its texts.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,6 +236,16 @@ impl Cleanup {
     /// A cleanup the user started from a review.
     pub fn manual(entries: Vec<Entry>) -> Cleanup {
         Cleanup::new(entries, false)
+    }
+
+    /// Outcomes already observed by Archive. Inspecting them never reviews or
+    /// removes again; a verified refusal needs the existing Check again flow.
+    pub fn retained(entries: Vec<Entry>) -> Cleanup {
+        let count = entries.len();
+        let mut cleanup = Cleanup::new(entries, false);
+        cleanup.review_index = count;
+        cleanup.auto_scheduled = true;
+        cleanup
     }
 
     fn new(entries: Vec<Entry>, background: bool) -> Cleanup {
@@ -584,6 +596,21 @@ mod tests {
     }
 
     #[test]
+    fn retained_archive_outcomes_never_start_another_review_or_removal() {
+        let mut kept = terminated("owner-1");
+        kept.status = Some(Status::Kept);
+        kept.row = ready_row("owner-1");
+        kept.verified = true;
+        let mut cleanup = Cleanup::retained(vec![kept]);
+        assert!(!cleanup.busy());
+        assert_eq!(cleanup.step(), Step::Idle);
+        assert!(cleanup.can_refresh());
+        cleanup.entries[0].status = Some(Status::Unconfirmed);
+        assert!(!cleanup.can_refresh());
+        assert_eq!(cleanup.step(), Step::Done);
+    }
+
+    #[test]
     fn terminate_offers_removal_with_qt_texts() {
         assert!(removal_offered(true, true, "claude", true, false));
         assert!(removal_offered(true, true, "codex", false, true));
@@ -765,6 +792,9 @@ mod tests {
             path: "/r-w".into(),
             common_dir: common_dir.into(),
             reason: Some("policy".into()),
+            archive: None,
+            review: None,
+            details_omitted: false,
         };
         let removed = Entry::terminated(
             "",

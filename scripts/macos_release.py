@@ -9,6 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 # Every channel installs the same Zerus.app; the casks conflict with each other.
 CASKS = {"stable": "zerus", "nightly": "zerus@nightly", "dev": "zerus@dev"}
 MINIMUM_SYSTEM = "14.0"
+# Both existing Qt and Next feed parsers require this semantic-version field.
+# In a Next candidate it is a compatibility marker, not a bundled dependency.
+LEGACY_QT_VERSION = "6.11.2"
 STABLE = re.compile(r"\d+\.\d+\.\d+")
 NIGHTLY = re.compile(r"\d+\.\d+\.\d+\.r\d+\.g[0-9a-f]{7}\.n(\d+)")
 DEV = re.compile(r"\d+\.\d+\.\d+-dev\.([1-9]\d*)")
@@ -46,10 +49,9 @@ def _channel_version(version, channel):
     _require(isinstance(version, str) and pattern.fullmatch(version), f"Cask version must be a {channel} version.")
 
 
-def render_cask(version, digest, channel="stable", tag=None):
+def _render_cask(text, version, digest, channel, tag):
     _channel_version(version, channel)
     _require(DIGEST.fullmatch(digest), "Cask digest must be a lowercase SHA-256.")
-    text = (ROOT / "packaging/homebrew" / f"{cask_for(channel)}.rb.in").read_text()
     if channel == "nightly":
         # Nightly prereleases are immutable; the tag holds the workflow run ID, not the version.
         _require(isinstance(tag, str) and NIGHTLY_TAG.fullmatch(tag), "Nightly cask needs its nightly release tag.")
@@ -59,6 +61,11 @@ def render_cask(version, digest, channel="stable", tag=None):
                  "Dev cask needs its immutable mirror build directory.")
         text = text.replace("@BUILD_DIRECTORY@", tag)
     return text.replace("@VERSION@", version).replace("@SHA256@", digest)
+
+
+def render_cask(version, digest, channel="stable", tag=None):
+    text = (ROOT / "packaging/homebrew" / f"{cask_for(channel)}.rb.in").read_text()
+    return _render_cask(text, version, digest, channel, tag)
 
 
 def cask_fields(text):
@@ -72,6 +79,25 @@ def cask_fields(text):
 
 def require_template_cask(text, version, digest, channel="stable", tag=None):
     _require(text == render_cask(version, digest, channel, tag), "Homebrew cask differs from the reviewed template.")
+
+
+def reviewed_cask_templates(version, digest, channel="stable", tag=None):
+    """Expected bytes for validating existing casks, never for creating new ones."""
+    templates = [render_cask(version, digest, channel, tag)]
+    if channel in ("stable", "nightly"):
+        previous = (ROOT / "packaging/homebrew/previous" / f"{cask_for(channel)}.rb.in").read_text()
+        templates.append(_render_cask(previous, version, digest, channel, tag))
+    return tuple(templates)
+
+
+def require_sealed_cask(text, version, digest, channel="stable", tag=None):
+    """Retain the exact pre-Next cask when retrying a sealed stable/nightly candidate.
+
+    New candidates always render the current template. Old ones must not be
+    rebuilt or rewritten just because the reviewed template changed.
+    """
+    _require(text in reviewed_cask_templates(version, digest, channel, tag),
+             "Homebrew cask differs from the reviewed template.")
 
 
 def cask_version_key(version, channel="stable"):

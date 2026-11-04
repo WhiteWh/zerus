@@ -29,8 +29,8 @@ const window = (used: number, minutes: number | null, extra: Partial<ProjectedWi
 function member(id: string, provider: string, extra: Partial<Profile> = {}): Profile {
   return {
     key: `${provider}:${id}`, host: "", machine: "pc", id, label: "Work", provider, native: id.startsWith("native-"), installed: true,
-    is_default: false, home: `/profiles/${id}`, auth_revision: "", online: true, state: "ready", detail: "", signed_in: true,
-    permission: "", permission_label: "", permission_hint: "", model_supported: false, model_text: "",
+    is_default: false, home: `/profiles/${id}`, auth_revision: "", online: true, state: "ready", detail: { source: "" }, signed_in: true,
+    permission: "", permission_label: { source: "" }, permission_hint: { source: "" }, model_supported: false, model_text: { source: "" },
     usage: usageOf({ provider }), opencode: null, ...extra,
   };
 }
@@ -39,7 +39,7 @@ function account(members: Profile[], usage: Partial<Usage> = {}): Account {
   const first = members[0];
   return {
     key: `${first.provider}:${first.id}`, label: first.label, provider: first.provider, installed: true, machines: ["pc"], members,
-    usage: usageOf({ provider: first.provider, ...usage }), permission: "", identity_lines: [], identity_note: "",
+    usage: usageOf({ provider: first.provider, ...usage }), permission: { source: "" }, identity_lines: [], identity_note: null,
   };
 }
 

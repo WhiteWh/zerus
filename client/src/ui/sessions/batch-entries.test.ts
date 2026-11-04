@@ -9,6 +9,8 @@ vi.hoisted(() => {
   vi.stubGlobal("window", { document: { addEventListener: () => {} } });
 });
 vi.mock("../../bridge", () => ({
+  // The session entry points also initialize the bounded creation-card store.
+  onCreations: vi.fn(async () => () => {}), creationsView: vi.fn(async () => []),
   runAction: vi.fn(),
   inspectSession: vi.fn(async () => null),
   pendingReadMarks: vi.fn(async () => []),

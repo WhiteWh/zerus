@@ -17,8 +17,12 @@
 //! Inbox and default markers against a concrete project, causal heads) is
 //! resolved by `hgs swarm apply` and the replica (src/swarm/model.rs:126-201,
 //! src/swarm/catalog.rs:369-394), never here.
+pub mod conflicts;
+pub mod connection;
+pub mod dialog;
 pub mod draft;
 pub mod edit;
+pub mod folder_edit;
 pub mod grouping;
 pub mod layout;
 pub mod qt_import;
@@ -26,7 +30,7 @@ pub mod runs;
 pub mod sync;
 
 use crate::paths::windows_shaped;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -71,7 +75,8 @@ pub fn project_id(project: &Value) -> &str {
 
 /// A project folder as SessionOrganization keeps it
 /// (SessionOrganization.cpp:36-44).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Folder {
     /// The catalog's `id`, empty when it has none. Never made up here.
     pub id: String,
@@ -112,27 +117,38 @@ pub fn folders(project: &Value) -> Vec<Folder> {
         if out.len() == FOLDERS {
             break;
         }
-        let machine = field(folder, "machine");
-        let path = field(folder, "path");
-        if machine.is_empty() || (!path.starts_with('/') && !windows_shaped(&path)) {
+        let Some(folder) = folder_value(folder) else {
             continue;
+        };
+        if seen.insert(format!("{}\n{}", folder.machine, folder.path)) {
+            out.push(folder);
         }
-        let place = format!("{machine}\n{path}");
-        if !seen.insert(place.clone()) {
-            continue;
-        }
-        let id = field(folder, "id");
-        out.push(Folder {
-            key: if id.is_empty() { place } else { id.clone() },
-            id,
-            name: field(folder, "name"),
-            machine_id: field(folder, "machine_id"),
-            machine_name: field(folder, "machine_name"),
-            machine,
-            path,
-        });
     }
     out
+}
+
+/// The same decoder for one original folder record; edits preserve the rest
+/// of that record instead of reconstructing it from this presentation.
+pub fn folder_value(value: &Value) -> Option<Folder> {
+    let machine = field(value, "machine");
+    let path = field(value, "path");
+    if machine.is_empty() || (!path.starts_with('/') && !windows_shaped(&path)) {
+        return None;
+    }
+    let id = field(value, "id");
+    Some(Folder {
+        key: if id.is_empty() {
+            format!("{machine}\n{path}")
+        } else {
+            id.clone()
+        },
+        id,
+        machine,
+        path,
+        name: field(value, "name"),
+        machine_id: field(value, "machine_id"),
+        machine_name: field(value, "machine_name"),
+    })
 }
 
 /// A project's explicit members.

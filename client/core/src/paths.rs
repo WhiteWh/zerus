@@ -190,6 +190,15 @@ fn fold(c: char) -> char {
     }
 }
 
+/// A normalized comparison key, for bounded folder metadata indexes only.
+/// It conveys no computer ownership or filesystem authority.
+pub(crate) fn comparison_key(path: &str, style: Style) -> String {
+    let cleaned = clean(path, style);
+    match style {
+        Style::Posix => cleaned,
+        Style::Windows => cleaned.chars().map(fold).collect(),
+    }
+}
 fn equal_folded(a: &str, b: &str) -> bool {
     a.chars().map(fold).eq(b.chars().map(fold))
 }

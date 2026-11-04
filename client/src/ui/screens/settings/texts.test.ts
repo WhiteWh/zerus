@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { APPROVALS_TITLE, APPROVALS_BODY, APPROVALS_CONFIRM, APPROVALS_WARNING, APPROVALS_HINT } from "./approval-opt-in";
 
 // Every text Settings shows for a Qt control is Qt's own: it appears in the
 // Qt source it comes from and in the section that shows it.
@@ -57,12 +58,8 @@ const KEYBOARD = [
   "Keyboard", "Command", "Shortcut", "Alternate", "Reset", "Reset all", "Restore the default chords of the selected command",
   "Chords marked ✓ work in Terminal.", "Double-click a shortcut, or press Enter on it, to change it.", "Works in Terminal",
   "Reset all shortcuts", "Restore the default chords of every command?", "Change shortcut", "Clear", "Shortcut in use",
+  "Press the new shortcut for %1.", "Already used by %1. Reassign?",
 ];
-const KEYBOARD_FILLED: [string, string][] = [
-  ["Press the new shortcut for %1.", "Press the new shortcut for {title}."],
-  ["Already used by %1. Reassign?", "Already used by ${separatedList("],
-];
-
 const ABOUT_FILLED: [string, string][] = [
   ["Zerus %1", "`Zerus ${__APP_VERSION__}`"],
   ["hgs CLI %1", "`hgs CLI ${version}`"],
@@ -204,11 +201,6 @@ const APPROVALS_CORE = [
   "The automatic approval journal is unavailable. No new approval was authorized.",
   "Update the local hgs CLI to use automatic approvals and its journal.",
 ];
-// webui's wording for this client, where Qt has no text (approvals stay off here).
-const APPROVALS_CLIENT = [
-  "This client never approves tool requests automatically. Answer each request in its session.",
-  "Automatic approvals are turned on in the Qt client. They work only while the Qt client is running; this client does not approve tool requests.",
-];
 
 const worktreesQt = fs.readFileSync(new URL("tray/src/WorktreeSettings.h", repo), "utf8");
 const worktreesCore = ["client/core/src/worktree_policy.rs", "client/core/src/worktree_policy/page.rs"]
@@ -286,7 +278,7 @@ describe("Settings texts", () => {
     expect(source("Processes.tsx")).toContain(text);
   });
   it("Processes keeps Qt's timing ranges", () => {
-    const TIMINGS = [...source("Processes.tsx").matchAll(/\{ key: "([^"]+)", label: "([^"]+)", min: ([\d.]+), max: ([\d.]+) \}/g)]
+    const TIMINGS = [...source("Processes.tsx").matchAll(/\{ key: "([^"]+)", label: (?:trNoop\()?"([^"]+)"\)?, min: ([\d.]+), max: ([\d.]+) \}/g)]
       .map((m) => ({ key: m[1], label: m[2], min: Number(m[3]), max: Number(m[4]) }));
     const qtTimings = [...qt.matchAll(/timing\("(\w+)",tr\("([^"]+)"\),ProcessSettings::\w+\(\),([\d.]+),([\d.]+)\)/g)]
       .map((m) => ({ key: `processes/${m[1]}`, label: m[2], min: Number(m[3]), max: Number(m[4]) }));
@@ -299,9 +291,9 @@ describe("Settings texts", () => {
   });
   it("the Processes tab fills in Qt's counts", () => {
     expect(processView).toContain('tr("Terminate selected (%1)")');
-    expect(sessionsUi("Processes.tsx")).toContain("`Terminate selected (${ids.length})`");
+    expect(sessionsUi("Processes.tsx")).toContain(`tr("Terminate selected (%1)", ids.length)`);
     expect(sessionsWindow).toContain('tr("Processes (%1)")');
-    expect(processStore).toContain("`Processes (${count})`");
+    expect(processStore).toContain('tr("Processes (%1)", count)');
   });
   it.each(PROCESS_MENU)("the session menu shows Qt's %s", (text) => {
     expect(sessionsWindow).toContain(`tr("${text}")`);
@@ -320,6 +312,10 @@ describe("Settings texts", () => {
     expect(analyticsQt).toContain('"Reading %1 configured route(s)…"');
     expect(analyticsCore).toContain('"Reading {} configured route(s)…"');
   });
+  it.each([APPROVALS_TITLE, APPROVALS_BODY, APPROVALS_CONFIRM, APPROVALS_WARNING, APPROVALS_HINT])("the dangerous opt-in uses Qt and the mockup's text: %s", (text) => {
+    const mockup = fs.readFileSync(new URL("design/webui/src/screens/settings/Policies.tsx", repo), "utf8") + fs.readFileSync(new URL("design/webui/src/dialogs/SettingsDialogs.tsx", repo), "utf8");
+    expect(approvalsQt).toContain(text); expect(mockup).toContain(text);
+  });
   it.each(APPROVALS)("Automatic approvals shows Qt's %s", (text) => {
     expect(approvalsQt).toContain(`"${text}"`);
     expect(source("Approvals.tsx") + source("approvals-journal.ts")).toContain(text);
@@ -334,9 +330,6 @@ describe("Settings texts", () => {
     expect(approvalsQt).toContain('"Selected answer: %1"');
     expect(approvalsCore).toContain('"Selected answer: {}"');
   });
-  it.each(APPROVALS_CLIENT)("Automatic approvals shows the client's %s", (text) => {
-    expect(source("Approvals.tsx")).toContain(text);
-  });
   it.each(WORKTREES)("Worktrees shows Qt's %s", (text) => {
     expect(worktreesQt).toContain(`"${text}"`);
     expect(source("Worktrees.tsx")).toContain(text);
@@ -347,7 +340,7 @@ describe("Settings texts", () => {
   });
   it.each(MOBILE)("Mobile connection shows Qt's %s", (text) => {
     expect(mobileQt).toContain(`"${text}"`);
-    expect(source("Mobile.tsx")).toContain(text);
+    expect(source("Mobile.tsx") + source("ComputerInvitations.tsx") + source("WorkspacePanel.tsx")).toContain(text);
   });
   it.each(MOBILE_CORE)("the mobile core says Qt's %s", (text) => {
     expect(mobileQt.replaceAll("\\n", "\n")).toContain(text);
@@ -383,7 +376,7 @@ describe("Settings texts", () => {
   });
   it("Files fills in Qt's limit question", () => {
     expect(filesQt).toContain('"Zerus will automatically delete its oldest downloaded copies when they exceed %1. Files you added or edited will be kept."');
-    expect(source("Files.tsx")).toContain("Zerus will automatically delete its oldest downloaded copies when they exceed ${formatDataSize(props.bytes)}. Files you added or edited will be kept.");
+    expect(source("Files.tsx")).toContain('tr("Zerus will automatically delete its oldest downloaded copies when they exceed %1. Files you added or edited will be kept.", formatDataSize(props.bytes))');
   });
   it.each(FILES_CORE)("the download cache says Qt's %s", (text) => {
     expect(cacheQt).toContain(`"${text}"`);
@@ -420,17 +413,13 @@ describe("Settings texts", () => {
   it("About names the build as UpdateController::installedVersion does", () => {
     const updates = fs.readFileSync(new URL("tray/src/UpdateController.cpp", repo), "utf8");
     expect(updates).toContain('tr("%1 (local changes %2)")');
-    expect(source("about-version.ts")).toContain("`${version} (local changes ${source})`");
+    expect(source("about-version.ts")).toContain('tr("%1 (local changes %2)", version, source)');
     expect(updates).toContain('QString("%1 (%2)")');
     expect(source("about-version.ts")).toContain("`${version} (${source})`");
   });
   it.each(KEYBOARD)("Keyboard shows Qt's %s", (text) => {
     expect(keyboard).toContain(`"${text}"`);
     expect(source("Keyboard.tsx")).toContain(text);
-  });
-  it.each(KEYBOARD_FILLED)("Keyboard fills in Qt's %s", (template, shown) => {
-    expect(keyboard).toContain(`"${template}"`);
-    expect(source("Keyboard.tsx")).toContain(shown);
   });
   it("uses Shortcuts.cpp's titles, groups, reasons and Terminal rules", () => {
     const qtTexts = [...shortcuts.matchAll(/(?:QT_TRANSLATE_NOOP\("Shortcuts", |translate\("Shortcuts", )"((?:[^"\\]|\\.)+)"/g)].map((m) => m[1]);
@@ -454,7 +443,7 @@ describe("Settings texts", () => {
     expect(source("Sessions.tsx")).toContain(text);
   });
   it("lists the sections in Qt's order", () => {
-    const labels = [...source("sections.ts").matchAll(/label: "([^"]+)"/g)].map((m) => m[1]);
+    const labels = [...source("sections.ts").matchAll(/label: (?:trNoop\()?"([^"]+)"/g)].map((m) => m[1]);
     const nav = /nav->addItems\(\{([^}]*)\}\)/.exec(qt)![1];
     const qtOrder = [...nav.matchAll(/tr\("([^"]+)"\)/g)].map((m) => m[1]);
     // Worktrees goes in before Automatic approvals (SettingsPage.h:140).

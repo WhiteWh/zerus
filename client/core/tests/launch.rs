@@ -366,7 +366,7 @@ fn the_generated_worktree_goes_beside_the_selected_root() {
         "/srv/clone-work-1"
     );
     assert_eq!(
-        worktree_tooltip("work-1"),
+        worktree_tooltip("work-1").english(),
         "New branch: work-1\nStart from: HEAD"
     );
 }
@@ -686,14 +686,17 @@ fn start_runs_with_qt_texts_and_reasons() {
     let form = ready();
     let shown = shown(&form);
     assert!(shown.start_enabled);
-    assert_eq!(shown.start_text, START_SESSION);
+    assert_eq!(shown.start_text.english(), START_SESSION);
     assert!(shown.automatic);
     assert_eq!(shown.worktree_target, "/srv/repo-work-1a2b3c4d");
     assert_eq!(
-        shown.worktree_tooltip,
+        shown
+            .worktree_tooltip
+            .map(|t| t.english())
+            .unwrap_or_default(),
         "New branch: work-1a2b3c4d\nStart from: HEAD"
     );
-    assert_eq!(shown.preview, "");
+    assert_eq!(shown.preview, None);
     assert_eq!(shown.notice, None);
 
     for (change, why) in [
@@ -816,6 +819,7 @@ fn start_runs_with_qt_texts_and_reasons() {
             ..ready()
         })
         .name_problem
+        .map(|t| t.english())
         .as_deref(),
         Some("Names cannot contain /, : or . or control characters.")
     );
@@ -824,7 +828,8 @@ fn start_runs_with_qt_texts_and_reasons() {
             stage: Stage::CheckingFolder,
             ..ready()
         })
-        .start_text,
+        .start_text
+        .english(),
         "Checking folder…"
     );
     assert_eq!(
@@ -832,7 +837,8 @@ fn start_runs_with_qt_texts_and_reasons() {
             stage: Stage::CreatingWorktree,
             ..ready()
         })
-        .start_text,
+        .start_text
+        .english(),
         "Creating worktree…"
     );
 }
@@ -852,7 +858,7 @@ fn a_repository_source_clones_and_starts() {
     };
     let shown = shown(&form);
     assert!(shown.start_enabled);
-    assert_eq!(shown.start_text, "Clone and start");
+    assert_eq!(shown.start_text.english(), "Clone and start");
     // Auto stays available for a repository: the clone is a Git checkout.
     assert!(shown.automatic && shown.auto_enabled);
     assert_eq!(shown.worktree_target, "/srv/clone-work-1a2b3c4d");
@@ -863,6 +869,7 @@ fn a_repository_source_clones_and_starts() {
             ..form.clone()
         })
         .start_text
+        .english()
     };
     assert_eq!(
         text(Repository {
@@ -930,7 +937,12 @@ fn a_repository_source_clones_and_starts() {
 
 #[test]
 fn previews_and_notices_use_qt_texts_in_qt_order() {
-    let preview = |form: Form| launch::shown(&form).preview;
+    let preview = |form: Form| {
+        launch::shown(&form)
+            .preview
+            .map(|t| t.english())
+            .unwrap_or_default()
+    };
     assert_eq!(
         preview(Form {
             prefill_pending: true,
@@ -958,7 +970,7 @@ fn previews_and_notices_use_qt_texts_in_qt_order() {
         ..ready()
     });
     assert_eq!(
-        outside.preview,
+        outside.preview.map(|t| t.english()).unwrap_or_default(),
         "This folder is outside the project.\nStarting here will add it to this project."
     );
     assert!(outside.outside_project);
@@ -971,7 +983,7 @@ fn previews_and_notices_use_qt_texts_in_qt_order() {
         .outside_project
     );
 
-    let notice = |form: Form| launch::shown(&form).notice;
+    let notice = |form: Form| launch::shown(&form).notice.map(|t| t.english());
     assert_eq!(
         notice(Form {
             folder_online: false,

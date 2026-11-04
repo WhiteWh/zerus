@@ -2,6 +2,7 @@ import { createSignal } from "solid-js";
 import type { EditOutcome, GroupingOut, HeaderOut } from "../../types";
 import type { MenuEntry } from "../../store/ui";
 import type { Session } from "./types";
+import { tr } from "../../i18n";
 
 // The rules of the project menus and dialogs (SessionsWindow.cpp:2558-2616,
 // 5363-5372; ProjectsDialog.cpp:367-381): pure rules, the header menu's
@@ -11,7 +12,9 @@ import type { Session } from "./types";
 export interface Entry { enabled: boolean; reason?: string }
 
 interface HeaderMenuState {
-  collapse: "Expand project" | "Collapse project";
+  /** The project is collapsed now; the entry expands it. Logic reads this, never the label. */
+  collapsed: boolean;
+  collapse: string;
   edit: Entry;
   up: Entry & { before?: string };
   down: Entry & { before?: string };
@@ -29,7 +32,8 @@ export function headerMenuState(g: GroupingOut, project: string): HeaderMenuStat
   const edit = editEntry(g);
   const several = g.headers.length > 1;
   return {
-    collapse: g.headers[at].collapsed ? "Expand project" : "Collapse project",
+    collapsed: g.headers[at].collapsed,
+    collapse: g.headers[at].collapsed ? tr("Expand project") : tr("Collapse project"),
     edit,
     up: { enabled: edit.enabled && at > 0, before: g.headers[at - 1]?.id, reason: edit.reason },
     // Before the project after the next one, else to the end (2598-2600).
@@ -58,20 +62,20 @@ export function headerEntries(g: GroupingOut, project: string, act: HeaderAction
   if (!m) return [];
   const hint = (e: Entry) => (e.enabled ? undefined : e.reason);
   return [
-    { label: "New session…", icon: "plus", action: act.newSession },
+    { label: tr("New session…"), icon: "plus", action: act.newSession },
     { separator: true },
-    { label: "Filter this project", icon: "funnel", action: act.filter },
+    { label: tr("Filter this project"), icon: "funnel", action: act.filter },
     { separator: true },
     // This device's layout: never waits for sync.
-    { label: m.collapse, icon: "list-tree", action: () => act.collapse(m.collapse === "Collapse project") },
-    { label: "Rename project…", icon: "pencil", disabled: !m.edit.enabled, hint: hint(m.edit), action: act.rename },
-    { label: "Project settings…", icon: "settings", action: act.settings },
+    { label: m.collapse, icon: "list-tree", action: () => act.collapse(!m.collapsed) },
+    { label: tr("Rename project…"), icon: "pencil", disabled: !m.edit.enabled, hint: hint(m.edit), action: act.rename },
+    { label: tr("Project settings…"), icon: "settings", action: act.settings },
     { separator: true },
-    { label: "Move project up", icon: "arrow-up", disabled: !m.up.enabled, hint: hint(m.up), action: () => act.move(m.up.before) },
-    { label: "Move project down", icon: "arrow-down", disabled: !m.down.enabled, hint: hint(m.down), action: () => act.move(m.down.before) },
-    { label: "Sort sessions by name", icon: "list-filter", disabled: !m.edit.enabled, hint: hint(m.edit), action: act.sort },
+    { label: tr("Move project up"), icon: "arrow-up", disabled: !m.up.enabled, hint: hint(m.up), action: () => act.move(m.up.before) },
+    { label: tr("Move project down"), icon: "arrow-down", disabled: !m.down.enabled, hint: hint(m.down), action: () => act.move(m.down.before) },
+    { label: tr("Sort sessions by name"), icon: "list-filter", disabled: !m.edit.enabled, hint: hint(m.edit), action: act.sort },
     { separator: true },
-    { label: "Delete project…", icon: "trash", danger: true, disabled: !m.remove.enabled, hint: hint(m.remove), action: act.remove },
+    { label: tr("Delete project…"), icon: "trash", danger: true, disabled: !m.remove.enabled, hint: hint(m.remove), action: act.remove },
   ];
 }
 
@@ -106,9 +110,9 @@ export function chipColor(c: FilterChip, headerOf: (project: string) => Pick<Hea
  * Qt's name dialogs set no length limit (QInputDialog::getText, SessionsWindow.cpp:2561,
  * 2585); the core trims a name and keeps 80 characters (`swarm::edit::clean_name`).
  */
-export const nameProblem = (name: string) => (name.trim() ? undefined : "Enter a project name.");
+export const nameProblem = (name: string) => (name.trim() ? undefined : tr("Enter a project name."));
 export const deleteText = (name: string) =>
-  `Delete “${name}”? Choose the project that will receive its sessions. Files and running agents stay in place.`;
+  tr("Delete “%1”? Choose the project that will receive its sessions. Files and running agents stay in place.", name);
 
 /** The organization store's part the dialogs use (store/organization.ts). */
 export interface OrgStore {
@@ -168,10 +172,10 @@ export function createOrgDialogs(org: OrgStore) {
   }
 
   /** The name dialog's title and starting text. */
-  function nameDialog(): { title: "New project" | "Rename project"; initial: string } | undefined {
+  function nameDialog(): { title: string; initial: string } | undefined {
     const d = dialog();
-    if (d?.kind === "new") return { title: "New project", initial: "" };
-    if (d?.kind === "rename") return { title: "Rename project", initial: d.name };
+    if (d?.kind === "new") return { title: tr("New project"), initial: "" };
+    if (d?.kind === "rename") return { title: tr("Rename project"), initial: d.name };
     return undefined;
   }
   /** OK in New or Rename project; a blank name keeps the dialog open. */
@@ -195,7 +199,7 @@ export function createOrgDialogs(org: OrgStore) {
   /** The session menu's Move to project entry, also for archive identities. */
   function moveEntry(s: Session): MenuEntry {
     const e = editEntry(org.grouping());
-    return { label: "Move to project…", icon: "folder", disabled: !e.enabled, hint: e.reason, action: () => openMove([s]) };
+    return { label: tr("Move to project…"), icon: "folder", disabled: !e.enabled, hint: e.reason, action: () => openMove([s]) };
   }
 
   return { dialog, close, openMove, openNew, openRename, openDelete, moveChoicesFor, choose, newProject, nameDialog, submitName,

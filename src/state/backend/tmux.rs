@@ -87,6 +87,12 @@ fn field_format(field: PaneField) -> &'static str {
     match field {
         PaneField::SessionId => "#{session_id}",
         PaneField::SessionName => "#{session_name}",
+        PaneField::SocketPath => "#{socket_path}",
+        PaneField::SessionCreated => "#{session_created}",
+        PaneField::SessionWindows => "#{session_windows}",
+        PaneField::SessionGrouped => "#{session_grouped}",
+        PaneField::WindowPanes => "#{window_panes}",
+        PaneField::WindowLinked => "#{window_linked}",
         PaneField::PaneId => "#{pane_id}",
         PaneField::ServerPid => "#{pid}",
         PaneField::PanePid => "#{pane_pid}",

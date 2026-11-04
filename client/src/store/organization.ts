@@ -5,6 +5,7 @@ import { rowId } from "./catalog";
 import { clearNotice, notify } from "./actions";
 import type { Batch, EditOutcome, GroupingOut, HeaderOut } from "../types";
 import type { Session } from "../ui/sessions/types";
+import { trNoop, tr } from "../i18n";
 
 // The shared project organization in the Sessions list: each row's project
 // and rank and the project headers, as the Rust side sends them (it keeps the
@@ -18,12 +19,12 @@ import type { Session } from "../ui/sessions/types";
 export const INBOX = "ungrouped";
 /** Project sync's notices replace each other and a success clears them, as Qt's one status line. */
 export const SYNC_NOTICE = "project-sync";
-export const STARTING = "Project sync is starting.";
-export const GONE = "This project is no longer listed. Open the menu again.";
+export const STARTING = trNoop("Project sync is starting.");
+export const GONE = trNoop("This project is no longer listed. Open the menu again.");
 export const conflictsText = (n: number) => `${n} project conflict(s) need review in Swarm.`;
-export const unavailable = (detail: string) => `Project sync unavailable: ${detail}`;
-export const LAYOUT_NOTICE_TITLE = "Project layout not saved";
-export const LAYOUT_NOTICE_TEXT = "The saved project layout could not be read. The original is kept unchanged. Changes to the project layout in this session will not be saved.";
+export const unavailable = (detail: string) => tr("Project sync unavailable: %1", detail);
+export const LAYOUT_NOTICE_TITLE = trNoop("Project layout not saved");
+export const LAYOUT_NOTICE_TEXT = trNoop("The saved project layout could not be read. The original is kept unchanged. Changes to the project layout in this session will not be saved.");
 
 export const emptyGrouping = (): GroupingOut => ({
   loaded: false, default_project: INBOX, headers: [], ready: false, reason: STARTING,
@@ -59,7 +60,7 @@ export function createOrganization(say: Say, unsay: (key: string) => void = () =
       // toast. Later batches and dismissals do not repeat it this startup.
       if (b.grouping.layout_save_paused && !layoutPauseShown) {
         layoutPauseShown = true;
-        say("warn", LAYOUT_NOTICE_TEXT, true, undefined, LAYOUT_NOTICE_TITLE);
+        say("warn", tr(LAYOUT_NOTICE_TEXT), true, undefined, tr(LAYOUT_NOTICE_TITLE));
       }
       // The hub's one-time warning, shown once until it clears (a dropped draft's reason).
       const notice = b.grouping.notice || undefined;
@@ -85,8 +86,8 @@ export function createOrganization(say: Say, unsay: (key: string) => void = () =
   /** Why an edit cannot run now (the disabled entries' reason). */
   function refusal(...projects: (string | undefined)[]): string | undefined {
     const g = grouping();
-    if (!g.ready) return g.reason ?? STARTING;
-    if (projects.some((p) => p !== undefined && !headerOf(p))) return GONE;
+    if (!g.ready) return g.reason ?? tr(STARTING);
+    if (projects.some((p) => p !== undefined && !headerOf(p))) return tr(GONE);
     return undefined;
   }
 
@@ -114,11 +115,11 @@ export function createOrganization(say: Say, unsay: (key: string) => void = () =
   }
 
   const invalidArchive = (rows: readonly Row[]) => rows.some((r) => r.state === "archived" && !r.archiveId)
-    ? "Invalid archived session identity. Refresh the archive." : undefined;
+    ? tr("Invalid archived session identity. Refresh the archive.") : undefined;
 
   /** Move to project: one call for every row, as one `swarm apply` (zerus-5wmh.18, .20). */
   function moveToProject(rows: readonly Row[], projectId: string, before?: Row): Promise<EditOutcome> {
-    if (!rows.length) return Promise.resolve({ outcome: "refused", detail: "Choose the sessions to move." });
+    if (!rows.length) return Promise.resolve({ outcome: "refused", detail: tr("Choose the sessions to move.") });
     return run(invalidArchive(before ? [...rows, before] : rows) ?? refusal(projectId), () => bridge.moveToProject(rows.map(memberOf), projectId, before ? memberOf(before) : null));
   }
   const createProject = (name: string, rows: readonly Row[] = []) =>
@@ -129,11 +130,18 @@ export function createOrganization(say: Say, unsay: (key: string) => void = () =
     run(refusal(projectId, destination), () => bridge.deleteProject(projectId, destination));
   const moveProject = (projectId: string, before: string | undefined) => run(refusal(projectId), () => bridge.moveProject(projectId, before ?? null));
   const sortProject = (projectId: string) => run(refusal(projectId), () => bridge.sortProject(projectId));
+  async function setDefaultProject(projectId: string): Promise<boolean> {
+    const why = refusal(projectId);
+    if (why) { say("info", why); return false; }
+    try { await bridge.setDefaultProject(projectId); return true; }
+    catch (error) { say("error", String(error), true); return false; }
+  }
+  const changeProjectFolder = (project: string, change: import("../ui/screens/project-folders").FolderChange) => run(refusal(project, change.kind === "transfer" ? change.destination : undefined), () => bridge.projectFolderChange(project, change));
   /** Expand or collapse: this device's layout; the next batch shows it. */
   const setProjectCollapsed = (projectId: string, collapsed: boolean) => { void bridge.setProjectCollapsed(projectId, collapsed).catch(() => {}); };
 
   return { grouping, groups, defaultProject, applyGrouping, groupOf, headerOf, moveToProject, createProject,
-           renameProject, setProjectColor, deleteProject, moveProject, sortProject, setProjectCollapsed };
+           renameProject, setProjectColor, deleteProject, moveProject, sortProject, setProjectCollapsed, setDefaultProject, changeProjectFolder };
 }
 
 export type Organization = ReturnType<typeof createOrganization>;
@@ -144,7 +152,7 @@ export function bindArchivedGroups(lookup: (key: string) => string | undefined) 
 
 const app = createOrganization(notify, clearNotice, (key) => archivedGroup(key));
 export const { grouping, groups, defaultProject, applyGrouping, groupOf, headerOf, moveToProject, createProject,
-               renameProject, setProjectColor, deleteProject, moveProject, sortProject, setProjectCollapsed } = app;
+               renameProject, setProjectColor, deleteProject, moveProject, sortProject, setProjectCollapsed, setDefaultProject, changeProjectFolder } = app;
 
 /** Project settings… asks the Projects screen to show this project. */
 export const [projectToShow, setProjectToShow] = createSignal<string | undefined>();

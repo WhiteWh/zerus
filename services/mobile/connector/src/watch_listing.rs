@@ -29,6 +29,8 @@ pub struct Catalog {
     /// Snapshot pages until the last one arrives.
     pending: Option<BTreeMap<String, Value>>,
     meta: Option<Map<String, Value>>,
+    /// Presence durations describe this observation, not the last heartbeat.
+    meta_at: Option<Instant>,
     snapshot: bool,
     last_frame: Option<Instant>,
 }
@@ -74,6 +76,7 @@ impl Catalog {
             ("snapshot", protocol::topic::CATALOG_META) => {
                 if let Value::Object(meta) = &frame["value"] {
                     self.meta = Some(meta.clone());
+                    self.meta_at = Some(now);
                 }
             }
             ("error", _) if frame["fatal"] == true => {
@@ -108,12 +111,60 @@ impl Catalog {
                 .cmp(b["name"].as_str().unwrap_or_default())
         });
         let mut listing = meta.clone();
+        // An otherwise-live stream can keep sending heartbeats or session
+        // deltas without another metadata sample. Neither renews presence.
+        let presence = self
+            .meta_at
+            .and_then(|at| now.checked_duration_since(at))
+            .and_then(|age| {
+                listing
+                    .get("desktop_presence")
+                    .and_then(|p| aged_presence(p, age))
+            });
+        match presence {
+            Some(presence) => {
+                listing.insert("desktop_presence".into(), presence);
+            }
+            None => {
+                listing.remove("desktop_presence");
+            }
+        }
         listing.insert(
             "sessions".into(),
             Value::Array(sessions.into_iter().cloned().collect()),
         );
         Some(Value::Object(listing))
     }
+}
+
+/// Preserve the native relative-duration contract without giving a cached
+/// sample a new observation time. Only a fresh metadata frame can renew it.
+fn aged_presence(value: &Value, age: Duration) -> Option<Value> {
+    let seconds = |value: &Value| value.as_f64().filter(|n| n.is_finite() && *n >= 0.0);
+    let age = age.as_secs_f64();
+    if age > zerus_relay::alerts::PRESENCE_FRESH {
+        return None;
+    }
+    let idle = seconds(&value["idle_seconds"])?;
+    let locked = value["locked"].as_bool()?;
+    let lock = match value.get("locked_seconds") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(seconds(value)?),
+    };
+    let mut presence = value.as_object()?.clone();
+    presence.insert(
+        "idle_seconds".into(),
+        serde_json::Number::from_f64(idle + age)?.into(),
+    );
+    if locked {
+        if let Some(lock) = lock {
+            presence.insert(
+                "locked_seconds".into(),
+                serde_json::Number::from_f64(lock + age)?.into(),
+            );
+        }
+    }
+    Some(Value::Object(presence))
 }
 
 /// Reads one line of at most `LINE_BYTES`; None at the end of the stream.
@@ -348,6 +399,156 @@ mod tests {
                 now,
             )
             .unwrap();
+    }
+
+    fn presence_catalog(presence: Value, now: Instant) -> Catalog {
+        let mut catalog = Catalog::default();
+        catalog
+            .apply(
+                &line(json!({"v":1,"seq":1,"t":"snapshot","topic":"catalog",
+            "page":0,"last":true,"items":[]})),
+                now,
+            )
+            .unwrap();
+        catalog
+            .apply(
+                &line(json!({"v":1,"seq":2,"t":"snapshot","topic":"catalog.meta",
+            "page":0,"last":true,"value":{"host":"fixture","desktop_presence":presence}})),
+                now,
+            )
+            .unwrap();
+        catalog
+    }
+
+    #[test]
+    fn heartbeat_and_catalog_deltas_age_presence_without_renewing_its_sample() {
+        let now = Instant::now();
+        let original =
+            json!({"idle_seconds":4,"locked":true,"locked_seconds":7,"future":{"kept":true}});
+        let mut catalog = presence_catalog(original.clone(), now);
+        for seconds in [10, 20, 120, 121] {
+            let at = now + Duration::from_secs(seconds);
+            let frame = if seconds == 20 {
+                json!({"v":1,"seq":3,"t":"delta","topic":"catalog","upsert":[],"remove":[]})
+            } else {
+                json!({"v":1,"seq":3,"t":"heartbeat"})
+            };
+            catalog.apply(&line(frame), at).unwrap();
+            let listing = catalog.listing(at).expect("session stream remains live");
+            if seconds <= 120 {
+                assert_eq!(
+                    listing["desktop_presence"]["idle_seconds"],
+                    4.0 + seconds as f64
+                );
+                assert_eq!(
+                    listing["desktop_presence"]["locked_seconds"],
+                    7.0 + seconds as f64
+                );
+                assert_eq!(listing["desktop_presence"]["future"], original["future"]);
+            } else {
+                assert!(listing.get("desktop_presence").is_none());
+            }
+            assert_eq!(
+                catalog.meta.as_ref().unwrap()["desktop_presence"],
+                original,
+                "listing calls must not repeatedly age or mutate the retained sample"
+            );
+        }
+    }
+
+    #[test]
+    fn only_fresh_metadata_can_renew_presence_and_missing_presence_clears_it() {
+        let now = Instant::now();
+        let mut catalog = presence_catalog(
+            json!({"idle_seconds":0,"locked":false,"locked_seconds":null}),
+            now,
+        );
+        let at = now + Duration::from_secs(121);
+        catalog
+            .apply(&line(json!({"v":1,"t":"heartbeat"})), at)
+            .unwrap();
+        assert!(catalog
+            .listing(at)
+            .unwrap()
+            .get("desktop_presence")
+            .is_none());
+        catalog.apply(&line(json!({"v":1,"t":"snapshot","topic":"catalog.meta","page":0,"last":true,
+            "value":{"host":"fixture","desktop_presence":{"idle_seconds":2,"locked":false,"locked_seconds":null}}})), at).unwrap();
+        let aged = catalog.listing(at + Duration::from_secs(3)).unwrap();
+        assert_eq!(aged["desktop_presence"]["idle_seconds"], 5.0);
+        assert_eq!(aged["desktop_presence"]["locked_seconds"], Value::Null);
+        catalog
+            .apply(
+                &line(
+                    json!({"v":1,"t":"snapshot","topic":"catalog.meta","page":0,"last":true,
+            "value":{"host":"fixture"}}),
+                ),
+                at,
+            )
+            .unwrap();
+        assert!(catalog
+            .listing(at)
+            .unwrap()
+            .get("desktop_presence")
+            .is_none());
+    }
+
+    #[test]
+    fn malformed_presence_never_becomes_an_active_or_away_default() {
+        let now = Instant::now();
+        for value in [
+            Value::Null,
+            json!([]),
+            json!({"state":"active"}),
+            json!({"idle_seconds":-1,"locked":false}),
+            json!({"idle_seconds":"0","locked":false}),
+            json!({"idle_seconds":0}),
+            json!({"idle_seconds":0,"locked":"false"}),
+            json!({"idle_seconds":0,"locked":true,"locked_seconds":-1}),
+        ] {
+            let catalog = presence_catalog(value, now);
+            assert!(catalog
+                .listing(now)
+                .unwrap()
+                .get("desktop_presence")
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn no_writer_does_not_republish_old_presence_despite_a_live_stream() {
+        use zerus_relay::alerts::{away_since, decide, Decision, Delivery, Presence};
+        let now = Instant::now();
+        let sample = json!({"idle_seconds":0,"locked":false});
+        let mut catalog = presence_catalog(sample.clone(), now);
+        // Writer gone since the Qt switch: liveness alone is not a new sample.
+        let later = now + Duration::from_secs(86400);
+        catalog
+            .apply(&line(json!({"v":1,"t":"heartbeat"})), later)
+            .unwrap();
+        let listing = catalog.listing(later).unwrap();
+        assert!(listing.get("desktop_presence").is_none());
+        assert_eq!(listing["host"], "fixture");
+        assert_eq!(listing["sessions"], json!([]));
+        assert!(catalog
+            .listing(now - Duration::from_secs(1))
+            .unwrap()
+            .get("desktop_presence")
+            .is_none());
+        // Preserve D2: the last real activity is only a historical timer.
+        // With no writer since the switch, every away_N timer has elapsed;
+        // neither a heartbeat nor repeated evaluation resets that sample.
+        let historical = Presence::from_value(&sample, 0.0).unwrap();
+        assert_eq!(
+            Presence::from_value(&listing["desktop_presence"], 86_400.0),
+            None
+        );
+        for minutes in [0, 5, 10, 15, 30] {
+            assert_eq!(
+                decide(Delivery::Away(minutes), away_since(&[historical]), 86_400.0),
+                Decision::Deliver
+            );
+        }
     }
 
     #[test]

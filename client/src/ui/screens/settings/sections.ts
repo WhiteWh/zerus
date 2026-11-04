@@ -14,6 +14,7 @@ import { ProcessesSection } from "./Processes";
 import { AboutSection, refreshAbout } from "./About";
 import { UpdatesSection } from "./Updates";
 import { refreshUpdates } from "../../../store/updates";
+import { trNoop } from "../../../i18n";
 
 // Settings sections in Qt's order (tray/src/SettingsPage.h:43, Worktrees
 // inserted at :140). A section shows once it has a component; `refresh` runs
@@ -35,16 +36,16 @@ export interface Section {
 export const SECTIONS: readonly Section[] = [
   { id: "appearance", label: "Appearance", icon: "palette", component: AppearanceSection },
   { id: "sessions", label: "Sessions", icon: "rows-3", component: SessionsSection },
-  { id: "recovery", label: "Automatic recovery", icon: "rotate-ccw", component: RecoverySection, refresh: refreshRecovery },
+  { id: "recovery", label: trNoop("Automatic recovery"), icon: "rotate-ccw", component: RecoverySection, refresh: refreshRecovery },
   { id: "processes", label: "Processes", icon: "activity", component: ProcessesSection },
   { id: "updates", label: "Updates", icon: "download", component: UpdatesSection, refresh: refreshUpdates },
-  { id: "mobile", label: "Mobile connection", icon: "smartphone", component: MobileSection },
+  { id: "mobile", label: trNoop("Mobile connection"), icon: "smartphone", component: MobileSection },
   { id: "files", label: "Files", icon: "hard-drive", component: FilesSection },
   { id: "worktrees", label: "Worktrees", icon: "folder-git-2", component: WorktreesSection, refresh: refreshWorktrees },
-  { id: "approvals", label: "Automatic approvals", icon: "shield-check", component: ApprovalsSection },
-  { id: "voice", label: "Voice input", icon: "mic", component: VoiceSection, refresh: refreshVoice },
+  { id: "approvals", label: trNoop("Automatic approvals"), icon: "shield-check", component: ApprovalsSection },
+  { id: "voice", label: trNoop("Voice input"), icon: "mic", component: VoiceSection, refresh: refreshVoice },
   { id: "keyboard", label: "Keyboard", icon: "keyboard", component: KeyboardSection },
-  { id: "analytics", label: "Private analytics", icon: "gauge", component: AnalyticsSection },
+  { id: "analytics", label: trNoop("Private analytics"), icon: "gauge", component: AnalyticsSection },
   { id: "about", label: "About", icon: "info", component: AboutSection, refresh: refreshAbout },
 ];
 

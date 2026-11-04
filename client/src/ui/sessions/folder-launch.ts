@@ -2,6 +2,7 @@ import { createSignal } from "solid-js";
 import type * as bridge from "../../bridge";
 import type { ComputerId, Folder, FolderOut, MachineMeta, PathStyle } from "../../types";
 import { absolute, native, of } from "./path-forms";
+import { tr } from "../../i18n";
 
 // The Projects entries' state for a folder (ProjectsDialog.cpp 515-532,
 // 552-560): why it cannot start a session and its path as shown. The
@@ -10,7 +11,11 @@ import { absolute, native, of } from "./path-forms";
 // openFolderSession checks the same state before it opens the dialog.
 
 /** A folder a Projects entry starts from: the screen's `Folder` or the organization's `FolderOut`. */
-export type LaunchFolder = Pick<Folder | FolderOut, "key" | "machine" | "path">;
+export type LaunchFolder = Pick<Folder | FolderOut, "key" | "machine" | "path" | "machine_id">;
+
+/** .66.2.31 admits a read model only; native Windows folder actions await PC qualification. */
+export const localWindowsFolder = (folder: LaunchFolder, local?: MachineMeta): boolean =>
+  local?.platform === "windows" && (!!local.machine_id && folder.machine_id === local.machine_id || !!local.host && folder.machine === local.host);
 
 export interface LaunchEnvironment {
   /** This computer's host name, "" before it reports one. */
@@ -27,11 +32,11 @@ export interface LaunchEnvironment {
  * id is no folder selected: every listed folder has a key.
  */
 export function folderLaunchProblem(folder: LaunchFolder, env: LaunchEnvironment, localExists: boolean | undefined): string {
-  if (!folder.key) return "Select a folder for the new session.";
-  if (!folder.machine || !env.localHost) return "Waiting for this computer's identity.";
+  if (!folder.key) return tr("Select a folder for the new session.");
+  if (!folder.machine || !env.localHost) return tr("Waiting for this computer's identity.");
   const local = folder.machine === env.localHost;
-  if (!env.online(local ? "" : folder.machine)) return `Reconnect ${folder.machine} to start a session in this folder.`;
-  if (!absolute(folder.path, env.style(folder.machine)) || (local && localExists === false)) return "This folder is unavailable on this computer.";
+  if (!env.online(local ? "" : folder.machine)) return tr("Reconnect %1 to start a session in this folder.", folder.machine);
+  if (!absolute(folder.path, env.style(folder.machine)) || (local && localExists === false)) return tr("This folder is unavailable on this computer.");
   return "";
 }
 
@@ -68,7 +73,7 @@ export function createFolderLaunch(deps: FolderLaunchDeps) {
     const localHost = local?.host ?? "";
     const style = (machine: string) => of(local?.platform, !!machine && machine === localHost, buildStyle() ?? "posix");
     const env = { localHost, online: deps.online, style };
-    return { problem: folderLaunchProblem(folder, env, exists), shown: native(folder.path, style(folder.machine)), local: !!localHost && folder.machine === localHost };
+    return { problem: localWindowsFolder(folder, local) ? tr("Folder management is unavailable for this computer.") : folderLaunchProblem(folder, env, exists), shown: native(folder.path, style(folder.machine)), local: !!localHost && folder.machine === localHost };
   }
 
   /**
@@ -78,6 +83,7 @@ export function createFolderLaunch(deps: FolderLaunchDeps) {
    */
   async function folderExists(folder: LaunchFolder): Promise<boolean | undefined> {
     await ensureBuildStyle();
+    if (localWindowsFolder(folder, deps.cards()[""])) return false;
     if (!folderLaunch(folder).local) return undefined;
     try { return await deps.bridge.localFolderExists(folder.path); } catch { return false; }
   }

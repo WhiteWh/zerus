@@ -254,6 +254,31 @@ mod tests {
     }
 
     #[test]
+    fn observing_the_pong_before_subscribe_prevents_cross_fence_coalescing() {
+        let sink = Sink::new(false);
+        let writer = Writer::spawn(sink.clone(), 1 << 20, Duration::from_secs(60), || {});
+        assert!(writer.put(item("blocked", None)));
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(writer.offer(item("old", Some("state|processes|run:r"))));
+        assert!(writer.put(item("fence", None)));
+        sink.open();
+        let until = Instant::now() + Duration::from_secs(5);
+        while !sink.lines().iter().any(|line| line["id"] == "fence") {
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        // Only now may the new subscription enqueue/coalesce its first state.
+        assert!(writer.offer(item("new", Some("state|processes|run:r"))));
+        while sink.lines().len() < 4 {
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let ids: Vec<_> = sink.lines().iter().map(|line| line["id"].as_str().unwrap().to_owned()).collect();
+        assert_eq!(ids, ["blocked", "old", "fence", "new"]);
+        writer.halt();
+    }
+
+    #[test]
     fn frames_are_numbered_in_write_order_and_coalesce_while_queued() {
         let sink = Sink::new(false);
         let writer = Writer::spawn(sink.clone(), 1 << 20, Duration::from_secs(60), || {});

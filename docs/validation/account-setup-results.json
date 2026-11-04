@@ -1,0 +1,104 @@
+{
+  "isolation": "Normal embedded-assets app, private D-Bus and Xvfb, child environment from scratch with private HOME/XDG/TMPDIR/TMUX_TMPDIR. Fake local workstation and peer studio, no provider authentication, installer, SSH or native service was run.",
+  "mockup": "Served app.html Accounts; SettingsDialogs AddAccountDialog (520 px) and ApiKeyDialog (460 px), compared side by side. Qt supplies saved-profile and terminal behavior.",
+  "effects": [
+    {
+      "host": "studio",
+      "args": [
+        "account",
+        "restore",
+        "codex-saved",
+        "--revision",
+        "r1"
+      ],
+      "effect": "restore",
+      "revision": "r1",
+      "profile": "codex-saved"
+    },
+    {
+      "host": "studio",
+      "args": [
+        "account",
+        "add",
+        "codex-63bcbf2971",
+        "--revision",
+        "r2",
+        "--provider",
+        "codex",
+        "--label",
+        "work"
+      ],
+      "effect": "add",
+      "revision": "r2",
+      "profile": "codex-63bcbf2971"
+    },
+    {
+      "host": "studio",
+      "args": [
+        "account",
+        "set-key",
+        "native-dsh",
+        "--revision",
+        "r4",
+        "--json"
+      ],
+      "effect": "set-key",
+      "revision": "r4",
+      "profile": "native-dsh"
+    },
+    {
+      "host": "studio",
+      "args": [
+        "account",
+        "restore",
+        "native-opencode",
+        "--revision",
+        "r5"
+      ],
+      "effect": "restore",
+      "revision": "r5",
+      "profile": "native-opencode"
+    },
+    {
+      "host": "studio",
+      "args": [
+        "account",
+        "start",
+        "native-opencode",
+        "--revision",
+        "r6"
+      ],
+      "effect": "start",
+      "revision": "r6",
+      "profile": "native-opencode"
+    }
+  ],
+  "captured_terminal_commands": [
+    "hgs @studio --expect-machine eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee account login codex-63bcbf2971 --revision r3",
+    "hgs @studio --expect-machine eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee account login codex-63bcbf2971 --revision r3",
+    "hgs @studio --expect-machine eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee account install kimi --revision r4"
+  ],
+  "assertions": [
+    "API-key Cancel sends nothing; cancelled Add is covered by the controller regression.",
+    "Saved Codex and OpenCode profiles restore only on studio.",
+    "New Codex profile is selected; its terminal receives the new exact profile ID, physical machine and post-create revision.",
+    "Explicit Sign in uses the same exact profile.",
+    "Install agent opens only the selected peer provider installer in the configured terminal.",
+    "DeepSeek key is private stdin, absent from argument and call logs.",
+    "OpenCode Start calls once, then reads its account catalog on the shared hub.",
+    "A stale Add submitted with Enter is refused with no effect or terminal.",
+    "All five native effects and all three terminal captures target only studio."
+  ],
+  "checks": {
+    "frontend": "check, full Vitest 2139 passed plus 1 existing skip, build",
+    "entry_bytes": 450531,
+    "entry_budget": 500000,
+    "core": "all-target Clippy; 6 account action units and 5 fake-CLI integrations",
+    "native": "12 account controller tests; all-target Clippy default/media/video/no-default-features; embedded-assets build",
+    "root": "all-target Clippy; CLI Accounts 38 cases with 1 existing platform skip",
+    "windows": "root hgs and media Tauri MSVC cross-Clippy",
+    "phase4": "18 of 18 steps in another isolated built-app launch"
+  },
+  "root_src_touched": true,
+  "remaining": "Add to machine distribution flow is the next PR."
+}

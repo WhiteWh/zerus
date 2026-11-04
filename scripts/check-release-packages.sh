@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Validate public recipes using local candidate archives, without publication.
+# Validate Zerus Next source/binary recipes using local archives, without publication.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if [ "$(id -u)" = 0 ]; then echo 'makepkg must run as an unprivileged user.' >&2; exit 1; fi
@@ -57,4 +57,4 @@ directory = Path(sys.argv[1])
 finish_candidate(directory)
 validate_candidate(directory, Path("VERSION").read_text().strip())
 PY
-printf 'Source and binary packages validated; all three AUR metadata pairs prepared. Nothing was published.\n'
+printf 'Zerus Next source and binary packages validated; all three stable AUR metadata pairs prepared. Nothing was published.\n'

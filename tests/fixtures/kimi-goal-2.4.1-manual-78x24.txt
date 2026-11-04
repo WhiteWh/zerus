@@ -1,0 +1,24 @@
+ ● Starting goal (Завершить проверку отдельного intrinsic слоя и новой публик…)
+ ──────────────────────────────────────────────────────────────────────────────
+   ▶ Approve CreateGoal?
+
+   Start goal: Завершить проверку отдельного intrinsic слоя и новой публикац...
+   Done when: Все 13 trophy/156 состояний проверены, включая g2★0, без двойн...
+
+   ▶ 1. Switch to Never Ask and start
+        Best if you want Kimi Code to keep working while you are away. Tools
+        are approved automatically and questions are skipped; only plans in
+        Plan mode wait for your review.
+     2. Switch to Ask When Needed and start
+        Tools are approved automatically. Kimi Code may still ask you
+        questions.
+     3. Start in Always Ask
+        Keep approvals on. Kimi Code will ask before risky actions, so the goal
+        may stop and wait for you.
+     4. Do not start
+        Return to the input box with your goal command.
+
+   ↑/↓ select · 1/2/3/4 choose · ↵ confirm
+ ──────────────────────────────────────────────────────────────────────────────
+ fixture  …/tmp/hgs-pause-007fspaj/project with spaces
+                                                           context: 1% (68/32k)

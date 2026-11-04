@@ -8,9 +8,9 @@ url='https://github.com/ufna/zerus'
 license=('MIT')
 # Library floors come from the verified package's .BUILDINFO, never the publisher.
 depends=(@BINARY_LIBRARY_DEPENDS@
+         'gst-plugins-base' 'gst-plugins-good' 'gst-plugins-bad' 'gst-plugins-ugly' 'gst-libav'
          'tmux>=3.7' 'openssh' 'python' 'curl' 'procps-ng' 'hicolor-icon-theme' 'bash' 'tar')
 optdepends=('konsole: external KDE terminal integration'
-            'qt6-webengine: embedded DeepSeek Native UI'
             'wl-clipboard: clipboard transfers on Wayland'
             'xclip: clipboard transfers on X11'
             'nodejs: separately installed native agents and DeepSeek Harness'

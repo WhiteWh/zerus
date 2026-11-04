@@ -3,6 +3,7 @@ import * as bridge from "../bridge";
 import { setSetting } from "./settings";
 import { toast } from "./notices";
 import { pauseMessagePlayback } from "./mediaPlayback";
+import { tr } from "../i18n";
 
 export type VoiceState = "idle" | "starting" | "recording" | "saving" | "preview" | "submitting" | "uncertain";
 export interface VoiceShown {
@@ -116,7 +117,7 @@ export function createVoice(port: VoicePort, owner: string = crypto.randomUUID()
 
 export const voicePort: VoicePort = {
   open: (...args) => bridge.voiceOpen(...args), input: (...args) => bridge.voiceInput(...args), close: (...args) => bridge.voiceClose(...args),
-  notice: (text) => { toast("Voice notice", text, "error", true); },
+  notice: (text) => { toast(tr("Voice notice"), text, "error", true); },
   remember: (profile) => {
     if (profile.machine_id !== undefined) void setSetting("speech/machine_id", profile.machine_id);
     if (profile.profile_id !== undefined) void setSetting("speech/profile", profile.profile_id);

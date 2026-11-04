@@ -253,11 +253,16 @@ output as it comes, written with `WriteConsoleW`; the console keeps its own
 scrollback, as there is no alternate screen around the session. The pane takes
 the size of the client that was active last, and an attached launch starts the
 session at the console's size. Inside a session (`HGS_HOST_PANE` is set), `hgs a`
-and a launch with or without `-d` are refused with exit 2, as inside tmux, but
-without naming tmux (`already inside session NAME; open a new tab`, or `already
+and a launch without `-d` are refused with exit 2, as inside tmux, but without
+naming tmux (`already inside session NAME; open a new tab` for `hgs a`, `already
+inside session NAME; use --new -d or open a new tab` for a launch, or `already
 inside a session; ...` when the host cannot name it). `fork` and `resume` without
 `-d` are refused the same way (`already inside a session; use fork -d or open a new
-tab`); `fork -d` and `resume -d` still start their sessions from there.
+tab`). A launch with `-d`, `fork -d` and `resume -d` start their sessions from
+there without touching the console. The new session starts from this process's
+environment without the caller's session variables (`SESSION_CONTEXT` in
+`src/state/backend/host.rs`, which also drops Claude Code's `CLAUDECODE` mark), and
+a launch never passes on the caller's account profile.
 
 | Keys | What happens |
 |---|---|

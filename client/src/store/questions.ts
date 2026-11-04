@@ -2,6 +2,7 @@ import { createEffect, createRoot, createSignal } from "solid-js";
 import * as bridge from "../bridge";
 import { notify } from "./actions";
 import { composer } from "./composer";
+import { trText } from "../text";
 import type { ButtonView, ColdAnswer, QuestionEdit, QuestionReply, QuestionView } from "../types";
 
 // The shown question card (Qt's QuestionCard): its review delay, its replies
@@ -74,7 +75,7 @@ export function createQuestions(port: QuestionPort, clock: Clock = browserClock)
   }
 
   const reviewing = (b: ButtonView) => b.review_label !== null && left() > 0;
-  const label = (b: ButtonView) => (reviewing(b) ? `${b.review_label} (${left()})` : b.label);
+  const label = (b: ButtonView) => (reviewing(b) ? `${trText(b.review_label!)} (${left()})` : trText(b.label));
   const enabled = (b: ButtonView) => b.visible && b.enabled && !reviewing(b);
   const reply = (r: QuestionReply, card: string, at: number) => {
     if (r.kind === "cold") {

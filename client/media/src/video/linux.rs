@@ -277,10 +277,7 @@ struct Folder(PathBuf);
 impl Folder {
     fn create() -> Option<Folder> {
         use std::os::unix::fs::DirBuilderExt;
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |time| time.as_nanos());
-        let path = std::env::temp_dir().join(format!("zerus-video-{}-{nanos}", std::process::id()));
+        let path = std::env::temp_dir().join(super::folder_name());
         std::fs::DirBuilder::new().mode(0o700).create(&path).ok()?;
         Some(Folder(path))
     }

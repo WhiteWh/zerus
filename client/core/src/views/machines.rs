@@ -56,6 +56,8 @@ pub struct MachinesView {
     /// This computer's name as `machine ls` reports it.
     pub local: String,
     pub environment_override: bool,
+    /// Exact optimistic-lock token from the same machine-list snapshot.
+    pub connection_revision: String,
     pub machines: Vec<MachineRow>,
     pub effective: Option<Effective>,
     pub check: Option<CheckResult>,
@@ -75,6 +77,7 @@ pub struct MachinesState {
     check_alias: Option<String>,
     check: Option<Result<Value, String>>,
     checking: bool,
+    writing: bool,
 }
 
 fn row(machine: &Value, environment: bool) -> MachineRow {
@@ -192,7 +195,7 @@ impl MachinesState {
     /// `machine ls` on show and on Refresh; false while one or a check runs
     /// (MachinesPage::reload ignores it while any request runs).
     pub fn start_list(&mut self, now: u64) -> bool {
-        !self.checking && self.poll.due(now, true)
+        !self.checking && !self.writing && self.poll.due(now, true)
     }
 
     /// A failure keeps the rows and shows the error.
@@ -245,8 +248,20 @@ impl MachinesState {
         }
     }
 
+    pub fn start_write(&mut self) -> bool {
+        if self.busy() {
+            return false;
+        }
+        self.writing = true;
+        true
+    }
+
+    pub fn finish_write(&mut self) {
+        self.writing = false;
+    }
+
     pub fn busy(&self) -> bool {
-        self.poll.pending() || self.checking
+        self.poll.pending() || self.checking || self.writing
     }
 
     pub fn view(&self) -> MachinesView {
@@ -258,6 +273,7 @@ impl MachinesState {
             error: self.list_error.clone(),
             local: list.map(|list| text(list, "local")).unwrap_or_default(),
             environment_override: environment,
+            connection_revision: list.map(|list| text(list, "revision")).unwrap_or_default(),
             machines: list
                 .map(|list| {
                     items(list, "machines")

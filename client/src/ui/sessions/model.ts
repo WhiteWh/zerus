@@ -2,14 +2,17 @@ import { groupRows, type Row } from "./group-rows";
 export { groupRows, type Row, type ListInput } from "./group-rows";
 import { createMemo } from "solid-js";
 import { archive, archiveRows, fleetComputers } from "../../store/archive";
-import { catalog, computerFresh, orderedRows } from "../../store/catalog";
+import { catalog, computerFresh, hasDraftKey, orderedRows } from "../../store/catalog";
 import { machineCards } from "../../store/machines";
 import { archiveMachineChoices, archiveProjectChoices } from "./archive-filters";
 import { defaultProject, grouping, groups } from "../../store/organization";
-import { stateFilter, matchesFilter, search, machineFilter, projectFilter, accountFilter, folderFilter, expandedChildren, compactRows } from "../../store/ui";
+import { stateFilter, matchesFilter, listedByFilter, search,machineFilter, projectFilter, accountFilter, folderFilter, expandedChildren, compactRows, selected, selectedKey, subagentOpen } from "../../store/ui";
 import { compileScopes, scopeCounts } from "./scope-filters";
 import { withCreations } from "../../store/creations";
 import { isWorking, needsAttention } from "../../store/attention";
+import { followedFor } from "../../store/actions";
+import { flag } from "../../store/settings";
+import { rosterFor } from "./subagents";
 import type { Session } from "./types";
 
 // Flattened list model. Heights match tray/src/SessionCardDelegate.h
@@ -68,13 +71,13 @@ const scoped = createMemo(() => compileScopes(scopes()));
 export const membersByGroup = createMemo(() => groupMembers(catalog.order, catalog.rows, groups, defaultProject()));
 
 const matchesLiveFilters = (s: Session, f: Parameters<typeof matchesFilter>[1], hosts: readonly string[], q: string) =>
-  matchesFilter(s, f) && (!hosts.length || hosts.includes(s.machine)) && scoped()(s, projectOf(s)) && sessionMatchesSearch(s, q);
+  listedByFilter(s, f) && (!hosts.length || hosts.includes(s.machine)) && scoped()(s, projectOf(s)) && sessionMatchesSearch(s, q);
 
 /** Whether the filters list an owner once its collapsed project is revealed. */
 export function listedSessionIgnoringCollapse(id: string): boolean {
   if (stateFilter() === "archived") return false;
   const s = catalog.rows[id];
-  return !!s && matchesFilter(s, stateFilter()) && sessionMatchesSearch(s, search().trim())
+  return !!s && listedByFilter(s, stateFilter()) && sessionMatchesSearch(s, search().trim())
     && compileScopes(scopes())(s, groups[id]?.group ?? defaultProject());
 }
 
@@ -88,6 +91,10 @@ export const listRows = createMemo<Row[]>(() => {
     grouping: grouping(), members: membersByGroup(), visible, online, projects: projectFilter(),
     expanded: (k: string) => !!expandedChildren[k], compact: (k: string) => !!compactRows[k], filter: f, hosts, query: q,
     accounts: accountFilter(), folder: folderFilter(),
+    includeCompleted: flag("workspace/showCompletedSubagents"),
+    selected: { key: selectedKey(), subagent: subagentOpen(), conversation: selected()?.conversationId },
+    roster: (s: Session) => rosterFor(s, s.key === selectedKey() ? followedFor(s.key).value : undefined),
+    childDraft: (s: Session, child: { id: string }) => hasDraftKey(`${s.computer}\n${s.name}\n${s.conversationId ?? ""}\n${child.id}`),
   };
   const out = groupRows(scope);
   return withCreations(out, scope);

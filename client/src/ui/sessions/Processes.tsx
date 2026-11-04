@@ -5,6 +5,7 @@ import { notify } from "../../store/actions";
 import { createOutputFollow, groupItem, processes } from "../../store/processes";
 import { setMenu } from "../../store/ui";
 import type { ProcessesView } from "../../types";
+import { tr } from "../../i18n";
 
 // The Processes tab (tray/src/ProcessView.cpp:36-79) over the Rust hub's view
 // (src-tauri processes.rs): the summary with the busy indicator and Stop
@@ -27,7 +28,7 @@ const domId = (item: string) => `proc-${item.replace(/[^A-Za-z0-9_-]/g, (c) => `
 function rowMenu(v: ProcessesView, at: { x: number; y: number }) {
   const key = v.key, ids = [...v.selected];
   setMenu({ x: at.x, y: at.y, items: [{
-    label: ids.length === 1 ? "Terminate" : `Terminate selected (${ids.length})`,
+    label: ids.length === 1 ? tr("Terminate") : tr("Terminate selected (%1)", ids.length),
     disabled: !v.stop.enabled, hint: v.stop.tooltip,
     action: () => processes.stopIfStill(key, ids),
   }] });
@@ -35,7 +36,7 @@ function rowMenu(v: ProcessesView, at: { x: number; y: number }) {
 
 /** Copy command: the command as the agent ran it (Qt copies it verbatim). */
 async function copyCommand(command: string) {
-  try { await copyVerbatim(command); } catch (error) { notify("error", typeof error === "string" ? error : String(error), true, undefined, "Not copied"); }
+  try { await copyVerbatim(command); } catch (error) { notify("error", typeof error === "string" ? error : String(error), true, undefined, tr("Not copied")); }
 }
 
 export function ProcessesTab() {
@@ -79,10 +80,10 @@ export function ProcessesTab() {
             <Show when={v().notes}><div class="proc-note hint">{v().notes}</div></Show>
             <Show when={v().stop_notice}><div class="proc-note hint">{v().stop_notice}</div></Show>
             <Show when={v().failed}>{(text) => <div class="proc-note warn">{text()}</div>}</Show>
-            <div class="proc-list" ref={list} tabindex="0" role="tree" aria-label="Processes" aria-multiselectable="true"
+            <div class="proc-list" ref={list} tabindex="0" role="tree" aria-label={tr("Processes")} aria-multiselectable="true"
               aria-activedescendant={processes.focus() ? domId(processes.focus()!.id) : undefined} onKeyDown={onKey}>
               <table class="proc-table" role="presentation">
-                <thead role="presentation"><tr role="presentation"><th>Command</th><th>Agent</th><th>State</th><th>Duration</th></tr></thead>
+                <thead role="presentation"><tr role="presentation"><th>{tr("Command")}</th><th>{tr("Agent")}</th><th>{tr("State")}</th><th>{tr("Duration")}</th></tr></thead>
                 <tbody role="presentation">
                   <For each={v().groups}>{(g) => (
                     <>
@@ -109,14 +110,14 @@ export function ProcessesTab() {
               </table>
             </div>
             <div class="proc-detail">
-              <Show when={v().detail} fallback={<div class="hint">Select a command to view its output.</div>}>
+              <Show when={v().detail} fallback={<div class="hint">{tr("Select a command to view its output.")}</div>}>
                 {(d) => (
                   <>
                     <b class="mono proc-command">{d().command}</b>
                     <Show when={d().details}><div class="hint proc-details">{d().details}</div></Show>
                     <div class="row">
                       <span class="hint grow">{d().notice}</span>
-                      <button class="btn small" onClick={() => void copyCommand(d().command)}>Copy command</button>
+                      <button class="btn small" onClick={() => void copyCommand(d().command)}>{tr("Copy command")}</button>
                     </div>
                     <pre class="act-code mono proc-output" ref={output}
                       onScroll={(e) => { const el = e.currentTarget; follow.scrolled(el.scrollHeight - el.scrollTop - el.clientHeight < OUTPUT_END); }}>{d().output ?? ""}</pre>

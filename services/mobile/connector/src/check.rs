@@ -64,6 +64,10 @@ pub fn report(
         .collect();
     configuration.insert("findings".into(), Value::Array(listed));
     let mut report = Map::new();
+    report.insert(
+        "capabilities".into(),
+        json!({"workspace_stop": crate::workspace_lifecycle::STOP_PREFLIGHT_ABI}),
+    );
     if let Ok(config) = &validated {
         if config.encrypted_workspace.is_some() {
             configuration.insert("encrypted_workspace".into(), json!(true));

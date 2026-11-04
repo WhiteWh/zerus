@@ -229,7 +229,7 @@ pub fn attach_env(
         "TERM",
         "COLORTERM",
     ];
-    let mut env: Vec<(OsString, OsString)> = base
+    let mut env: Vec<(OsString, OsString)> = crate::child_environment::restored(base)
         .into_iter()
         .filter(|(key, _)| !REMOVED.iter().any(|removed| key == removed))
         .collect();
@@ -588,6 +588,32 @@ mod tests {
             ]
             .map(|(k, v)| (k.to_owned(), v.to_owned()))
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn attach_client_does_not_inherit_the_guis_private_webkit_stack() {
+        let env = attach_env([
+            ("PATH".into(), "/usr/bin".into()),
+            (
+                "LD_LIBRARY_PATH".into(),
+                "/private/gtk:/private/webkit".into(),
+            ),
+            ("WEBKIT_EXEC_PATH".into(), "/private/processes".into()),
+            (
+                crate::child_environment::WEBKIT_MARKER.into(),
+                r#"{"version":1,"LD_LIBRARY_PATH":null,"WEBKIT_EXEC_PATH":null}"#.into(),
+            ),
+        ]);
+        assert!(!env.iter().any(|(key, _)| [
+            "LD_LIBRARY_PATH",
+            "WEBKIT_EXEC_PATH",
+            crate::child_environment::WEBKIT_MARKER
+        ]
+        .iter()
+        .any(|removed| key == removed)));
+        assert!(env.contains(&("PATH".into(), "/usr/bin".into())));
+        assert!(env.contains(&("TERM".into(), "xterm-256color".into())));
     }
 
     #[test]

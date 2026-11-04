@@ -361,6 +361,16 @@ impl Grouping {
         self.runs.take_dirty()
     }
 
+    /// Projects-only copy. Never used by shared edits or session placement.
+    pub fn local_windows_projects(
+        &self,
+        organization: &Value,
+        node: &str,
+    ) -> Result<Value, &'static str> {
+        self.layout
+            .overlay_local_windows_folders(organization, node)
+    }
+
     /// A rename is recoverable (durable draft), or its old member was absent.
     pub fn acknowledge_rename(&mut self, from: &str, to: &str) {
         self.runs.acknowledge_rename(from, to);
@@ -690,6 +700,27 @@ impl Grouping {
         self.layout.presentation_seeded()
     }
 
+    pub fn windows_folders_import_layout(
+        &self,
+    ) -> Result<Option<super::layout::Layout>, &'static str> {
+        self.layout
+            .windows_folders_import_pending()
+            .map(|pending| pending.then(|| self.layout.clone()))
+    }
+
+    pub fn seed_windows_folders(
+        &mut self,
+        seed: super::layout::WindowsFoldersSeed,
+        context: &super::layout::WindowsFoldersContext<'_>,
+    ) -> Result<bool, &'static str> {
+        let changed = self.layout.seed_windows_folders(seed, context)?;
+        if changed {
+            let layout = std::mem::take(&mut self.layout);
+            self.replace_layout(layout);
+        }
+        Ok(changed)
+    }
+
     pub fn seed_presentation(
         &mut self,
         seed: super::layout::PresentationSeed,
@@ -726,6 +757,24 @@ impl Grouping {
         self.headers_dirty = true;
     }
 
+    /// A device-local default, as Qt's presentation overlay. Existing explicit
+    /// assignments stay put; implicit rows follow the selected default.
+    pub fn set_default_project(&mut self, project: &str) -> Result<(), String> {
+        if !self.loaded
+            || !self
+                .projects
+                .iter()
+                .any(|(id, _, _, accessible)| id == project && *accessible)
+        {
+            return Err(super::edit::GONE.into());
+        }
+        self.layout.set_default_project(Some(project.into()));
+        self.default = project.into();
+        let layout = std::mem::take(&mut self.layout);
+        self.replace_layout(layout);
+        Ok(())
+    }
+
     pub fn set_collapsed(&mut self, project: &str, collapsed: bool) {
         self.layout.set_collapsed(project, collapsed);
         self.headers_dirty = true;
@@ -755,7 +804,9 @@ impl Grouping {
             | Intent::Rename { .. }
             | Intent::Reorder { .. }
             | Intent::Renamed { .. }
-            | Intent::AddFolder { .. } => {}
+            | Intent::AddFolder { .. }
+            | Intent::Folder { .. } => {}
+            Intent::CreateFolder { .. } => {}
         }
         self.revision = None;
         self.headers_dirty = true;
@@ -900,6 +951,44 @@ mod tests {
 
     fn present(grouping: &mut Grouping, org: &Value, revision: u64) {
         grouping.present(org, Arc::new(members(org)), revision);
+    }
+
+    #[test]
+    fn choosing_a_local_default_moves_only_implicit_rows_and_survives_restart() {
+        let mut grouping = Grouping::default();
+        let org = organization(&["workstation\nclaude/p/explicit"], &[]);
+        for name in ["explicit", "implicit"] {
+            grouping.observe(&upsert(name, "workstation", &format!("claude/p/{name}")));
+        }
+        present(&mut grouping, &org, 1);
+        grouping.take();
+        assert!(grouping.set_default_project("gone").is_err());
+        assert!(
+            grouping.set_default_project("beta").is_err(),
+            "inaccessible project"
+        );
+        grouping.set_default_project("alpha").unwrap();
+        let (rows, view) = grouping.take();
+        assert_eq!(view.unwrap().default_project, "alpha");
+        assert!(rows
+            .iter()
+            .any(|r| r.key == "implicit" && r.group == "alpha"));
+        grouping.set_default_project("ungrouped").unwrap();
+        let (rows, _) = grouping.take();
+        assert!(rows
+            .iter()
+            .any(|r| r.key == "implicit" && r.group == "ungrouped"));
+        assert!(!rows
+            .iter()
+            .any(|r| r.key == "explicit" && r.group != "alpha"));
+        grouping.set_default_project("alpha").unwrap();
+        let mut restored = Grouping::new(Layout::from_json(&grouping.take_layout().unwrap()));
+        present(&mut restored, &org, 1);
+        assert_eq!(restored.default_project(), "alpha");
+        assert_eq!(
+            org["default_project"], "ungrouped",
+            "shared catalog untouched"
+        );
     }
 
     #[test]

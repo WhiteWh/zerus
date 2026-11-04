@@ -65,5 +65,8 @@ else
     export HGS_INSTALL_PREFIX="$HOME/.local"
     unset HGS_STATE_DIR HGS_CONFIG_DIR
     "$source/install.sh"
-    HGS_TRAY_RESTART=1 "$source/tray/install.sh"
+    # WhiteWh fork: the fork's features live in the Qt GUI until they move to
+    # the Tauri client, so the fork's own update keeps Qt unless the
+    # installation explicitly chose otherwise.
+    HGS_LINUX_GUI="${HGS_LINUX_GUI:-qt}" HGS_TRAY_RESTART=1 "$source/tray/install.sh"
 fi

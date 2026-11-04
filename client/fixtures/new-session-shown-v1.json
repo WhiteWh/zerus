@@ -1,0 +1,398 @@
+[
+  {
+    "start_enabled": false,
+    "start_text": {
+      "source": "Start session"
+    },
+    "preview": {
+      "source": "Browse to choose a folder on this computer."
+    },
+    "outside_project": false,
+    "name_problem": {
+      "source": "Names cannot contain /, : or . or control characters."
+    },
+    "notice": {
+      "source": "Enable local sessions for this computer in Machines, or add a remote machine."
+    },
+    "automatic": false,
+    "auto_enabled": false,
+    "none_enabled": true,
+    "worktree_target": "",
+    "worktree_tooltip": null,
+    "choose_existing_enabled": false,
+    "create_manually_enabled": false,
+    "worktree_options_enabled": false,
+    "fields_enabled": true,
+    "browse_enabled": false,
+    "cancel_enabled": true,
+    "open_terminal_enabled": true,
+    "open_terminal_tooltip": {
+      "source": "Also open an external terminal for this session."
+    },
+    "clone_launch_due": false
+  },
+  {
+    "start_enabled": false,
+    "start_text": {
+      "source": "Start session"
+    },
+    "preview": {
+      "source": "Browse to choose a folder on this computer."
+    },
+    "outside_project": false,
+    "name_problem": {
+      "source": "Names cannot contain /, : or . or control characters."
+    },
+    "notice": {
+      "source": "Add a remote machine in Machines to start sessions from this computer."
+    },
+    "automatic": false,
+    "auto_enabled": false,
+    "none_enabled": true,
+    "worktree_target": "",
+    "worktree_tooltip": null,
+    "choose_existing_enabled": false,
+    "create_manually_enabled": false,
+    "worktree_options_enabled": false,
+    "fields_enabled": true,
+    "browse_enabled": false,
+    "cancel_enabled": true,
+    "open_terminal_enabled": true,
+    "open_terminal_tooltip": {
+      "source": "Also open an external terminal for this session."
+    },
+    "clone_launch_due": false
+  },
+  {
+    "start_enabled": false,
+    "start_text": {
+      "source": "Start session"
+    },
+    "preview": {
+      "source": "Checking the session's main working folder…"
+    },
+    "outside_project": false,
+    "name_problem": {
+      "source": "Names cannot contain /, : or . or control characters."
+    },
+    "notice": null,
+    "automatic": false,
+    "auto_enabled": false,
+    "none_enabled": true,
+    "worktree_target": "",
+    "worktree_tooltip": null,
+    "choose_existing_enabled": false,
+    "create_manually_enabled": false,
+    "worktree_options_enabled": false,
+    "fields_enabled": true,
+    "browse_enabled": true,
+    "cancel_enabled": true,
+    "open_terminal_enabled": true,
+    "open_terminal_tooltip": {
+      "source": "Also open an external terminal for this session."
+    },
+    "clone_launch_due": false
+  },
+  {
+    "start_enabled": false,
+    "start_text": {
+      "source": "Start session"
+    },
+    "preview": {
+      "source": "This folder is outside the project.\nStarting here will add it to this project."
+    },
+    "outside_project": true,
+    "name_problem": {
+      "source": "Names cannot contain /, : or . or control characters."
+    },
+    "notice": null,
+    "automatic": false,
+    "auto_enabled": false,
+    "none_enabled": true,
+    "worktree_target": "",
+    "worktree_tooltip": null,
+    "choose_existing_enabled": false,
+    "create_manually_enabled": false,
+    "worktree_options_enabled": false,
+    "fields_enabled": true,
+    "browse_enabled": true,
+    "cancel_enabled": true,
+    "open_terminal_enabled": true,
+    "open_terminal_tooltip": {
+      "source": "Also open an external terminal for this session."
+    },
+    "clone_launch_due": false
+  },
+  {
+    "start_enabled": false,
+    "start_text": {
+      "source": "Start session"
+    },
+    "preview": null,
+    "outside_project": false,
+    "name_problem": {
+      "source": "Names cannot contain /, : or . or control characters."
+    },
+    "notice": null,
+    "automatic": true,
+    "auto_enabled": true,
+    "none_enabled": true,
+    "worktree_target": "/srv/repo-work-1a2b3c4d",
+    "worktree_tooltip": {
+      "source": "New branch: %1\nStart from: HEAD",
+      "args": [
+        {
+          "kind": "verbatim",
+          "value": "work-1a2b3c4d"
+        }
+      ]
+    },
+    "choose_existing_enabled": false,
+    "create_manually_enabled": true,
+    "worktree_options_enabled": true,
+    "fields_enabled": true,
+    "browse_enabled": true,
+    "cancel_enabled": true,
+    "open_terminal_enabled": true,
+    "open_terminal_tooltip": {
+      "source": "Also open an external terminal for this session."
+    },
+    "clone_launch_due": false
+  },
+  {
+    "start_enabled": false,
+    "start_text": {
+      "source": "Start session"
+    },
+    "preview": {
+      "source": "Browse to choose a folder on this computer."
+    },
+    "outside_project": false,
+    "name_problem": {
+      "source": "Names cannot contain /, : or . or control characters."
+    },
+    "notice": {
+      "source": "Loading this session's account…"
+    },
+    "automatic": false,
+    "auto_enabled": false,
+    "none_enabled": true,
+    "worktree_target": "",
+    "worktree_tooltip": null,
+    "choose_existing_enabled": false,
+    "create_manually_enabled": false,
+    "worktree_options_enabled": false,
+    "fields_enabled": true,
+    "browse_enabled": true,
+    "cancel_enabled": true,
+    "open_terminal_enabled": true,
+    "open_terminal_tooltip": {
+      "source": "Also open an external terminal for this session."
+    },
+    "clone_launch_due": false
+  },
+  {
+    "start_enabled": false,
+    "start_text": {
+      "source": "Start session"
+    },
+    "preview": null,
+    "outside_project": false,
+    "name_problem": {
+      "source": "Names cannot contain /, : or . or control characters."
+    },
+    "notice": {
+      "source": "Restore or add an account in Agent accounts to start this agent."
+    },
+    "automatic": false,
+    "auto_enabled": false,
+    "none_enabled": true,
+    "worktree_target": "",
+    "worktree_tooltip": null,
+    "choose_existing_enabled": false,
+    "create_manually_enabled": false,
+    "worktree_options_enabled": false,
+    "fields_enabled": true,
+    "browse_enabled": true,
+    "cancel_enabled": true,
+    "open_terminal_enabled": true,
+    "open_terminal_tooltip": {
+      "source": "Also open an external terminal for this session."
+    },
+    "clone_launch_due": false
+  },
+  {
+    "start_enabled": false,
+    "start_text": {
+      "source": "Start session"
+    },
+    "preview": null,
+    "outside_project": false,
+    "name_problem": {
+      "source": "Names cannot contain /, : or . or control characters."
+    },
+    "notice": null,
+    "automatic": false,
+    "auto_enabled": false,
+    "none_enabled": true,
+    "worktree_target": "",
+    "worktree_tooltip": null,
+    "choose_existing_enabled": false,
+    "create_manually_enabled": false,
+    "worktree_options_enabled": false,
+    "fields_enabled": true,
+    "browse_enabled": true,
+    "cancel_enabled": true,
+    "open_terminal_enabled": true,
+    "open_terminal_tooltip": {
+      "source": "Also open an external terminal for this session."
+    },
+    "clone_launch_due": false
+  },
+  {
+    "start_enabled": false,
+    "start_text": {
+      "source": "Creating worktree…"
+    },
+    "preview": null,
+    "outside_project": false,
+    "name_problem": {
+      "source": "Names cannot contain /, : or . or control characters."
+    },
+    "notice": null,
+    "automatic": false,
+    "auto_enabled": false,
+    "none_enabled": false,
+    "worktree_target": "",
+    "worktree_tooltip": null,
+    "choose_existing_enabled": false,
+    "create_manually_enabled": false,
+    "worktree_options_enabled": false,
+    "fields_enabled": false,
+    "browse_enabled": false,
+    "cancel_enabled": false,
+    "open_terminal_enabled": false,
+    "open_terminal_tooltip": {
+      "source": "Also open an external terminal for this session."
+    },
+    "clone_launch_due": false
+  },
+  {
+    "start_enabled": false,
+    "start_text": {
+      "source": "Cloning…"
+    },
+    "preview": {
+      "source": "Browse to choose a folder on this computer."
+    },
+    "outside_project": false,
+    "name_problem": {
+      "source": "Names cannot contain /, : or . or control characters."
+    },
+    "notice": null,
+    "automatic": false,
+    "auto_enabled": false,
+    "none_enabled": false,
+    "worktree_target": "",
+    "worktree_tooltip": null,
+    "choose_existing_enabled": false,
+    "create_manually_enabled": false,
+    "worktree_options_enabled": false,
+    "fields_enabled": false,
+    "browse_enabled": false,
+    "cancel_enabled": false,
+    "open_terminal_enabled": false,
+    "open_terminal_tooltip": {
+      "source": "Also open an external terminal for this session."
+    },
+    "clone_launch_due": false
+  },
+  {
+    "start_enabled": false,
+    "start_text": {
+      "source": "Use checkout and start"
+    },
+    "preview": {
+      "source": "Browse to choose a folder on this computer."
+    },
+    "outside_project": false,
+    "name_problem": {
+      "source": "Names cannot contain /, : or . or control characters."
+    },
+    "notice": null,
+    "automatic": false,
+    "auto_enabled": true,
+    "none_enabled": true,
+    "worktree_target": "",
+    "worktree_tooltip": null,
+    "choose_existing_enabled": false,
+    "create_manually_enabled": false,
+    "worktree_options_enabled": false,
+    "fields_enabled": true,
+    "browse_enabled": true,
+    "cancel_enabled": true,
+    "open_terminal_enabled": true,
+    "open_terminal_tooltip": {
+      "source": "Also open an external terminal for this session."
+    },
+    "clone_launch_due": false
+  },
+  {
+    "start_enabled": false,
+    "start_text": {
+      "source": "Start session"
+    },
+    "preview": null,
+    "outside_project": false,
+    "name_problem": {
+      "source": "Names cannot contain /, : or . or control characters."
+    },
+    "notice": null,
+    "automatic": false,
+    "auto_enabled": false,
+    "none_enabled": true,
+    "worktree_target": "",
+    "worktree_tooltip": null,
+    "choose_existing_enabled": false,
+    "create_manually_enabled": false,
+    "worktree_options_enabled": false,
+    "fields_enabled": true,
+    "browse_enabled": true,
+    "cancel_enabled": true,
+    "open_terminal_enabled": false,
+    "open_terminal_tooltip": {
+      "source": "DeepSeek opens in the workspace's Native UI."
+    },
+    "clone_launch_due": false
+  },
+  {
+    "start_enabled": false,
+    "start_text": {
+      "source": "Start session"
+    },
+    "preview": {
+      "source": "A matching project is detected automatically.\nOtherwise this session stays in Inbox."
+    },
+    "outside_project": true,
+    "name_problem": {
+      "source": "Names cannot contain /, : or . or control characters."
+    },
+    "notice": null,
+    "automatic": false,
+    "auto_enabled": false,
+    "none_enabled": true,
+    "worktree_target": "",
+    "worktree_tooltip": null,
+    "choose_existing_enabled": false,
+    "create_manually_enabled": false,
+    "worktree_options_enabled": false,
+    "fields_enabled": true,
+    "browse_enabled": true,
+    "cancel_enabled": true,
+    "open_terminal_enabled": false,
+    "open_terminal_tooltip": {
+      "source": "OpenCode runs through its native server and opens in Activity."
+    },
+    "clone_launch_due": false
+  }
+]

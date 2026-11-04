@@ -6,6 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::Value;
 use zerus_watch_protocol::{self as watch, topic, Body, Frame};
 
+pub mod changes;
 /// Typed older-peer replacements, without manufacturing watch frames.
 pub mod legacy;
 
@@ -97,6 +98,12 @@ pub fn totals(db: &Connection) -> Result<Totals> {
 }
 
 pub fn migrate(db: &Connection) -> Result<()> {
+    migrate_base(db)?;
+    changes::migrate(db)
+}
+
+/// Original catalog schema, for the service's ordered historical migrations.
+pub fn migrate_base(db: &Connection) -> Result<()> {
     db.execute_batch(
         "CREATE TABLE desktop_catalog_owner(id INTEGER PRIMARY KEY CHECK(id=1), epoch TEXT NOT NULL);
          INSERT INTO desktop_catalog_owner VALUES(1,'');
@@ -313,6 +320,36 @@ pub fn disconnect_many(db: &mut Connection, sources: &[Source]) -> Result<()> {
     Ok(())
 }
 
+/// Remove a configured alias's exact projection, without scanning its rows.
+/// Generation storage is reclaimed by the usual indexed, bounded collector.
+pub fn remove_source(db: &mut Connection, source: &Source) -> Result<()> {
+    validate_source(source)?;
+    let tx = db.transaction()?;
+    owner(&tx, source)?;
+    if let Some(old) = state(&tx, &source.computer)? {
+        ensure!(
+            old.epoch == source.service_epoch
+                && old.incarnation as u64 == source.incarnation
+                && old.generation as u64 == source.generation,
+            "stale catalog source removal"
+        );
+        tx.execute(
+            "UPDATE desktop_catalog_generations SET obsolete=1 WHERE id IN (?1,?2)",
+            params![old.visible, old.staged],
+        )?;
+        tx.execute(
+            "UPDATE desktop_catalog_change_views SET dirty=1 WHERE generation=?1",
+            [old.visible],
+        )?;
+        tx.execute(
+            "DELETE FROM desktop_catalog_sources WHERE computer=?1",
+            [&source.computer],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 fn apply_inner(db: &mut Connection, source: &Source, frame: &Frame) -> Result<Applied> {
     check_frame(frame)?;
     let tx = db.transaction()?;
@@ -398,6 +435,7 @@ fn apply_inner(db: &mut Connection, source: &Source, frame: &Frame) -> Result<Ap
                     params![visible, removal.key],
                 )?;
             }
+            changes::record(&tx, visible, delta)?;
             tx.execute(
                 "UPDATE desktop_catalog_sources SET cursor=?2 WHERE computer=?1",
                 params![source.computer, delta.cursor],
@@ -454,6 +492,7 @@ fn publish(tx: &Transaction<'_>, source: &Source, old: &State) -> Result<()> {
         [old.visible],
     )?;
     tx.execute("UPDATE desktop_catalog_sources SET visible=staged,staged=NULL,complete=1 WHERE computer=?1", [&source.computer])?;
+    changes::publish(tx, source, old.visible)?;
     Ok(())
 }
 
@@ -573,6 +612,9 @@ pub fn status(db: &Connection, computer: &str) -> Result<Status> {
 /// No cascade or full catalog scan; the actor yields between calls. Call outside
 /// input transactions.
 pub fn collect(db: &mut Connection) -> Result<Option<usize>> {
+    if let Some(n) = changes::collect(db)? {
+        return Ok(Some(n));
+    }
     let tx = db.transaction()?;
     let generation: Option<i64> = tx
         .query_row(
@@ -609,7 +651,14 @@ pub fn collect(db: &mut Connection) -> Result<Option<usize>> {
         params![generation, through],
     )?;
     tx.execute(
-        "DELETE FROM desktop_catalog_generations WHERE id=?1 AND rows=0",
+        "DELETE FROM desktop_catalog_change_views WHERE generation=?1 AND NOT EXISTS
+         (SELECT 1 FROM desktop_catalog_changes WHERE generation=?1) AND EXISTS
+         (SELECT 1 FROM desktop_catalog_generations WHERE id=?1 AND rows=0)",
+        [generation],
+    )?;
+    tx.execute(
+        "DELETE FROM desktop_catalog_generations WHERE id=?1 AND rows=0 AND NOT EXISTS
+         (SELECT 1 FROM desktop_catalog_changes WHERE generation=?1)",
         [generation],
     )?;
     tx.commit()?;

@@ -55,6 +55,10 @@ fn caller(record: &Value) -> Option<Caller> {
     ancestry(record["pid"].as_u64()? as u32, crate::platform::parent_process_id(), crate::platform::parent_and_argv)
 }
 
+pub(super) fn main_codex_hook(record: &Value) -> bool {
+    caller(record).is_some_and(|source| source.provider == "codex" && !source.headless)
+}
+
 // An inherited HGS token is not proof that a new same-provider conversation
 // belongs to the interactive parent. Codex records its headless entry point in
 // the rollout header; /new and /clear still use the interactive source.

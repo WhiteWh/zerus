@@ -7,6 +7,7 @@ import { FolderBrowserDialog } from "../components/FolderBrowser";
 import type { FolderBrowserCalls } from "../components/folder-browser";
 import type { Style } from "./paths";
 import { NewWorktree, baseKey } from "./worktree-dialogs";
+import { tr } from "../../i18n";
 
 // Create manually… (NewSessionDialog::createWorktree 1125-1143): Qt's
 // NewWorktreeDialog, from the prototype's layout (design/webui/src/dialogs/
@@ -60,12 +61,12 @@ function BaseField(props: {
     <div class="nw-base" ref={root}>
       <input id="nw-base" class="field mono grow" role="combobox" aria-expanded={props.open} aria-controls="nw-base-list" aria-autocomplete="none"
         aria-activedescendant={props.open && active() >= 0 ? `nw-base-o-${active()}` : undefined}
-        title="Local branch, tag, commit or an already fetched remote branch (for example origin/main)." value={props.value} disabled={props.disabled}
+        title={tr("Local branch, tag, commit or an already fetched remote branch (for example origin/main).")} value={props.value} disabled={props.disabled}
         onInput={(e) => props.onInput(e.currentTarget.value)} onKeyDown={keys} />
-      <button type="button" class="icon-btn nw-base-open" tabindex="-1" aria-label="Start from" disabled={props.disabled}
+      <button type="button" class="icon-btn nw-base-open" tabindex="-1" aria-label={tr("Start from")} disabled={props.disabled}
         onClick={() => (props.open ? props.onOpen(false) : show())}><Icon name="chevron-down" size={14} /></button>
       <Show when={props.open}>
-        <ul class="ns-choice-list nw-base-list" id="nw-base-list" role="listbox" aria-label="Start from">
+        <ul class="ns-choice-list nw-base-list" id="nw-base-list" role="listbox" aria-label={tr("Start from")}>
           <For each={props.options}>{(option, index) => (
             <li id={`nw-base-o-${index()}`} role="option" aria-selected={option === props.value} classList={{ on: option === props.value, active: index() === active() }}
               onPointerEnter={() => setActive(index())} onMouseDown={(e) => e.preventDefault()} onClick={() => pick(index())}>
@@ -153,33 +154,33 @@ export function NewWorktreeDialog(props: {
           if (!form.canClose()) { el.showModal(); return; }
           props.onClose();
         }}>
-        <div class="dlg-head"><h2 id="nw-title">New worktree</h2></div>
+        <div class="dlg-head"><h2 id="nw-title">{tr("New worktree")}</h2></div>
         <div class="dlg-body nw-body">
           <p class="nw-context">{v().context}</p>
           <div class="form-row">
-            <label for="nw-branch">New branch</label>
+            <label for="nw-branch">{tr("New branch")}</label>
             <input id="nw-branch" ref={branch} class="field mono" placeholder="feature/my-task" value={v().branch} disabled={v().busy}
               onInput={(e) => form.setBranch(e.currentTarget.value)} />
           </div>
           <div class="form-row">
-            <label for="nw-base">Start from</label>
+            <label for="nw-base">{tr("Start from")}</label>
             <BaseField value={v().base} options={v().bases} current={v().baseIndex} disabled={v().busy} open={baseOpen()} onOpen={setBaseOpen}
               onInput={(text) => form.setBase(text)} onPick={(index) => form.chooseBase(index)} onStep={(by) => form.stepBase(by)} />
           </div>
           <div class="form-row">
-            <label for="nw-destination">New folder</label>
+            <label for="nw-destination">{tr("New folder")}</label>
             <div class="row">
               <input id="nw-destination" class="field mono grow" value={v().destination} disabled={v().busy} onInput={(e) => form.setDestination(e.currentTarget.value)} />
-              <button type="button" class="btn" disabled={v().busy} onClick={() => void parentFolder()}>Parent folder…</button>
+              <button type="button" class="btn" disabled={v().busy} onClick={() => void parentFolder()}>{tr("Parent folder…")}</button>
             </div>
           </div>
-          <p class="nw-help">Creates a new branch and working folder. It remains on this computer if you cancel or cannot start the session.</p>
+          <p class="nw-help">{tr("Creates a new branch and working folder. It remains on this computer if you cancel or cannot start the session.")}</p>
           <p class="nw-error" role="status">{v().error}</p>
         </div>
         <div class="dlg-foot">
           <span class="spacer" />
-          <button type="button" class="btn" data-role="cancel" disabled={v().busy} onClick={close}>Cancel</button>
-          <button type="button" class="btn primary" disabled={!v().createEnabled} onClick={() => form.create()}>Create worktree</button>
+          <button type="button" class="btn" data-role="cancel" disabled={v().busy} onClick={close}>{tr("Cancel")}</button>
+          <button type="button" class="btn primary" disabled={!v().createEnabled} onClick={() => form.create()}>{tr("Create worktree")}</button>
         </div>
       </dialog>
       <Show when={browsing()}>{(start) => (

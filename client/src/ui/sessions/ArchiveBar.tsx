@@ -1,4 +1,5 @@
 import { For, Show, createEffect, createSignal, on, onCleanup } from "solid-js";
+import { tr } from "../../i18n";
 import { Portal } from "solid-js/web";
 import { Icon } from "../lib/icons";
 import { archive, buttonText } from "../../store/archive";
@@ -31,20 +32,20 @@ export function ArchiveBar(props: { contentSearch?: boolean } = {}) {
     <div class="archive-browser" ref={observe}>
       <div class="archive-bar">
         <DatePicker />
-        <button class="icon-btn archive-refresh" title="Refresh archive" aria-label="Refresh archive" disabled={!status().refreshEnabled} onClick={() => archive.refresh()}>
+        <button class="icon-btn archive-refresh" title={tr("Refresh archive")} aria-label={tr("Refresh archive")} disabled={!status().refreshEnabled} onClick={() => archive.refresh()}>
           <Icon name="refresh" size={16} />
         </button>
       </div>
       <Show when={!props.contentSearch}><div class="archive-bar">
         <span class="archive-status ell" title={status().hint} aria-description={status().hint}>{status().summary}</span>
         <Show when={status().newer.visible}>
-          <button class="btn small archive-nav" title="Newer sessions" aria-label="Newer sessions" disabled={!status().newer.enabled} onClick={() => archive.newer()}>
-            <Icon name="chevron-left" size={14} />{buttonText(width(), "Newer")}
+          <button class="btn small archive-nav" title={tr("Newer sessions")} aria-label={tr("Newer sessions")} disabled={!status().newer.enabled} onClick={() => archive.newer()}>
+            <Icon name="chevron-left" size={14} />{buttonText(width(), "Newer") ? tr("Newer") : ""}
           </button>
         </Show>
         <Show when={status().older.visible}>
-          <button class="btn small archive-nav" title="Older sessions" aria-label="Older sessions" disabled={!status().older.enabled} onClick={() => archive.older()}>
-            <Icon name="chevron-right" size={14} />{buttonText(width(), "Older")}
+          <button class="btn small archive-nav" title={tr("Older sessions")} aria-label={tr("Older sessions")} disabled={!status().older.enabled} onClick={() => archive.older()}>
+            <Icon name="chevron-right" size={14} />{buttonText(width(), "Older") ? tr("Older") : ""}
           </button>
         </Show>
       </div>
@@ -124,29 +125,29 @@ function DatePicker() {
       {/* In the page's body: a transformed list panel (the strip's peek) would otherwise place a fixed panel. */}
       <Show when={open()}>
         <Portal>
-        <div class="archive-pop" ref={panel} role="dialog" aria-label="Archived date" data-shortcut-context="none"
+        <div class="archive-pop" ref={panel} role="dialog" aria-label={tr("Archived date")} data-shortcut-context="none"
           style={{ left: `${place().left}px`, top: `${place().top}px`, width: `${place().width}px` }}
           onPointerDown={(e) => e.stopPropagation()}>
-          <div class="archive-pop-title">Archived date</div>
+          <div class="archive-pop-title">{tr("Archived date")}</div>
           <div class="archive-pop-body">
             <div class="archive-pop-custom">
-              <label class="archive-pop-label" for="archive-from">From</label>
-              <input id="archive-from" class="field" type="date" min={MIN_DAY} max={MAX_DAY} aria-label="Archived from, inclusive"
+              <label class="archive-pop-label" for="archive-from">{tr("From")}</label>
+              <input id="archive-from" class="field" type="date" min={MIN_DAY} max={MAX_DAY} aria-label={tr("Archived from, inclusive")}
                 value={draft().from} onInput={(e) => edit("from", e.currentTarget.value)} />
-              <label class="archive-pop-label" for="archive-until">Through</label>
-              <input id="archive-until" class="field" type="date" min={MIN_DAY} max={MAX_DAY} aria-label="Archived through, inclusive"
+              <label class="archive-pop-label" for="archive-until">{tr("Through")}</label>
+              <input id="archive-until" class="field" type="date" min={MIN_DAY} max={MAX_DAY} aria-label={tr("Archived through, inclusive")}
                 value={draft().until} onInput={(e) => edit("until", e.currentTarget.value)} />
               <div class="hint archive-pop-hint" classList={{ invalid: draftReversed(draft()) }}>{draftHint(draft())}</div>
               <div class="archive-pop-actions">
-                <button type="button" class="btn primary" disabled={!draftValid(draft())} onClick={apply}>Apply range</button>
-                <button type="button" class="btn" onClick={close}>Cancel</button>
+                <button type="button" class="btn primary" disabled={!draftValid(draft())} onClick={apply}>{tr("Apply range")}</button>
+                <button type="button" class="btn" onClick={close}>{tr("Cancel")}</button>
               </div>
             </div>
             <div class="archive-pop-quick">
-              <div class="archive-pop-label">Quick ranges</div>
+              <div class="archive-pop-label">{tr("Quick ranges")}</div>
               <For each={PERIODS}>
                 {(caption, i) => (
-                  <button type="button" class="archive-preset" aria-pressed={draft().period === i()} onClick={() => stage(i() as Period)}>{caption}</button>
+                  <button type="button" class="archive-preset" aria-pressed={draft().period === i()} onClick={() => stage(i() as Period)}>{tr(caption)}</button>
                 )}
               </For>
             </div>

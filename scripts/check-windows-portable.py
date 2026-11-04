@@ -5,8 +5,8 @@ Every platform reads only the zip directory, build-info.json and the ConPTY
 pair, whose SHA-256 must be the pinned one, as the release publishers do. On
 Windows, --run also extracts the bundle into a disposable folder and starts its
 executables with a minimal environment: no Qt, build, user or HGS_* paths, and
-PATH without the bundle, so they must load the Qt and MSVC runtime from their
-own folder. --selftest then also enables local sessions in that folder's
+PATH without the bundle. New packages use Tauri plus the separately installed
+WebView2 Evergreen runtime; legacy archives keep their old Qt checks. --selftest then also enables local sessions in that folder's
 temporary profile with `hgs.exe session-host install`, which must stage the
 pinned pair into the host image; no session host starts.
 """
@@ -108,9 +108,17 @@ def main():
                 require(isinstance(box, dict) and box.get("ok") is True and box.get("local_sessions") is False and
                         box.get("sessions") == [], "hgs.exe does not report a control-only local computer.")
                 # hgs-tray must find the hgs.exe next to it, not one from PATH.
-                report = run(tray, ["--selftest"], environment, base)
-                require(report.startswith("hgs ok: "), f"Unexpected hgs-tray --selftest output: {report}")
-                print(f"Control-only local computer {box.get('host')!r}; hgs-tray --selftest: {report}")
+                if manifest.get("desktop") == "tauri":
+                    report = json.loads(run(tray, ["--build-info"], environment, base))
+                    require(report.get("version") == version and report.get("sourceCommit") == commit
+                            and report.get("sourceDirty") is False and report.get("ZerusGUI") == "tauri"
+                            and report.get("CFBundleIdentifier") == "com.hgdev.hgs-tray",
+                            "Portable desktop is not the exact clean Tauri switch build.")
+                    print("Tauri desktop build/source/switch identity matches the portable package.")
+                else:
+                    report = run(tray, ["--selftest"], environment, base)
+                    require(report.startswith("hgs ok: "), f"Unexpected hgs-tray --selftest output: {report}")
+                    print(f"Control-only local computer {box.get('host')!r}; hgs-tray --selftest: {report}")
                 # Enabling local sessions from the extracted folder stages the
                 # ConPTY pair next to hgs.exe into the host image (spec D2, D6).
                 # Only the temporary profile changes, and nothing starts a host.

@@ -78,12 +78,12 @@ class Gateway(LifecycleCase):
         self.crl_der = None
         self.crl_fetches = 0
         self.addCleanup(self.close_crl_server)
-        # Replace only this case's registered TemporaryDirectory cleanup. Its
+        # Wrap this case's registered root cleanup, preserving its own policy. Its
         # GC finalizer must not bypass custody after an uncertain detached start.
         guard_root_cleanup(self, self.temp, lambda:
             (self.custody is None or self.custody.may_remove_root)
             and all(manager.may_remove_root for manager in self.managers)
-            and self.crl_closed)
+            and self.crl_closed, cleanup_callback=self.cleanup_temp)
         tls = self.root / "tls"
         tls.mkdir()
         crl_path = "/fixture-" + uuid.uuid4().hex + ".crl"

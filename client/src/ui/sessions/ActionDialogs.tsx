@@ -14,6 +14,9 @@ import { targetOf } from "../../store/actions";
 import { setSetting } from "../../store/settings";
 import { sessionForks } from "../../store/sessionForks";
 import { FORK_CHECKING, FORK_HINT } from "./fork-ui";
+import { tr } from "../../i18n";
+import { captureUntrackedShell, untrackedShell, UNVERIFIED_SHELL } from "../../store/untrackedShell";
+import type { Action } from "../../types";
 
 const ForkDialog = lazy(() => import("./ForkDialog"));
 
@@ -52,32 +55,32 @@ export function actionEntries(s: Session, details?: Details, options: { context?
     // Qt's archiveNameOccupied: one scan of the live rows, for an archived row only.
     occupied: archived && archiveNameOccupied(row, catalog.rows),
   });
-  const hint = (enabled: boolean, reason?: string) => (enabled ? undefined : reason);
+  const hint = (enabled: boolean, reason?: string) => (enabled || !reason ? undefined : tr(reason));
   return {
     change: {
-      label: m.change.label, icon: archived || row.state !== "running" ? "play" : "pause", disabled: !m.change.enabled, hint: hint(m.change.enabled, m.change.reason),
+      label: tr(m.change.label), icon: archived || row.state !== "running" ? "play" : "pause", disabled: !m.change.enabled, hint: hint(m.change.enabled, m.change.reason),
       action: () => { void (archived ? restoreSession(row) : change(row)); },
     },
     stop: {
-      label: "Stop", icon: "circle-stop", shown: m.stop.visible, disabled: !m.stop.enabled, hint: hint(m.stop.enabled, m.stop.reason),
+      label: tr("Stop"), icon: "circle-stop", shown: m.stop.visible, disabled: !m.stop.enabled, hint: hint(m.stop.enabled, m.stop.reason),
       action: () => { if (details) void perform(row, { kind: "interrupt", turn_started: details.turn_started }); },
     },
-    rename: { label: "Rename…", icon: "pencil", disabled: !m.rename, action: () => send({ type: "open", kind: "rename", row }) },
+    rename: { label: tr("Rename…"), icon: "pencil", disabled: !m.rename, action: () => send({ type: "open", kind: "rename", row }) },
     fork: forkEntry(s, details),
     archive: m.archive.visible
-      ? { label: "Move to archive", icon: "archive", disabled: !m.archive.enabled, hint: hint(m.archive.enabled, m.archive.reason), action: () => { void perform(row, { kind: "archive" }).then(refreshArchiveWhenDone); } }
+      ? { label: tr("Move to archive"), icon: "archive", disabled: !m.archive.enabled, hint: hint(m.archive.enabled, m.archive.reason), action: () => { void perform(row, { kind: "archive" }).then(refreshArchiveWhenDone); } }
       : undefined,
     end: {
-      label: m.end.label, icon: m.end.label === "Terminate session…" ? "circle-stop" : "trash", danger: true, disabled: !m.end.enabled, hint: hint(m.end.enabled, m.end.reason),
+      label: tr(m.end.label), icon: m.end.label === "Terminate session…" ? "circle-stop" : "trash", danger: true, disabled: !m.end.enabled, hint: hint(m.end.enabled, m.end.reason),
       action: () => {
         // Qt's click-time GONE pre-check first; a forget names the run and conversation in view.
         if (terminates(row, details)) { send({ type: "open", kind: "terminate", row }); return; }
         const live = stillListed(row);
         if (!live) return;
         // An archived row is keyed by its archive id; Qt's key also holds the name.
-        if (archived && live.name !== row.name) { notify("info", GONE, true); return; }
+        if (archived && live.name !== row.name) { notify("info", tr(GONE), true); return; }
         const opening = forgetOpening(row, live, details);
-        if (opening === "changed") { notify("error", STATE_CHANGED, true); return; }
+        if (opening === "changed") { notify("error", tr(STATE_CHANGED), true); return; }
         send({ type: "open", kind: "forget", ...opening });
       },
     },
@@ -87,8 +90,8 @@ export function actionEntries(s: Session, details?: Details, options: { context?
 /** Both menus share the inspected source and the one guarded Fork path. */
 export function forkEntry(s: Session, details?: Details): Item {
   const row = snapshotOf(s);
-  return { label: "Fork session…", icon: "git-fork", disabled: !sessionForks.available(row, details),
-    hint: details ? details.fork_reason || FORK_HINT : FORK_CHECKING,
+  return { label: tr("Fork session…"), icon: "git-fork", disabled: !sessionForks.available(row, details),
+    hint: details ? details.fork_reason || tr(FORK_HINT) : tr(FORK_CHECKING),
     action: () => { if (details && sessionForks.available(row, details)) send({ type: "open", kind: "fork", row, details: { ...details } }); },
   };
 }
@@ -102,10 +105,10 @@ export function copyEntries(s: Session, details?: Details): { command: Item; nam
   const row = snapshotOf(s);
   const c = copyState(row, !computerOffline(s.computer), details);
   return {
-    command: { label: c.command.label, icon: "link", disabled: !c.command.enabled, action: () => { void copyCommand(row); } },
-    name: { label: "Copy session name", icon: "copy", action: () => { void copyName(row); } },
-    reference: { label: "Copy session reference", icon: "link", disabled: !c.reference, action: () => { void copyReference(row, details); } },
-    folder: { label: "Copy folder path", icon: "copy", disabled: !c.folder.enabled, action: () => { void copyFolder(row, details); } },
+    command: { label: tr(c.command.label), icon: "link", disabled: !c.command.enabled, action: () => { void copyCommand(row); } },
+    name: { label: tr("Copy session name"), icon: "copy", action: () => { void copyName(row); } },
+    reference: { label: tr("Copy session reference"), icon: "link", disabled: !c.reference, action: () => { void copyReference(row, details); } },
+    folder: { label: tr("Copy folder path"), icon: "copy", disabled: !c.folder.enabled, action: () => { void copyFolder(row, details); } },
   };
 }
 
@@ -118,7 +121,7 @@ export function muteEntry(s: Session): Item | undefined {
   const row = snapshotOf(s);
   const m = notificationsState(row, !computerOffline(s.computer), pendingNotifications(s.computer, s.conversationId));
   if (!m) return undefined;
-  return { label: m.label, icon: row.muted ? "bell" : "bell-off", disabled: !m.enabled, hint: m.hint, action: () => { void toggleMute(row); } };
+  return { label: tr(m.label), icon: row.muted ? "bell" : "bell-off", disabled: !m.enabled, hint: tr(m.hint), action: () => { void toggleMute(row); } };
 }
 
 /**
@@ -131,7 +134,7 @@ export function freshActionEntry(s: Session, header = false): Item | undefined {
   const m = freshEntry(row, !computerOffline(s.computer), updating(s.computer, s.name), running());
   if (!m) return undefined;
   return {
-    label: "Start fresh…", icon: "clear", disabled: !m.enabled, hint: header ? FRESH_TIP : m.hint,
+    label: tr("Start fresh…"), icon: "clear", disabled: !m.enabled, hint: header ? tr(FRESH_TIP) : m.hint && tr(m.hint),
     action: () => {
       const live = stillListed(row);
       // Qt returns silently when the session can no longer start fresh.
@@ -176,18 +179,18 @@ function RenameDialog(props: { row: ActionRow; close: () => void }) {
   };
   return (
     <form onSubmit={submit}>
-      <div class="dlg-head"><Icon name="pencil" size={18} class="accent" /><h2 id="action-dlg-title">Rename session</h2></div>
+      <div class="dlg-head"><Icon name="pencil" size={18} class="accent" /><h2 id="action-dlg-title">{tr("Rename session")}</h2></div>
       <div class="dlg-body">
         <div class="dlg-detail dlg-context">{props.row.machine} / {prefix.slice(0, -1)}</div>
-        <label class="dlg-label" for="rename-tag">Session name</label>
-        <input id="rename-tag" data-initial class="dlg-input" placeholder="e.g. release planning" value={value()} onInput={(e) => setValue(e.currentTarget.value)} />
+        <label class="dlg-label" for="rename-tag">{tr("Session name")}</label>
+        <input id="rename-tag" data-initial class="dlg-input" placeholder={tr("e.g. release planning")} value={value()} onInput={(e) => setValue(e.currentTarget.value)} />
         <div class="dlg-detail ell" title={prefix + value()}>{prefix + value()}</div>
         <Show when={problem()}><div class="dlg-error">{problem()}</div></Show>
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn" onClick={props.close}>Cancel</button>
-        <button type="submit" class="btn primary" disabled={!!problem() || value() === oldTag}>Rename</button>
+        <button type="button" class="btn" onClick={props.close}>{tr("Cancel")}</button>
+        <button type="submit" class="btn primary" disabled={!!problem() || value() === oldTag}>{tr("Rename")}</button>
       </div>
     </form>
   );
@@ -195,10 +198,18 @@ function RenameDialog(props: { row: ActionRow; close: () => void }) {
 
 function TerminateDialog(props: { row: ActionRow; close: () => void }) {
   const copy = terminateCopy(props.row);
+  const shell = untrackedShell(props.row);
+  const [terminal, setTerminal] = createSignal<Extract<Action, { kind: "terminate_shell" }>>();
+  const [terminalError, setTerminalError] = createSignal("");
   const [offer, setOffer] = createSignal<string>();
   const [remove, setRemove] = createSignal(false);
   let closed = false, consumed = false;
   onMount(() => {
+    if (shell) {
+      void captureUntrackedShell(props.row).then((action) => { if (!closed) setTerminal(action); })
+        .catch(() => { if (!closed) setTerminalError(UNVERIFIED_SHELL); });
+      return;
+    }
     const target = targetOf(props.row, "terminate");
     if (copy.action !== "terminate" || !target) return;
     void terminationCleanupOffer(target).then((value) => {
@@ -209,26 +220,31 @@ function TerminateDialog(props: { row: ActionRow; close: () => void }) {
   });
   onCleanup(() => { closed = true; const id = offer(); if (id && !consumed) void terminationCleanupCancel(id); });
   const submit = () => {
+    if (shell && !terminal()) return;
     const id = remove() ? offer() : undefined;
     consumed = !!id;
     if (offer() && !remove()) void setSetting("workspace/removeWorktreeAfterTermination", false);
-    props.close(); void end(props.row, copy.action, id);
+    props.close(); void end(props.row, terminal() ?? copy.action, id);
   };
   return (
     <>
       <div class="dlg-head"><Icon name="triangle-alert" size={18} class="accent" /><h2 id="action-dlg-title">{copy.title}</h2></div>
       <div class="dlg-body">
-        <div class="confirm-body" id="action-dlg-body">{copy.text}</div>
+        <div class="confirm-body" id="action-dlg-body">{shell ? tr("Close the verified shell terminal for %1? Its working folder will be kept; no archive will be created.", props.row.name) : copy.text}</div>
         <div class="dlg-detail">{copy.detail}</div>
+        <Show when={shell}>
+          <p class="hint">{tr("The working folder will be kept. Detached jobs may continue after this shell terminal closes.")}</p>
+          <Show when={terminalError()}><p class="dlg-error">{tr(terminalError())}</p></Show>
+        </Show>
         <Show when={offer()}>
-          <label class="check" style={{ "margin-top": "10px" }}><input type="checkbox" checked={remove()} onChange={(e) => setRemove(e.currentTarget.checked)} /> Remove the working folder after stopping</label>
-          <p class="hint" style={{ "margin-top": "6px" }}>Removal runs in the background after exact successful termination, only for a verified generated worktree. Unknown local data keeps the folder for review. Computer: {props.row.machine}</p>
+          <label class="check" style={{ "margin-top": "10px" }}><input type="checkbox" checked={remove()} onChange={(e) => setRemove(e.currentTarget.checked)} /> {tr("Remove the working folder after stopping")}</label>
+          <p class="hint" style={{ "margin-top": "6px" }}>{tr("Removal runs in the background after exact successful termination, only for a verified generated worktree. Unknown local data keeps the folder for review. Computer: %1", props.row.machine)}</p>
         </Show>
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>Cancel</button>
-        <button type="button" class="btn solid-danger" onClick={submit}>{offer() ? remove() ? "Stop and remove folder" : "Stop and archive" : copy.confirm}</button>
+        <button type="button" class="btn solid-danger" onClick={submit} disabled={shell && !terminal()}>{offer() ? remove() ? tr("Stop and remove folder") : tr("Stop and archive") : copy.confirm}</button>
+        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
       </div>
     </>
   );
@@ -250,8 +266,8 @@ function ForgetDialog(props: { row: ActionRow; bound: ForgetScope; close: () => 
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>Cancel</button>
         <button type="button" class="btn solid-danger" onClick={() => { props.close(); void (archived ? forgetArchived(props.row) : forget(props.row, props.bound)); }}>{copy.confirm}</button>
+        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
       </div>
     </>
   );
@@ -263,10 +279,10 @@ function FreshDialog(props: { row: ActionRow; close: () => void }) {
     props.close();
     const live = catalog.rows[props.row.key];
     if (!live || !freshStillValid(snapshotOf(live), props.row, !computerOffline(live.computer), updating(live.computer, live.name), running())) {
-      notify("error", FRESH_CHANGED, true);
+      notify("error", tr(FRESH_CHANGED), true);
       return;
     }
-    notify("info", `Starting ${props.row.name} with a new conversation…`);
+    notify("info", tr("Starting %1 with a new conversation…", props.row.name));
     void perform(snapshotOf(live), { kind: "start_fresh" });
   };
   return (
@@ -275,8 +291,8 @@ function FreshDialog(props: { row: ActionRow; close: () => void }) {
       <div class="dlg-body"><div class="confirm-body" id="action-dlg-body" style={{ "white-space": "pre-line" }}>{copy.text}</div></div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>Cancel</button>
         <button type="button" class="btn solid-danger" onClick={confirm}>{copy.confirm}</button>
+        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
       </div>
     </>
   );
@@ -295,14 +311,14 @@ function BatchDialog(props: { copy: BatchConfirmation; answer: (confirmed: boole
       <div class="dlg-body">
         <div class="confirm-body" id="action-dlg-body" style={{ "white-space": "pre-line" }}>{props.copy.text}</div>
         <details class="dlg-detail">
-          <summary>Show details</summary>
+          <summary>{tr("Show details")}</summary>
           <div style={{ "white-space": "pre-line", "max-height": "160px", overflow: "auto" }}>{props.copy.details.join("\n")}</div>
         </details>
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>Cancel</button>
         <button type="button" class="btn solid-danger" onClick={() => { props.answer(true); props.close(); }}>{props.copy.confirm}</button>
+        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
       </div>
     </>
   );

@@ -12,14 +12,15 @@ import { notify, bindSearchActionRow } from "./actions";
 import { createContentSearch, identityMatches, metadataMatches, mergeSessionMatch, searchCount, SEARCH_ROWS, type FoundHit, type SearchReply } from "./content-search-model";
 import { clearSearchPreview, setSearchPreview } from "./searchSelection";
 import type { Session } from "../ui/sessions/types";
+import { trNoop, tr } from "../i18n";
 
 export interface SearchItem { id: string; session: Session; found?: FoundHit; run: string; conversation: string }
-export const STALE_SEARCH = "This session changed. Search again to see its current history.";
+export const STALE_SEARCH = trNoop("This session changed. Search again to see its current history.");
 export { identityMatches, metadataMatches } from "./content-search-model";
 
 export const { contentSearch, searchItems, searchStatus, activateSearchItem } = createRoot(() => {
   const contentSearch = createContentSearch({
-    read: (computer, query, generation) => inTauri() ? invoke<SearchReply>("content_search", { computer, query, generation }) : Promise.reject("Contents search needs the desktop app."),
+    read: (computer, query, generation) => inTauri() ? invoke<SearchReply>("content_search", { computer, query, generation }) : Promise.reject(tr("Contents search needs the desktop app.")),
     cancel: (through) => { if (inTauri()) void invoke("cancel_content_search", { through }).catch(() => {}); },
   });
   const [held, setHeld] = createSignal<Session>();
@@ -71,7 +72,7 @@ export const { contentSearch, searchItems, searchStatus, activateSearchItem } = 
   function activateSearchItem(item: SearchItem) {
     const current = searchItems().find((candidate) => candidate.id === item.id);
     const row = item.session.archiveId ? current?.session : catalog.rows[item.session.key];
-    if (!current || !row || row.name !== item.session.name || (row.runId ?? "") !== item.run || (row.conversationId ?? "") !== item.conversation) { notify("error", STALE_SEARCH, true); return; }
+    if (!current || !row || row.name !== item.session.name || (row.runId ?? "") !== item.run || (row.conversationId ?? "") !== item.conversation) { notify("error", tr(STALE_SEARCH), true); return; }
     batch(() => {
       if (row.archiveId) setHeld(row);
       setSelectedKey(row.key); setSubagentOpen(undefined); setDetailTab("activity");

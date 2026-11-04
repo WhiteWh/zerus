@@ -1,4 +1,5 @@
-// Settings > Private analytics: the texts AnalyticsSettings.cpp writes from
+
+import { trNoop, tr } from "../../../i18n";// Settings > Private analytics: the texts AnalyticsSettings.cpp writes from
 // what the core's analytics page drew (zerus_client_core::analytics::page).
 // Numbers QLocale writes follow the person's locale; those Qt writes with
 // QString::arg stay plain.
@@ -35,7 +36,7 @@ export const COUNTERS = [
   "failure_service", "failure_unknown", "input_tokens", "output_tokens", "cache_tokens", "reasoning_tokens",
 ];
 export const SPEECH_COUNTERS = ["submitted", "completed", "failed", "cancelled", "uncertain", "audio_ms", "queue_ms", "processing_ms"];
-export const THIS_COMPUTER = "This computer";
+export const THIS_COMPUTER = trNoop("This computer");
 
 /** QLocale().toString(n, 'f', decimals), or of a whole number. */
 export function localNumber(n: number, decimals = 0, locale?: string): string {
@@ -43,14 +44,14 @@ export function localNumber(n: number, decimals = 0, locale?: string): string {
 }
 
 export function displayRoute(route: string): string {
-  return route === "" ? THIS_COMPUTER : route;
+  return route === "" ? tr(THIS_COMPUTER) : route;
 }
 
 /** A reported measure: unavailable when absent, minutes for durations. */
 export function measure(values: Record<string, number>, key: string, locale?: string): string {
-  if (!(key in values)) return "Unavailable";
+  if (!(key in values)) return tr("Unavailable");
   const n = values[key];
-  if (key.endsWith("_ms")) return `${localNumber(n / 60000, 2, locale)} min`;
+  if (key.endsWith("_ms")) return tr("%1 min", localNumber(n / 60000, 2, locale));
   return localNumber(Math.trunc(n), 0, locale);
 }
 
@@ -64,7 +65,7 @@ export function timeText(seconds: number | null): string {
 }
 
 export function codes(values: string[]): string {
-  return values.length ? values.map((code) => code.replaceAll("_", " ")).join(", ") : "None reported";
+  return values.length ? values.map((code) => code.replaceAll("_", " ")).join(", ") : tr("None reported");
 }
 
 /** Each counter's line: its name in words and its measure. */
@@ -72,35 +73,35 @@ export function describeCounters(counts: Record<string, number>, names: string[]
   return names.map((name) => {
     let label = name.endsWith("_ms") ? name.slice(0, -3) : name;
     label = label.replaceAll("_", " ");
-    if (name === "audio_ms") label = "Accepted audio";
-    else if (name === "queue_ms") label = "Total queue time";
-    else if (name === "processing_ms") label = "Total processing time";
+    if (name === "audio_ms") label = tr("Accepted audio");
+    else if (name === "queue_ms") label = tr("Total queue time");
+    else if (name === "processing_ms") label = tr("Total processing time");
     return `${label}: ${measure(counts, name, locale)}`;
   }).join("\n");
 }
 
 /** The overview above the coverage. */
 export function overviewText(report: Report, locale?: string): string {
-  let histogram = "Recorded fleet work histogram: Unavailable (missing, incompatible or overflowing samples).";
+  let histogram = tr("Recorded fleet work histogram: Unavailable (missing, incompatible or overflowing samples).");
   if (report.work) {
     const count = report.work.count;
-    const mean = count > 0 ? `${localNumber(report.work.sum / count, 1, locale)} ms` : "Unavailable (no samples)";
-    histogram = `Recorded fleet work histogram: ${localNumber(count, 0, locale)} samples; weighted mean ${mean}.`;
+    const mean = count > 0 ? `${localNumber(report.work.sum / count, 1, locale)} ms` : tr("Unavailable (no samples)");
+    histogram = tr("Recorded fleet work histogram: %1 samples; weighted mean %2.", localNumber(count, 0, locale), mean);
   }
-  return `${report.from} through ${report.through} UTC (${report.routes} selected route(s), ${report.present} current unique computer(s)). ` +
-    `Recorded current totals: ${measure(report.totals, "turn_completed", locale)} completed turns; ${measure(report.totals, "work_ms", locale)} work.\n` +
-    `${histogram}\nCoverage below applies to every total and recorded sample.`;
+  return tr("%1 through %2 UTC (%3 selected route(s), %4 current unique computer(s)). ", report.from, report.through, report.routes, report.present) +
+    tr("Recorded current totals: %1 completed turns; %2 work.\n", measure(report.totals, "turn_completed", locale), measure(report.totals, "work_ms", locale)) +
+    `${histogram}\n` + tr("Coverage below applies to every total and recorded sample.");
 }
 
 /** One computer's coverage: its paragraph, then its error, waits and providers. */
 export function coverageText(c: ComputerReport): string {
   const lines = [
-    `${displayRoute(c.route)} (${c.current ? "Current" : "Last known (excluded)"}); generated ${timeText(c.generated_at)}; revision ${Math.trunc(c.revision)}\n` +
-    `Coverage ${timeText(c.start)} to ${timeText(c.end)}; ${c.partial ? "partial" : "no partial flag reported"}\n` +
+    `${displayRoute(c.route)} (${c.current ? "Current" : tr("Last known (excluded)")}); generated ${timeText(c.generated_at)}; revision ${Math.trunc(c.revision)}\n` +
+    tr("Coverage %1 to %2; %3\n", timeText(c.start), timeText(c.end), c.partial ? "partial" : "no partial flag reported") +
     `Gaps: ${codes(c.gaps)}\nUnsupported: ${codes(c.unsupported)}\nCollection: ${c.collecting ? "enabled" : "disabled"}`,
   ];
   if (c.error) lines.push(c.error);
-  if (c.waits) lines.push(`Current unresolved waits observed: ${Math.trunc(c.waits.observed)} (${c.waits.complete ? "reported complete" : "incomplete observation"})`);
+  if (c.waits) lines.push(tr("Current unresolved waits observed: %1 (%2)", Math.trunc(c.waits.observed), c.waits.complete ? "reported complete" : "incomplete observation"));
   for (const p of c.providers) {
     const known = p.partial !== null;
     lines.push(`${p.provider} coverage: ${known ? (p.partial ? "partial" : "reported") : "unknown"}; unsupported: ${known ? codes(p.unsupported ?? []) : "unknown"}`);
@@ -133,7 +134,7 @@ export function detailText(row: Row, locale?: string): string {
 }
 
 export function pageText(offset: number, shown: number, total: number): string {
-  return `${shown ? offset + 1 : 0}–${offset + shown} of ${total} daily buckets (up to 50 per page)`;
+  return tr("%1–%2 of %3 daily buckets (up to 50 per page)", shown ? offset + 1 : 0, offset + shown, total);
 }
 
 /** The default range: the last 30 UTC days through today. */

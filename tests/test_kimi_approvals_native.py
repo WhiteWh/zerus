@@ -54,19 +54,21 @@ GOAL_CRITERION = 'Все 13 trophy/156 состояний проверены, в
 GOAL_OPTIONS = {
     'manual': (
         ('auto', 'Switch to Never Ask and start',
-         'Best if you want Kimi Code to keep working while you are away. Tools are approved automatically, and questions are skipped.',
+         'Best if you want Kimi Code to keep working while you are away. Tools are approved automatically and '
+         'questions are skipped; only plans in Plan mode wait for your review.',
          'broader'),
         ('yolo', 'Switch to Ask When Needed and start',
-         'Tools and plan changes are approved automatically. Kimi Code may still ask you questions.', 'broader'),
+         'Tools are approved automatically. Kimi Code may still ask you questions.', 'broader'),
         ('manual', 'Start in Always Ask',
          'Keep approvals on. Kimi Code will ask before risky actions, so the goal may stop and wait for you.', 'once'),
         ('cancel', 'Do not start', 'Return to the input box with your goal command.', 'once')),
     'yolo': (
         ('auto', 'Switch to Never Ask and start',
-         'Best if you want Kimi Code to keep working while you are away. Tools are approved automatically, and questions are skipped.',
+         'Best if you want Kimi Code to keep working while you are away. Tools are approved automatically and '
+         'questions are skipped; only plans in Plan mode wait for your review.',
          'broader'),
         ('yolo', 'Keep Ask When Needed and start',
-         'Tools and plan changes stay approved automatically. Kimi Code may still ask you questions.', 'once'),
+         'Tools stay approved automatically. Kimi Code may still ask you questions.', 'once'),
         ('cancel', 'Do not start', 'Return to the input box with your goal command.', 'once')),
 }
 
@@ -74,10 +76,16 @@ GOAL_OPTIONS = {
 def goal_mode(method):
     if not method.startswith('test_goal_'):
         return None
+    method = method.replace('test_goal_fullscreen_', 'test_goal_', 1)
     for mode in GOAL_OPTIONS:
         if method.startswith('test_goal_' + mode + '_'):
             return mode
     raise ValueError('a goal scenario must name its manual or yolo mode')
+
+
+def tui_config(method):
+    mode = 'fullscreen' if method.startswith('test_goal_fullscreen_') else 'regular'
+    return 'tui_mode = "%s"\n[upgrade]\nauto_install = false\n' % mode
 
 
 def digest(path):
@@ -257,43 +265,68 @@ def tool_result(body, call_id):
     return None
 
 
-def native_plan_path(body, calls):
-    result = tool_result(body, calls[0][0])
-    paths = [line[len('Plan file: '):].strip() for line in (result or '').splitlines()
-             if line.startswith('Plan file: ')]
+REMINDER = '<system-reminder>\n'
+
+
+def native_plan_path(body):
+    """The one plan file Kimi named for this turn. Since Kimi Code 2.4 only the
+    user turns plan mode on (Shift-Tab or /plan); the model has no
+    EnterPlanMode. Kimi then adds its plan-mode system reminder to the turn,
+    ending in `Plan file: <path>` (planModeInjection.ts). A Plan file line
+    anywhere else, such as in the user's own prompt, names nothing."""
+    paths = set()
+    for message in body.get('messages', []):
+        text = content_text(message.get('content')) if message.get('role') == 'user' else ''
+        if text.startswith(REMINDER + 'Plan mode '):
+            paths.update(line[len('Plan file: '):].strip() for line in text.splitlines()
+                         if line.startswith('Plan file: '))
     if len(paths) != 1:
-        raise ValueError('EnterPlanMode did not return exactly one native plan path')
-    path = paths[0]
+        raise ValueError('Kimi did not name exactly one native plan file in its plan-mode reminder')
+    path = paths.pop()
     normalized = path.replace('\\', '/')
     absolute = path.startswith('/') or (len(path) > 2 and path[1] == ':' and path[2] in '/\\')
     if not absolute or '/agents/main/plans/' not in normalized or not normalized.endswith('.md') \
             or '..' in normalized.split('/'):
-        raise ValueError('EnterPlanMode returned an unsafe plan path')
+        raise ValueError('Kimi named an unsafe plan path')
     return path
 
 
 def plan_action(body):
+    """The fixture model's next step in the plan mode the user turned on:
+    write the named plan file, then ask for its review with ExitPlanMode."""
     tools = {tool.get('function', {}).get('name') for tool in body.get('tools', [])}
     if not tools:
         return None
     calls = conversation_calls(body)
     names = [name for _, name in calls]
     if not names:
-        return ('EnterPlanMode', {}) if 'EnterPlanMode' in tools else None
-    if names == ['EnterPlanMode']:
         if 'Write' not in tools:
             raise ValueError('native plan mode did not offer Write')
-        return 'Write', dict(path=native_plan_path(body, calls), content=PLAN_BODY)
-    if names == ['EnterPlanMode', 'Write']:
-        if 'ExitPlanMode' not in tools or tool_result(body, calls[1][0]) is None:
+        return 'Write', dict(path=native_plan_path(body), content=PLAN_BODY)
+    if names == ['Write']:
+        if 'ExitPlanMode' not in tools or tool_result(body, calls[0][0]) is None:
             raise ValueError('native plan Write did not complete')
         return 'ExitPlanMode', {}
-    if names == ['EnterPlanMode', 'Write', 'ExitPlanMode']:
-        result = tool_result(body, calls[2][0])
+    if names == ['Write', 'ExitPlanMode']:
+        result = tool_result(body, calls[1][0])
         if result is not None and result.startswith('Exited plan mode.'):
             return None
         raise ValueError('ExitPlanMode did not complete successfully')
     raise ValueError('unexpected native plan tool history: ' + repr(names))
+
+
+def plan_mode_events(text):
+    """Kimi's durable plan-mode records in one main wire, in order. A last line
+    without its newline is still being written; it is read on the next poll."""
+    rows = (json.loads(line) for line in text.split('\n')[:-1] if line.strip())
+    return [row for row in rows if isinstance(row, dict) and str(row.get('type', '')).startswith('plan_mode.')]
+
+
+def plan_mode_shown(screen):
+    """Kimi's own signs that plan mode is on: its `Plan mode: ON` notice and
+    the `plan` badge leading the footer (config.ts, footer.ts)."""
+    rows = [row.strip() for row in screen.splitlines()]
+    return 'Plan mode: ON' in rows and any(row.split()[:2] == ['plan', 'fixture'] for row in rows)
 
 
 class Model(http.server.BaseHTTPRequestHandler):
@@ -435,8 +468,9 @@ class GoalCases:
         screen = ' '.join(self.screen().split())
         self.assertIn('Approve CreateGoal?', screen)
         rows = [' '.join(row.split()) for row in self.screen().splitlines()]
+        fullscreen = self._testMethodName.startswith('test_goal_fullscreen_')
         width = len(next(row.strip() for row in self.screen().splitlines()
-                         if row.strip() and set(row.strip()) == {'─'}))
+                         if row.strip() and set(row.strip()) == {'─'})) - int(fullscreen)
         # Every fixture character is one terminal cell; assert Kimi's exact truncation.
         for prefix, text in (('Start goal: ', GOAL_OBJECTIVE), ('Done when: ', GOAL_CRITERION)):
             line = '  ' + prefix + text
@@ -444,7 +478,8 @@ class GoalCases:
             self.assertIn(expected_line.strip(), rows)
         for number, (_, label, description, _) in enumerate(expected, 1):
             self.assertIn('%d. %s' % (number, label), screen)
-            self.assertIn(description, screen)
+            if not fullscreen or number == 1:
+                self.assertIn(description, screen)
         return card
 
     def wire_events(self, kind):
@@ -493,8 +528,49 @@ class GoalCases:
         self.assert_goal_created()
         self.assert_mode_change(modes, [])
 
+    def test_goal_fullscreen_manual_starts_in_manual(self):
+        self.test_goal_manual_starts_in_manual()
+
+    def test_goal_fullscreen_yolo_auto_switches_to_never_ask(self):
+        self.test_goal_yolo_auto_switches_to_never_ask()
+
+    def test_goal_fullscreen_yolo_cancel_does_not_start(self):
+        self.test_goal_yolo_cancel_does_not_start()
+
+    def test_goal_fullscreen_yolo_keeps_ask_when_needed(self):
+        self.test_goal_yolo_keeps_ask_when_needed()
+
 
 class PlanCases:
+    def plan_mode_on(self):
+        """Kimi 2.4 lets only the user turn plan mode on. Press Shift-Tab at the
+        idle composer as a user does; Kimi creates its session for it. Wait for
+        Kimi's one plan_mode.enter in that session's main wire, its notice and
+        footer badge, and hgs's own idle binding to that conversation. The
+        returned state admits the plan prompt."""
+        self.press('BTab')
+
+        def entered():
+            wires = list(self.home.glob('sessions/*/*/agents/main/wire.jsonl'))
+            if len(wires) != 1:
+                return None
+            events = plan_mode_events(wires[0].read_text(encoding='utf-8'))
+            if not events:
+                return None
+            if [(row.get('type'), row.get('agentId')) for row in events] != [('plan_mode.enter', 'main')] \
+                    or not isinstance(events[0].get('id'), str) or not events[0]['id']:
+                self.fail('Kimi did not record exactly one plan-mode entry: ' + json.dumps(events))
+            if not plan_mode_shown(self.screen()):
+                return None
+            state = self.inspect()
+            if state.get('conversation_id') != wires[0].parent.parent.parent.name \
+                    or (state.get('activity'), state.get('phase')) != ('idle', 'idle') \
+                    or state.get('pending_questions'):
+                return None
+            return state, events[0]['id']
+        state, self.plan_id = self.until(entered)
+        return state
+
     def plan_answerable(self):
         def pending():
             cards = [card for card in self.inspect()['pending_questions'] if card['source'] == 'kimi_plan_review']
@@ -526,13 +602,15 @@ class PlanCases:
 
     def test_plan_review_approve(self):
         card = self.plan_answerable()
+        # The reviewed plan is the file of the plan mode the user turned on.
+        self.assertEqual(Path(card['plan_path']).name, self.plan_id + '.md')
         self.assertEqual(Path(card['plan_path']).read_text(), PLAN_BODY)
         self.assertEqual(self.decide(card, option='approve'),
                          {'decision': 'approved', 'selectedLabel': 'Approve'})
-        exits = self.wire_events('plan_mode.exit')
-        self.assertEqual(len(exits), 1, exits)
+        events = plan_mode_events(self.wire.read_text(encoding='utf-8'))
+        self.assertEqual([row.get('type') for row in events], ['plan_mode.enter', 'plan_mode.exit'], events)
         primary = [body for body in self.server.requests if call_names(body)]
-        self.assertEqual(call_names(primary[-1]), ['EnterPlanMode', 'Write', 'ExitPlanMode'])
+        self.assertEqual(call_names(primary[-1]), ['Write', 'ExitPlanMode'])
         self.assertIn('Fixture complete.', self.screen())
 
 
@@ -606,7 +684,7 @@ class NativeKimiApprovals(ApprovalCases, GoalCases, PlanCases, lifecycle.Harness
         server, home = self.server, self.home
         home.mkdir()
         (home / 'config.toml').write_text(model_config(server.server_port, self.goal_mode or 'default'))
-        (home / 'tui.toml').write_text('[upgrade]\nauto_install = false\n')
+        (home / 'tui.toml').write_text(tui_config(self._testMethodName))
         self.assertEqual(Path(shutil.which('kimi', path=self.env['PATH'])).resolve(),
                          (self.bin / 'kimi').resolve() if sys.platform == 'darwin' else self.image)
         self.name = 'kimi/p/approval'
@@ -705,6 +783,10 @@ class NativeKimiApprovals(ApprovalCases, GoalCases, PlanCases, lifecycle.Harness
     def screen(self):
         return self.t('capture-pane', '-p', '-t', '=' + self.name + ':')
 
+    def press(self, key):
+        """One key into the private pane, as the user's terminal sends it."""
+        self.t('send-keys', '-t', '=' + self.name + ':', key)
+
     def height(self):
         return int(self.t('display-message', '-p', '-t', '=' + self.name + ':', '#{window_height}'))
 
@@ -775,6 +857,7 @@ class NativeKimiApprovals(ApprovalCases, GoalCases, PlanCases, lifecycle.Harness
         text = 'Start the fixture goal.' if self.goal_mode else 'Run the fixture command.'
         marker = '1. Switch to Never Ask and start' if self.goal_mode else '1. Approve once'
         if self.plan_scenario:
+            state = self.plan_mode_on()
             text, marker = PLAN_PROMPT, 'Ready to build with this plan?'
         payload = dict(request_id=str(uuid.uuid4()), text=text, expected_run_id=state['run_id'],
                        expected_conversation_id=state.get('conversation_id') or '')
@@ -1119,22 +1202,33 @@ class FixtureControls(unittest.TestCase):
         self.assertIn(json.dumps(json.dumps(dict(command=MARKER, description='Fixture command')))[1:-1], first)
         self.assertIn('Fixture complete.', post([dict(role='tool', content='done')]))
 
+    # Part of Kimi 2.4.1's main-agent tool list: ExitPlanMode is offered, EnterPlanMode is not.
+    TOOLS = ('Agent', 'AskUserQuestion', 'Bash', 'CreateGoal', 'Edit', 'ExitPlanMode', 'Read', 'Write')
+
+    @staticmethod
+    def reminder(path, opening='Plan mode is active: the user turned it on to review a plan before anything changes.'):
+        # An abbreviated planModeInjection.ts reminder with its Plan file footer,
+        # wrapped as systemReminder.ts wraps it.
+        return dict(role='user', content=[dict(type='text', text=REMINDER + opening
+                                               + '\n\nWorkflow:\n  4. Write Plan\n\nPlan file: ' + path
+                                               + '\n</system-reminder>')])
+
+    def plan_request(self, *messages):
+        return dict(tools=[dict(type='function', function=dict(name=name)) for name in self.TOOLS],
+                    messages=[dict(role='user', content=PLAN_PROMPT), *messages])
+
     def test_the_model_writes_the_native_plan_before_exit(self):
         for path in ('/tmp/private/agents/main/plans/example.md',
+                     'C:/private/agents/main/plans/example.md',
                      'C:\\private\\agents\\main\\plans\\example.md'):
             with self.subTest(path=path):
-                body = dict(tools=[dict(function=dict(name=name))
-                                   for name in ('EnterPlanMode', 'Write', 'ExitPlanMode')],
-                            messages=[dict(role='user', content=PLAN_PROMPT)])
+                body = self.plan_request(dict(role='user', content='<system-reminder>\nToday is fixed.\n</system-reminder>'),
+                                         self.reminder(path))
 
                 def called(name, call_id):
                     body['messages'].append(dict(role='assistant', tool_calls=[
                         dict(id=call_id, type='function', function=dict(name=name, arguments='{}'))]))
 
-                self.assertEqual(plan_action(body), ('EnterPlanMode', {}))
-                called('EnterPlanMode', 'call_fixture_EnterPlanMode')
-                body['messages'].append(dict(role='tool', tool_call_id='call_fixture_EnterPlanMode',
-                                             content='Plan mode is now active.\nPlan file: ' + path))
                 self.assertEqual(plan_action(body), ('Write', dict(path=path, content=PLAN_BODY)))
                 called('Write', 'call_fixture_Write')
                 body['messages'].append(dict(role='tool', tool_call_id='call_fixture_Write', content='Wrote plan'))
@@ -1142,8 +1236,157 @@ class FixtureControls(unittest.TestCase):
                 called('ExitPlanMode', 'call_fixture_ExitPlanMode')
                 body['messages'].append(dict(role='tool', tool_call_id='call_fixture_ExitPlanMode',
                                              content='Exited plan mode. Plan mode deactivated.'))
+                # Kimi's exit reminder follows; the turn then ends normally.
+                body['messages'].append(dict(role='user', content=REMINDER + 'Plan mode is no longer active.\n'
+                                             '</system-reminder>'))
                 self.assertIsNone(plan_action(body))
-                self.assertEqual(call_names(body), ['EnterPlanMode', 'Write', 'ExitPlanMode'])
+                self.assertEqual(call_names(body), ['Write', 'ExitPlanMode'])
+
+    def test_a_repeated_reminder_names_the_same_plan_file(self):
+        path = '/tmp/private/agents/main/plans/example.md'
+        sparse = self.reminder(path, 'Plan mode still active (see full instructions earlier).')
+        self.assertEqual(plan_action(self.plan_request(self.reminder(path), sparse)),
+                         ('Write', dict(path=path, content=PLAN_BODY)))
+
+    def test_the_model_never_plans_without_the_users_plan_mode(self):
+        path = '/tmp/private/agents/main/plans/example.md'
+        other = '/tmp/private/agents/main/plans/other.md'
+        for messages in (
+                # 2.4.1 without plan mode: ExitPlanMode is offered, no reminder names a file.
+                (),
+                # A Plan file line of the user's own, outside Kimi's reminder.
+                (dict(role='user', content='Plan file: ' + path),),
+                (dict(role='assistant', content=REMINDER + 'Plan mode is active.\nPlan file: ' + path),),
+                (self.reminder(path), self.reminder(other)),
+                (self.reminder('relative/agents/main/plans/example.md'),),
+                (self.reminder('/tmp/private/agents/main/plans/../../escape.md'),),
+                (self.reminder('/tmp/private/agents/other/plans/example.md'),),
+                (self.reminder('/tmp/private/agents/main/plans/example.txt'),)):
+            with self.subTest(messages=messages), self.assertRaises(ValueError):
+                plan_action(self.plan_request(*messages))
+        without_write = self.plan_request(self.reminder(path))
+        without_write['tools'] = [tool for tool in without_write['tools'] if tool['function']['name'] != 'Write']
+        with self.assertRaisesRegex(ValueError, 'did not offer Write'):
+            plan_action(without_write)
+        self.assertIsNone(plan_action(dict(messages=[dict(role='user', content=PLAN_PROMPT)])))
+
+    def test_an_unfinished_or_unexpected_plan_history_is_refused(self):
+        path = '/tmp/private/agents/main/plans/example.md'
+        for names, results, expected in (
+                (['Write'], {}, 'Write did not complete'),
+                (['Write', 'ExitPlanMode'], {'call_ExitPlanMode': 'No plan file found.'}, 'did not complete successfully'),
+                (['EnterPlanMode'], {'call_EnterPlanMode': 'Plan file: ' + path}, 'unexpected native plan tool'),
+                (['Write', 'Write'], {'call_Write': 'Wrote plan'}, 'unexpected native plan tool')):
+            body = self.plan_request(self.reminder(path))
+            for name in names:
+                body['messages'].append(dict(role='assistant', tool_calls=[
+                    dict(id='call_' + name, type='function', function=dict(name=name, arguments='{}'))]))
+            for call_id, content in results.items():
+                body['messages'].append(dict(role='tool', tool_call_id=call_id, content=content))
+            with self.subTest(names=names), self.assertRaisesRegex(ValueError, expected):
+                plan_action(body)
+
+    def test_the_model_streams_the_native_plan_write(self):
+        server = serve(MARKER, plan=True)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        import urllib.request
+        path = '/tmp/private/agents/main/plans/example.md'
+        request = urllib.request.Request('http://127.0.0.1:%d/v1/chat/completions' % server.server_port,
+                                         data=json.dumps(self.plan_request(self.reminder(path))).encode(), method='POST')
+        stream = urllib.request.urlopen(request, timeout=5).read().decode()
+        self.assertIn('"id": "call_fixture_Write"', stream)
+        self.assertIn(json.dumps(json.dumps(dict(path=path, content=PLAN_BODY)))[1:-1], stream)
+        self.assertNotIn('EnterPlanMode', stream)
+
+    WIRE = '\n'.join([
+        '{"type":"metadata","protocol_version":"1.5"}',
+        '{"type":"permission.set_mode","agentId":"main","mode":"manual","time":1}',
+        '{"type":"plan_mode.enter","agentId":"main","id":"bright-hero","time":2}',
+        '{"type":"runtime.set_binding","workspaceId":"wd_p","runtimeId":"local","agentId":"main","time":3}', ''])
+
+    def test_plan_mode_records_are_read_from_complete_wire_lines(self):
+        self.assertEqual(plan_mode_events(self.WIRE),
+                         [dict(type='plan_mode.enter', agentId='main', id='bright-hero', time=2)])
+        # A last line still being written is left for the next poll.
+        self.assertEqual(plan_mode_events(self.WIRE + '{"type":"plan_mode.exit","agentId":"ma'),
+                         plan_mode_events(self.WIRE))
+        self.assertEqual(plan_mode_events(''), [])
+        with self.assertRaises(ValueError):
+            plan_mode_events('{"type":"plan_mode.ex\n')
+
+    # Kimi 2.4.1 after Shift-Tab, laid out from its source (status-message.ts,
+    # custom-editor.ts, footer.ts): the notice, the empty composer and the footer.
+    PLAN_SCREEN = '\n'.join([
+        '  Plan mode: ON', '  Plan will be created here: /tmp/k/sessions/wd_p/session_1/agents/main/plans/bright-hero.md',
+        '',
+        ' ╭' + '─' * 76 + '╮', ' │ >' + ' ' * 73 + '│', ' ╰' + '─' * 76 + '╯',
+        ' plan  fixture  …/tmp/hgs-pause-x/project with spaces',
+        '                                                           context: 0% (0/32k)', ''])
+
+    def test_plan_mode_is_shown_only_with_its_notice_and_footer_badge(self):
+        self.assertTrue(plan_mode_shown(self.PLAN_SCREEN))
+        for changed in (self.PLAN_SCREEN.replace('Plan mode: ON', 'Plan mode: OFF'),
+                        self.PLAN_SCREEN.replace(' plan  fixture', ' fixture'),
+                        self.PLAN_SCREEN.replace('  Plan mode: ON', '  Plan mode is already on'),
+                        self.PLAN_SCREEN.replace(' plan  fixture', ' planning fixture')):
+            self.assertFalse(plan_mode_shown(changed), changed)
+
+    def plan_mode_case(self, wire_text, screen, state):
+        case = NativeKimiApprovals('test_plan_review_approve')
+        folder = Path(tempfile.mkdtemp(prefix='kimi-plan-mode-'))
+        self.addCleanup(shutil.rmtree, folder)
+        case.home = folder / '.kimi-code'
+        wire = case.home / 'sessions/wd_p/session_1/agents/main/wire.jsonl'
+        wire.parent.mkdir(parents=True)
+        if wire_text is not None:
+            wire.write_text(wire_text, encoding='utf-8')
+        case.press = mock.Mock()
+        case.screen = mock.Mock(return_value=screen)
+        case.inspect = mock.Mock(return_value=state)
+        return case
+
+    def test_plan_mode_is_turned_on_by_the_users_key_and_confirmed_natively(self):
+        ready = dict(run_id='run', conversation_id='session_1', activity='idle', phase='idle', pending_questions=[])
+        case = self.plan_mode_case(self.WIRE, self.PLAN_SCREEN, ready)
+        with mock.patch.object(time, 'monotonic', side_effect=[0, 0]):
+            self.assertEqual(case.plan_mode_on(), ready)
+        case.press.assert_called_once_with('BTab')
+        self.assertEqual(case.plan_id, 'bright-hero')
+
+    def test_plan_mode_waits_for_every_native_sign(self):
+        ready = dict(run_id='run', conversation_id='session_1', activity='idle', phase='idle', pending_questions=[])
+        entered = '{"type":"plan_mode.enter","agentId":"main","id":"bright-hero","time":2}\n'
+        for wire_text, screen, state in (
+                # Kimi has not created its session, or not recorded plan mode yet.
+                (None, self.PLAN_SCREEN, ready),
+                (self.WIRE.replace(entered, ''), self.PLAN_SCREEN, ready),
+                (self.WIRE.replace(entered, '') + entered[:30], self.PLAN_SCREEN, ready),
+                (self.WIRE, self.PLAN_SCREEN.replace(' plan  fixture', ' fixture'), ready),
+                (self.WIRE, self.PLAN_SCREEN, dict(ready, conversation_id=None)),
+                (self.WIRE, self.PLAN_SCREEN, dict(ready, conversation_id='session_other')),
+                (self.WIRE, self.PLAN_SCREEN, dict(ready, activity='busy', phase='working')),
+                (self.WIRE, self.PLAN_SCREEN, dict(ready, pending_questions=[dict(source='kimi_tool_approval')]))):
+            case = self.plan_mode_case(wire_text, screen, state)
+            with self.subTest(state=state, screen=screen[-120:]), \
+                    mock.patch.object(time, 'monotonic', side_effect=[0, 0, 60]), mock.patch.object(time, 'sleep'), \
+                    self.assertRaisesRegex(AssertionError, 'Native Kimi timed out'):
+                case.plan_mode_on()
+            case.press.assert_called_once_with('BTab')
+
+    def test_an_unexpected_plan_mode_record_fails_at_once(self):
+        ready = dict(run_id='run', conversation_id='session_1', activity='idle', phase='idle', pending_questions=[])
+        enter = '{"type":"plan_mode.enter","agentId":"main","id":"bright-hero","time":2}\n'
+        for extra in (enter, '{"type":"plan_mode.cancel","agentId":"main","time":4}\n',
+                      '{"type":"plan_mode.enter","agentId":"sub","id":"x","time":4}\n'):
+            case = self.plan_mode_case(self.WIRE + extra, self.PLAN_SCREEN, ready)
+            with self.subTest(extra=extra), mock.patch.object(time, 'monotonic', side_effect=[0, 0]), \
+                    self.assertRaisesRegex(AssertionError, 'exactly one plan-mode entry'):
+                case.plan_mode_on()
+        case = self.plan_mode_case(self.WIRE.replace('"id":"bright-hero",', ''), self.PLAN_SCREEN, ready)
+        with mock.patch.object(time, 'monotonic', side_effect=[0, 0]), \
+                self.assertRaisesRegex(AssertionError, 'exactly one plan-mode entry'):
+            case.plan_mode_on()
 
 
 if __name__ == '__main__':

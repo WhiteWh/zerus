@@ -32,7 +32,11 @@ NAMES = ('test_a_danger_warning_is_part_of_the_reviewed_request',
          'test_approve_once_runs_the_command',
          'test_reject_never_runs_the_command',
          'test_reject_with_feedback_reaches_the_model')
-GOAL_NAMES = ('test_goal_manual_starts_in_manual',
+GOAL_NAMES = ('test_goal_fullscreen_manual_starts_in_manual',
+              'test_goal_fullscreen_yolo_auto_switches_to_never_ask',
+              'test_goal_fullscreen_yolo_cancel_does_not_start',
+              'test_goal_fullscreen_yolo_keeps_ask_when_needed',
+              'test_goal_manual_starts_in_manual',
               'test_goal_yolo_auto_switches_to_never_ask',
               'test_goal_yolo_cancel_does_not_start',
               'test_goal_yolo_keeps_ask_when_needed')
@@ -67,7 +71,7 @@ def goal_methods(platform_id):
     names = tuple(sorted(node.name for node in common.body if isinstance(node, ast.FunctionDef)
                          and node.name.startswith('test_')))
     if names != GOAL_NAMES:
-        raise ValueError('the exact four goal methods require a new review')
+        raise ValueError('the exact eight goal methods require a new review')
     cls = ('test_kimi_approvals_windows.NativeWindowsKimiApprovals' if platform_id == 'win32-x64'
            else 'test_kimi_approvals_native.NativeKimiApprovals')
     return tuple(cls + '.' + name for name in GOAL_NAMES)

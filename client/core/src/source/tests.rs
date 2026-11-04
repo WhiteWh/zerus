@@ -290,3 +290,66 @@ fn a_cancelled_endpoint_cannot_admit_a_late_reader() {
     handle.stop();
     assert_eq!(sender.usage().workers, 0);
 }
+
+#[test]
+fn control_batches_pin_identity_and_finite_byte_item_admission_until_drop() {
+    let (sender, _receiver) = channel(Command::spawn);
+    let identity = Identity {
+        computer: "peer".into(),
+        incarnation: 7,
+    };
+    sender.shared.lock().sources.insert(
+        identity.computer.clone(),
+        Registered {
+            incarnation: 7,
+            cancel: None,
+        },
+    );
+    let ping = Control::Ping(zerus_watch_protocol::Ping {
+        id: Some(serde_json::json!("fence")),
+    });
+    assert!(sender
+        .shared
+        .control_batch(&identity, 0, std::slice::from_ref(&ping))
+        .is_none());
+    assert!(sender
+        .shared
+        .control_batch(
+            &Identity {
+                incarnation: 6,
+                ..identity.clone()
+            },
+            1,
+            std::slice::from_ref(&ping)
+        )
+        .is_none());
+    assert!(sender.shared.control_batch(&identity, 1, &[]).is_none());
+    assert!(sender
+        .shared
+        .control_batch(&identity, 1, &vec![ping.clone(); 4])
+        .is_none());
+    let oversized = Control::Ping(zerus_watch_protocol::Ping {
+        id: Some(serde_json::json!("x".repeat(CONTROL_BATCH_BYTES))),
+    });
+    assert!(sender
+        .shared
+        .control_batch(&identity, 1, &[oversized])
+        .is_none());
+    let batches: Vec<_> = (0..CONTROL_BATCHES)
+        .map(|_| {
+            sender
+                .shared
+                .control_batch(&identity, 1, std::slice::from_ref(&ping))
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(sender.usage().controls, CONTROL_BATCHES);
+    assert!(sender.usage().control_bytes <= CONTROL_BYTES);
+    assert!(sender
+        .shared
+        .control_batch(&identity, 1, std::slice::from_ref(&ping))
+        .is_none());
+    drop(batches);
+    assert_eq!(sender.usage().controls, 0);
+    assert_eq!(sender.usage().control_bytes, 0);
+}

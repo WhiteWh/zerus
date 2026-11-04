@@ -1,4 +1,5 @@
 import { machineFilter, multi, projectFilter, type MenuEntry } from "../../store/ui";
+import { tr } from "../../i18n";
 import { catalog, computerOffline } from "../../store/catalog";
 import { updating } from "../../store/actions";
 import { archive } from "../../store/archive";
@@ -51,7 +52,7 @@ export function machineMenu(): MenuEntry[] {
       start: (kind, count) => { void runMachine(computer, machine, kind, count); },
     });
   });
-  return entries.length ? [...entries, { separator: true }] : [{ label: MACHINES_WAITING, disabled: true }, { separator: true }];
+  return entries.length ? [...entries, { separator: true }] : [{ label: tr(MACHINES_WAITING), disabled: true }, { separator: true }];
 }
 
 /**

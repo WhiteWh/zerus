@@ -3,10 +3,12 @@ import { taskBoardAction } from "../bridge";
 import { notify } from "./actions";
 import { tasks } from "./tasks";
 import { STAGES, type Task } from "../ui/screens/tasks-ui";
+import { tr, trNoop } from "../i18n";
 
 export type BoardAction = { kind: "to_backlog" | "to_todo" | "back_to_todo" | "accept" | "top" } | { kind: "reorder"; anchor: string; before: boolean };
 export type MenuAction = Exclude<BoardAction["kind"], "reorder">;
-export const ACTION_LABEL: Record<MenuAction, string> = { to_backlog: "Move to Backlog", to_todo: "Move to To do", back_to_todo: "Back to To do", accept: "Accept", top: "Move to the top of To do" };
+export const ACTION_LABEL: Record<MenuAction, string> = { to_backlog: trNoop("Move to Backlog"), to_todo: trNoop("Move to To do"), back_to_todo: trNoop("Back to To do"), accept: trNoop("Accept"), top: trNoop("Move to the top of To do") };
+export const actionLabel = (action: MenuAction): string => tr(ACTION_LABEL[action]);
 export const ACTION_ICON: Record<MenuAction, string> = { to_backlog: "clock", to_todo: "list-todo", back_to_todo: "undo-2", accept: "check", top: "arrow-up-to-line" };
 export const [writingTask, setWritingTask] = createSignal<string>();
 export function boardActions(stage: string): MenuAction[] {
@@ -24,7 +26,7 @@ export async function actOnTask(project: string, task: Task, action: BoardAction
   if (!fresh || !canDrag(fresh) || fresh.stage !== task.stage || (action.kind === "reorder"
     ? !anchor || !anchor.writable || anchor.uuid === task.uuid || anchor.stage !== fresh.stage
     : !boardActions(fresh.stage).includes(action.kind))) {
-    notify("error", "The task changed. Nothing was changed. Refresh the task."); return;
+    notify("error", tr("The task changed. Nothing was changed. Refresh the task.")); return;
   }
   // No optimistic mutation or retry: the existing stream publishes the result.
   const expectedStage = fresh.stage;

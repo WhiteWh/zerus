@@ -3,6 +3,7 @@ import * as bridge from "../bridge";
 import type { ProcessesView, ProcessTarget } from "../types";
 import type { Session } from "../ui/sessions/types";
 import type { MenuEntry } from "./ui";
+import { tr } from "../i18n";
 
 // The Processes tab's view (Qt's ProcessView), held by the Rust hub
 // (src-tauri processes.rs) and sent with the batches when it changes. The
@@ -71,7 +72,7 @@ export function processTarget(s: Session, facts: { online: boolean; generation: 
 
 /** The session tab's Processes entry (SessionsWindow.cpp:1330, 3786-3787): shown while Settings > Processes is on, with the hub's count. */
 export const processesTab = (enabled: boolean, count: number) =>
-  ({ id: "processes" as const, label: count > 0 ? `Processes (${count})` : "Processes", show: enabled });
+  ({ id: "processes" as const, label: count > 0 ? tr("Processes (%1)", count) : tr("Processes"), show: enabled });
 
 /**
  * Follows the selected row while Processes is on, else nothing. Every change
@@ -258,8 +259,8 @@ const backgroundIdle = (s: Pick<Session, "activity" | "phase" | "backgroundJobs"
 export function runningCommandsEntry(s: Pick<Session, "state" | "activity" | "phase" | "backgroundJobs">, online: () => boolean, enabled: () => boolean, open: () => void): Extract<MenuEntry, { label: string }> | undefined {
   if (s.state === "archived" || !backgroundIdle(s)) return undefined;
   return {
-    label: "Show running commands", icon: "activity", disabled: !(online() && enabled()),
-    hint: enabled() ? "Follow this session's background work in Processes" : "Enable Settings > Processes to inspect running commands",
+    label: tr("Show running commands"), icon: "activity", disabled: !(online() && enabled()),
+    hint: enabled() ? tr("Follow this session's background work in Processes") : tr("Enable Settings > Processes to inspect running commands"),
     action: () => { if (online() && enabled()) open(); },
   };
 }

@@ -1,3 +1,4 @@
+import type { Text } from "./text";
 // The batch the Rust side returns from `next_batch` (zerus-client-core
 // `Batch`, snake_case JSON). Rows arrive as compact view rows projected in
 // Rust; the webview never sees raw watch frames.
@@ -12,6 +13,9 @@ export type ComputerId = string;
  * are null; times are seconds since the Unix epoch.
  */
 export interface ViewRow {
+  /** This device's retained pre-cutover queue, not host acknowledgement. */
+  local_read_reply?: boolean;
+  local_read_attention?: boolean;
   name: string;
   launch_id?: string | null;
   title?: string;
@@ -68,7 +72,12 @@ export interface ViewRow {
   process_state?: string;
   /** `process_work.count`, -1 when unknown. */
   background?: number;
+  /** Listed optional-question count; null while unknown, retained by Rust for the same conversation. */
+  optional_question_count?: number | null;
   archive_id?: string | null;
+  /** Native children by exact agent ID; never the hook-profile fallback. */
+  subagents?: Record<string, Record<string, unknown>>;
+  subagent_counts_complete?: boolean;
   /** The latest reply and the attention it raised, for marking them read. */
   reply_id?: string | null;
   attention_signature?: string | null;
@@ -142,13 +151,55 @@ export interface GroupingOut {
   /** The saved layout is retained and layout changes cannot persist this startup. */
   layout_save_paused?: boolean;
 }
-/** How a project edit ended (client/core `swarm::sync::EditOutcome`). */
-export type EditOutcome =
+/** How a project edit ended (client/core `swarm::sync::EditOutcome`), plus the reserved ID for Create. */
+export type EditOutcome = (
   | { outcome: "done"; conflicts: number }
   | { outcome: "kept"; detail: string }
-  | { outcome: "refused"; detail: string };
+  | { outcome: "refused"; detail: string }) & { project?: string; folder?: string };
+
+/** Native ownership presentation only; this can never authorize a writer. */
+export interface NotificationOwnership {
+  status: null | { abi: string; configuration: string; journal: string | null; revision: number;
+    state: "passive" | "preparing" | "service" | "draining" | "revoked" | "native" | "identity_changed" | "unavailable";
+    rearm_required: boolean; request_id: string | null; owner_epoch: string | null; identity_current: boolean };
+  request_id: string | null;
+  pending: boolean;
+  running: boolean;
+  code: string;
+}
+/** Desktop service presentation has separate provenance from device-local marks. */
+export interface DesktopService {
+  /** Native intent/current-scope presentation, never a permission. */
+  notification_preferences?: null | {
+    status: null | { abi: string; scope: { configuration: string; service_epoch: string };
+      journal: string | null; revision: number; configured: boolean; preferences: { optional_questions: boolean } };
+    pending: boolean;
+    request_id: string | null;
+    running: boolean;
+    available: boolean;
+    code: string;
+  };
+  connected: boolean;
+  epoch: string | null;
+  generation: number | null;
+  background: Record<string, { ready: boolean; code: string }>;
+  attention_counts: null | {
+    epoch: string; scope: "shared_host_state"; display_only: true; authority: false; local_marks_included: false;
+    aggregate: { complete: boolean; total: number | null; attention: number | null; known_total: number; known_attention: number };
+    computers: { computer: string; complete: boolean; online: boolean; total: number | null; attention: number | null }[];
+  };
+  automatic_approvals: boolean | null;
+  details_available: boolean;
+  /** Native frozen-read transfer; completion is durable queueing, not host ACK. */
+  pending_read_import?: null | { required: boolean; complete: boolean; running: boolean; code: string; through: number; superseded: number; delivered: false };
+  /** Best-effort Staged report only; its outcome never grants or gates service work. */
+  retained_source_import?: null | { required: boolean; complete: boolean; running: boolean; code: string; phase: string | null; creations_capture?: { code: string; paused: boolean; capture_id: string | null } };
+  notification_ownership?: NotificationOwnership;
+  code: string;
+}
 
 export interface Batch {
+  desktop_service?: DesktopService;
   upserts: RowOut[];
   removes: KeyOut[];
   replaces: ReplaceOut[];
@@ -224,7 +275,7 @@ export const emptyBatch = (): Batch => ({ upserts: [], removes: [], replaces: []
 /** A batch with nothing to apply. A composer view or a draft key set is content: Rust sends each once. */
 export const isEmptyBatch = (b: Batch) =>
   !b.upserts.length && !b.removes.length && !b.replaces.length && !b.computers.length && !b.machines?.length && !b.activity.length
-  && !b.tasks?.length && !b.groups?.length && !b.grouping && !b.processes_view && !b.composer && !b.draft_keys && !b.composer_events?.length;
+  && !b.desktop_service && !b.tasks?.length && !b.groups?.length && !b.grouping && !b.processes_view && !b.composer && !b.draft_keys && !b.composer_events?.length;
 
 /** One Activity event as `inspect` returns it; unknown fields are kept. */
 export interface ActivityEvent {
@@ -261,6 +312,7 @@ export type Action =
   | { kind: "archive" }
   | { kind: "terminate" }
   | { kind: "kill" }
+  | { kind: "terminate_shell"; identity: UntrackedShellIdentity }
   | { kind: "start_fresh" }
   | { kind: "forget" }
   | { kind: "forget_binding" }
@@ -272,9 +324,14 @@ export type Action =
   | { kind: "recovery"; job_id: string; action: "now" | "cancel" };
 
 export interface WorktreeCleanup { status: string; path: string; common_dir: string; reason?: string | null }
+export interface UntrackedShellIdentity {
+  version: number; socket: string; socket_dev: string; socket_ino: string;
+  server_pid: number; server_start: string; session_id: string; session_created: number;
+  pane_id: string; pane_pid: number; pane_start: string; shell: string;
+}
 
 export type Outcome =
-  | { outcome: "done"; receipt: unknown; cleanup: WorktreeCleanup | null }
+  | { outcome: "done"; receipt: unknown; cleanup: WorktreeCleanup | null; cleanup_capture?: import("./store/terminationCleanup").RetainedCapture | null }
   | { outcome: "failed"; detail: string }
   | { outcome: "uncertain"; detail: string };
 
@@ -334,6 +391,7 @@ export interface MachineMetrics {
 /** This Windows computer's session host. */
 export interface LocalHost { state: string | null; pid: number | null; protocol: number | null; conpty: string | null; integrity: string | null; windows_session: number | null; error: string | null }
 export interface MachineMeta {
+  machine_id?: string;
   host: string | null;
   hgs_version: string | null;
   platform: string | null;
@@ -380,16 +438,16 @@ export interface OpenCodeInfo { providers: { label: string; connection: string; 
 export interface Profile {
   key: string; host: ComputerId; machine: string; id: string; label: string; provider: string;
   native: boolean; installed: boolean; is_default: boolean; home: string; auth_revision: string; online: boolean;
-  state: MemberState; detail: string; signed_in: boolean;
-  permission: string; permission_label: string; permission_hint: string;
+  state: MemberState; detail: Text; signed_in: boolean;
+  permission: string; permission_mode?: string; permission_label: Text; permission_hint: Text;
   permission_source?: "provider" | "zerus";
   permission_catalog?: unknown; permission_current?: unknown;
-  model_supported: boolean; model_text: string;
+  model_supported: boolean; model_text: Text;
   usage: Usage; opencode: OpenCodeInfo | null;
 }
 export interface Account {
   key: string; label: string; provider: string; installed: boolean; machines: string[]; members: Profile[];
-  usage: Usage; permission: string; identity_lines: string[]; identity_note: string;
+  usage: Usage; permission: Text; identity_lines: Text[]; identity_note: Text | null;
 }
 export interface AccountHost { computer: ComputerId; name: string; label: string; online: boolean }
 export interface BindingEvidence { host: ComputerId; provider: string; id: string; home: string; group: string }
@@ -406,12 +464,20 @@ export interface AccountsView {
   truncated: number;
 }
 export interface MachineRow { alias: string; enabled: boolean; source: string; inherited: boolean; hostname: string; user: string; port: number | null; identity_file: string; origin: string }
+export interface MachineConnection { hostname: string; user: string; port: number | null; identity_file: string; enabled: boolean }
+export type MachineChange = { kind: "set"; connection: MachineConnection; create: boolean } | { kind: "reset" | "remove" };
+export interface MachineReference { alias: string; revision: string }
+export type MachineSetupRequest = { kind: "install"; reference: MachineReference; source: string } | { kind: "enable"; machine_id: string };
+export interface MachineSetupOutcome { success: boolean; uncertain: boolean; text: string; output: string }
+export interface MachineChangeRequest { alias: string; revision: string; change: MachineChange }
 export interface Effective { alias: string; pending: boolean; error: boolean; text: string; hostname: string; user: string; port: string; key: string }
 export interface CheckResult { alias: string; pending: boolean; error: boolean; text: string }
 export interface MachinesView {
   /** Computation order from the screens hub; absent on older snapshots. */
   revision?: number;
   loaded: boolean; refreshing: boolean; error: string | null; local: string; environment_override: boolean;
+  /** Exact configuration revision, separate from the hub computation order. */
+  connection_revision?: string;
   machines: MachineRow[]; effective: Effective | null; check: CheckResult | null; busy: boolean;
 }
 export interface Folder {
@@ -469,11 +535,11 @@ export interface LaunchForm {
 }
 /** What the form shows (core `launch::Shown`). */
 export interface LaunchShown {
-  start_enabled: boolean; start_text: string; preview: string; outside_project: boolean; name_problem: string | null;
-  notice: string | null; automatic: boolean; auto_enabled: boolean; none_enabled: boolean;
-  worktree_target: string; worktree_tooltip: string; choose_existing_enabled: boolean; create_manually_enabled: boolean;
+  start_enabled: boolean; start_text: Text; preview: Text | null; outside_project: boolean; name_problem: Text | null;
+  notice: Text | null; automatic: boolean; auto_enabled: boolean; none_enabled: boolean;
+  worktree_target: string; worktree_tooltip: Text | null; choose_existing_enabled: boolean; create_manually_enabled: boolean;
   worktree_options_enabled: boolean; fields_enabled: boolean; browse_enabled: boolean; cancel_enabled: boolean;
-  open_terminal_enabled: boolean; open_terminal_tooltip: string; clone_launch_due: boolean;
+  open_terminal_enabled: boolean; open_terminal_tooltip: Text; clone_launch_due: boolean;
 }
 /** A saved project with its folders on each computer ("" is this computer). */
 export interface LaunchProject { id: string; name?: string; folders: { machine: string; path: string }[] }
@@ -642,7 +708,8 @@ export interface ArchivedActivity {
 // The composer (src-tauri/src/composer): the mirrors of its serde shapes.
 
 /** One attachment of the open draft; `path` is its `zerus-file` path. */
-export interface AttachmentView { name: string; mime: string; reference: string; bytes: number; path: string; excerpt: string | null }
+export interface ImageSize { width: number; height: number }
+export interface AttachmentView { name: string; mime: string; reference: string; bytes: number; path: string; excerpt: string | null; image_size?: ImageSize | null }
 export type ChipTone = "quiet" | "danger" | "warning" | "success";
 /** The cache chip (core `cache::Chip`); hidden when not `visible`. */
 export interface Chip { visible: boolean; tone: ChipTone; label: string; short_label: string }
@@ -664,11 +731,11 @@ export interface LocalMessage {
   submitted_at: number; error: string; uncertain: boolean; message_id: string | null; submitted_text: string | null; source: string | null; voice: Record<string, unknown> | null;
 }
 /** The native queue (core input_queue::QueueView), kept separate from local messages. */
-export interface QueueView { id: string; text: string; hint: string; can_send_now: boolean; enabled: boolean; label: string }
+export interface QueueView { id: string; text: string; hint: string; can_send_now: boolean; enabled: boolean; label: string; run_id?: string; conversation_id?: string }
 export interface ComposerView {
-  handle: number; key: string; loaded: boolean; rev: number; text_epoch: number; text: string; position: number; anchor: number;
+  handle: number; key: string; subagent?: { agent_id: string; send_supported: boolean; hint: string } | null; loaded: boolean; rev: number; text_epoch: number; text: string; position: number; anchor: number;
   attachments: AttachmentView[]; removed: string | null; attaching: boolean; sending: boolean; recording?: boolean; waiting: string | null; uncertain: boolean;
-  status: string; status_error: boolean; can_send: boolean; send_label: string; available: boolean; unavailable_reason: string; block_reason: string | null;
+  status: string; status_error: boolean; can_send: boolean; send_label: Text; available: boolean; unavailable_reason: string; block_reason: string | null;
   attachments_available: boolean; attachments_reason: string; session_status: string; session_status_error: boolean; session_blocks_input: boolean;
   /** The open session's last read failed (Qt's m_inspectError). */
   inspect_error: boolean;
@@ -682,22 +749,22 @@ export interface ComposerView {
 }
 
 // The question card (src-tauri composer/questions.rs, core questions.rs).
-export interface ButtonView { visible: boolean; enabled: boolean; label: string; review_label: string | null }
-export interface OptionView { id: string; label: string; description: string; markdown: boolean; checked: boolean; enabled: boolean; visible: boolean }
-export interface TextView { visible: boolean; enabled: boolean; value: string; placeholder: string; accessible_name: string; max_units: number; max_chars: number }
-export interface FormView { id: string; tab: string; prompt: string; body: string; markdown: boolean; monospace_body: boolean; multi: boolean;
-  mode: string; mode_visible: boolean; options: OptionView[]; other: OptionView | null; text: TextView | null }
-export interface QueueNav { previous: boolean; next: boolean; previous_tip: string; next_tip: string }
-export interface CardView { heading: string; progress: string; pending: string; pending_tip: string; nav: QueueNav | null; tabs_visible: boolean;
-  page: number; forms: FormView[]; status: string; status_error: boolean; available: boolean; locked: boolean; review: boolean; created_at: number;
-  submit: ButtonView; approve: ButtonView; deny: ButtonView; skip: ButtonView; previous: ButtonView; next: ButtonView; retry: boolean; skip_tip: string; retry_tip: string }
+export interface ButtonView { visible: boolean; enabled: boolean; label: Text; review_label: Text | null }
+export interface OptionView { id: string; label: Text; description: Text; markdown: boolean; checked: boolean; enabled: boolean; visible: boolean }
+export interface TextView { visible: boolean; enabled: boolean; value: string; placeholder: Text; accessible_name: Text; max_units: number; max_chars: number }
+export interface FormView { id: string; tab: Text; prompt: string; body: string; markdown: boolean; monospace_body: boolean; multi: boolean;
+  mode: Text; mode_visible: boolean; options: OptionView[]; other: OptionView | null; text: TextView | null }
+export interface QueueNav { previous: boolean; next: boolean; previous_tip: Text; next_tip: Text }
+export interface CardView { heading: Text; progress: Text | null; pending: Text | null; pending_tip: Text; nav: QueueNav | null; tabs_visible: boolean;
+  page: number; forms: FormView[]; status: Text; status_error: boolean; available: boolean; locked: boolean; review: boolean; created_at: number;
+  submit: ButtonView; approve: ButtonView; deny: ButtonView; skip: ButtonView; previous: ButtonView; next: ButtonView; retry: boolean; skip_tip: Text; retry_tip: Text }
 /**
  * `revision` grows when the card is built again (a new card, a changed form,
  * a restored answer): the review starts again and the fields reset. `epoch`
  * grows with every change of the answers from Rust, each revision's included:
  * the fields take Rust's values again, and an edit names the epoch it is based on.
  */
-export interface QuestionView { answering?: boolean; card: string; revision: number; epoch: number; asked: string; asked_tip: string; terminal_label: string; view: CardView }
+export interface QuestionView { answering?: boolean; card: string; revision: number; epoch: number; asked: string; asked_tip: string; terminal_label: Text; native_ui: boolean; view: CardView }
 export type QuestionEdit = { kind: "option"; item: string; option: string; checked: boolean } | { kind: "other"; item: string; checked: boolean } | { kind: "text"; item: string; text: string };
 export interface ColdAnswer { title: string; text: string; proceed: string }
 export type QuestionReply = { kind: "sending" } | { kind: "busy" } | { kind: "cold"; token: number; prompt: ColdAnswer } | { kind: "notice"; text: string };
@@ -709,16 +776,18 @@ export type ColdAction = "send" | "compact" | "clear";
 export interface ColdChoice { action: ColdAction; label: string; enabled: boolean; tooltip: string }
 export interface ColdPrompt { title: string; text: string; informative: string; choices: ColdChoice[] }
 export type StartChoice = "resume" | "resume_compact" | "fresh";
-export interface StartOption { choice: StartChoice; label: string; enabled: boolean; tooltip: string }
-export interface StartQuestion { title: string; text: string; informative: string; options: StartOption[] }
+export interface StartOption { choice: StartChoice; label: Text; enabled: boolean; tooltip: Text | null }
+export interface StartQuestion { title: Text; text: Text; informative: Text; options: StartOption[] }
 export type SendReply =
   | { kind: "sending" } | { kind: "busy" } | { kind: "blocked"; reason: string } | { kind: "notice"; text: string; error: boolean }
   | { kind: "cold"; token: number; prompt: ColdPrompt } | { kind: "clear_context"; token: number } | { kind: "start"; token: number; question: StartQuestion };
 export type Answer = { kind: "cold"; action: ColdAction } | { kind: "start"; choice: StartChoice } | { kind: "cancel" };
 /** Where Inspect on a failed local row leads. */
 export type Inspect = { kind: "native_ui" } | { kind: "terminal" } | { kind: "refresh"; notice: string };
-/** The session a composer belongs to (src-tauri `SessionRef`): `key` is the catalog key. */
-export interface SessionRef { computer: ComputerId; key: string; name: string; archive_id: string | null }
+/** One exact native child; sends still name the parent run and conversation. */
+export interface SubagentRef { agent_id: string; parent_conversation_id: string }
+/** The session or child a composer belongs to (src-tauri `SessionRef`): `key` is the parent catalog key. */
+export interface SessionRef { computer: ComputerId; key: string; name: string; archive_id: string | null; subagent?: SubagentRef }
 /** The detail tab that shows, for the composer's inspect retry (Qt's poll interval). */
 export type ComposerTab = "activity" | "terminal" | "native" | "processes";
 /** A file of an Activity message, as the journal lists it. */
@@ -754,6 +823,7 @@ export interface Fetched {
   path: string; name: string; mime: string; bytes: number;
   /** An image whose header gives its size, at most Qt's 64M pixels: a card may show its thumbnail. */
   thumbnail: boolean;
+  image_size?: ImageSize | null;
 }
 
 // Saved drafts (src-tauri `composer/saved.rs`).
@@ -783,19 +853,21 @@ export type UpdateChannel = "stable" | "nightly" | "dev";
 export interface UpdatesView {
   busy: boolean;
   available: boolean;
-  heading: string;
-  installed: string;
-  latest: string;
-  comparison: string;
+  /** Interface prose from the core and app (core Text); the webview translates it. */
+  heading: Text;
+  installed: Text;
+  latest: Text;
+  comparison: Text | null;
+  /** RFC 3339 time, or "Never". */
   last_checked: string;
   cached: boolean;
-  error: string;
+  error: Text | null;
   channel: UpdateChannel;
   automatic: boolean;
-  release_label: string;
+  release_label: Text;
   release_enabled: boolean;
-  download_label: string | null;
-  details: { ownership: string; command: string; copy_name: string; instructions: string };
+  download_label: Text | null;
+  details: { ownership: Text; command: Text | null; copy_name: Text | null; instructions: Text | null };
   restart_required: boolean;
   login_item_deprioritized: boolean;
   version: string;
@@ -806,19 +878,19 @@ export interface UpdatesView {
 export const emptyUpdatesView = (): UpdatesView => ({
   busy: false,
   available: false,
-  heading: "Updates have not been checked",
-  installed: "",
-  latest: "Not checked",
-  comparison: "",
+  heading: { source: "Updates have not been checked" },
+  installed: { source: "" },
+  latest: { source: "Not checked" },
+  comparison: null,
   last_checked: "Never",
   cached: false,
-  error: "",
+  error: null,
   channel: "stable",
   automatic: true,
-  release_label: "View release",
+  release_label: { source: "View release" },
   release_enabled: false,
   download_label: null,
-  details: { ownership: "", command: "", copy_name: "Copy command", instructions: "" },
+  details: { ownership: { source: "" }, command: null, copy_name: null, instructions: null },
   restart_required: false,
   login_item_deprioritized: false,
   version: "",

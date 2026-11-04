@@ -10,11 +10,13 @@ const MAX_BODY_CHARS: usize = 16_000;
 const NARROW: &str =
     "Kimi's approval does not show this whole request; enlarge Terminal or answer there";
 const INVALID: &str = "Zerus cannot verify this CreateGoal request. Answer it in Terminal.";
-const AUTO_DESCRIPTION: &str = "Best if you want Kimi Code to keep working while you are away. Tools are approved automatically, and questions are skipped.";
+// Kimi Code 2.4.1 goalStartOptions (goal-start-permission-prompt.ts), shown
+// verbatim by its CreateGoal ApprovalPanel.
+const AUTO_DESCRIPTION: &str = "Best if you want Kimi Code to keep working while you are away. Tools are approved automatically and questions are skipped; only plans in Plan mode wait for your review.";
 const YOLO_SWITCH_DESCRIPTION: &str =
-    "Tools and plan changes are approved automatically. Kimi Code may still ask you questions.";
+    "Tools are approved automatically. Kimi Code may still ask you questions.";
 const YOLO_KEEP_DESCRIPTION: &str =
-    "Tools and plan changes stay approved automatically. Kimi Code may still ask you questions.";
+    "Tools stay approved automatically. Kimi Code may still ask you questions.";
 const MANUAL_DESCRIPTION: &str = "Keep approvals on. Kimi Code will ask before risky actions, so the goal may stop and wait for you.";
 const CANCEL_DESCRIPTION: &str = "Return to the input box with your goal command.";
 
@@ -347,6 +349,88 @@ fn chooser(rows: &[&str], margin: usize, width: usize, goal: &Goal<'_>) -> Resul
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Layout {
+    Inline,
+    Docked(usize),
+}
+
+fn docked_head(goal: &Goal<'_>, width: usize) -> Result<Vec<String>> {
+    let mut rows = head(goal, width)?;
+    // DockSection's body reserves one column for its scrollbar, including
+    // when the complete goal fits and the scrollbar itself is blank.
+    for (index, line) in goal.body().split('\n').enumerate() {
+        rows[index + 3] = truncate(&format!("  {line}"), width - 1).ok_or(INVALID)?;
+    }
+    Ok(rows)
+}
+
+fn docked_chooser(rows: &[&str], margin: usize, width: usize, goal: &Goal<'_>) -> Result<usize> {
+    let choices = goal.choices();
+    let mut selected = None;
+    for (position, choice) in choices.iter().enumerate() {
+        let (number, label, marked) =
+            choice_row(rows.get(position).ok_or(NARROW)?, margin).ok_or(NARROW)?;
+        if number != position + 1 || label != choice.label {
+            return Err(
+                "Kimi's goal choices differ from this request; answer it in Terminal".into(),
+            );
+        }
+        if marked && selected.replace(position).is_some() {
+            return Err(
+                "Kimi's goal approval has an ambiguous selection; answer it in Terminal".into(),
+            );
+        }
+    }
+    let selected = selected.ok_or(NARROW)?;
+    let count = choices.len();
+    if !inside(rows.get(count).ok_or(NARROW)?, margin).is_some_and(str::is_empty) {
+        return Err(NARROW.into());
+    }
+    // Kimi 2.4.1 uses a fixed area of at most three rows, padded below a
+    // shorter description. Reject clipped text, hover previews of another
+    // choice and changed wording; navigation will verify every hidden choice.
+    for height in 1..=3 {
+        let start = count + 1;
+        let end = start + height;
+        if !inside(rows.get(end).copied().unwrap_or("?"), margin).is_some_and(str::is_empty)
+            || inside(rows.get(end + 1).copied().unwrap_or("?"), margin)
+                != truncate(&hint(count), width).as_deref()
+            || rows.get(end + 2).and_then(|row| rule(row)) != Some((margin, width))
+        {
+            continue;
+        }
+        let description = rows[start..end]
+            .iter()
+            .map(|row| {
+                inside(row, margin)
+                    .and_then(|row| {
+                        if row.is_empty() {
+                            Some("")
+                        } else {
+                            row.strip_prefix("  ")
+                        }
+                    })
+                    .ok_or_else(|| NARROW.to_owned())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let first_blank = description
+            .iter()
+            .position(|row| row.is_empty())
+            .unwrap_or(height);
+        if description[first_blank..].iter().all(|row| row.is_empty())
+            && question_terminal::wrapped(
+                &description[..first_blank],
+                choices[selected].description,
+            )
+        {
+            return Ok(selected);
+        }
+        return Err("Kimi's goal choice description differs; answer it in Terminal".into());
+    }
+    Err(NARROW.into())
+}
+
 fn bottom(rows: &[&str]) -> Option<(usize, usize, usize)> {
     (6..rows.len()).rev().find_map(|end| {
         let (margin, width) = rule(rows[end])?;
@@ -356,12 +440,11 @@ fn bottom(rows: &[&str]) -> Option<(usize, usize, usize)> {
         {
             return None;
         }
-        let before = (0..end - 2).rev().find(|index| {
-            rows.get(*index)
-                .and_then(|row| inside(row, margin))
-                .is_some_and(str::is_empty)
-        })?;
-        let first = before + 1;
+        let before = (0..end - 2)
+            .rev()
+            .find(|index| rule(rows[*index]) == Some((margin, width)))
+            .map_or(0, |index| index + 1);
+        let first = (before..end - 2).find(|index| choice_row(rows[*index], margin).is_some())?;
         let labels: Vec<&str> = rows[first..end - 2]
             .iter()
             .filter_map(|row| choice_row(row, margin))
@@ -402,38 +485,56 @@ fn clipped(screen: &str) -> bool {
     bottom(&rows).is_some_and(|(first, margin, width)| top(&rows, first, margin, width).is_none())
 }
 
-fn read(screen: &str, request: &Value) -> Result<()> {
+fn read_layout(screen: &str, request: &Value) -> Result<Layout> {
     let goal = goal(request)?;
     if goal.body().chars().count() > MAX_BODY_CHARS {
         return Err("This request is too long to review here. Answer it in Terminal.".into());
     }
     let plain = question_terminal::plain(screen)?;
     let rows: Vec<&str> = plain.lines().map(str::trim_end).collect();
-    let mut found = 0;
+    let mut found = Vec::new();
     for (start, row) in rows.iter().enumerate() {
         let Some((margin, width)) = rule(row) else {
             continue;
         };
-        let Ok(head) = head(&goal, width) else {
-            continue;
-        };
-        if head.iter().enumerate().all(|(index, expected)| {
-            rows.get(start + index).and_then(|row| inside(row, margin)) == Some(expected.as_str())
-        }) && chooser(&rows[start + head.len()..], margin, width, &goal).is_ok()
-        {
-            found += 1;
+        for docked in [false, true] {
+            let Ok(head) = (if docked {
+                docked_head(&goal, width)
+            } else {
+                head(&goal, width)
+            }) else {
+                continue;
+            };
+            if !head.iter().enumerate().all(|(index, expected)| {
+                rows.get(start + index).and_then(|row| inside(row, margin))
+                    == Some(expected.as_str())
+            }) {
+                continue;
+            }
+            let rest = &rows[start + head.len()..];
+            if docked {
+                if let Ok(selected) = docked_chooser(rest, margin, width, &goal) {
+                    found.push(Layout::Docked(selected));
+                }
+            } else if chooser(rest, margin, width, &goal).is_ok() {
+                found.push(Layout::Inline);
+            }
         }
     }
-    match found {
-        1 => Ok(()),
-        0 if clipped(screen) => Err(NARROW.into()),
-        0 if complete(screen) => Err(
+    match found.as_slice() {
+        [layout] => Ok(*layout),
+        [] if clipped(screen) => Err(NARROW.into()),
+        [] if complete(screen) => Err(
             "The visible Kimi goal approval differs from this request; answer it in Terminal"
                 .into(),
         ),
-        0 => Err("Kimi's goal approval is not visible; open Terminal".into()),
+        [] => Err("Kimi's goal approval is not visible; open Terminal".into()),
         _ => Err("Kimi shows this goal approval more than once; answer it in Terminal".into()),
     }
+}
+
+fn read(screen: &str, request: &Value) -> Result<()> {
+    read_layout(screen, request).map(|_| ())
 }
 
 fn chosen(card: &Value, answers: &Value) -> Result<(usize, String)> {
@@ -546,7 +647,23 @@ fn drive<T: Transport>(
     answers: &Value,
 ) -> Result<()> {
     let (index, _) = chosen(card, answers)?;
-    read(&io.screen()?, request)?;
+    if let Layout::Docked(mut selected) = read_layout(&io.screen()?, request)? {
+        let count = goal(request)?.choices().len();
+        // Inspection never navigates. Once the user explicitly answers, check
+        // every description the dock hides before a number key can submit.
+        for _ in 1..count {
+            selected = next_docked(io, check, request, selected, count)?;
+        }
+        for _ in 0..count {
+            if selected == index {
+                break;
+            }
+            selected = next_docked(io, check, request, selected, count)?;
+        }
+        if read_layout(&io.screen()?, request)? != Layout::Docked(index) {
+            return Err("Kimi's goal selection changed before submission".into());
+        }
+    }
     check()?;
     io.key(&(index + 1).to_string())?;
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -562,6 +679,30 @@ fn drive<T: Transport>(
             return Err("Kimi has not confirmed the goal decision".into());
         }
         io.pause();
+    }
+}
+
+fn next_docked<T: Transport>(
+    io: &mut T,
+    check: &mut dyn FnMut() -> Result<()>,
+    request: &Value,
+    selected: usize,
+    count: usize,
+) -> Result<usize> {
+    check()?;
+    io.key("Down")?;
+    let next = (selected + 1) % count;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        io.pause();
+        match read_layout(&io.screen()?, request)? {
+            Layout::Docked(actual) if actual == next => return Ok(next),
+            Layout::Docked(actual) if actual == selected => {}
+            _ => return Err("Kimi's goal panel changed during navigation".into()),
+        }
+        if Instant::now() >= deadline {
+            return Err("Kimi's goal selection did not move".into());
+        }
     }
 }
 
@@ -628,6 +769,107 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn docked_screen(request: &Value, selected: usize, width: usize) -> String {
+        let goal = goal(&request["request"]).unwrap();
+        let choices = goal.choices();
+        let wrap = |text: &str| {
+            let mut rows = vec![String::new()];
+            for word in text.split_whitespace() {
+                let last = rows.last_mut().unwrap();
+                if !last.is_empty() && last.len() + 1 + word.len() > width - 2 {
+                    rows.push(word.to_owned());
+                } else {
+                    if !last.is_empty() {
+                        last.push(' ');
+                    }
+                    last.push_str(word);
+                }
+            }
+            rows
+        };
+        let mut rows = docked_head(&goal, width).unwrap();
+        for (index, choice) in choices.iter().enumerate() {
+            rows.push(format!(
+                "{}{}. {}",
+                if index == selected { "  ▶ " } else { "    " },
+                index + 1,
+                choice.label
+            ));
+        }
+        rows.push(String::new());
+        let height = choices
+            .iter()
+            .map(|choice| wrap(choice.description).len())
+            .max()
+            .unwrap()
+            .min(3);
+        let description = wrap(choices[selected].description);
+        for index in 0..height {
+            rows.push(
+                description
+                    .get(index)
+                    .map(|row| format!("  {row}"))
+                    .unwrap_or_default(),
+            );
+        }
+        rows.extend([String::new(), hint(choices.len()), "─".repeat(width)]);
+        rows.into_iter()
+            .map(|row| {
+                if row.is_empty() {
+                    row
+                } else {
+                    format!(" {row}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn fullscreen_panel_binds_the_selected_description_and_body_width() {
+        const CAPTURE: &str =
+            include_str!("../../tests/fixtures/kimi-goal-2.4.1-fullscreen-manual-78x24.txt");
+        let mut event = request("manual");
+        event["request"]["display"]["objective"] =
+            json!("Завершить проверку отдельного intrinsic слоя и новой публикации без production");
+        event["request"]["display"]["completionCriterion"] =
+            json!("Все 13 trophy/156 состояний проверены, включая g2★0, без двойного учёта");
+        assert_eq!(
+            read_layout(CAPTURE, &event["request"]),
+            Ok(Layout::Docked(0))
+        );
+        assert!(complete(CAPTURE) && !clipped(CAPTURE));
+        for mode in ["manual", "yolo"] {
+            let event = request(mode);
+            for selected in 0..goal(&event["request"]).unwrap().choices().len() {
+                let screen = docked_screen(&event, selected, 78);
+                assert_eq!(
+                    read_layout(&screen, &event["request"]),
+                    Ok(Layout::Docked(selected)),
+                    "{screen}"
+                );
+                for wrong in [
+                    screen.replace("RC12", "other"),
+                    screen.replace("Do not start", "Do not begin"),
+                    screen.replace("▶ ", "  "),
+                    screen.replace("↑/↓ select", "↑/↓ choose"),
+                    format!("{screen}\n{screen}"),
+                ] {
+                    assert!(read(&wrong, &event["request"]).is_err(), "{wrong}");
+                }
+            }
+            let shown = docked_screen(&event, 0, 78);
+            assert!(read(
+                &shown.replace("questions are skipped", "questions are ignored"),
+                &event["request"]
+            )
+            .is_err());
+            let clipped_screen = shown.lines().skip(1).collect::<Vec<_>>().join("\n");
+            assert!(clipped(&clipped_screen) && !complete(&clipped_screen));
+            assert!(read(&docked_screen(&event, 0, 40), &event["request"]).is_err());
+        }
     }
 
     fn answer(id: &str) -> Value {
@@ -742,6 +984,32 @@ mod tests {
     }
 
     #[test]
+    fn kimi_2_4_1_goal_panel_matches_exactly() {
+        // Kimi Code 2.4.1's own 78x24 approval panel, captured by the native CI fixture.
+        const SCREEN: &str = include_str!("../../tests/fixtures/kimi-goal-2.4.1-manual-78x24.txt");
+        let mut event = request("manual");
+        event["request"]["display"]["objective"] =
+            json!("Завершить проверку отдельного intrinsic слоя и новой публикации без production");
+        event["request"]["display"]["completionCriterion"] =
+            json!("Все 13 trophy/156 состояний проверены, включая g2★0, без двойного учёта");
+        assert!(complete(SCREEN) && !clipped(SCREEN));
+        assert_eq!(read(SCREEN, &event["request"]), Ok(()));
+        for older in [
+            SCREEN.replace(
+                "automatically and questions",
+                "automatically, and questions",
+            ),
+            SCREEN.replace(
+                "  Tools are approved",
+                "  Tools and plan changes are approved",
+            ),
+            SCREEN.replace("goal command.", "goal command"),
+        ] {
+            assert!(read(&older, &event["request"]).is_err(), "{older}");
+        }
+    }
+
+    #[test]
     fn truncation_and_unicode_follow_visible_columns() {
         assert_eq!(truncate("abcdef", 5).as_deref(), Some("ab..."));
         assert_eq!(truncate("Привет", 5).as_deref(), Some("Пр..."));
@@ -839,6 +1107,144 @@ mod tests {
             Ok(self.response.clone().filter(|_| self.screens.len() == 1))
         }
         fn pause(&mut self) {}
+    }
+
+    fn docked_delivery(event: &Value, initial: usize, target: usize) -> Fixture {
+        let count = goal(&event["request"]).unwrap().choices().len();
+        let mut selections = vec![initial];
+        for _ in 1..count {
+            selections.push((selections.last().unwrap() + 1) % count);
+        }
+        for _ in 0..count {
+            if selections.last() == Some(&target) {
+                break;
+            }
+            selections.push((selections.last().unwrap() + 1) % count);
+        }
+        let mut screens = selections
+            .into_iter()
+            .map(|selected| docked_screen(event, selected, 78))
+            .collect::<Vec<_>>();
+        screens.push(String::new());
+        Fixture {
+            screens,
+            keys: vec![],
+            pastes: vec![],
+            response: Some(
+                response(goal(&event["request"]).unwrap().choices()[target].id)["response"].clone(),
+            ),
+        }
+    }
+
+    #[test]
+    fn a_skipped_navigation_frame_never_submits() {
+        let home = tempfile::tempdir().unwrap();
+        let record = record(home.path());
+        for mode in ["manual", "yolo"] {
+            let event = request(mode);
+            let card = only(&record, &event);
+            let mut io = docked_delivery(&event, 0, 0);
+            io.screens[1] = docked_screen(&event, 2, 78);
+            assert!(drive(
+                &mut io,
+                &mut || Ok(()),
+                &event["request"],
+                &card,
+                &answer("auto")
+            )
+            .is_err());
+            assert_eq!(
+                io.keys,
+                ["Down"],
+                "a skipped choice must stop before the next key"
+            );
+        }
+    }
+
+    #[test]
+    fn fullscreen_delivery_checks_every_description_before_the_submission_key() {
+        let home = tempfile::tempdir().unwrap();
+        let record = record(home.path());
+        for mode in ["manual", "yolo"] {
+            let event = request(mode);
+            let card = only(&record, &event);
+            let choices = goal(&event["request"]).unwrap().choices();
+            for initial in 0..choices.len() {
+                for (target, choice) in choices.iter().enumerate() {
+                    let mut io = docked_delivery(&event, initial, target);
+                    let navigation = io.screens.len() - 2;
+                    let mut checks = 0;
+                    drive(
+                        &mut io,
+                        &mut || {
+                            checks += 1;
+                            Ok(())
+                        },
+                        &event["request"],
+                        &card,
+                        &answer(choice.id),
+                    )
+                    .unwrap();
+                    assert_eq!(&io.keys[..navigation], vec!["Down"; navigation]);
+                    assert_eq!(io.keys[navigation], (target + 1).to_string());
+                    assert_eq!(checks, io.keys.len());
+                    assert!(io.pastes.is_empty());
+                }
+            }
+            let mut io = docked_delivery(&event, 0, 0);
+            io.screens[1] = io.screens[1].replace(
+                "approved automatically.",
+                "approved automatically and plans too.",
+            );
+            assert!(drive(
+                &mut io,
+                &mut || Ok(()),
+                &event["request"],
+                &card,
+                &answer("auto")
+            )
+            .is_err());
+            assert_eq!(
+                io.keys,
+                ["Down"],
+                "a changed hidden description must never submit"
+            );
+
+            let mut io = docked_delivery(&event, 0, 0);
+            let mut checks = 0;
+            assert!(drive(
+                &mut io,
+                &mut || {
+                    checks += 1;
+                    if checks == 2 {
+                        Err("request changed".into())
+                    } else {
+                        Ok(())
+                    }
+                },
+                &event["request"],
+                &card,
+                &answer("auto")
+            )
+            .is_err());
+            assert_eq!(
+                io.keys,
+                ["Down"],
+                "a stale request stops before the next key"
+            );
+
+            let mut io = docked_delivery(&event, 0, 0);
+            io.screens[1] = screen(&event, 1);
+            assert!(drive(
+                &mut io,
+                &mut || Ok(()),
+                &event["request"],
+                &card,
+                &answer("auto")
+            )
+            .is_err());
+            assert_eq!(io.keys, ["Down"], "a layout transition is not replayed");
+        }
     }
 
     #[test]

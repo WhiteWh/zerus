@@ -1,4 +1,5 @@
 import { AgentBadge, MachineBadge, StatusBadge } from "./SessionCard";
+import { tr } from "../../i18n";
 import { clearMulti } from "./organize";
 import { agentKind } from "../../store/catalog";
 import { HIDE_LAUNCH_STATUS, accessibleText, computerOf, creationRowId, rowDetail } from "./creations-ui";
@@ -25,7 +26,7 @@ function choose(id: string) {
 function menu(e: MouseEvent, id: string) {
   e.preventDefault();
   e.stopPropagation();
-  setMenu({ x: e.clientX, y: e.clientY, items: [{ label: HIDE_LAUNCH_STATUS, action: () => { void hideCreation(id); } }] });
+  setMenu({ x: e.clientX, y: e.clientY, items: [{ label: tr(HIDE_LAUNCH_STATUS), action: () => { void hideCreation(id); } }] });
 }
 
 export function CreationCard(props: { card: Card }) {

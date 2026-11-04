@@ -4,7 +4,8 @@ import type { FitAddon } from "@xterm/addon-fit";
 import { Icon } from "../lib/icons";
 import { contentScale } from "../../store/ui";
 import { skin } from "../../skin/runtime";
-import { terminal, type Screen } from "../../store/terminal";
+import { screenShowsLatest, terminal, type Screen } from "../../store/terminal";
+import { tr } from "../../i18n";
 
 // xterm.js 6 loads when Terminal first opens. Linux keeps the DOM renderer;
 // macOS and Windows add the WebGL addon and fall back to DOM when its
@@ -71,7 +72,10 @@ export function TerminalTab() {
     if (gone) { term.dispose(); return; }
     const measure = () => { if (host.clientWidth > 0 && host.clientHeight > 0) fit.fit(); };
     measure();
-    const screen: Screen = { write: (bytes, done) => term.write(bytes, done), paste: (text) => term.paste(text), reset: () => term.reset(), size: () => ({ cols: term.cols, rows: term.rows }) };
+    const screen: Screen = {
+      write: (bytes, done) => term.write(bytes, done), paste: (text) => term.paste(text), reset: () => term.reset(), size: () => ({ cols: term.cols, rows: term.rows }),
+      latest: () => screenShowsLatest(term),
+    };
     term.onData((data) => terminal.input(encoder.encode(data), screen));
     term.onBinary((data) => terminal.input(Uint8Array.from(data, (c) => c.charCodeAt(0) & 255), screen));
     term.onResize(({ cols, rows }) => terminal.resized(cols, rows));
@@ -87,17 +91,17 @@ export function TerminalTab() {
   // Qt's updateButtons tooltips; unavailable shows the reason.
   const reason = () => terminal.texts()?.reason ?? "";
   const available = () => !!terminal.texts()?.available;
-  const toggleTip = () => (connected() ? "Disconnect terminal. The session keeps running" : available() ? "Connect terminal" : reason());
-  const reconnectTip = () => (available() ? "Reconnect terminal. The session keeps running" : reason());
+  const toggleTip = () => (connected() ? tr("Disconnect terminal. The session keeps running") : available() ? tr("Connect terminal") : reason());
+  const reconnectTip = () => (available() ? tr("Reconnect terminal. The session keeps running") : reason());
   return (
     <div class="term-tab">
       <div class="term-bar">
         <span class="ell" title={terminal.status()}>{terminal.status()}</span>
         <span class="grow" />
-        <button class="icon-btn" data-tip={reconnectTip()} aria-label="Reconnect terminal" disabled={!terminal.ready()} onClick={() => { void terminal.reconnect(); }}>
+        <button class="icon-btn" data-tip={reconnectTip()} aria-label={tr("Reconnect terminal")} disabled={!terminal.ready()} onClick={() => { void terminal.reconnect(); }}>
           <Icon name="refresh-cw" size={15} />
         </button>
-        <button class="icon-btn" data-tip={toggleTip()} aria-label={connected() ? "Disconnect terminal" : "Connect terminal"} disabled={!connected() && !terminal.ready()}
+        <button class="icon-btn" data-tip={toggleTip()} aria-label={connected() ? tr("Disconnect terminal") : tr("Connect terminal")} disabled={!connected() && !terminal.ready()}
           onClick={() => { void terminal.toggle(); }}>
           <Icon name={connected() ? "unplug" : "plug"} size={15} />
         </button>

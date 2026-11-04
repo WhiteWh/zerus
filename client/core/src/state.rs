@@ -641,6 +641,41 @@ impl CatalogState {
         self.hello.as_ref()
     }
 
+    /// Indexed service bootstrap parts are original source metadata, not
+    /// invented watch frames or a catalog snapshot. They carry no sequence.
+    pub fn source_metadata(
+        &mut self,
+        computer: &ComputerId,
+        part: &str,
+        value: Value,
+    ) -> Result<Vec<Change>, &'static str> {
+        match part {
+            "hello" => {
+                let hello: Hello =
+                    serde_json::from_value(value).map_err(|_| "invalid_source_hello")?;
+                let mut machine = self.machine.clone().unwrap_or_default();
+                if !hello.host.is_empty() {
+                    machine.host = Some(hello.host.clone());
+                }
+                machine.machine_id = hello
+                    .machine_id
+                    .clone()
+                    .filter(|id| crate::creation::canonical_uuid(id));
+                self.hello = Some(hello);
+                if self.machine.as_ref() == Some(&machine) {
+                    return Ok(vec![]);
+                }
+                self.machine = Some(machine.clone());
+                Ok(vec![Change::Machine {
+                    computer: computer.clone(),
+                    machine,
+                }])
+            }
+            "meta" if value.is_object() => Ok(self.set_meta(computer, value).into_iter().collect()),
+            _ => Err("invalid_source_metadata"),
+        }
+    }
+
     /// A new stream attempt starts (a probe or a spawn).
     pub fn begin(&mut self) {
         self.failed = false;
@@ -965,6 +1000,7 @@ impl<'a> Before<'a> {
         if let Some(old) = old {
             row.notify.optional_count = old.notify.optional_count;
             row.notify.optional_ids.clone_from(&old.notify.optional_ids);
+            row.optional_question_count = Some(old.notify.optional_count);
         }
     }
 
@@ -1454,6 +1490,7 @@ mod tests {
             ),
         );
         let row = row_of(&unknown, "run:run");
+        assert_eq!(row.optional_question_count, Some(2));
         assert_eq!(
             (row.notify.optional_count, row.notify.optional_ids.clone()),
             (2, vec!["q1".to_owned(), "q2".to_owned()]),
@@ -1471,6 +1508,7 @@ mod tests {
             2,
             "also across a full listing"
         );
+        assert_eq!(row_of(&again, "run:run").optional_question_count, Some(2));
         let other = state.apply(
             &local,
             &upsert(4, "run:run", questions(Value::Null, "other", "running")),
@@ -1480,6 +1518,7 @@ mod tests {
             -1,
             "another conversation starts unknown"
         );
+        assert_eq!(row_of(&other, "run:run").optional_question_count, None);
     }
 
     #[test]

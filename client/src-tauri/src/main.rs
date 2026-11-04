@@ -2,6 +2,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // The service's fixed inherited socket/owner entry precedes renderer,
+    // Tauri context, instance claims and every ordinary GUI/writer setup.
+    #[cfg(target_os = "macos")]
+    if let Some(status) = zerus_client_lib::entry::notification_host(
+        std::env::args_os().skip(1),
+        zerus_client_lib::notification_host::run,
+    ) {
+        std::process::exit(status);
+    }
     // A launch's console window on Windows: this program started with
     // `--console-run` runs the program in it and ends with its exit code.
     #[cfg(all(windows, feature = "live"))]
@@ -15,7 +24,5 @@ fn main() {
             std::process::exit(console_host::run(&arguments));
         }
     }
-    // First, before Tauri, GTK or any thread: WebKit reads its renderer variables at start.
-    zerus_client_lib::renderer::choose();
     zerus_client_lib::run();
 }

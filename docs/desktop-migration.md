@@ -78,8 +78,12 @@ never re-seed after rollback.
 
 G1 retains `desktop/owner.lock` for its process lifetime. G3 never takes it.
 `desktop/handoff.lock` is a separate OS-backed exclusive lock. G1's publication
-helper holds it briefly to commit immutable evidence and refuses/retries while
-an active writer holds it. G3 has no filesystem committer. G1 rereads
+helper holds it briefly to commit immutable evidence. If the active notification
+runtime holds it, G1's actor can lend its actual current Owner to one bounded
+Staged-only finalizer on the existing private IPC client thread. That whole
+Owner stays charged through filesystem work and original connection cleanup;
+revoke refuses new jobs and waits for admitted work. Other contention stays
+deferred, with only an exact known-negative explicit retry. G3 has no filesystem committer. G1 rereads
 the exact import UUID and digest under that lock, owns all marker transitions
 (`imported`, `quiesced`, `complete`, `revoked`), and retains the lock while any migrated
 writer runs. Commits use atomic replacement with durable file/directory flushes.
@@ -270,9 +274,25 @@ each source item is bounded at 1 MiB before JSON allocation, and scope JSON at
 destinations, unsafe credential-bearing repository URLs and oversized records
 remain in the unchanged source without a final family record. Attach the fresh
 source recheck before publication. No live Clone, status, retirement, clone,
-checkout or launch call runs. Next keeps no separate pending-clone store: its
-actual clone operations are already in the covered creation journal. These
-adapters add no discovery, startup publication, consumer or execution authority.
+checkout or launch call runs. These adapters add no discovery, startup
+publication, consumer or execution authority.
+
+`next_repository_clones(settings_bytes)` additionally covers Projects Clone's
+later native-only `repository_clones` Settings extension as
+`next-repository-clones`, schema 1, format `settings-json-v1`. It reuses the
+bounded Settings and version-1 checkpoint decoders (64 exact opaque scopes),
+without opening Settings or starting a writer. An absent extension is explicit;
+null, future, malformed, duplicate or oversized records refuse the family.
+Pending/previous credential-bearing URLs, including userinfo, queries or
+fragments, remain only in the original source without a final family record.
+The source hash covers the full original Settings bytes. Private snapshots
+include a `clone-header` with presence and extension byte length, followed by
+`clone-checkpoint-bytes` chunks with exact byte offsets and base64 bodies of at
+most 512 KiB before encoding. Concatenating them retains the extension JSON's
+original bytes, order and whitespace, including pending/previous request IDs;
+unrelated settings are excluded. The original scope hashes are never resolved
+to a current CLI/computer/project. Attach the same fresh source recheck before
+publication. No status, settlement, retirement, clone or replay is authorized.
 
 `download_index(folder, bytes)` reuses the pure bounded decoder extracted from
 the existing `download_cache::Ledger::open`. The index `.zerus-files.json` is
@@ -381,6 +401,25 @@ The adapters call no namespace adoption, post, close, activation or retry,
 create no live notifier/lock/source reader and seed or rewrite no file. G4
 retains its secure reads and native effects; G1 retains the runtime admission
 and drain. This evidence remains Staged and cannot authorize historical effects.
+
+`next_linux_owned_notifications(bytes)` separately retains the optional
+AgentAttention sibling `linux-notifications-owned.json` as
+`next-linux-owned-notification-identities`, schema 2, format
+`linux-notifications-owned-json-v2`. It reuses G4's explicit
+`decode_owned_for(..., AgentAttention)`, including raw entry/file budgets and
+each row's owner/identity and empty-legacy-home checks. SoftwareUpdate rows or invalidations in
+this file refuse; no Update sibling family is invented here. Schema-one
+sources and their original suppression home remain unchanged.
+
+Private `linux-owned-notification-header` records byte length, raw entry count,
+unknown-field presence and byte encoding. Subsequent
+`linux-owned-notification-bytes` chunks contain exact offsets and base64 of at
+most 512 KiB of original bytes. Order, whitespace, original IDs, pending/unknown
+states and private unknown fields survive without calling policy `encode` or
+constructing a Model. Attach the same fresh source recheck before publication.
+This single-file adapter proves no combined owner-pair inventory, valid restart,
+commit, source discovery, current profile, permission consumer, lease or drain.
+It opens no file and has no production caller or historical effect path.
 
 `recovery_policy_caches(&QtSnapshot, next_settings_bytes)` decodes both former
 `recovery/sharedPolicy` values before returning either source stream. Families

@@ -1,18 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { creditsText, loginLabel, memberStateText, memberOf, panelWindow, summaryLine, visibleAccounts, visibleMembers } from "./accounts-ui";
+import { creditsText, loginLabel, memberStateLabel, memberStateText, memberOf, panelWindow, profileTags, summaryLine, visibleAccounts, visibleMembers } from "./accounts-ui";
 import { NOW, projected, usageOf } from "../../store/testing";
 import { dayTime } from "../lib/usage";
 import { emptyAccounts, type Account, type Profile } from "../../types";
 
 const member = (extra: Partial<Profile> = {}): Profile => ({
   key: "\u001fclaude-work", host: "", machine: "workstation", id: "claude-work", label: "Work", provider: "claude", native: false,
-  installed: true, is_default: false, home: "", auth_revision: "", online: true, state: "ready", detail: "Ready on workstation.",
-  signed_in: true, permission: "auto", permission_label: "Auto", permission_hint: "", model_supported: true, model_text: "",
+  installed: true, is_default: false, home: "", auth_revision: "", online: true, state: "ready", detail: { source: "Ready on workstation." },
+  signed_in: true, permission: "auto", permission_label: { source: "Auto" }, permission_hint: { source: "" }, model_supported: true, model_text: { source: "" },
   usage: usageOf(), opencode: null, ...extra,
 });
 const account = (members: Profile[], key = "a"): Account => ({
   key, label: "Work", provider: members[0].provider, installed: true, machines: members.map((m) => m.machine), members,
-  usage: usageOf(), permission: "Auto", identity_lines: [], identity_note: "",
+  usage: usageOf(), permission: { source: "Auto" }, identity_lines: [], identity_note: null,
 });
 
 describe("accounts page", () => {
@@ -49,6 +49,20 @@ describe("accounts page", () => {
     expect(visibleMembers(many, "m1\u001fx").map((m) => m.machine)).toEqual(["m0", "m1", "m2", "m3"]);
     expect(visibleMembers(account(many.members.slice(0, 4)), undefined)).toHaveLength(4);
     expect(visibleMembers(account(many.members.slice(0, 5)), undefined)).toHaveLength(4);
+  });
+
+  it("tags only profiles that share a machine, by native or a unique id prefix", () => {
+    const at = (host: string, id: string, extra: Partial<Profile> = {}) => member({ key: `${host}\u001f${id}`, host, machine: host, id, ...extra });
+    const tags = profileTags(account([
+      at("arch", "claude-6875dbf59f"), at("arch", "claude-d036076906"), at("arch", "native-claude", { native: true }), at("mac", "claude-6875dbf59f"),
+    ]));
+    expect([...tags]).toEqual([["arch\u001fclaude-6875dbf59f", "6875db"], ["arch\u001fclaude-d036076906", "d03607"], ["arch\u001fnative-claude", "native"]]);
+    const codex = { provider: "codex" };
+    const close = profileTags(account([at("arch", "codex-94d8b8359f", codex), at("arch", "codex-94d8b8aaaa", codex), at("arch", "short", codex)]));
+    expect([...close.values()]).toEqual(["94d8b83", "94d8b8a", "short"]);
+    expect(profileTags(account([at("arch", "claude-a"), at("mac", "claude-b")])).size).toBe(0);
+    expect(memberStateLabel("ready")).toBe("Ready");
+    expect(memberStateLabel("signed-out")).toBe("Sign-in needed");
   });
 
   it("words the summary as Qt does", () => {

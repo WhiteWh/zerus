@@ -200,13 +200,15 @@ save them.
 
 | Family | Job | Key after the prefix | Saved when | Bound |
 | --- | --- | --- | --- | --- |
-| `msrv-`, `cli-`, `windows-cli-` | Quick checks, CLI, Windows | OS/arch, hash of `rustc -Vv`, month, `Cargo.lock` hash | Exact key missed; Rust build passed | Monthly restart; about 200–250 MB each; the quick checks' `target/replica` (the replica crate's own lockfile) rides under the same key |
+| `msrv-v2-` | Quick checks | OS/arch, hash of `rustc -Vv`, month, `Cargo.lock` hash | Exact key missed; Rust checks passed | Shared Cargo target, incremental state and debug symbols disabled; monthly restart |
+| `cli-`, `windows-cli-` | CLI, Windows | OS/arch, hash of `rustc -Vv`, month, `Cargo.lock` hash | Exact key missed; Rust build passed | Monthly restart |
 | `connector-` | Rust mobile connector | OS/arch, hash of `rustc +1.99.1 -Vv`, month, `services/mobile/connector/Cargo.lock` hash | Exact key missed; connector tests passed | Monthly restart; about 400 MB before compression, without incremental state |
 | `client-native-` | Native desktop client | OS/arch, hash of `rustc +1.99.1 -Vv`, month, hashes of the three client lockfiles | Exact key missed; native checks passed | Monthly restart; Cargo registry and Git checkouts only, so multi-GB native target directories are never cached |
 | `arch-cargo-v1-` | Arch package | Month, hash of `Cargo.lock` and the connector's lock | Exact key missed; package built | Cargo registry only |
 | `android-gradle-v1-` | Android | Month, hash of the Gradle wrapper properties and `*.gradle.kts` | Exact key missed; tests and lint passed | Monthly restart; about 700 MB (`~/.gradle/caches` and `wrapper`) |
-| `windows-qt-6.10.3-` | Windows | Hash of the Qt pin and installer | Exact key missed; desktop build passed | The pinned Qt archives, no WebEngine |
-| `arch-ccache-v1-`, `arch-package-ccache-v1-`, `mac-desktop-ccache-v1-`, `windows-ccache-v1-` | Arch desktop, Arch package, macOS, Windows | Architecture (macOS, Windows), Qt release (Windows), run ID | Build passed with ccache misses | `CCACHE_MAXSIZE` 150, 100, 100 and 500 MB |
+| `arch-ccache-v1-`, `arch-package-ccache-v1-`, `mac-desktop-ccache-v1-` | Arch desktop, Arch package, macOS | Architecture (macOS), run ID | Build passed with ccache misses | `CCACHE_MAXSIZE` 150, 100 and 100 MB |
+
+Quick and relay checks reclaim only unused Android, .NET, Haskell and CodeQL installations on disposable hosted Ubuntu runners. Disk checkpoints record free bytes and build-directory sizes. Quick shares one Cargo target across its crates; the new cache family avoids restoring the former duplicated debug and incremental trees. Relay removes its completed host Cargo targets before Docker compiles the deployment image; the remaining memory-envelope checks run that image. PostgreSQL containers and volumes, Cargo registries and the Python test environment stay available. Runner classes and the repository cache limit are unchanged.
 
 The Windows real-agent job restores the `windows-cli-` family of the Windows
 desktop job for its release build and never saves it, so two jobs cannot race to
@@ -238,16 +240,6 @@ The Arch package job enables ccache for makepkg only through
 the image's default `BUILDENV` differs only in `ccache`. The published recipes and
 their `check()` are unchanged. The package build uses different compiler flags
 from the desktop build, so it has its own cache family.
-
-Windows installs the official ccache 4.14.1 x86_64 release. The job pins its
-SHA-256, which matches the archive signed with the ccache minisign key
-`RWQX7yXbBedVfI4PNx6FLdFXu9GHUFsr28s4BVGxm4BeybtnX3P06saF`. ccache officially
-supports MSVC since 4.13. Release builds have no `/Zi`, which ccache cannot
-cache; a build with debug information would need `/Z7` instead. Depend mode
-(`CCACHE_DEPEND`) takes the includes from Ninja's `/showIncludes` instead of
-running the preprocessor again. The job sets no `CCACHE_BASEDIR`: rewriting
-paths to relative ones would also change `__FILE__`, from which suites locate
-their fixtures, and the runner's workspace path is the same on every run.
 
 ### Manual checks
 
@@ -586,105 +578,64 @@ gives each step a synchronous anonymous pipe as stdin, and Windows OpenSSH never
 exits after using one (the fake client refuses it), so steps that start `hgs.exe`,
 `ssh` or the desktop app read stdin from `/dev/null`.
 
-Qt 6.10.3 for MSVC 2022 x64 with Qt Multimedia comes from the official archives
-pinned in `packaging/windows/qt.json`, which `scripts/install-qt-windows.py`
-installs with the shared standard-library installer `scripts/qt_archives.py`
-(also used for [macOS](macos-distribution.md#pinned-qt)). No PyPI package is
-installed for it. The pin lists what aqtinstall 3.3.0 installed for this build
-before: every archive of `qt.qt6.6103.win64_msvc2022_64` (`qtbase`, `qtsvg`,
-`qtdeclarative`, `qttools` with `windeployqt`, `qttranslations`,
-`d3dcompiler_47` and `opengl32sw`) and `qtmultimedia`, each with its URL path in
-the repository, its size, its SHA-256 and the directory its `Extract` operation
-in `Updates.xml` names. The installer downloads every archive (download.qt.io may
-redirect to a mirror), stops reading at the pinned size, checks the SHA-256 and
-lists the members with the runner image's 7-Zip before it extracts any archive.
-A member with an absolute, drive, parent, device or alternate-stream name, or a
-link, stops the installation; so does a link left in the extracted tree that
-resolves outside it. A failed download is retried twice, each failure logged;
-nothing unverified is kept. The result is aqtinstall's layout,
-`RUNNER_TEMP/Qt/6.10.3/msvc2022_64`. Of aqtinstall's fixups only `bin/qt.conf`
-(`Prefix=..`) is repeated: the official Qt is relocatable, the `qmake.exe`, `.prl`
-and `qconfig.pri` patches find nothing to change in 6.10.3, and `qtenv2.bat` is
-for interactive shells. Compared with an aqtinstall 3.3.0 installation of the
-same release (on Linux, 2026-10-15), all other 11807 entries matched, except
-for the line endings of `qconfig.pri`, which aqtinstall rewrites in text mode. On
-Windows that rewrite keeps the archive's CRLF in `qconfig.pri` but gave the LF
-`lib/*.prl` files CRLF, which only qmake reads; they now stay LF. The
-installer also writes `zerus-qt.json`, the archive list it installed, and the
-`Use Qt` step checks it with `--check`, so a restored cache must match the pin
-too.
+The Windows desktop is Zerus Next, built from the locked frontend and Tauri
+Rust package with `tauri.windows.conf.json` and the `video` feature. The output
+is `target/windows-next/release/hgs-tray.exe`, with the installed identity
+`com.hgdev.hgs-tray`. This job does not install Qt, run `windeployqt` or cache a
+Qt/C++ desktop build. Native Windows shell contracts also run in the dedicated
+client-native job.
 
-To update Qt, change the version, `prefix`, package names and directories in
-`qt.json`, then run `python scripts/install-qt-windows.py --lock`: it reads the
-archives and their `Extract` directories from the official `Updates.xml`,
-downloads each archive and records its size and digest once it matches the
-published `.sha256`. From Qt 6.11 each Windows architecture has a repository
-directory of its own (`desktop/qt6_6112/qt6_6112_msvc2022_64` rather than
-aqtinstall's expected `desktop/qt6_6112/qt6_6112`), which a package's `directory`
-names; the 6.11 base package adds `qtdoc`. Review the locked pin like the other
-pins and check `--output` locally (7-Zip on Linux works as well) before
-committing. The Qt directory is cached with `actions/cache` under a key that
-covers the Qt release, the pin and the installer. Like every cache, only trusted
-main checks save it; PR, manual and nightly runs restore it (see
-[build caches](#build-caches)). Such a run downloads Qt when no cache entry exists
-yet. Qt WebEngine is not installed: the embedded DeepSeek Native UI is an
-optional Linux plugin. The desktop build compiles through ccache.
+WebView2 Evergreen is a shared prerequisite. The app installer checks the
+Microsoft-documented user and machine registration and stops before changing
+Zerus files when it is missing. Winget declares `Microsoft.EdgeWebView2Runtime`
+as a dependency; portable users install it separately. Only the disposable
+Windows CI runner uses `scripts/ci/ensure-webview2.py`: it first checks for an
+existing runtime, otherwise downloads the official HTTPS bootstrapper within a
+4 MiB/time bound, verifies a valid Microsoft Authenticode signature, runs it
+with a fixed timeout and checks the registration again. It refuses owner and
+non-Windows environments and never removes the shared runtime. See Microsoft's
+[WebView2 distribution guidance](https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution).
 
-`scripts/ci/gui.sh` re-enters itself through `scripts/ci/msvc-env.py`, which
-locates Visual Studio with `vswhere` and applies `vcvars64.bat` (with its CMake
-and Ninja first on `PATH`) to that build only, then builds with Ninja and `cl` and
-runs every CTest suite offscreen.
+`scripts/package-windows.py` copies the exact tested `hgs.exe`, Tauri
+`hgs-tray.exe` and `zerus-mobile-connector.exe` into
+`zerus-windows-x86_64.zip`, preserving the top-level
+`zerus-windows-x86_64/hgs-tray.exe` path winget uses. It adds the app-local MSVC
+runtime from Visual Studio's default redistributable directory and the pinned
+ConPTY pair next to `hgs.exe`. No Qt runtime or plugins are deployed.
 
-`scripts/package-windows.py` bundles the exact tested `hgs.exe`, `hgs-tray.exe`
-and `zerus-mobile-connector.exe`
-into `zerus-windows-x86_64.zip` with one top-level `zerus-windows-x86_64/` folder:
+The zip carries the project, Codex and ConPTY notices, the host-target Rust
+notices for the CLI/connector and Tauri desktop (including its selected video
+feature), and the exact installed production frontend packages' license texts.
+Frontend collection uses the shared `client/scripts/collect-notices.py` and npm
+lockfile, excludes development tools except Vite's emitted preload runtime, and
+refuses missing notices or mismatched installed versions. `build-info.json`
+records `desktop:tauri`, `webview2_runtime:evergreen`, versions and exact source.
+The portable inspector still accepts immutable published Qt archives with their
+original layout and notices, so retries never rebuild or alter older releases.
 
-- `windeployqt` adds Qt, its plugins (including the SVG image and icon plugins
-  loaded at run time) and translations. It runs with `--no-opengl-sw`: the Mesa
-  software OpenGL fallback would need notices the zip does not carry. `--no-system-d3d-compiler` and `--no-system-dxc-compiler` keep
-  Microsoft's shader compilers out: Windows includes `D3DCompiler_47.dll`, and
-  the notices do not cover the Windows SDK's `dxcompiler.dll` and `dxil.dll`.
-  The ICU DLLs it copies from the build machine's System32 (a forwarder
-  to `icu.dll` on current Windows) are removed; `Qt6Core.dll` uses the system ICU.
-  The minimum is Windows 10 1903, which the desktop app's UTF-8 code page also
-  needs.
-- The app-local Visual C++ runtime DLLs come from the default redistributable
-  folder of the Visual Studio found by `vswhere`, never a hard-coded version.
-- `conpty.dll` and `OpenConsole.exe`, the pinned [ConPTY pair](#the-bundled-conpty-pair),
-  sit next to `hgs.exe`, so `hgs session-host install` from the extracted folder
-  stages them into the host image. `--conpty` names a folder from
-  `scripts/fetch-conpty.py`, whose files must match the pin; without it the
-  script fetches the pair itself.
-- `licenses/` holds the libvterm, md4c, Codex and ConPTY texts (the ConPTY license
-  and Windows Terminal's notices), the host-target Rust
-  dependency notices from `scripts/collect-licenses.py`, the per-module SPDX
-  documents shipped with Qt and, in `licenses/qt`, the texts from
-  `packaging/windows/licenses` (sources in its `README.md`). Packaging parses the
-  documents and fails when one names a standard license or exception without its
-  text there, or a `LicenseRef-` without extracted text in the documents.
-- `LICENSE`, `THIRD_PARTY_NOTICES.md`, a `README.txt` for Windows users and
-  `build-info.json` with the source commit, product, CLI and Qt versions.
+`scripts/check-windows-portable.py` checks safe regular-file names, the pinned
+ConPTY hashes, notices, manifest identity and the existing 512 MiB compressed /
+500 MB unpacked bounds. `--run --selftest` on Windows uses private temporary
+configuration and a minimal environment to check CLI/connector startup and the
+exact clean desktop `--build-info` identity. It stages the bundled ConPTY pair
+through `hgs.exe session-host install` without starting a host. New Tauri builds
+do not use Qt's old `--selftest` option.
 
-`scripts/check-windows-portable.py` then checks every entry (no absolute, parent,
-device, case-duplicate or symlink names, no ICU, software OpenGL or Direct3D
-shader compiler DLLs and no Qt WebEngine files), the required runtime and license texts, the manifest
-provenance and the limits: at most 512 MiB compressed, the release mirror's
-asset limit, and 500 MB unpacked, the bound applied to whole nightly candidates.
-`conpty.dll` and `OpenConsole.exe` must be the pinned builds, by size and SHA-256
-read in memory, and no file of either name may sit anywhere but next to
-`hgs.exe`; stable and nightly assembly and publication repeat these checks.
-With `--run --selftest` on Windows it extracts the zip and starts both
-executables with a minimal environment, without Qt or the bundle on `PATH`:
-`--version` of each, `hgs.exe ls --json --local` must report the control-only
-local computer, and `hgs-tray.exe --selftest` must find the `hgs.exe` next to
-it. Last, `hgs.exe session-host install` enables local sessions in the
-disposable profile and must stage the pinned pair into the host image; it starts
-no host. The job uploads the zip and logs as `windows-x86_64-<commit>` without
-recompressing them and keeps them for seven days (three for schedules). Qt
-WebEngine, which made earlier zips about 140 MB (345 MB unpacked), is not part of
-it. Only stable and nightly assembly use that zip. On main pushes the [Dev channel](public-distribution.md#verified-main-dev-channel)
-waits for this job like every other suite, so a Windows failure also holds back
-Dev, but Dev candidates carry no Windows build.
+CI builds the per-user Inno Setup installer from the tested zip without changing
+payload bytes. Installer survival tests install, upgrade and uninstall in their
+isolated fixture while preserving staged hosts and sessions. Login start is an
+unchecked installer choice and invokes the desktop's guarded login-item command;
+uninstall asks that command to remove only its own registration. Obsolete Qt
+files are removed only by the existing owned-app-folder upgrade sweep.
+Windows service registration/removal is reserved for the maintained G1 command
+from the Windows service lane. Explicit installer hooks currently log that it is
+pending; they create no ad-hoc scheduled task or claim active background duties.
+`hgs desktop registration --json` previews the shared definition/readiness interface.
+
+The job uploads the zip, installer and logs in `windows-x86_64-<commit>` for seven
+days (three for schedules). Stable/nightly assembly continues to use the tested
+zip unchanged; publishing the installer is separate work (.66.7.4). Windows Dev
+builds remain absent.
 
 #### The bundled ConPTY pair
 
@@ -869,6 +820,13 @@ Reviewed 2.1.314 against 2.1.312: its unattended approval countdown says
 and "avoid blocking progress". Either exact advisory is outside question identity
 because it counts down and disappears on navigation; the command, warning and
 choices remain bound, and altered wording still refuses delivery.
+Claude 2.1.317 adds a Bash reliability check after approval: macOS's system
+Bash 3.2 refuses some compound commands with exit code 126. The native safety
+fixtures retain the variable-path rm warning and exact directory fence using
+`T=$PWD; test . -ef <fixture-work>`; the former `$(pwd)` and quoted-variable
+comparison form was refused. Timeout diagnostics retain bounded native tool
+results beside the screen so execution errors remain visible when Claude
+collapses a completed tool call.
 Claude offers a one-time default permission mode change; fixtures set
 `hasSeenAutoDefaultNudge` except the suite that answers that offer. OpenCode has
 a supported minimum of 2.0.32; CI tests its latest release on Linux and macOS.
@@ -1008,6 +966,14 @@ signed-in account can use it. For Kimi this workflow currently discovers
 versions only. Its separate native and approval workflows qualify one latest
 Kimi release for affected PRs or manual runs. DeepSeek's latest-release keyless
 contract fixture runs in full Linux CLI CI.
+
+The Kimi approval gate covers CreateGoal in both regular and fullscreen mode.
+The fullscreen panel shows only the selected choice's description; inspection
+checks that visible text without navigating. An explicit answer verifies every
+choice's description through guarded navigation before submitting the requested
+option. Changed or clipped descriptions, a changed request or a layout transition
+refuse further input. Both modes retain native decision, permission-mode and
+single goal-creation checks.
 
 The Kimi native inventory includes launching with an initial message, waiting
 at folder trust without sending it, then delivering it exactly once through
@@ -1434,24 +1400,25 @@ Generate `.SRCINFO` with `makepkg --printsrcinfo`; never edit it manually.
 
 | Class | Packages | Reason |
 | --- | --- | --- |
-| Desktop runtime | `qt6-base`, `qt6-multimedia`, `qt6-svg`, `kstatusnotifieritem`, `kwindowsystem`, `kidletime`, `hicolor-icon-theme` | Widgets, voice recording, SVG plugin, tray/window integration, idle detection and icons |
+| Desktop runtime | `webkit2gtk-4.1`, `gtk3`, `gdk-pixbuf2`, `glib2`, `cairo`, `libsoup3`, `libappindicator`, `dbus`, `hicolor-icon-theme` | Zerus Next webview, GTK integration, tray and icons |
+| Media runtime | `alsa-lib`, `gstreamer`, `gst-plugins-base-libs`, `gst-plugins-base`, `gst-plugins-good`, `gst-plugins-bad`, `gst-plugins-ugly`, `gst-libav` | Voice capture, camera/round video, H.264/AAC and playback |
 | CLI/runtime tools | `tmux>=3.7`, `openssh`, `python`, `curl`, `procps-ng`, `bash`, `tar` | Persistent sessions, remote access, compatibility helper, account HTTP, process inspection, installers and remote source transfer |
 | Native library runtime | `glibc`, `libgcc`, `libstdc++` | Dynamically linked CLI/desktop binaries |
-| Source build only | `rust`, `cmake`, `ninja`, `qt6-webengine`; additionally `git` for `zerus-git` | Locked Rust and production Qt builds, the native UI plugin; Git source/version discovery |
+| Source build only | `rust`, `nodejs`, `npm`; additionally `git` for `zerus-git` | Locked Rust client/CLI/connector and frontend builds; Git source/version discovery |
 | Standard build environment | `base-devel` | Required by Arch's makepkg/AUR build convention; its tools are not repeated in makedepends |
-| Optional features | `nodejs`, `npm`, `git`, `konsole`, `wl-clipboard`, `xclip`, `systemd`, `qt6-webengine` | Native agent installation/runtime, worktrees, external terminals, clipboard, user services/scopes and the embedded DeepSeek Native UI |
+| Optional features | `nodejs`, `npm`, `git`, `konsole`, `wl-clipboard`, `xclip`, `systemd` | Native agent installation/runtime, worktrees, external terminals, clipboard and user services/scopes |
 
-The binary package has no Rust/CMake/Ninja build dependencies. Its Qt/KDE, C/C++
-runtime and glibc dependency floors are generated from the **verified builder's
-`.BUILDINFO`**, not the publication runner. `release-info.json` records these
-versions. This prevents installing that binary against older libraries that may
-lack symbols; Arch users should keep a fully updated system. A fresh binary/ABI
-rebuild gets a new product version and immutable assets.
+Both source recipes build `client/` with
+`tauri build --no-bundle --config tauri.switch.linux.conf.json --features video`.
+The output remains `hgs-tray`. Binary packages need no Rust, Node.js/npm or Qt
+build toolchain. GTK/WebKit, media and C/C++ library floors come from the
+**verified builder's `.BUILDINFO`**, never the publication runner;
+`release-info.json` records them. Arch users should keep a fully updated system.
+A fresh binary/ABI rebuild gets a new product version and immutable assets.
 
-Node.js and npm are separate optional dependencies. Native agents are installed
-separately through Accounts or their upstream installers; agent executables,
-credentials and user configuration are never bundled. Systemd integration is
-optional and detected at runtime. Packaging never enables services.
+Node.js/npm are runtime options for separately installed agents. Credentials,
+agent executables and user configuration are never bundled. Systemd integration
+is detected at runtime; packaging never enables services.
 
 ### Package contents and compatibility
 
@@ -1460,10 +1427,9 @@ Each flavor installs the same ADE bundle:
 - `/usr/bin/hgs`, `/usr/bin/hgs-tray`, the `hgs_state.py` compatibility shim and
   the explicit `zerus-setup` migration helper, whose `--mobile-connector
   {protect,migrate,rollback}` runs `/usr/lib/zerus/install-mobile-connector-service.py`.
-- `/usr/lib/hgs-tray/plugins/libhgs-tray-native-ui.so`, the embedded DeepSeek
-  Native UI. It alone links Qt WebEngine and loads only when `qt6-webengine` is
-  installed; otherwise Native UI opens in the browser. `check-package.py`
-  requires it and rejects an `hgs-tray` that links Qt WebEngine itself.
+- Zerus Next's `hgs-tray`, with embedded frontend assets. `check-package.py`
+  requires the Next build identity and GTK/WebKit linkage, rejects Qt/KDE
+  linkage and rejects a packaged Qt native UI plugin.
 - `/usr/bin/zerus-mobile-connector`, the Rust mobile connector, and its user
   unit `zerus-mobile-connector.service` (`KillMode=process`, configuration
   `%E/hgs/mobile/connector.json`, skipped while that file is missing). The
@@ -1476,18 +1442,14 @@ Each flavor installs the same ADE bundle:
 - A desktop entry, existing application icons and system-provided **user** unit
   definitions for `hgs-tray`, `hgs-swarm` and `hgs-recovery`.
 - Documentation and a sample tmux configuration under `/usr/share/doc/zerus`.
-- Zerus MIT, vendored libvterm MIT and the exact host-target Cargo dependency
-  license texts of `hgs` and the mobile connector (both locks) under
-  `/usr/share/licenses/<package-name>`.
+- Zerus MIT, the Codex data notice, and the host-target Cargo dependency
+  notices for `hgs`, the mobile connector and the client with its shipped
+  media/video features under `/usr/share/licenses/<package-name>`.
 
-Qt and KDE libraries are dynamically linked system dependencies. Qt WebEngine is
-needed only by the native UI plugin. Upgrades keep an installed `qt6-webengine`:
-an optional dependency is not an orphan for `pacman -Qdt`. Candidates sealed
-before Qt WebEngine became optional still validate for publication retries.
-`qt6-svg` supplies the dynamically loaded SVG image plugin used by menu and
-combo-box arrows; a Qt test renders the actual bundled resources so a missing
-plugin fails CI. The current Arch Qt base package supplies its Wayland display
-plugin. [Arch Qt SVG package](https://archlinux.org/packages/extra/x86_64/qt6-svg/).
+The Arch desktop dynamically links system GTK3/WebKitGTK and GStreamer; packages
+ship no Qt/KDE runtime or native UI plugin. Existing sealed Qt candidates remain
+valid for publication retries without changing their original bytes. The Qt
+source installer remains an explicit fallback until Linux acceptance.
 The runtime also declares curl for native account HTTP requests and procps-ng
 for process inspection. Optional Node.js/npm enable agent installation from
 Accounts; Git enables repository/worktree features. Arch's Node.js package does
@@ -1496,12 +1458,11 @@ The package does not bundle their distributions, native agent executables,
 accounts, credentials or configuration. Package installation does not start or
 stop services, edit user homes or replace the user's tmux configuration.
 
-The product package version currently follows the desktop version: `VERSION`
-and `tray/CMakeLists.txt` are **0.42.0**. The independently versioned compatible
-CLI is **1.51.0**. CI rejects a product/desktop version mismatch; packaging
-records both versions in `build-info.json`, with the source commit when built
-from Git. For source-archive builds, the release manifest and archive SHA-256
-provide the commit provenance.
+The product package version follows `VERSION`; the client embeds it in
+`--build-info`. The compatible CLI has its own version in `Cargo.toml`.
+Packaging records both versions and the source commit in `build-info.json`
+when built from Git. For source-archive builds, the release manifest and archive
+SHA-256 provide commit provenance.
 Stable fixes use patch releases (`0.42.1`, `0.42.2`); feature releases use a new
 minor version. `DEV_VERSION` names the next planned stable release and trusted
 main CI embeds its growing sequence (`0.42.1-dev.215`). Android follows the same
@@ -1531,6 +1492,17 @@ target and conflict. It is idempotent, preserves existing files and dangling
 symlinks, and refuses root execution. An existing source installation needs an
 intentional migration: inspect and move aside conflicting executables before
 running it. Do not remove `~/.config/hgs` or agent/session state.
+
+The package also ships the desktop-service installer. Explicitly register the
+per-user backend with `zerus-setup --desktop-service`; it consumes the selected
+CLI's configuration-scoped definition and IPC readiness probe. It imports the
+current graphical login environment before service creation and enables
+`hgs-desktop.service` for `graphical-session.target`. IPC readiness does not
+enable background workers. Custom definitions and drop-ins are preserved.
+The default `zerus-setup` command still creates compatibility links only.
+Pacman install/upgrade hooks never register, start or restart user services;
+after a package backend upgrade, run the explicit service setup again. See
+[Linux desktop background service](linux-distribution.md#desktop-background-service).
 
 Old user unit files in `~/.config/systemd/user` can shadow packaged definitions;
 inspect `systemctl --user cat hgs-tray.service` and the worker units before

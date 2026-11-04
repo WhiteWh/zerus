@@ -16,8 +16,9 @@ infer = { version = "0.22", default-features = false, features = ["alloc"] }
 # Reading Qt's macOS preference plist once, at the switch (settings).
 plist = { version = "1.10", default-features = false, features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
 time = { version = "0.3", features = ["parsing"] }
 zerus-watch-protocol = { path = "../../crates/watch-protocol" }
 zerus-desktop-migration = { path = "../../crates/desktop-migration" }
@@ -48,11 +49,14 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 # terminals and console windows (terminal_launch), and this process's Windows
 # session (launch::own_windows_session).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_Debug", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_ProcessStatus", "Win32_System_Registry", "Win32_System_RemoteDesktop", "Win32_System_Threading", "Win32_UI_Shell"] }
+unicode-casefold = "0.2"
+windows-sys = { version = "0.61", features = ["Wdk_System_Threading", "Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_Debug", "Win32_System_Environment", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Kernel", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_ProcessStatus", "Win32_System_Registry", "Win32_System_RemoteDesktop", "Win32_System_Threading", "Win32_UI_Shell"] }
 
 [features]
 konsole = ["dep:dbus"]
 linux-native-notify = ["dep:zbus", "dep:async-io", "dep:futures-lite", "dep:tokio"]
+# Read-only live-code observations on an existing Mac connection, opt-in only.
+macos-native-peer = ["objc2-foundation/NSData", "objc2-foundation/NSValue"]
 
 [[bin]]
 name = "fake-hgs-launcher"

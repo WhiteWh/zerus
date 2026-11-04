@@ -20,6 +20,8 @@
   .rail.labeled .rail-btn.on::before { left: -6px; }
 
   .page { min-width: 0; min-height: 0; overflow: hidden; display: flex; }
+  .page.with-service-status { flex-direction: column; }
+  .desktop-service-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: none; padding: 6px 12px; background: var(--z-color-pane); border-bottom: 1px solid var(--z-color-divider); color: var(--z-color-muted); font-size: var(--fs-xs); }
   .statusbar { grid-column: 2; display: flex; align-items: center; gap: 14px; height: 28px; white-space: nowrap; overflow: hidden; padding: 0 12px; border-top: 1px solid var(--z-color-divider); background: var(--z-color-pane); font-size: var(--fs-xs); color: var(--z-color-muted); }
   .statusbar .sb-usage { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 6px; border-radius: var(--z-radius-sm); color: var(--z-color-muted); }
   .statusbar .sb-usage:hover, .statusbar .sb-usage:focus-visible { background: var(--z-list-usage-hover); color: var(--z-color-text); }

@@ -33,6 +33,18 @@ PLIST_SRC="${SCRIPT_DIR}/packaging/${LABEL}.plist"
 PLIST_DEST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
 RELOAD=0
 
+# The desktop backend is independent of GUI lifetime. Preflight its exact owned
+# registration before replacing the app; GUI-only updates retain a live backend.
+if [ -x "${HOME}/.local/bin/hgs" ]; then
+    HGS_BIN="${HOME}/.local/bin/hgs"
+elif command -v hgs >/dev/null 2>&1; then
+    HGS_BIN="$(command -v hgs)"
+else
+    echo 'hgs-tray: install the hgs CLI with ./install.sh or mac-install.sh first.' >&2
+    exit 1
+fi
+python3 "${SCRIPT_DIR}/../scripts/install-macos-desktop-service.py" "${HGS_BIN}" --check-only
+
 # Неинтерактивный ssh на мак приходит с голым PATH (/usr/bin:/bin:/usr/sbin:/sbin):
 # /opt/homebrew/bin туда добавляет только `brew shellenv` из профиля интерактивной
 # оболочки. Скрипт должен работать и по ssh, и из Терминала, поэтому инструмент ищем
@@ -54,18 +66,19 @@ bundle_cdhash() {
 }
 
 # --- 0. which GUI -------------------------------------------------------------
-# The kind already installed stays (update-installed.py --installed-gui) unless
-# HGS_MAC_GUI chooses: qt for the Qt GUI, client for the Tauri client
-# (docs/macos-distribution.md#tauri-client-switch). A Mac without Zerus gets Qt.
-GUI="${HGS_MAC_GUI:-}"
-if [ -z "${GUI}" ]; then
-    GUI=qt
-    if [ -f "${SCRIPT_DIR}/update-installed.py" ] \
-        && [ "$(python3 "${SCRIPT_DIR}/update-installed.py" --installed-gui "${APP_DEST}" 2>/dev/null)" = "tauri" ]; then
-        GUI=client
-    fi
-fi
+# Fresh installs and upgrades build Zerus Next. HGS_MAC_GUI=qt remains an explicit
+# fallback until Mac acceptance; update-installed.py keeps Qt as the rollback copy
+# when switching to the client (docs/macos-distribution.md#tauri-client-switch).
+GUI="${HGS_MAC_GUI:-client}"
 case "${GUI}" in qt|client) ;; *) echo "HGS_MAC_GUI must be qt or client" >&2; exit 1 ;; esac
+DESKTOP_ARGS=()
+if [ "${GUI}" = "client" ]; then
+    # Capture the root build before the GUI changes CARGO_TARGET_DIR. The SSH
+    # wrapper supplies its retained native build explicitly; never sign that file.
+    LOCAL_CLI_BUILD="${HGS_MAC_CLI_BUILD:-${CARGO_TARGET_DIR:-${SCRIPT_DIR}/../target}/release/hgs}"
+    python3 "${SCRIPT_DIR}/prepare-local-macos.py" --check-cli \
+        --hgs "${LOCAL_CLI_BUILD}" --runner-hgs "${HGS_BIN}"
+fi
 
 # --- 1. build -----------------------------------------------------------------
 echo "[1/4] Building..."
@@ -120,9 +133,26 @@ echo "[2/4] Installing the .app bundle to ~/Applications..."
 # copy receives the public identity and compatible certificate before replacement.
 LOCAL_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/zerus-source-install.XXXXXX")"
 trap 'rm -rf "${LOCAL_STAGE}"' EXIT
-ditto "${BUILD_APP}" "${LOCAL_STAGE}/hgs-tray.app"
+if [ "${GUI}" = "client" ]; then
+    python3 "${SCRIPT_DIR}/prepare-local-macos.py" --app "${BUILD_APP}" \
+        --hgs "${LOCAL_CLI_BUILD}" --runner-hgs "${HGS_BIN}" \
+        --output "${LOCAL_STAGE}/hgs-tray.app" --installed "${APP_DEST}"
+    # The parent remains private; the installed bundle has its normal app mode.
+    chmod 755 "${LOCAL_STAGE}/hgs-tray.app"
+    python3 "${SCRIPT_DIR}/prepare-local-macos.py" --check-cli \
+        --hgs "${LOCAL_CLI_BUILD}" --runner-hgs "${HGS_BIN}"
+    if [ "$(bundle_cdhash "${LOCAL_STAGE}/hgs-tray.app/Contents/MacOS/hgs")" != \
+         "$(bundle_cdhash "${APP_DEST}/Contents/MacOS/hgs")" ]; then
+        DESKTOP_ARGS+=(--restart)
+    fi
+    DESKTOP_ARGS+=(--runner-hgs "${HGS_BIN}")
+    DESKTOP_HGS="${APP_DEST}/Contents/MacOS/hgs"
+else
+    ditto "${BUILD_APP}" "${LOCAL_STAGE}/hgs-tray.app"
+    python3 "${SCRIPT_DIR}/sign-local-macos.py" "${LOCAL_STAGE}/hgs-tray.app" "${APP_DEST}"
+    DESKTOP_HGS="${HGS_BIN}"
+fi
 BUILD_APP="${LOCAL_STAGE}/hgs-tray.app"
-python3 "${SCRIPT_DIR}/sign-local-macos.py" "${BUILD_APP}" "${APP_DEST}"
 # The numbered Dev guard before anything is replaced (docs/reference.md); without
 # the live update, also no switch between Qt and the client.
 if [ "${RESTART_RUNNING}" = "1" ]; then
@@ -154,16 +184,6 @@ echo "[3/4] Installing the LaunchAgent to ~/Library/LaunchAgents..."
 # путь к hgs подставляются здесь -- тем же приёмом, каким linux-ветка ниже правит Exec= в
 # .desktop. ~/.local/bin в PATH у launchd нет вовсе, так что --hgs обязателен: без него
 # трей не находит hgs и молча показывает пустой флот.
-if [ -x "${HOME}/.local/bin/hgs" ]; then
-    HGS_BIN="${HOME}/.local/bin/hgs"
-elif command -v hgs >/dev/null 2>&1; then
-    HGS_BIN="$(command -v hgs)"
-else
-    echo "hgs-tray: hgs not found -- neither ~/.local/bin/hgs nor in PATH." >&2
-    echo "  Install it from the workstation (./mac-install.sh [ssh-alias]) and retry:" >&2
-    echo "  without hgs the tray has nothing to show, so nothing is installed." >&2
-    exit 1
-fi
 # stderr агента (StandardErrorPath в plist): туда же, куда macOS складывает логи
 # пользовательских программ. Без файла launchd молча выбрасывает stderr, и зависание
 # главного потока (см. MainThreadWatchdog.h) не оставляет ни строчки.
@@ -184,6 +204,9 @@ if [ "${UPDATE}" = "1" ]; then
     python3 "${SCRIPT_DIR}/update-installed.py" "${BUILD_APP}" "${APP_DEST}"
     RELOAD=0
 fi
+# The selected signed service image is in the INSTALLED pair, never the staging
+# copy. Only a real backend change reloads this owned service, not native agents.
+python3 "${SCRIPT_DIR}/../scripts/install-macos-desktop-service.py" "${DESKTOP_HGS}" ${DESKTOP_ARGS[@]+"${DESKTOP_ARGS[@]}"}
 # launchctl list печатает "PID<TAB>Status<TAB>Label"; PID "-" значит, что агент
 # зарегистрирован, но не работает (Status -- код его последнего выхода).
 AGENT_PID="$(launchctl list 2>/dev/null | awk -v l="${LABEL}" '$3 == l { print $1 }')"
@@ -215,14 +238,22 @@ SCRATCH=0
 if [ -n "${HGS_INSTALL_PREFIX:-}" ]; then SCRATCH=1; fi
 LIVE="${RESTART_RUNNING}"
 if [ "${SCRATCH}" = "1" ]; then LIVE=0; fi
-GUI="${HGS_LINUX_GUI:-}"
-if [ -z "${GUI}" ]; then
-    GUI=qt
-    if [ "$(python3 "${SCRIPT_DIR}/update-installed.py" --installed-gui "${BIN_DEST}" 2>/dev/null)" = "tauri" ]; then
-        GUI=client
-    fi
-fi
+# Fresh installs and upgrades use Zerus Next. Qt remains an explicit fallback
+# until Linux acceptance: HGS_LINUX_GUI=qt ./tray/install.sh.
+GUI="${HGS_LINUX_GUI:-client}"
 case "${GUI}" in qt|client) ;; *) echo "HGS_LINUX_GUI must be qt or client" >&2; exit 1 ;; esac
+if [ "${GUI}" = "client" ] && [ "${LIVE}" = "1" ]; then
+    if [ -x "${PREFIX}/bin/hgs" ]; then
+        HGS_BIN="${PREFIX}/bin/hgs"
+    elif command -v hgs >/dev/null 2>&1; then
+        HGS_BIN="$(command -v hgs)"
+    else
+        echo "hgs-tray: install the hgs CLI first (./install.sh)." >&2
+        exit 1
+    fi
+    # Refuse an unsupported CLI or custom service before replacing the GUI.
+    python3 "${SCRIPT_DIR}/../scripts/install-linux-desktop-service.py" --hgs "${HGS_BIN}" --check
+fi
 
 # --- 1. build -----------------------------------------------------------------
 echo "[1/4] Building..."
@@ -259,6 +290,14 @@ CHECK=(--check "${BUILD_BIN}" "${BIN_DEST}")
 if [ "${LIVE}" = "1" ]; then CHECK+=(--live); fi
 # The numbered Dev guard before anything is replaced (docs/reference.md).
 python3 "${SCRIPT_DIR}/update-installed.py" "${CHECK[@]}"
+# An explicit local selection persists independently of the binary, so later
+# previews and the updater's service restarts keep it. Packages use the stock unit.
+LAUNCHER_CHANGE="$(python3 "${SCRIPT_DIR}/linux-launcher.py" --install "${PREFIX}")"
+if [ -n "${LAUNCHER_CHANGE}" ]; then CHANGED=1; fi
+LAUNCH_BIN="${BIN_DEST}"
+if [ -f "${PREFIX}/share/hgs/local-webkit.json" ]; then
+    LAUNCH_BIN="${PREFIX}/libexec/hgs-tray-launch"
+fi
 RELOAD=0
 mkdir -p "${PREFIX}/bin"
 if ! cmp -s "${BUILD_BIN}" "${BIN_DEST}" 2>/dev/null; then
@@ -330,10 +369,10 @@ else
     UNIT_DEST="${HOME}/.config/systemd/user/hgs-tray.service"
 fi
 mkdir -p "$(dirname "${UNIT_DEST}")"
-# The default unit stays byte-identical to the packaged %h form. Only a scratch
-# prefix needs a literal path, quoted and escaped as systemd requires.
-if [ "${SCRATCH}" = "1" ]; then
-    SYSTEMD_BIN_DEST="${BIN_DEST//\\/\\\\}"
+# The default unit stays byte-identical to the packaged %h form. Scratch and
+# opted-in local launches use a literal path, quoted and escaped for systemd.
+if [ "${SCRATCH}" = "1" ] || [ "${LAUNCH_BIN}" != "${BIN_DEST}" ]; then
+    SYSTEMD_BIN_DEST="${LAUNCH_BIN//\\/\\\\}"
     SYSTEMD_BIN_DEST="${SYSTEMD_BIN_DEST//\"/\\\"}"
     SYSTEMD_BIN_DEST="${SYSTEMD_BIN_DEST//%/%%}"
     NEW_UNIT=""
@@ -357,9 +396,19 @@ mkdir -p "${DESKTOP_DEST%/*}"
 # The launcher opens Sessions through the running instance; login start is only
 # through the service above, never another copy of this desktop file.
 NEW_DESKTOP=""
+DESKTOP_EXEC="${BIN_DEST} --sessions"
+if [ "${LAUNCH_BIN}" != "${BIN_DEST}" ]; then
+    # Desktop Entry values unescape once before Exec's quoted-argument parser.
+    DESKTOP_EXEC="$(python3 - "${LAUNCH_BIN}" <<'PY'
+import sys
+value = sys.argv[1].replace('\\', r'\\\\').replace('"', r'\\"').replace('`', r'\\`').replace('$', r'\\$').replace('%', '%%')
+print('"' + value + '" --sessions')
+PY
+)"
+fi
 while IFS= read -r line || [ -n "${line}" ]; do
     case "${line}" in
-        Exec=*) line="Exec=${BIN_DEST} --sessions" ;;
+        Exec=*) line="Exec=${DESKTOP_EXEC}" ;;
         Icon=*) line="Icon=${SYMBOLIC_DEST}" ;;
     esac
     NEW_DESKTOP+="${line}"$'\n'
@@ -381,6 +430,26 @@ fi
 if [ "${SCRATCH}" = "1" ]; then
     echo "[4/4] Scratch prefix ${PREFIX}: no service-manager action."
 else
+    if [ "${GUI}" = "client" ] && [ "${LIVE}" = "1" ]; then
+        SERVICE_HELPER="${PREFIX}/lib/zerus/install-linux-desktop-service.py"
+        for SERVICE_SOURCE in desktop-revoke-hold.py install-linux-desktop-service.py; do
+            SERVICE_DEST="${PREFIX}/lib/zerus/${SERVICE_SOURCE}"
+            if ! cmp -s "${SCRIPT_DIR}/../scripts/${SERVICE_SOURCE}" "${SERVICE_DEST}"; then
+                install -Dm755 "${SCRIPT_DIR}/../scripts/${SERVICE_SOURCE}" "${SERVICE_DEST}.new"
+                mv -f "${SERVICE_DEST}.new" "${SERVICE_DEST}"
+                CHANGED=1
+            fi
+        done
+        # The helper imports this login's environment before service creation.
+        # Unchanged backend code stays alive across a UI-only update.
+        DESKTOP_STATUS=0
+        python3 "${SERVICE_HELPER}" --hgs "${HGS_BIN}" || DESKTOP_STATUS=$?
+        case "${DESKTOP_STATUS}" in
+            0) ;;
+            3) echo "Desktop backend refresh pending. Continuing the GUI update; refresh the backend from the current graphical session." ;;
+            *) exit "${DESKTOP_STATUS}" ;;
+        esac
+    fi
     echo "[4/4] Reloading and enabling hgs-tray.service..."
     systemctl --user daemon-reload
     if [ "$(systemctl --user is-enabled hgs-tray.service 2>/dev/null || true)" != "enabled" ]; then

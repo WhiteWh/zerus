@@ -22,6 +22,10 @@ fn the_panel_follows_tracking_online_and_sending() {
         (view.id.as_str(), view.text.as_str(), view.hint.as_str()),
         ("q-1", "\u{276F} later", "ctrl+x ctrl+s to send now")
     );
+    assert_eq!(
+        (view.run_id.as_str(), view.conversation_id.as_str()),
+        ("run-1", "conv-1")
+    );
     assert!(view.can_send_now && view.enabled);
     assert_eq!(view.label, "Send now");
     let sending = queue_view(&details, true, true, false, true).unwrap();

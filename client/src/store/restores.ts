@@ -7,6 +7,7 @@ import { search, selectedKey, setSelectedKey, setStateFilter, stateFilter, type 
 import { archiveNameOccupied, menuState, nameKey, snapshotOf, STATE_CHANGED, type ActionRow } from "../ui/sessions/actions-ui";
 import type { Session } from "../ui/sessions/types";
 import type { Action, Outcome } from "../types";
+import { trNoop, tr } from "../i18n";
 
 // Restore session and Forget archived session, after Qt's changeSession
 // (SessionsWindow.cpp 5542-5560), terminateSession (5758-5826), writeDone
@@ -31,10 +32,10 @@ import type { Action, Outcome } from "../types";
 
 export const RESTORE_LIMIT = 64;
 const errorText = (error: unknown) => (typeof error === "string" ? error : error instanceof Error ? error.message : String(error));
-export const RESTORES_PENDING = "Finish or refresh the earlier restores before restoring another session.";
-export const RESTORE_UNVERIFIED = "The restored conversation could not be verified. Your archived draft remains in Saved drafts.";
+export const RESTORES_PENDING = trNoop("Finish or refresh the earlier restores before restoring another session.");
+export const RESTORE_UNVERIFIED = trNoop("The restored conversation could not be verified. Your archived draft remains in Saved drafts.");
 /** Qt's selectSessionEntry refusal after a confirmation. */
-export const NO_LONGER_AVAILABLE = "This session is no longer available. Refresh the list and open its actions again.";
+export const NO_LONGER_AVAILABLE = trNoop("This session is no longer available. Refresh the list and open its actions again.");
 
 interface PendingRestore {
   /** The computer and name (`nameKey`). */
@@ -56,7 +57,7 @@ export interface RestoreDeps {
   updating(computer: string, name: string): boolean;
   /** A selection batch or a machine-wide call runs (Qt's m_pending). */
   batchRunning(): boolean;
-  perform(row: ActionRow, action: Action, options?: { quiet?: boolean }): Promise<Outcome>;
+  perform(row: ActionRow, action: Action, options?: import("./actions").PerformOptions): Promise<Outcome>;
   notify(tone: Notice["tone"], text: string, sticky?: boolean): number;
   /** The click-time recheck of a menu entry (store/actions.ts). */
   stillListed(row: ActionRow): ActionRow | undefined;
@@ -112,7 +113,7 @@ export function createRestores(deps: RestoreDeps) {
       if (!conversation) deps.setSelectedKey(live.key);
       else {
         deps.setSelectedKey(undefined);
-        deps.notify("error", RESTORE_UNVERIFIED, true);
+        deps.notify("error", tr(RESTORE_UNVERIFIED), true);
       }
     }
     if (followed === p.id) followed = undefined;
@@ -165,11 +166,11 @@ export function createRestores(deps: RestoreDeps) {
     const kept = untrack(pending).find((p) => p.sourceKey === row.key)?.source;
     const live = kept && !deps.archived(row.key) ? snapshotOf(kept) : deps.stillListed(row);
     if (!live) return;
-    if (live.name !== row.name) { deps.notify("info", GONE, true); return; }
-    if ((live.state === "running") !== (row.state === "running")) { deps.notify("error", STATE_CHANGED, true); return; }
+    if (live.name !== row.name) { deps.notify("info", tr(GONE), true); return; }
+    if ((live.state === "running") !== (row.state === "running")) { deps.notify("error", tr(STATE_CHANGED), true); return; }
     if (live.state !== "archived" || !restorable(live)) return;
     const id = nameKey(live);
-    if (writing !== undefined || full(id)) { deps.notify("error", RESTORES_PENDING, true); return; }
+    if (writing !== undefined || full(id)) { deps.notify("error", tr(RESTORES_PENDING), true); return; }
     const source = snapshotOf(live);
     writing = id;
     followed = id;
@@ -209,11 +210,11 @@ export function createRestores(deps: RestoreDeps) {
   async function forgetArchived(row: ActionRow): Promise<void> {
     const live = deps.archived(row.key);
     if (!live || live.name !== row.name || ((row.created ?? 0) > 0 && (live.created ?? 0) > 0 && live.created !== row.created)) {
-      deps.notify("error", NO_LONGER_AVAILABLE, true);
+      deps.notify("error", tr(NO_LONGER_AVAILABLE), true);
       return;
     }
     if (!deps.online(live.computer) || deps.batchRunning() || deps.updating(live.computer, live.name)) return;
-    if (live.state === "running") { deps.notify("error", STATE_CHANGED, true); return; }
+    if (live.state === "running") { deps.notify("error", tr(STATE_CHANGED), true); return; }
     cancelFollow();
     const out = await deps.perform(row, { kind: "forget_archive", archive_id: row.archiveId ?? "" });
     if (out.outcome === "done") deps.refreshArchive();
@@ -231,7 +232,7 @@ export function createRestores(deps: RestoreDeps) {
         (error: unknown) => { drop(id); throw error; },
       );
     },
-    forget: (row) => deps.perform(row, { kind: "forget_archive", archive_id: row.archiveId ?? "" }, { quiet: true }),
+    forget: (row, delay) => deps.perform(row, { kind: "forget_archive", archive_id: row.archiveId ?? "" }, { quiet: true, delay, skipDelay: !delay }),
     refresh: () => deps.refreshArchive(),
     taken: (row) => {
       const key = appeared.get(nameKey(row));

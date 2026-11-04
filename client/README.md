@@ -21,6 +21,22 @@ stops or replaces the installed Zerus GUI, CLI, agents or services.
 On the Mac the client also builds as Zerus itself, the switch bundle that takes
 over `com.hgdev.hgs-tray`; see `docs/macos-distribution.md#tauri-client-switch`.
 
+The canonical `com.hgdev.hgs-tray` GUI has one owner per login user on macOS,
+Linux and Windows, independent of temporary directories, HOME/profile overrides
+and hgs configuration. Unix retains a kernel lock in a private UID directory
+under the OS `/tmp`; Windows retains a global kernel object keyed by the token
+SID. A duplicate forwards public navigation to the canonical endpoint and exits
+before GUI or desktop ownership setup. If that endpoint is not ready, it exits
+cleanly after a bounded wait. Unsafe or unavailable exclusion fails closed.
+Exclusion lasts through final GUI teardown until actual process exit. Crashes
+release it in the kernel; only its next owner replaces a stale Unix
+socket. The existing Qt activation endpoints remain available for updaters and
+configuration-bound desktop requests. `ZERUS_CLIENT_DESKTOP_SERVICE=1` still
+starts a GUI and receives the same exclusion. The fixed authenticated Mac
+`--desktop-notification-host` entry runs separately before GUI admission and
+creates no window or menu-bar item. Private canonical copies retain the published
+bundle ID and participate in this guard.
+
 The installed Linux and Windows switch uses the same identifier,
 `com.hgdev.hgs-tray`, and the `hgs-tray` executable/instance name. Settings seed
 once from Qt's `~/.config/hgdev/hgs-tray.conf` on Linux (an absolute
@@ -164,14 +180,85 @@ describes.
 `npm run dev` alone serves the frontend in a browser; without Tauri it replays
 `fixtures/replay-batches.json`, so the UI works without the app.
 
+The menu component regression uses native WebKitGTK (Python GI, GTK 3 and
+WebKit2 4.1), with synthetic delayed IPC and no real CLI or sessions. Start
+`npm run dev -- --port 1437`, then from the repository root run:
+
+```sh
+timeout 45s dbus-run-session -- xvfb-run -a -s '-screen 0 1440x900x24' \
+  env GDK_BACKEND=x11 WAYLAND_DISPLAY=zerus-nonexistent WEBKIT_DISABLE_DMABUF_RENDERER=1 \
+  /usr/bin/python3 client/scripts/menu-smoke.py
+```
+
+It checks painted frames, button identity, focus, placement layout reads and
+dismissal during preparation. A stalled inspection must paint after the 180 ms
+preparation budget, then update late capabilities without moving or refocusing.
+To use an authorized Arch display window, wrap
+the command in `flock -w 1800 /tmp/zerus-arch-display.lock`, omit Xvfb and the
+renderer/display overrides, pass the original desktop bus address as
+`ZERUS_MENU_SCREEN_BUS` through `dbus-run-session`, and add `--real-display`.
+That mode checks the screen lock before opening and throughout the run. Both
+modes use private webview data and close their own window on completion.
+
 Environment:
 
 | Variable | Effect |
 | --- | --- |
 | `ZERUS_CLIENT_HGS` | The `hgs` to run (default: the first `hgs` on `PATH`, then in `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`, since an app started from Finder or a launcher gets a short `PATH`) |
+| `ZERUS_CLIENT_DESKTOP_SERVICE` | Exact value `1` selects the experimental desktop-service source at startup (default off). No legacy Fleet, read delivery, automatic approval, notification or recovery-sync worker starts in that mode; unavailable service stays unavailable. This does not activate the service. |
 | `ZERUS_CLIENT_REPLAY` | Replay synthetic watch streams instead of running `hgs`: a path list (`:` on Unix), the first file is this computer, `alias=file` entries are peers, e.g. `fixtures/replay.ndjson:mac=fixtures/replay-mac.ndjson` |
 | `ZERUS_CLIENT_REPLAY_INTERVAL_MS` | The pause per `heartbeat` frame of a replay (default 900) |
 | `ZERUS_CLIENT_QUERY` | URL parameters for the window, e.g. `select=claude/sample-project/api-refactor` opens that session and `page=settings` that screen |
+
+The service source validates lifecycle component readiness and reads bounded catalog
+pages through one subscriber. After the initial insertion walk, a serial
+`catalog_changes` reader catches up from its first revision, then reads only
+bounded upserts/tombstones. It preserves exact decimal revisions and projection
+identity, coalesces hints, and restarts a baseline on a gap, unknown cursor outcome
+or scope replacement. Only a fully consumed delta walk establishes membership;
+provisional/offline rows remain incomplete. Quit bounds the service join to five
+seconds after its draft flush. Shared host attention counts remain separate from
+this device's review marks; incomplete/null counts remain unknown. An unavailable
+or invalid count projection does not disconnect a valid lifecycle or catalog.
+Catalog bootstrap uses the bounded, epoch-bound runtime source roster instead
+of the counts' computer list. Retained pre-cutover read marks are projected by
+indexed exact-identity lookups into outgoing rows as device-local flags; the host
+acknowledgement fields and shared counts remain unchanged. The GUI read-delivery
+gate stays closed, and the webview does not mirror that entire legacy queue. Read intents
+are acknowledged only after a durable actor receipt, retaining their request UUID
+through an uncertain result. Activity, processes, project tasks and organization use
+the existing subscriber's bounded detail lease. Each view retains its exact consumer
+identity and validates the route generation, revision and contiguous detail sequence;
+native frame sequences may skip. Native Gap frames retain the subscription and
+allow the next snapshot to replace its staged data. Genuine route inconsistencies
+retire only that view before bounded rearming; unknown follow outcomes stay
+unavailable until explicit Retry, with no GUI watcher or request replay. An explicit
+Retry resets that view's recovery budget; temporary control admission pressure uses
+bounded retries before reporting it unavailable.
+
+After the existing automatic-approval confirmation, the native sender uses the
+dedicated authenticated `desktop frontend-request` route. It registers the original
+child before writing stdin and retains that registration through child and pipe
+drain. On a verified Mac installation it selects the paired bundled `hgs`; a failed
+pair has no ordinary CLI fallback. One outstanding request per operation retains
+its UUID through an uncertain result. **Check result** reads the original receipt
+and never resubmits it. If the original relay's exit is confirmed and that lookup
+proves no receipt exists, the request settles as not applied and a fresh intent
+can be submitted. An unverified exit or failed lookup remains pending.
+Maintenance has a native command using the shared full
+configuration type, with both update and recovery explicit; it replaces GUI identity
+with the running application's executable and build. An unknown recovery save
+remains pending. Updates and Recovery use one shared maintenance intent: update
+preference changes wait for the native preference worker before submitting both
+subsystems, and Recovery Save snapshots its form/base and retains update preferences.
+Only that Save's exact receipt acknowledges the edit; unrelated save counters do
+not. Opening a page only reads status and any existing receipt. **Apply background
+settings** explicitly sends current preferences and connects shared recovery policy
+synchronization when no configuration has been supplied yet. Manual **Check now**
+stays in the UI update worker. No generic request can change approval policy or
+maintenance configuration.
+Keep this switch off for normal installations;
+this source is not a complete UI-only cutover.
 
 A build without the `live` feature (`--no-default-features`) has no data source;
 the frontend then uses its built-in replay.
@@ -318,6 +405,47 @@ with Qt's enablement, confirmations and texts (`actions-ui.ts`). A peer's call
 is prefixed with `@alias` and uses the longer timeout. Every call is made with
 the child's own environment: the agent attribution (`HGS_SESSION`,
 `HGS_RUN_ID`) is never passed on.
+
+`core::end_action` supplies the bounded confirmation snapshot and monotonic
+five-second timing rules for the Undo integration. Its metadata check requests
+no history; its end calls reuse the existing scoped lifecycle envelope and exact
+receipt validator. A shell run may have no native conversation. An unidentified
+run cannot become a delayed name-only mutation. This pure module performs no I/O.
+
+Projects folder Add/Edit/Remove/Copy/Move use the same shared organization
+writer. They compare the original folder identity and fields, preserve unknown
+record fields, apply Qt's path/duplicate rules, and change links without creating
+or removing files. The form reads the existing folder decoder; Browse and local
+Open reuse the maintained directory browser and opener. Folder selection uses
+its stable key. Local Windows folder management remains dependent on
+zerus-5wmh.66.2.31; these controls do not introduce a Windows folder model.
+
+The native `action_delay` adapter reserves Actions' existing write lane without
+publishing a send-block fact. Main-webview registration starts a five-second
+monotonic window; its dedicated waiter never reads a source or runs a command.
+Undo and window destruction discard reservations; close-to-tray, hide and
+minimize retain their deadline. Consuming an
+elapsed reference repeats metadata equality and uses the same action, cleanup
+or Clear dispatcher, with exact receipt handling. The queue holds at most five
+windows of 50,000 targets, with at most 16 MiB of serialized captured metadata
+across all windows. Old settled UUID tombstones roll over FIFO at 16,384; active
+windows are never evicted. A batch shares
+one lane for same-name archives but admits only one active member at a time.
+Confirmed Archive, Terminate, Clear session and Forget now use these native
+reservations through a lazy countdown controller. Selection Archive/Terminate/
+Forget has one window and one toast for the whole batch; Clear archive keeps its
+existing immediate confirmed flow. Native timing releases the original writer,
+which rechecks the exact captured identity. Browser timers only paint the Undo
+label. Ordinary sends and Stop stay outside the grace period.
+
+Five pending Undo notices remain visible and focusable. A sixth action adds the
+agreed transient refusal line to the newest one without reserving anything.
+Identity changes cancel a single window; a batch refuses only the changed
+member. Hiding, minimizing and close-to-tray preserve deadlines. Under the
+coordinator's budget ruling for this slice, real Quit/destruction drops pending
+windows without effects or durable state; Quit logs one bounded line per dropped group
+with at most five session names. Durable quit delivery and next-start settlement remain
+in zerus-5wmh.66.2.34.3.
 
 | Action | Arguments (`NAME` is the session name) | Standard input | Timeout here, peer |
 | --- | --- | --- | --- |
@@ -611,6 +739,25 @@ hidden sessions included, except sessions marked for review; at 0 the entry is
 disabled. A run marks those replies read and shows "1 reply marked as read."
 or "N replies marked as read."
 
+### Viewed reply
+
+As Qt's `checkViewedReply`, the selected session's unread reply is read once
+it stayed in view for a second (`src/store/viewedReply.ts`, checked every
+400 ms while the window shows). The window must be shown, not minimised and
+focused, the Sessions page current and no modal dialog or popup open; a
+subagent's Activity, an archived row and a computer that is not online never
+count. The followed inspection must have succeeded and name the row's
+conversation and reply. Activity must be within 30 px of its end, show no
+search result or deferred layout, and have the reply's row start in the
+viewport (when that row is not rendered: an empty final Stop of an idle
+session, or loaded events at or past the reply). Terminal must be connected,
+at its bottom and not blank. Any change of the session, conversation or reply
+starts the second again. Only that reply is read (`markReplyRead`): the
+attention and Review later stay, and a read mark is queued as for Mark as
+read. Nothing scrolls. The open row then stays under Needs attention and
+Active until another row is selected, as it does after Mark as read and Mark
+all as read.
+
 ### Copy actions
 
 The copy entries build text locally or ask `hgs` for it and put it on the
@@ -854,8 +1001,8 @@ File drops follow `SessionFileDrop` and `SessionsWindow.cpp:2618-2659`. A local
 session gets quoted paths pasted without an automatic Enter. A peer's files are
 staged first with `Action::StageFiles`; the paste still names the attach
 generation and is refused if that attach changed or the Terminal is hidden.
-Other tabs attach dropped files to the main composer, except a subagent's
-Activity. The drop must stay over the detail panel, retain its entering target
+Other tabs attach dropped files to the current main or child composer. The
+drop must stay over the detail panel, retain its entering target
 and contain only regular files. Windows keeps the T1b refusal text until native
 Terminal support lands.
 
@@ -906,6 +1053,25 @@ in replay mode, shared with voice. The previous Qt store is read but never
 written, including recovery. The one exit hook closes voice and the composers,
 then flushes this store on quit and termination signals. A send whose durable
 save has not started cannot dispatch during shutdown.
+
+### Subagents
+
+The catalog retains at most 256 native children per session, never the
+hook-profile fallback. The list follows Qt's completed-child rule, retaining
+the selected child and nongroup children with drafts. A child Activity is one
+bounded replacement page of at most 200 events from `inspect --subagent`, read
+only while that exact child is visible and online; it never inherits the
+parent's live state or grows a history. Child attachments carry the same exact
+agent identity.
+
+A child with a matching inspection and `send_supported` gets the ordinary
+composer layout and durable draft under
+`computer\nsession\nparent-conversation\nagent-id`. Send names the parent run
+and conversation plus `agent_id`, rechecks that identity and support before
+dispatch, and keeps its local delivery row under the same parent identity.
+Read-only children hide the editor and actions. Parent lifecycle, model, Stop,
+cache/account, question, queue and push controls never cross into a child.
+Navigation preserves parent and child drafts independently.
 
 ## Account usage and automatic recovery
 
@@ -999,6 +1165,43 @@ its guarded Remove action arrive with A2-6.
 
 ## Phase 4 smoke run
 
+DeepSeek's Native UI follows the mockup's session detail tab and existing
+question, local-message, recovery, sign-in and session-menu routes. Linux
+embeds a bounded cache of four incognito launch profiles in the main window;
+macOS, Windows and unsupported web engines use the existing browser route
+from the session menu. Opening the tab never opens a browser automatically.
+Reload reconnects the view through `hgs native-ui NAME --json`, without
+reloading or restarting a DeepSeek bridge.
+
+The native child has no app or plugin IPC. Linux checks the actual WebKit
+navigation action before handing a clicked external link to the guarded
+opener, keeps same-origin popups in place, and refuses new native windows.
+User-initiated `window.open` uses the same guarded browser handoff.
+Downloads require the exact foreground session and a native Save dialog.
+Its GTK overlay follows the measured frame and hides before menus or dialogs.
+The GLib FFI block replaces Wry's single earlier navigation-policy
+handler on that owned child before its first URL load; an unexpected handler
+graph uses browser fallback. The primary view's policy is unchanged.
+
+Run the Native UI proof from the repository root with a switch-identity build:
+
+```sh
+TAURI_CONFIG='{"identifier":"com.hgdev.hgs-tray"}' cargo build --locked \
+  --manifest-path client/src-tauri/Cargo.toml --features media,tauri/custom-protocol
+python3 client/scripts/native-ui-smoke.py \
+  --app client/src-tauri/target/debug/zerus-client \
+  --output artifacts/validation/native-ui-proof
+```
+
+The script always creates a private D-Bus, Xvfb and HOME/XDG/TMPDIR/TMUX_TMPDIR
+from a fresh environment, and uses only a local HTTP fixture and fake CLI.
+It records IPC and private-protocol refusals, native pointer gestures,
+download cancellation and exact saved bytes, profile eviction, explicit
+browser fallback, resize and activation, then the complete Phase 4 smoke.
+The ignored `native_ui::linux::tests` case separately qualifies the expected
+handler graph, primary-handler preservation and reload on that same private
+bus/display; run it explicitly with `--ignored --test-threads=1`.
+
 `scripts/make-fixture.py` deterministically generates the replay, including the
 warm and cold cache states, a paused resumable session, JSON and one-pixel PNG
 attachments, a question, an approval and a native queue. The six driven
@@ -1026,6 +1229,15 @@ Run the smoke with a new scratch directory (choose another name on a rerun):
 ```sh
 python3 scripts/phase4-smoke.py --scratch "$PWD/target/phase4-smoke-run"
 ```
+
+Use `--only variable-scroll` for the long Markdown/append regression. On Linux,
+add `--native-wheel` to replay the queued-scroll/layout ordering and drive
+trusted wheel input while the provider window rotates. Its XTest driver verifies
+that the display server is the original sibling Xvfb owned by `xvfb-run`.
+Use `--static-wheel --static-shape mixed` with those flags for separate gestures
+and 900 ms pauses without event-window changes. This also checks that remounting
+static rows does not change their scroll range. `--renderer shm|dmabuf` selects
+the Linux renderer configuration; Xvfb does not qualify hardware DMA-BUF.
 
 The runner supplies the release binary, replay and fake, isolates `HOME`,
 `XDG_DATA_HOME` and `XDG_CACHE_HOME`, and forces the safe headless environment:
@@ -1334,7 +1546,10 @@ Activity has events and scrolls, bounds each scenario at 60 s and the run at
 sessions off, with Reduce motion (both only tried, not stored), with the window
 hidden and with it minimised (`perf_away`; a bare Xvfb has no window manager, so
 there the window stays shown and the log says `minimized false`), each of the
-last two followed by one as displayed again.
+last two followed by one as displayed again. On Linux, endless motion also pauses
+on toplevel focus loss, covering minimised Wayland windows that keep reporting a visible document;
+visible one-shot entrances still complete, including new questions and toasts.
+the away log and report record the animation state at each pause and resume.
 `ZERUS_CLIENT_PERF_LABEL` names the platform, `ZERUS_CLIENT_PERF_HZ`
 overrides the display rate (`display_hz`), `ZERUS_CLIENT_PERF_REPRESENTATIVE=0`
 marks Xvfb runs and `ZERUS_CLIENT_PERF_PREFERENCE=default` keeps WebKit's
@@ -1452,7 +1667,7 @@ A blank window is not detected. Known gap: on the GL path a minimised window kee
 
 ## Rules
 
-- Part B adds voice and round video, DeepSeek's Native UI and the external
+- Part B adds voice and round video and the external
   terminal, shell and folder entries; their current disabled slots stay in Qt's
   places until then.
 - The UI never separates values with dots (U+00B7, U+2022, U+2219, U+22C5,
@@ -1478,3 +1693,23 @@ built app using a private D-Bus/Xvfb, private state and fake hgs. It covers reco
 outcomes, explicit discard, unknown non-replay, source-change refusal, inspection,
 Escape and Keep, with captures of the approved chip/dialog states. The fixture
 never deletes even its own synthetic worktree files.
+
+An archived session whose folder stays for review has a sticky **Session
+archived** notice with structured counts, **Review…** and **Restore session**.
+Restore rechecks the exact archive and physical computer, then uses the existing
+archive writer. It never retries cleanup. Admitted rows stay bounded at 64;
+overflow contributes to the chip counts and uses the existing Worktrees review
+route. Its exact archive restore identity remains available independently of the
+cleanup row. A refused restore leaves the warning and recorded outcome in place.
+On an older CLI whose successful help reply lacks the computer-guard capability,
+Archive and Terminate keep their original calls. Their notice offers Review only;
+an unguarded Restore is never offered. Failed or timed-out capability probes do
+not fall back to a weaker call.
+
+For the recovery walk, first run `npm run build` in `client`, then build the
+Tauri app with `--features media,tauri/custom-protocol` so it embeds those assets.
+Add `--recovery` to the command above. Use `--legacy` for the older-CLI Archive,
+Review-only, singular-row copy and Escape walk. The normal recovery walk covers
+both Restore surfaces, changed
+archive identity, refusal, unknown outcomes, overflow, and Escape focus return,
+using a private D-Bus, Xvfb, HOME/XDG/TMPDIR/TMUX_TMPDIR and a fake hgs.

@@ -5,6 +5,7 @@ import { Icon } from "../lib/icons";
 import type { ActionRow } from "./actions-ui";
 import { createConfirm } from "./newsession-view";
 import { LaunchWarning } from "./LaunchWarning";
+import { tr } from "../../i18n";
 
 /** Mockup SessionDialogs.Fork; capability and submission semantics from Qt. */
 export default function ForkDialog(props: { row: ActionRow; details: Details; close(): void }) {
@@ -21,16 +22,16 @@ export default function ForkDialog(props: { row: ActionRow; details: Details; cl
   };
   return <>
     <form onSubmit={submit}>
-      <div class="dlg-head"><Icon name="git-fork" size={18} class="accent" /><h2 id="action-dlg-title">Fork session</h2><span class="grow" />
-        <button type="button" class="icon-btn" title="Close" aria-label="Close" onClick={props.close}><Icon name="x" size={15} /></button></div>
+      <div class="dlg-head"><Icon name="git-fork" size={18} class="accent" /><h2 id="action-dlg-title">{tr("Fork session")}</h2><span class="grow" />
+        <button type="button" class="icon-btn" title={tr("Close")} aria-label={tr("Close")} onClick={props.close}><Icon name="x" size={15} /></button></div>
       <div class="dlg-body">
-        <p class="muted">The fork continues this conversation in a new session. The original keeps running.</p>
-        <div class="form-row"><label for="fork-tag">New session name</label>
+        <p class="muted">{tr("The fork continues this conversation in a new session. The original keeps running.")}</p>
+        <div class="form-row"><label for="fork-tag">{tr("New session name")}</label>
           <input ref={input} id="fork-tag" class="field" data-initial autofocus value={tag()} disabled={sessionForks.working()} onInput={(event) => setTag(event.currentTarget.value)} /></div>
         <Show when={problem()}><div class="hint dlg-error">{problem()}</div></Show>
       </div>
-      <div class="dlg-foot"><span class="spacer" /><button type="button" class="btn" onClick={props.close}>Cancel</button>
-        <button type="submit" class="btn primary" disabled={!!problem() || sessionForks.busy()}>Fork</button></div>
+      <div class="dlg-foot"><span class="spacer" /><button type="button" class="btn" onClick={props.close}>{tr("Cancel")}</button>
+        <button type="submit" class="btn primary" disabled={!!problem() || sessionForks.busy()}>{tr("Fork")}</button></div>
     </form>
     <LaunchWarning confirm={confirm} />
   </>;

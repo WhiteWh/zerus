@@ -351,7 +351,7 @@ describe("repository source (NewSessionDialog.cpp 590-639)", () => {
     });
     t.world.hold("prefill");
     await t.open({ agent: "codex" });
-    expect(t.state().form?.preview).toBe("Checking the session's main working folder…");
+    expect(t.state().form?.preview?.source).toBe("Checking the session's main working folder…");
     t.act.setSource(true);
     t.act.setUrl("git@example.invalid:team/fresh.git");
     t.act.setDestination("/workspace/keep-name");
@@ -825,7 +825,7 @@ describe("reads only (Review Focus 1 and 2)", () => {
     t.world.release("prefill");
     await settle();
     expect(t.state().folderPath).toBe("/workspace/elsewhere");
-    expect(t.state().form?.preview).not.toBe("Checking the session's main working folder…");
+    expect(t.state().form?.preview?.source).not.toBe("Checking the session's main working folder…");
   });
 
   it("the prefill moves a linked worktree's session to its main checkout", async () => {

@@ -125,6 +125,28 @@ fn snapshot_swap_is_atomic_and_preserves_exact_private_rows() {
 }
 
 #[test]
+fn removed_alias_releases_only_its_exact_projection_and_collects_in_pages() {
+    let (mut db, mut source) = setup();
+    put(
+        &mut db,
+        &source,
+        &snapshot(2, 0, true, 1, (0..512).map(item).collect()),
+    );
+    let stale = source.clone();
+    source.generation = 2;
+    connect(&mut db, &source, &hello()).unwrap();
+    assert!(remove_source(&mut db, &stale).is_err());
+    assert!(page(&db, "peer", None).is_ok());
+    disconnect_many(&mut db, &[source.clone()]).unwrap();
+    remove_source(&mut db, &source).unwrap();
+    assert!(page(&db, "peer", None).is_err());
+    assert_eq!(totals(&db).unwrap().retained_sources, 0);
+    assert_eq!(totals(&db).unwrap().stored_rows, 512);
+    assert_eq!(collect(&mut db).unwrap(), Some(256));
+    assert_eq!(totals(&db).unwrap().stored_rows, 256);
+}
+
+#[test]
 fn incomplete_snapshot_forms_roll_back_and_retire_only_current_source() {
     for case in 0..7 {
         let (mut db, source) = setup();

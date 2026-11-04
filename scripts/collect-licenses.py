@@ -47,11 +47,19 @@ def main():
     # Each locked Cargo project whose binary the distribution ships; the root
     # workspace (hgs) by default. Linux packages add the mobile connector.
     parser.add_argument("--manifest-path", type=Path, action="append", dest="manifests")
+    parser.add_argument("--manifest-features", action="append", default=[], metavar="MANIFEST=FEATURES",
+                        help="features used by one shipped Cargo project; repeat for several manifests")
     # The Android app ships a library built for each of its ABIs' Rust targets.
     parser.add_argument("--target", action="append", dest="targets",
                         help="a Rust target the binaries are built for; repeat for several [default: this host]")
     args = parser.parse_args()
-    targets = args.targets or [next(line[6:] for line in subprocess.check_output(["rustc", "-vV"], text=True).splitlines()
+    features = {}
+    for value in args.manifest_features:
+        manifest, separator, names = value.partition("=")
+        if not separator or not names or Path(manifest) not in (args.manifests or []):
+            parser.error("--manifest-features must name a supplied --manifest-path and nonempty features")
+        features[Path(manifest)] = names
+    targets = args.targets or [next(line[6:] for line in subprocess.check_output(["rustc", "-vV"], encoding="utf-8").splitlines()
                                     if line.startswith("host: "))]
     packages = {}
     for manifest in args.manifests or [None]:
@@ -60,7 +68,10 @@ def main():
             command += ["--filter-platform", target]
         if manifest is not None:
             command += ["--manifest-path", str(manifest)]
-        metadata = json.loads(subprocess.check_output(command, text=True))
+        if manifest in features:
+            command += ["--features", features[manifest]]
+        # Cargo emits UTF-8 regardless of Windows' default ANSI code page.
+        metadata = json.loads(subprocess.check_output(command, encoding="utf-8"))
         resolved = {node["id"] for node in metadata["resolve"]["nodes"]}
         shipped = None
         if args.targets:
@@ -72,7 +83,9 @@ def main():
                         "--prefix", "none", "--format", "{p}"]
                 if manifest is not None:
                     tree += ["--manifest-path", str(manifest)]
-                shipped |= {tuple(line.split()[:2]) for line in subprocess.check_output(tree, text=True).splitlines()
+                if manifest in features:
+                    tree += ["--features", features[manifest]]
+                shipped |= {tuple(line.split()[:2]) for line in subprocess.check_output(tree, encoding="utf-8").splitlines()
                             if line.strip()}
         for package in metadata["packages"]:
             if package.get("source") and package["id"] in resolved and (

@@ -48,6 +48,9 @@ fn flag(value: &Value, key: &str) -> bool {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct QueueView {
     pub id: String,
+    /// Exact inspection identity for display-only receipt reconciliation.
+    pub run_id: String,
+    pub conversation_id: String,
     /// The queue as the agent's terminal shows it, plain text.
     pub text: String,
     /// The Send now tooltip, without the window chord.
@@ -75,6 +78,8 @@ pub fn queue_view(
     let can_send_now = flag(queue, "can_send_now") && online && !inspect_error;
     Some(QueueView {
         id: id.to_owned(),
+        run_id: text(details, "run_id").to_owned(),
+        conversation_id: text(details, "conversation_id").to_owned(),
         text: text(queue, "text").to_owned(),
         hint: text(queue, "hint").to_owned(),
         can_send_now,

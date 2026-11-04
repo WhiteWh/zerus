@@ -137,7 +137,7 @@ impl SessionFiles {
                             Ok(()) => continue,
                             Err(mpsc::RecvTimeoutError::Timeout) => {
                                 if let Some(me) = weak.upgrade() {
-                                    me.run_trim();
+                                    me.run_trim(false);
                                 }
                                 break;
                             }
@@ -383,7 +383,7 @@ impl SessionFiles {
                 self.notice(warning.clone(), true);
             }
             if cached {
-                self.run_trim();
+                self.run_trim(true);
                 let _ = self.trim.try_send(());
             }
         }
@@ -434,7 +434,37 @@ impl SessionFiles {
             _ => self.emit(id),
         }
     }
-    fn run_trim(self: &Arc<Self>) {
+    fn run_trim(self: &Arc<Self>, after_download: bool) {
+        if crate::desktop_service::mode() {
+            if self.trim_busy.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            let service = self
+                .app
+                .state::<crate::commands::AppState>()
+                .desktop_service();
+            let root = crate::files::folder(&self.app);
+            let me = self.clone();
+            tauri::async_runtime::spawn(async move {
+                let timing = if after_download {
+                    zerus_client_core::desktop::cache_maintenance::Timing::AfterOpeningGrace
+                } else {
+                    zerus_client_core::desktop::cache_maintenance::Timing::Immediate
+                };
+                let result = match service {
+                    Some(service) => service.cache_pass(root, None, timing).await.map(|_| ()),
+                    None => Err(
+                        "Downloaded files maintenance is unavailable from the desktop service."
+                            .into(),
+                    ),
+                };
+                me.trim_busy.store(false, Ordering::Release);
+                if let Err(error) = result {
+                    me.notice(error, true);
+                }
+            });
+            return;
+        }
         let limit = crate::files::limit(&self.app);
         if limit == 0 || self.trim_busy.swap(true, Ordering::AcqRel) {
             return;

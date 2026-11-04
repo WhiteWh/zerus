@@ -1,0 +1,18 @@
+@layer components {
+  .project-swarm .sw-conflicts { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 14px; min-height: 0; }
+  .project-swarm .sw-cside { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--z-color-divider); padding-right: 8px; }
+  .project-swarm .sw-clist { flex: 1; min-height: 0; overflow: auto; }
+  .project-swarm .sw-clist li { display: flex; flex-direction: column; gap: 2px; padding: 7px 8px; border-radius: var(--z-radius-sm); font-size: var(--fs-sm); cursor: default; }
+  .project-swarm .sw-clist li:hover { background: var(--z-color-hover); }
+  .project-swarm .sw-clist li.on { background: var(--z-color-row-selected); }
+  .project-swarm .sw-review { display: flex; flex-direction: column; gap: 8px; min-width: 0; overflow: auto; }
+  .project-swarm .sw-review > p { font-size: var(--fs-sm); }
+  .project-swarm .sw-choices td { white-space: pre-line; height: auto; padding: 7px 10px; vertical-align: top; }
+  .project-swarm .sw-choices th:nth-child(2) { width: 190px; }
+  .project-swarm .sw-choices th:nth-child(3) { width: 90px; }
+  .project-swarm .sw-outcome { min-height: 3em; }
+  .project-swarm .sw-cpager, .project-swarm .sw-vpager { flex: none; font-size: var(--fs-xs); }
+  .project-swarm .sw-cpager { gap: 4px; margin-top: 8px; }
+  .project-swarm .sw-cpager > span { text-align: center; white-space: nowrap; }
+  .project-swarm .sw-cpager > .btn { padding: 4px; min-width: 24px; }
+}

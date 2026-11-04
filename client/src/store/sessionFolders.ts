@@ -7,6 +7,7 @@ import { computerOffline } from "./catalog";
 import { stillListed } from "./actions";
 import { toast } from "./notices";
 import * as bridge from "../bridge";
+import { tr } from "../i18n";
 
 export interface FolderRequest {
   target: Target;
@@ -35,14 +36,14 @@ export function folderEntries(s: Session, request: FolderRequest, status?: Folde
       const advisory = await bridge.sessionFolderOpen(request, kind);
       if (advisory) toast("Zerus: session opened, but not the way you asked", advisory, "warn");
     } catch (error) {
-      toast(kind === "shell" ? "Could not open folder shell" : "Open folder", String(error), "error", true);
+      toast(kind === "shell" ? tr("Could not open folder shell") : tr("Open folder"), String(error), "error", true);
     }
   };
   const identified = !!request.target.run_id && !!request.target.conversation_id;
   return {
-    folder: { label: "Open folder", icon: "folder-open", disabled: !identified || !status?.folder,
-      hint: status?.folder_hint ?? (s.computer ? "Available only for sessions on this computer" : "Session folder is unavailable"), action: () => { void run("folder"); } },
-    shell: { label: "Open shell in session folder", icon: "square-terminal", disabled: !identified || !status?.shell || computerOffline(s.computer),
-      hint: "Open shell in session folder", action: () => { void run("shell"); } },
+    folder: { label: tr("Open folder"), icon: "folder-open", disabled: !identified || !status?.folder,
+      hint: status?.folder_hint ?? (s.computer ? tr("Available only for sessions on this computer") : tr("Session folder is unavailable")), action: () => { void run("folder"); } },
+    shell: { label: tr("Open shell in session folder"), icon: "square-terminal", disabled: !identified || !status?.shell || computerOffline(s.computer),
+      hint: tr("Open shell in session folder"), action: () => { void run("shell"); } },
   };
 }

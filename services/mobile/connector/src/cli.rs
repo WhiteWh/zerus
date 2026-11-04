@@ -18,7 +18,9 @@ options:
   --allow-insecure-localhost  allow plain HTTP to a loopback relay (development)
   --check                     report on the configuration and journal read-only, then exit
   --json                      with --check, print the report as JSON
-  --version                   print the version and exit";
+  --version                   print the version and exit
+
+Workspace stop ABI: service-preflight-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {

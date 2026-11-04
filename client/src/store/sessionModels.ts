@@ -4,6 +4,7 @@ import type { Outcome, Target } from "../types";
 import type { Session } from "../ui/sessions/types";
 import { ModelPicker, catalogSupported, markCatalogFavorite, markFavorite, type PickerView } from "../ui/sessions/opencode-models";
 import { effortChoices, modelChoices, settingsView, text, type ModelChoice, type ModelContext } from "../ui/sessions/session-model-settings";
+import { tr } from "../i18n";
 
 export interface ModelsPort {
   apply(target: Target, model: string, effort: string, pending: string | undefined, openCode: boolean): Promise<Outcome>;
@@ -155,7 +156,7 @@ export function createSessionModels(port: ModelsPort) {
       if (out.outcome !== "done") {
         change.scheduled = false; change.blocked = true;
         const stale = automatic && ["pending settings changed; refresh before applying", "pending settings target changed; refresh before applying"].includes(out.detail.replace(/^hgs: /, ""));
-        if (!stale) port.notice(`Model settings for ${change.target.name}: ${out.detail}`);
+        if (!stale) port.notice(tr("Model settings for %1: %2", change.target.name, out.detail));
         return;
       }
       const r = out.receipt as Record<string, unknown>;
@@ -171,7 +172,7 @@ export function createSessionModels(port: ModelsPort) {
       }
     } catch (e) {
       change.scheduled = false; change.blocked = true;
-      port.notice(`Model settings for ${change.target.name}: ${errorText(e)}`);
+      port.notice(tr("Model settings for %1: %2", change.target.name, errorText(e)));
     } finally { setChanging(undefined); }
   }
 
@@ -215,7 +216,7 @@ export function createSessionModels(port: ModelsPort) {
       const i = input(); if (!i || !canApply()) return;
       const p: Pending = { key: i.row.key, target: targetOf(i), model: model(), effort: effort(), id: text(i.details?.pending_settings_id),
         openCode: i.row.cmd === "opencode", attempted: false, scheduled: false, rearmed: false, blocked: false, applied: false };
-      if (pending.size >= 64 && !pending.has(p.key)) { port.notice("Check pending model changes before applying another change."); return; }
+      if (pending.size >= 64 && !pending.has(p.key)) { port.notice(tr("Check pending model changes before applying another change.")); return; }
       pending.set(p.key, p); publishKeys(); setOpened(false);
       await send(p, false);
     },

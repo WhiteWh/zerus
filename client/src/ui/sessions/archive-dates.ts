@@ -3,6 +3,8 @@
 // local time. Presets and date edits change only the draft; Apply commits it.
 // Days are local calendar days written YYYY-MM-DD (what <input type="date">
 // reads and writes); they compare as text.
+import { tr, trNoop } from "../../i18n";
+import { dayMonth } from "../lib/dates";
 
 /** All dates, Today, Last 7 days, Last 30 days, custom. */
 export type Period = 0 | 1 | 2 | 3 | 4;
@@ -13,14 +15,13 @@ export interface DateRange { period: Period; first: string; last: string }
 /** The picker's draft; "" is Any date (All dates staged). */
 export interface Draft { period: Period; from: string; until: string }
 
-export const PERIODS = ["All dates", "Today", "Last 7 days", "Last 30 days"] as const;
+export const PERIODS = [trNoop("All dates"), trNoop("Today"), trNoop("Last 7 days"), trNoop("Last 30 days")] as const;
 /** The upper bound of All dates (Qt's 253402300800, year 10000). */
 export const ALL_UNTIL = 253402300800;
 /** QDateEdit's limits in the picker. */
 export const MIN_DAY = "1970-01-02";
 export const MAX_DAY = "9999-12-30";
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const pad = (n: number, width = 2) => String(n).padStart(width, "0");
 const parts = (day: string) => day.split("-").map(Number) as [number, number, number];
 const dayOf = (d: Date) => `${pad(d.getFullYear(), 4)}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -59,19 +60,19 @@ export function rangeBounds(r: DateRange, now: Date): [number, number] {
 
 function formatDay(day: string, year: boolean): string {
   const [y, m, d] = parts(day);
-  return `${d} ${MONTHS[m - 1]}${year ? ` ${y}` : ""}`;
+  return dayMonth(new Date(y, m - 1, d), year);
 }
 
 /** The picker's caption (updateCaption): the preset, one day, or the two days with an en dash. */
 export function rangeCaption(r: DateRange): string {
-  if (r.period !== 4) return PERIODS[r.period];
+  if (r.period !== 4) return tr(PERIODS[r.period]);
   if (r.first === r.last) return formatDay(r.first, true);
   const sameYear = r.first.slice(0, 4) === r.last.slice(0, 4);
   return `${formatDay(r.first, !sameYear)} – ${formatDay(r.last, true)}`;
 }
 
 /** The picker button's accessible name and tooltip. */
-export const pickerLabel = (r: DateRange) => `Archived date: ${rangeCaption(r)}. Choose period`;
+export const pickerLabel = (r: DateRange) => tr("Archived date: %1. Choose period", rangeCaption(r));
 
 /** The draft a period stages (stage): Any date for All dates, the preset's days, or the applied custom range. */
 export function stageDraft(period: Period, applied: DateRange, now: Date): Draft {
@@ -109,8 +110,8 @@ export const draftReversed = (d: Draft) => d.period !== 0 && dayInRange(d.from) 
 
 /** Qt's hints; a day Qt's edits cannot hold keeps the neutral one (Apply stays off). */
 export function draftHint(d: Draft): string {
-  if (d.period === 0) return "All archived dates (no date limits)";
-  return draftReversed(d) ? "End date must be on or after the start date." : "Both dates included (local time)";
+  if (d.period === 0) return tr("All archived dates (no date limits)");
+  return draftReversed(d) ? tr("End date must be on or after the start date.") : tr("Both dates included (local time)");
 }
 
 /** Apply: the range it commits and whether that changed it; undefined for an invalid custom range (Apply is off). */

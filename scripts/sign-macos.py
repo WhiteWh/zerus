@@ -19,6 +19,7 @@ import tempfile
 import time
 
 from macos_stapler import run_stapler
+from macos_release import LEGACY_QT_VERSION
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_ENTITLEMENTS = ROOT / "packaging/macos/Zerus.entitlements"
@@ -212,7 +213,8 @@ def main():
     info = plistlib.loads((args.app / "Contents/Info.plist").read_bytes())
     if info.get("CFBundleShortVersionString") != args.version or info.get("ZerusReleaseVersion") != release:
         parser.error("the bundle version does not match --version and --release")
-    qt_version = json.loads((ROOT / "packaging/macos/qt.json").read_text())["qt_version"]
+    qt_version = (LEGACY_QT_VERSION if info.get("ZerusGUI") == "tauri" else
+                  json.loads((ROOT / "packaging/macos/qt.json").read_text())["qt_version"])
     work = args.output.with_name(args.output.name + ".signing")
     app = work / "Zerus.app"
     subprocess.run(["ditto", str(args.app), str(app)], check=True)

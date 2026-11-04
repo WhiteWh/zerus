@@ -41,6 +41,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+mod external;
+pub use external::{ExternalTicket, EXTERNAL_BUSY, EXTERNAL_CHANGED};
+
 pub use super::STARTING;
 
 /// SwarmController's flush delay (SwarmController.cpp:64).
@@ -202,6 +205,10 @@ pub struct Controller {
     queued: Vec<Ticket>,
     /// m_sent and the request (busy while Some).
     sent: Option<Sent>,
+    /// A Join/Resolve reservation in this same controller; never a second writer.
+    external: Option<Arc<()>>,
+    /// Catalog identity accompanying the external result's causal-head guard.
+    external_guard: Option<(String, String)>,
     /// m_flush (SwarmController.cpp:64-65).
     flush_at: Option<u64>,
     /// The next `refresh` that sends `apply` (m_poll, 55, 96-101); a failure arms it.
@@ -243,11 +250,11 @@ pub struct Controller {
 impl Controller {
     /// Whether edits are accepted.
     pub fn ready(&self) -> bool {
-        self.ready && !self.ended
+        self.ready && !self.ended && self.external.is_none()
     }
 
     pub fn busy(&self) -> bool {
-        self.sent.is_some()
+        self.sent.is_some() || self.external.is_some()
     }
 
     pub fn pending(&self) -> bool {
@@ -266,6 +273,9 @@ impl Controller {
     /// When `due` next has something to do: the flush, the tick, or the end
     /// of the guard while it holds a state back.
     pub fn next_due(&self) -> Option<u64> {
+        if self.external.is_some() {
+            return None;
+        }
         let guard =
             (self.held.is_some() && !self.busy() && !self.pending()).then_some(self.guard_until);
         [self.flush_at, self.refresh_at, guard]
@@ -307,6 +317,9 @@ impl Controller {
     }
 
     fn reason(&self) -> String {
+        if self.external.is_some() {
+            return EXTERNAL_BUSY.into();
+        }
         if let (None, Some(error)) = (&self.base, &self.source_error) {
             return unavailable(error);
         }
@@ -400,11 +413,21 @@ impl Controller {
     /// and `due` adopts it when the guard ends: a later writer may have
     /// superseded the write, and the source would not send it again.
     fn offer(&mut self, observation: Observation, now: u64) -> bool {
+        let wrong_catalog = self.external_guard.as_ref().is_some_and(|(node, swarm)| {
+            observation.value["node_id"].as_str() != Some(node.as_str())
+                || observation.value["swarm_id"].as_str() != Some(swarm.as_str())
+        });
+        // Time cannot qualify a late pre-Join catalog. Wait for the source
+        // to echo the completed identity; never queue an old one for later.
+        if wrong_catalog {
+            return false;
+        }
         if now < self.guard_until && !shows(&observation, &self.guard) {
             self.held = Some(observation);
             return false;
         }
         self.guard.clear();
+        self.external_guard = None;
         self.held = None;
         self.adopt(observation);
         true

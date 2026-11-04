@@ -13,6 +13,7 @@ import {
 } from "../../bridge";
 import { toast } from "../../store/ui";
 import type { Session } from "./types";
+import { tr } from "../../i18n";
 
 const [sessionFile, setSessionFile] = createSignal<SessionFileView>();
 export { sessionFile };
@@ -25,9 +26,9 @@ function apply(id: number, view: SessionFileView | null) {
   if (view.revision >= current.revision) setSessionFile(view);
 }
 onSessionFileChanged((view) => apply(view.id, view));
-onSessionFileNotice((notice) => toast("File reference", notice.text, notice.warn ? "warn" : "info", notice.warn));
+onSessionFileNotice((notice) => toast(tr("File reference"), notice.text, notice.warn ? "warn" : "info", notice.warn));
 
-function report(error: unknown) { toast("File reference", String(error), "warn", true); }
+function report(error: unknown) { toast(tr("File reference"), String(error), "warn", true); }
 export function openExternal(url: string) { void sessionFileExternal(url).catch(report); }
 
 export function openSessionFile(session: Session, href: string) {

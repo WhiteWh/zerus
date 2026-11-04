@@ -43,8 +43,12 @@ pub enum OrganizationUpdate {
 
 /// What an edit of the organization starts from: the organization the user
 /// saw and the versions observed with it, for one digest.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct OrganizationSnapshot {
+    /// The same source's identities, rather than identities inferred from an
+    /// alias or another cached listing. The CLI exposes node_id as machine_id.
+    pub node_id: String,
+    pub swarm_id: String,
     pub digest: String,
     /// `swarm get`'s `organization`.
     pub base: Value,
@@ -129,6 +133,8 @@ impl OrganizationState {
     pub fn snapshot(&self) -> Option<OrganizationSnapshot> {
         let full = self.full.as_ref()?;
         Some(OrganizationSnapshot {
+            node_id: full["node_id"].as_str().unwrap_or_default().to_owned(),
+            swarm_id: full["swarm_id"].as_str().unwrap_or_default().to_owned(),
             digest: full["digest"].as_str().unwrap_or_default().to_owned(),
             base: full["organization"].clone(),
             versions: full["versions"].clone(),
@@ -359,6 +365,8 @@ mod tests {
             json!(["a"])
         );
         let snapshot = organization.snapshot().unwrap();
+        assert_eq!(snapshot.node_id, "node-1");
+        assert_eq!(snapshot.swarm_id, "swarm-1");
         assert_eq!(snapshot.digest, "d1");
         assert_eq!(snapshot.versions, json!({"project:alpha:name": ["op-1"]}));
         assert_eq!(snapshot.base["projects"][0]["id"], "alpha");

@@ -11,6 +11,8 @@ pub mod linux_tray;
 #[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(target_os = "macos")]
+pub(crate) mod macos_notification_request;
+#[cfg(target_os = "macos")]
 pub mod macos_power;
 // The menu bar drives the desk thread, which exists only with the live data source.
 #[cfg(all(target_os = "macos", feature = "live"))]
@@ -21,3 +23,6 @@ pub mod macos_notify;
 
 #[cfg(all(target_os = "linux", feature = "live"))]
 pub mod linux_window_layer;
+
+#[cfg(windows)]
+pub mod windows;

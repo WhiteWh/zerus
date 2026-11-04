@@ -1,12 +1,9 @@
-//! Settings > Mobile connection, without its live actions for now: the
-//! workspace's status from the connector, each computer's phones and the
-//! shared notification timing (core `mobile`). The page lives here for the
-//! window's life, as Qt's panels do: one status read, one phones sweep and
-//! one timing call at a time, each on a thread of its own, with
-//! "mobile-changed" when one answers. A sweep reads every enabled computer,
-//! at most eight at once. Nothing here starts, stops or changes the
-//! connector, its service or the workspace, or pairs or revokes a phone. A
-//! replay never drives the CLI.
+//! Settings > Mobile connection: one status read, one bounded phones sweep
+//! and one notification-timing call at a time, with "mobile-changed" answers.
+//! The child modules share one effects gate for bounded one-use phone,
+//! computer-invitation, workspace and connector lifecycle plans. Existing CLI commands retain
+//! connector/service ownership and saved enrollment recovery. A replay never
+//! drives the CLI.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -19,6 +16,17 @@ use zerus_client_core::mobile::page::{Delivery, Page, View};
 use zerus_client_core::mobile::{self, PhoneList, Workspace};
 
 use crate::organization::Organization;
+
+mod phones;
+pub use phones::*;
+mod computers;
+pub use computers::*;
+mod enrollment;
+pub use enrollment::*;
+mod connector_actions;
+pub use connector_actions::*;
+mod legacy;
+pub use legacy::*;
 
 const REPLAY: &str = "The mobile connection is not read in a replay.";
 /// Computers whose phones are read at once.
@@ -41,11 +49,8 @@ pub struct Calls {
 fn hgs_calls() -> Calls {
     Calls {
         status: Box::new(|| {
-            let client_dir = std::env::current_exe()
-                .ok()
-                .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
-            let connector = mobile::connector_program(&default_hgs(), client_dir.as_deref());
-            mobile::read_status(&connector, &mobile::config_path())
+            let (connector, config) = workspace_runtime();
+            mobile::read_status(&connector, &config)
         }),
         hosts: Box::new(|| mobile::hosts(&default_hgs())),
         phones: Box::new(|host| mobile::phones(&default_hgs(), host)),
@@ -56,10 +61,26 @@ fn hgs_calls() -> Calls {
     }
 }
 
+fn workspace_runtime() -> (std::path::PathBuf, std::path::PathBuf) {
+    let client_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
+    (
+        mobile::connector_program(&default_hgs(), client_dir.as_deref()),
+        mobile::config_path(),
+    )
+}
+
 pub struct Mobile(Arc<Inner>);
 
 struct Inner {
     page: Mutex<Page>,
+    phone_plans: Mutex<phones::Plans>,
+    computer_plans: Mutex<computers::Plans>,
+    enrollment_plans: Mutex<enrollment::Plans>,
+    connector_plans: Mutex<connector_actions::Plans>,
+    legacy_plan: Mutex<Option<legacy::Plan>>,
+    effects: std::sync::atomic::AtomicBool,
     /// The page's clock: monotonic, so a changed system time neither names
     /// nor hides the sync service early.
     started: Instant,
@@ -91,6 +112,12 @@ impl Inner {
     fn new(blocked: bool, calls: Calls, notify: Box<dyn Fn() + Send + Sync>) -> Inner {
         Inner {
             page: Mutex::new(Page::new()),
+            phone_plans: Mutex::new(phones::Plans::default()),
+            computer_plans: Mutex::new(computers::Plans::default()),
+            enrollment_plans: Mutex::new(enrollment::Plans::default()),
+            connector_plans: Mutex::new(connector_actions::Plans::default()),
+            legacy_plan: Mutex::new(None),
+            effects: std::sync::atomic::AtomicBool::new(false),
             started: Instant::now(),
             blocked,
             calls,
@@ -290,6 +317,15 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    pub(super) fn service_calls_for_plans() -> Calls {
+        Calls {
+            status: Box::new(|| Err("unused".into())),
+            hosts: Box::new(|| Ok(vec![])),
+            phones: Box::new(|_| Ok(None)),
+            delivery: Box::new(|_| Err("unused".into())),
+        }
+    }
 
     /// Counts each kind of call; the calls wait while `hold` is set.
     #[derive(Default)]

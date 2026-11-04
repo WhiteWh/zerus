@@ -16,6 +16,7 @@ import { accountTooltip, exhausted, exhaustedSummary, usageChipPercent, usageLoa
 import { recoveryInspection, recoveryUsageNotice } from "./recovery-ui";
 import { footerUsageSummary } from "./session-usage-ui";
 import type { Session } from "./types";
+import { tr } from "../../i18n";
 
 const toneClass = (tone: string) => tone === "danger" ? "danger" : tone === "warning" ? "warn" : tone === "success" ? "ok" : "";
 
@@ -40,12 +41,12 @@ export function AccountUsageChip(props: { session: Session }) {
   return (
     <Show when={props.session.tracked && !props.session.archiveId}>
       <span class="session-usage-strip">
-        <button type="button" class="sb-usage account-usage" title={accountTooltip(u(), now())} aria-label={`Account usage\n${exhausted(u(), now())}\n${accountTooltip(u(), now())}`} onClick={openAccount}>
+        <button type="button" class="sb-usage account-usage" title={accountTooltip(u(), now())} aria-label={`${tr("Account usage")}\n${exhausted(u(), now())}\n${accountTooltip(u(), now())}`} onClick={openAccount}>
           <Show when={u().provider}><AgentBadge agent={props.session.agent} /></Show>
           <UsageMeters windows={windowsAt(u().windows, now())} loading={usageLoading(u())} summary={footerUsageSummary(u())} indicator={text("workspace/usageIndicator") as UsageIndicator} />
         </button>
-        <button type="button" class="icon-btn small usage-refresh" disabled={!online() || u().refreshing} aria-label="Refresh usage"
-          title={u().refreshing ? "Updating account usage…" : "Refresh usage"} onClick={() => void refreshSessionUsage(true)}>
+        <button type="button" class="icon-btn small usage-refresh" disabled={!online() || u().refreshing} aria-label={tr("Refresh usage")}
+          title={u().refreshing ? tr("Updating account usage…") : tr("Refresh usage")} onClick={() => void refreshSessionUsage(true)}>
           <Show when={!u().refreshing} fallback={<span class="su-spin"><Icon name="refresh-cw" size={12} /></span>}><Icon name="refresh-cw" size={12} /></Show>
         </button>
       </span>
@@ -66,7 +67,7 @@ export function UsageLimitChip(props: { session: Session; compact: boolean }) {
   const warning = () => exhaustedText() || notice();
   const percent = () => usageChipPercent(u(), now());
   const summary = () => exhaustedSummary(u(), now());
-  const label = () => percent() !== undefined ? `Usage ${percent()}%` : summary()?.label ?? "Usage available";
+  const label = () => percent() !== undefined ? tr("Usage %1%", percent()!) : summary()?.label ?? tr("Usage available");
   createEffect(() => { if (percent() === undefined && !warning()) setOpen(false); });
   return (
     <Show when={percent() !== undefined || warning()}>
@@ -75,15 +76,15 @@ export function UsageLimitChip(props: { session: Session; compact: boolean }) {
           aria-label={label()} title={warning() || label()}
           onClick={(event) => { setKeyboard(event.detail === 0); setOpen(!open()); }}>
           <Icon name={percent() !== undefined ? "gauge" : "attention"} size={13} />
-          <Show when={percent() !== undefined} fallback={<Show when={props.compact} fallback={<>{(summary()?.label ?? "Usage available")}<Show when={summary()?.remaining}><span class="usage-reset">{summary()!.remaining}</span></Show></>}>
-            {summary()?.shortLabel ?? "Usage"}
+          <Show when={percent() !== undefined} fallback={<Show when={props.compact} fallback={<>{(summary()?.label ?? tr("Usage available"))}<Show when={summary()?.remaining}><span class="usage-reset">{summary()!.remaining}</span></Show></>}>
+            {summary()?.shortLabel ?? tr("Usage")}
           </Show>}>
             {props.compact ? `${percent()}%` : label()}
           </Show>
         </button>
-        <ChipPopover open={open()} anchor={chip} label="Account usage limit" keyboard={keyboard()} class="usage-limit-pop" onClose={(focus) => { setOpen(false); if (focus) chip.focus(); }}>
+        <ChipPopover open={open()} anchor={chip} label={tr("Account usage limit")} keyboard={keyboard()} class="usage-limit-pop" onClose={(focus) => { setOpen(false); if (focus) chip.focus(); }}>
           <p class="usage-warning">{warning() || label()}</p>
-          <div class="cache-actions"><button type="button" class="btn small" disabled={computerOffline(props.session.computer) || u().refreshing} onClick={() => void refreshSessionUsage(true)}>Refresh usage</button></div>
+          <div class="cache-actions"><button type="button" class="btn small" disabled={computerOffline(props.session.computer) || u().refreshing} onClick={() => void refreshSessionUsage(true)}>{tr("Refresh usage")}</button></div>
         </ChipPopover>
       </span>
     </Show>

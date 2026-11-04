@@ -5,14 +5,20 @@ the real lifecycle, gives the exact bytes hgs prints; the real agent's own
 SessionStart hook returns those bytes, and the agent must hand the instructions
 to its model, a localhost fixture.
 
-Run with HGS_CLAUDE_TEST_BIN and HGS_CODEX_TEST_BIN (otherwise skipped)."""
+Run with HGS_CLAUDE_TEST_BIN and HGS_CODEX_TEST_BIN (otherwise skipped).
+Linux Codex exec owns a fresh subreaper; unknown settlement keeps its root.
+Other hosts retain the original direct subprocess route.
+"""
 import http.server
 import json
 import os
+from pathlib import Path
 import shlex
 import subprocess
+import sys
 import threading
 import unittest
+import uuid
 
 import test_fork
 
@@ -20,6 +26,50 @@ PHRASE = "Run `hgs task` in your shell"
 
 
 class Native(test_fork.Base):
+    def remove_fixture_root(self):
+        if not getattr(self, "native_settled", True):
+            self.fail(f"native process settlement unknown; preserved fixtures: {self.root}")
+        super().remove_fixture_root()
+
+    def run_owned_codex(self, command, env, timeout=120, drain_seconds=6):
+        """On Linux, fence root removal until the original private wrapper is waited.
+
+        File-backed streams cannot keep communicate() waiting after a detached
+        child inherits a pipe. Only a bounded, nonce/PID-matched exit receipt
+        from that wrapper permits removal; no filesystem retry hides a writer.
+        """
+        if sys.platform != "linux":
+            return subprocess.run(command, env=env, stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True, timeout=timeout)
+        self.native_settled = False
+        nonce = uuid.uuid4().hex
+        receipt = self.root / ("native-settlement-" + nonce + ".json")
+        output, error = self.root / "native.stdout", self.root / "native.stderr"
+        wrapper = Path(__file__).with_name("task_context_process.py")
+        with output.open("xb") as stdout, error.open("xb") as stderr:
+            process = subprocess.Popen([sys.executable, str(wrapper), "--receipt", str(receipt),
+                "--nonce", nonce, "--timeout", str(timeout), "--drain-seconds", str(drain_seconds),
+                "--", *command], env=env, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr)
+            try:
+                code = process.wait(timeout=timeout + drain_seconds + 4)
+            except subprocess.TimeoutExpired:
+                process.kill()  # This exact original wrapper only; root remains fenced.
+                process.wait(timeout=2)
+                raise
+        def bounded(path, limit):
+            with path.open("rb") as file:
+                data = file.read(limit + 1)
+            self.assertLessEqual(len(data), limit, "native fixture output exceeded its bound")
+            return data.decode("utf-8", "replace")
+        stdout, stderr = bounded(output, 1024 * 1024), bounded(error, 1024 * 1024)
+        self.assertTrue(receipt.is_file(), f"native settlement missing; preserved fixtures: {self.root}\n{stderr}")
+        settled = json.loads(bounded(receipt, 4096))
+        self.assertEqual((settled.get("settled"), settled.get("wrapper_pid"), settled.get("nonce")),
+                         (True, process.pid, nonce), "native settlement identity mismatch")
+        self.native_settled = True
+        print("ZERUS_TASK_CONTEXT_SETTLEMENT=" + json.dumps(settled, sort_keys=True), flush=True)
+        return subprocess.CompletedProcess(command, code, stdout, stderr)
+
     def context_hook(self, agent):
         """A hook command printing what hgs prints at a recorded start of an `agent` session."""
         name = self.start(agent, "native")
@@ -126,11 +176,15 @@ class NativeCodexTaskContext(Native):
         (home / "config.toml").write_text(
             'model="gpt-6.1-sol"\nmodel_provider="fixture"\ncheck_for_update_on_startup=false\n'
             '[model_providers.fixture]\nname="Fixture"\nbase_url="http://127.0.0.1:' + str(port) + '/v1"\n'
-            'wire_api="responses"\nrequest_max_retries=0\nstream_max_retries=0\n[features]\nhooks=true\n')
+            'wire_api="responses"\nrequest_max_retries=0\nstream_max_retries=0\n[features]\nplugins=false\nhooks=true\n')
         env = dict(HOME=str(self.root / "native-home"), PATH=os.environ["PATH"], CODEX_HOME=str(home), OPENAI_API_KEY="fixture")
-        run = subprocess.run([os.environ["HGS_CODEX_TEST_BIN"], "exec", "--ephemeral", "--skip-git-repo-check",
+        # Reuse the maintained effective-value guard: curated-plugin git clones
+        # can outlive codex exec and write after the tmux fixture has drained.
+        from test_clear_context_native import NativeCodexClear
+        NativeCodexClear.assert_plugin_sync_off(self, home)
+        run = self.run_owned_codex([os.environ["HGS_CODEX_TEST_BIN"], "exec", "--ephemeral", "--skip-git-repo-check",
                               "-s", "read-only", "--dangerously-bypass-hook-trust", "-C", str(work), "--color", "never", "Hello."],
-                             env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+                             env=env)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertTrue(requests, "Codex sent no request")
         developer = [item for item in requests[0].get("input", []) if item.get("role") == "developer"]

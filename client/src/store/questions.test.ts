@@ -3,23 +3,23 @@ import { createRoot } from "solid-js";
 import { createQuestions, type Clock, type QuestionPort } from "./questions";
 import type { ButtonView, CardView, QuestionView } from "../types";
 
-const button = (over: Partial<ButtonView> = {}): ButtonView => ({ visible: true, enabled: true, label: "Submit answer", review_label: null, ...over });
+const button = (over: Partial<ButtonView> = {}): ButtonView => ({ visible: true, enabled: true, label: { source: "Submit answer" }, review_label: null, ...over });
 
 function card(over: Partial<CardView> = {}, revision = 1, epoch = revision): QuestionView {
   return {
-    card: "question\n[\"studio\\nclaude/sample-project/review\",\"tool:t1\",\"h\"]\nrun-1\nconv-1", revision, epoch, asked: "", asked_tip: "", terminal_label: "Open Terminal",
+    card: "question\n[\"studio\\nclaude/sample-project/review\",\"tool:t1\",\"h\"]\nrun-1\nconv-1", revision, epoch, asked: "", asked_tip: "", terminal_label: { source: "Open Terminal" }, native_ui: false,
     view: {
-      heading: "Agent needs your answer", progress: "", pending: "1 pending", pending_tip: "", nav: null, tabs_visible: false, page: 0, forms: [],
-      status: "", status_error: false, available: true, locked: false, review: false, created_at: 0,
-      submit: button(), approve: button({ visible: false, label: "Approve once" }), deny: button({ visible: false, label: "Deny" }),
-      skip: button({ visible: false, label: "Skip" }), previous: button({ visible: false, label: "← Back" }), next: button({ visible: false, label: "Next →" }),
-      retry: false, skip_tip: "", retry_tip: "", ...over,
+      heading: { source: "Agent needs your answer" }, progress: null, pending: { source: "%1 pending", args: [{ kind: "number", value: 1 }] }, pending_tip: { source: "" }, nav: null, tabs_visible: false, page: 0, forms: [],
+      status: { source: "" }, status_error: false, available: true, locked: false, review: false, created_at: 0,
+      submit: button(), approve: button({ visible: false, label: { source: "Approve once" } }), deny: button({ visible: false, label: { source: "Deny" } }),
+      skip: button({ visible: false, label: { source: "Skip" } }), previous: button({ visible: false, label: { source: "← Back" } }), next: button({ visible: false, label: { source: "Next →" } }),
+      retry: false, skip_tip: { source: "" }, retry_tip: { source: "" }, ...over,
     },
   };
 }
 
-const approval = (revision = 1) => card({ heading: "Agent needs your approval", review: true, submit: button({ visible: false }),
-  approve: button({ label: "Approve once", review_label: "Approve once" }), deny: button({ label: "Deny" }) }, revision);
+const approval = (revision = 1) => card({ heading: { source: "Agent needs your approval" }, review: true, submit: button({ visible: false }),
+  approve: button({ label: { source: "Approve once" }, review_label: { source: "Approve once" } }), deny: button({ label: { source: "Deny" } }) }, revision);
 
 function fakes() {
   const calls: string[] = [];

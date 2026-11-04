@@ -7,6 +7,7 @@ import runpy
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 SCRIPT = Path(__file__).resolve().parents[1] / "packaging/linux/zerus-setup"
 
@@ -74,6 +75,24 @@ class ArchSetup(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.run_setup(uid=0)
         self.assertFalse((self.home / ".local").exists())
+
+
+    def test_desktop_registration_forwards_exact_selected_cli_and_configuration(self):
+        tool = self.prefix / "lib/zerus/install-linux-desktop-service.py"
+        tool.parent.mkdir(parents=True)
+        tool.write_text("fixture helper\n")
+        args = ["zerus-setup", "--prefix", str(self.prefix), "--desktop-service", "install",
+                "--hgs", "/opt/example/hgs selected", "--config-dir", "/data/example/config",
+                "--state-dir", "/data/example/state", "--no-start"]
+        with patch.dict(os.environ, {"HOME": str(self.home)}), patch("sys.argv", args), \
+                patch("os.geteuid", return_value=1000), \
+                patch("subprocess.run", return_value=SimpleNamespace(returncode=0)) as run:
+            self.assertEqual(self.entrypoint(), 0)
+        # zerus-setup resolves --prefix; macOS temporary directories are symlinked.
+        self.assertEqual(run.call_args.args[0][1:], [str(tool.resolve()), "install", "--hgs", "/opt/example/hgs selected",
+                                                   "--config-dir", "/data/example/config",
+                                                   "--state-dir", "/data/example/state", "--no-start"])
+        self.assertFalse((self.home / ".local").exists(), "service registration is separate from compatibility links")
 
 
 if __name__ == "__main__":

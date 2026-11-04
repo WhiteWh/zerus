@@ -1,0 +1,156 @@
+{
+  "isolation": "Normal embedded-assets app with private D-Bus, Xvfb and HOME/XDG/TMPDIR/TMUX_TMPDIR; child environment from scratch. Synthetic workstation, lab and studio; capture-only configured terminal. No provider authentication, real SSH, installers or native services.",
+  "mockup": "Served app.html Accounts Add to machine; design/webui/src/dialogs/AddToMachine.tsx, all three steps compared side by side. Same 600 px layout, texts, fields and outcomes. Profile identity and transfer behavior follow Qt.",
+  "checks": {
+    "explicit_effects": 7,
+    "saved_restores": 1,
+    "successful_copies": 1,
+    "uncertain_copies": 1,
+    "profile_creations": 2,
+    "api_key_saves": 2,
+    "captured_terminal_launches": 2,
+    "uncertain_retries": 0,
+    "phase4_smoke": "18 of 18 passed"
+  },
+  "effects": [
+    {
+      "host": "lab",
+      "args": [
+        "account",
+        "restore",
+        "codex-saved",
+        "--revision",
+        "r1"
+      ],
+      "effect": "restore",
+      "revision": "r1",
+      "profile": "codex-saved"
+    },
+    {
+      "host": "",
+      "args": [
+        "account",
+        "copy",
+        "codex-example",
+        "--from",
+        "@local",
+        "--to",
+        "studio",
+        "--as",
+        "codex-example-account",
+        "--label",
+        "Example account",
+        "--source-machine",
+        "eeeeeeee-eeee-4eee-8eee-dddddddddddd",
+        "--destination-machine",
+        "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        "--source-revision",
+        "r1",
+        "--destination-revision",
+        "r1",
+        "--source-auth-revision",
+        "a1"
+      ],
+      "effect": "copy",
+      "target": "studio",
+      "profile": "codex-example-account"
+    },
+    {
+      "host": "lab",
+      "args": [
+        "account",
+        "add",
+        "codex-login-fixture",
+        "--revision",
+        "r10",
+        "--provider",
+        "codex",
+        "--label",
+        "Login fixture"
+      ],
+      "effect": "add",
+      "revision": "r10",
+      "profile": "codex-login-fixture"
+    },
+    {
+      "host": "studio",
+      "args": [
+        "account",
+        "add",
+        "codex-login-fixture",
+        "--revision",
+        "r10",
+        "--provider",
+        "codex",
+        "--label",
+        "Login fixture"
+      ],
+      "effect": "add",
+      "revision": "r10",
+      "profile": "codex-login-fixture"
+    },
+    {
+      "host": "lab",
+      "args": [
+        "account",
+        "set-key",
+        "native-dsh",
+        "--revision",
+        "r11",
+        "--json"
+      ],
+      "effect": "set-key",
+      "revision": "r11",
+      "profile": "native-dsh"
+    },
+    {
+      "host": "studio",
+      "args": [
+        "account",
+        "set-key",
+        "native-dsh",
+        "--revision",
+        "r11",
+        "--json"
+      ],
+      "effect": "set-key",
+      "revision": "r11",
+      "profile": "native-dsh"
+    },
+    {
+      "host": "",
+      "args": [
+        "account",
+        "copy",
+        "codex-uncertain",
+        "--from",
+        "@local",
+        "--to",
+        "studio",
+        "--as",
+        "codex-uncertain-fixture",
+        "--label",
+        "Uncertain fixture",
+        "--source-machine",
+        "eeeeeeee-eeee-4eee-8eee-dddddddddddd",
+        "--destination-machine",
+        "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        "--source-revision",
+        "r20",
+        "--destination-revision",
+        "r12",
+        "--source-auth-revision",
+        "uncertain-a1"
+      ],
+      "effect": "copy",
+      "target": "studio",
+      "profile": "codex-uncertain-fixture"
+    }
+  ],
+  "terminal_calls": [
+    "hgs @lab --expect-machine ffffffff-ffff-4fff-8fff-ffffffffffff account login codex-login-fixture --revision r11",
+    "hgs @studio --expect-machine eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee account login codex-login-fixture --revision r11"
+  ],
+  "transport_integration": "Real hgs processes over the existing local/SSH pipe with synthetic credentials: exact machine/catalog/auth guards; wrong destination receives zero credential bytes before admission. Legacy unguarded copy passes unchanged.",
+  "limitations": "Fake providers and peers, no native Windows or macOS runtime claim."
+}

@@ -9,6 +9,7 @@ another writer changing the catalog between two calls. Appends
 {"argv": [...], "stdin": "..."} to `log.ndjson` beside itself."""
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -19,7 +20,11 @@ with open(os.path.join(here, "log.ndjson"), "a") as log:
     log.write(json.dumps({"argv": args, "stdin": data}) + "\n")
 if args in (["swarm", "initialize", "--g3-status", "--json"], ["swarm", "initialize", "--g3", "--json"]):
     action = "g3-status" if args[2] == "--g3-status" else "g3-import"
-elif len(args) == 2 and args[0] == "swarm" and args[1] in ("get", "apply"):
+elif args == ["machine", "ls"]:
+    action = "machines"
+elif len(args) == 3 and args[0] == "swarm" and args[1] in ("preview", "join"):
+    action = args[1]
+elif len(args) == 2 and args[0] == "swarm" and args[1] in ("get", "apply", "sync", "resolve"):
     action = args[1]
 else:
     sys.stderr.write("fake hgs: unexpected call\n")
@@ -41,6 +46,15 @@ if reply.get("gate"):
     while not os.path.exists(os.path.join(here, reply["gate"])) and time.time() < deadline:
         time.sleep(0.02)
 time.sleep(reply.get("sleep", 0))
+if reply.get("hold_output"):
+    code = """import os, sys, time
+deadline = time.monotonic() + 20
+while not os.path.exists(sys.argv[1]) and time.monotonic() < deadline:
+    time.sleep(.02)
+"""
+    subprocess.Popen([sys.executable, "-c", code, os.path.join(here, reply["hold_output"])],
+                     stdin=subprocess.DEVNULL,
+                     env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": here, "TMPDIR": here})
 if reply.get("stdout") is not None:
     sys.stdout.write(json.dumps(reply["stdout"]))
 sys.stderr.write(reply.get("stderr", ""))

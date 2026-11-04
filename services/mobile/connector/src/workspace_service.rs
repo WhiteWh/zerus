@@ -249,6 +249,41 @@ pub(crate) async fn prepare_switch(
     #[cfg(not(target_os = "linux"))]
     Err(failure())
 }
+/// Read-only Stop admission. A cooperative exit is still unsafe under a foreign
+/// supervisor; no caller may write the Stop marker before this succeeds.
+pub(crate) async fn stop_preflight(
+    config: &Path,
+    private: &Path,
+    revision: &str,
+    profile: &crate::workspace::Profile,
+    control: &Value,
+) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            let store = Store::lock(private, false).map_err(|_| failure())?;
+            let binding = Binding {
+                revision: revision.into(),
+                node_id: profile.identity.device.device_id.clone(),
+                config: config.into(),
+                state: profile.state_dir.clone(),
+                relay_binding: String::new(),
+            };
+            linux::stop_preflight(read(&store)?.as_ref(), &binding, control).await
+        })
+        .await
+        .map_err(|_| failure())?
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (config, private, revision, profile, control);
+        // There is no verified installer-written LaunchAgent admission yet.
+        // Never infer safe supervision from encrypted workspace membership.
+        Err(ConnectorError::new(
+            "Stop is unavailable without a verified installer-managed connector service",
+        ))
+    }
+}
 /// Persist only an exact successful config CAS (or its exact pending recovery).
 pub(crate) fn activated(store: &Store, node_id: &str, revision: &str) -> Result<()> {
     let Some(mut record) = read(store)? else {

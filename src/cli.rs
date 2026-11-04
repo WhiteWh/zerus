@@ -55,14 +55,35 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        hgs desktop watch|request --json    private local desktop-v1 IPC
        hgs desktop feed --json             passive owner source data, no reader launch
        hgs desktop registration --json    preview this user's passive service definition
+       hgs desktop registration --json --background    preview Unix background definition
+       hgs desktop registration mode-check --json   verify an interactive mode-switch caller
+       hgs desktop revoke-hold --json --request-id UUID   retain original rollback exclusion until stdin EOF
+       hgs desktop registration install|remove|status --json   Windows interactive-user logon task
+       hgs desktop notification-registration install|status --json   Windows Toast registration
+       hgs desktop notification-registration remove --json --request-id UUID   after exact settled revoke
        hgs desktop import-evidence --json private staged migration input on stdin
        hgs desktop import-status --json --import-id UUID  read one import manifest
        Desktop service ABI: desktop-v1
+       Desktop approval audit ABI: desktop-approval-audit-v1
+       Desktop frontend request ABI: desktop-ui-request-v1
+       Desktop ownership ABI: desktop-ownership-v1
+       Notification controls ABI: desktop-notification-controls-v1
+       Desktop creation clone ABI: desktop-creation-clone-v1
+       Desktop pending read import ABI: desktop-pending-reads-v1
+       Desktop activation ABI: desktop-activation-v1
+       Desktop maintenance ABI: desktop-maintenance-v1
+       Desktop cache maintenance ABI: desktop-cache-maintenance-v1
+       Desktop startup ABI: desktop-startup-v1
+       Desktop logon registration ABI: desktop-logon-task-v1
+       Desktop Toast registration ABI: desktop-notification-registration-v1
         Desktop revoke ABI: desktop-revoke-v1
+        Desktop revoke hold ABI: desktop-revoke-hold-v1
         Desktop import ABI: desktop-import-v1
         Desktop source feed ABI: desktop-source-feed-v1
         Desktop owner ABI: desktop-delegation-v1
         Desktop catalog ABI: desktop-catalog-v1
+        Desktop catalog changes ABI: desktop-catalog-changes-v1
+        Desktop catalog relay ABI: desktop-catalog-relay-v1
        hgs mobile-peer --json         guarded direct-peer native request from JSON stdin
        hgs [@host] voice <session> --json  send and inspect persistent voice messages (JSON stdin; voice-video-v1)
        hgs [@host] speech --json      host speech providers and durable jobs (JSON stdin)
@@ -78,6 +99,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        hgs [@host] hooks <session> --json   read scoped hook health (hooks-health-v1)
        hgs [@host] hooks --account ID [--repair] --json   inspect or explicitly repair handlers
        hgs [@host] inspect <session> [--archive <id>] [--after <cursor>]   activity as JSON
+       hgs [@host] inspect <session> --read-observation   raw shared reads for a current journal-backed main session
        hgs [@host] reference <session> --json [--archive ID] [--agent ID]   copy a session reference
        hgs self [--json]              the calling agent's own session reference
        hgs [@host] guide [topic]      how agents message, wait for, launch and stop sessions and use tasks
@@ -102,6 +124,9 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        hgs [@host] terminal <session> --json scoped terminal screen/input; draft/submit_draft for the composer draft
        hgs [@host] AGENT DIRECTORY --new -n TAG -d --launch-id UUID
        hgs [@host] session-action <session> --json scoped native lifecycle action
+       hgs session-action-status <session> --json read an original exact lifecycle receipt
+       hgs @host --expect-machine ID session-action-status <session> --json
+       lifecycle-receipt-status-v1
        hgs [@host] compact-context <session> --json compact the idle agent context using its native command
        hgs [@host] clear-context <session> --json   clear the idle agent context using its native command
        hgs [@host] interrupt <session> --json   interrupt the current turn, keep the session
@@ -232,7 +257,7 @@ fn local_sessions() -> Result<()> {
 // Repository preparation owns only its checkout and receipt. Like the existing
 // configuration/control commands, it does not require or enable a session host.
 fn needs_local_sessions(command: &str) -> bool {
-    !matches!(command, "ls" | "watch" | "machine" | "presence" | "swarm" | "project" | "account" | "speech" | "analytics" | "graph" | "wait" | "team" | "rules" | "mobile" | "hooks" | "repository")
+    !matches!(command, "ls" | "watch" | "machine" | "presence" | "swarm" | "project" | "account" | "speech" | "analytics" | "graph" | "wait" | "team" | "rules" | "mobile" | "hooks" | "repository" | "session-action-status")
 }
 
 /// Fails unless this process may run what the processes of a session run:
@@ -440,12 +465,19 @@ pub(crate) fn executable_path() -> Result<PathBuf> {
     }
     Ok(env::current_exe()?)
 }
-/// Refuse a launch or attach inside a session pane, `-d` or not; only `fork -d`
-/// and `resume -d` start a session from inside one.
-fn nested_guard(dry: bool) -> Result<()> {
+/// The detached form that a launch refused inside a session pane names: a new
+/// session started beside that one, as `fork -d` and `resume -d` start theirs.
+const DETACHED_LAUNCH: &str = "--new -d";
+/// Refuse to attach this terminal inside a session pane: `hgs a`, and a launch
+/// without `-d`. A detached launch, `fork -d` and `resume -d` start their
+/// sessions from inside one; `retry` names that detached form, if any.
+fn nested_guard(dry: bool, retry: Option<&str>) -> Result<()> {
     if !dry && terminal().inside() {
         let name = terminal().enclosing_session();
-        return Err(Error::new(2, nested_refusal(cfg!(unix), Some(&name), None)));
+        return Err(Error::new(
+            2,
+            nested_refusal(cfg!(unix), Some(&name), retry),
+        ));
     }
     Ok(())
 }
@@ -473,9 +505,11 @@ pub(crate) fn usage() -> &'static str {
 /// Commands that only Unix dispatches: `notify` for the tray, and `clip` and
 /// `paste`, which tmux's C-v binding runs.
 const UNIX_ONLY_COMMANDS: [&str; 3] = ["notify", "clip", "paste"];
-/// Whether a usage line tells of what only Unix has: a command of
-/// `UNIX_ONLY_COMMANDS` or the Ctrl+V that runs `hgs paste`.
+/// Lines for Unix commands/input bindings or the POSIX creation-clone ABI.
 fn unix_only_usage(line: &str) -> bool {
+    if line.trim() == zerus_client_core::desktop::creation_clone::HELP_MARKER {
+        return true;
+    }
     let mut words = line.split_whitespace();
     match words.next() {
         Some("hgs") => words
@@ -561,9 +595,16 @@ pub fn dispatch(mut args: Vec<String>) -> Result<i32> {
     // shell, stdin rewriting or a second native process.
     if args.first().is_some_and(|a| a == "--expect-machine") {
         let expected = args.get(1).ok_or_else(|| Error::new(2, "Missing expected machine identity"))?;
-        if uuid::Uuid::parse_str(expected).ok().is_none_or(|id| id.to_string() != *expected)
-            || crate::swarm::local_node_id(&config).map_err(|_| Error::new(1,"Native machine identity is unavailable"))? != *expected
-        {
+        if uuid::Uuid::parse_str(expected).ok().is_none_or(|id| id.to_string() != *expected) {
+            return Err(Error::new(1,"Mobile target identity changed; refresh computers"));
+        }
+        let guarded_at = if args.get(2).is_some_and(|a| a=="--client") {4} else {2};
+        let actual = if args.get(guarded_at).is_some_and(|a| a=="session-action-status") {
+            state::lifecycle_receipt_machine(&config).map_err(|_| Error::new(1,"Native machine identity is unavailable"))?
+        } else {
+            crate::swarm::local_node_id(&config).map_err(|_| Error::new(1,"Native machine identity is unavailable"))?
+        };
+        if actual != *expected {
             return Err(Error::new(1,"Mobile target identity changed; refresh computers"));
         }
         args.drain(..2);
@@ -658,6 +699,7 @@ pub fn dispatch(mut args: Vec<String>) -> Result<i32> {
             #[cfg(target_os = "linux")]
             println!("WSL file snapshot ABI: wsl-file-snapshot-v1");
             println!("Desktop creation ABI: guarded-create-v1");
+            println!("Account transfer ABI: revision-copy-v1");
             #[cfg(windows)]
             print!("{}\nMobile gateway ABI: windows-local-v1\n", crate::host::admin::HELP);
             return Ok(0);
@@ -861,9 +903,10 @@ pub fn dispatch(mut args: Vec<String>) -> Result<i32> {
             }
             state_command(command, &args)
         }
-        "inspect" | "processes" | "worktrees" | "git-status" | "git-diff" | "repository" | "dirs" | "send" | "send-now" | "send-cancel" | "session-action" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "read" | "notifications"
+        "inspect" | "processes" | "worktrees" | "git-status" | "git-diff" | "repository" | "dirs" | "send" | "send-now" | "send-cancel" | "session-action" | "session-action-status" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "read" | "notifications"
         | "attachment" | "file-read" | "recovery" | "voice" | "schedules" | "graph" | "wait" | "team" | "rules" | "switch-account" => {
             if command == "rules" && dry { return Err(Error::new(1,"Rules operations do not support --dry-run")); }
+            if command == "session-action-status" && dry { return Err(Error::new(1,"Lifecycle receipt reads do not support --dry-run")); }
             if command == "repository" && dry { return Err(Error::new(1,"Repository operations do not support --dry-run")); }
             if command == "wait" && dry { return Err(Error::new(1,"Wait operations do not support --dry-run")); }
             if command == "team" && dry { return Err(Error::new(1,"Team operations do not support --dry-run")); }
@@ -1248,12 +1291,13 @@ fn remote(
         "--expect-machine" => {
             let expected=require(&args,0,"Missing expected machine identity")?;
             let actual=require(&args,1,"Missing guarded command")?;
-            let terminal=!has(&args,"-d")&&!matches!(actual,"dirs"|"worktrees"|"repository"|"--help"|"dsh"|"opencode");
+            let terminal=!has(&args,"-d")&&!matches!(actual,"dirs"|"worktrees"|"repository"|"session-action-status"|"--help"|"dsh"|"opencode");
             flags=vec!["-o".into(),"BatchMode=yes".into(),"-o".into(),crate::windows_peer::connect_timeout(config, target, 3)];
             if terminal { flags.insert(0,"-t".into()); }
             let mut all=vec!["--expect-machine".into(),expected.into(),"--client".into(),config.host().into()];
             all.extend_from_slice(&args[1..]);all
         }
+        "session-action-status" => return Err(Error::new(2,"A remote lifecycle receipt read requires --expect-machine ID before session-action-status")),
         "archives" | "kill" | "terminate" | "pause" | "inspect" | "reference" | "processes" | "worktrees" | "git-status" | "git-diff" | "repository" | "dirs" | "project" | "archive" | "rename"
         | "send" | "send-now" | "send-cancel" | "session-action" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "schedules" | "graph" | "wait" | "team" | "rules" | "guide" | "dsh" | "opencode" | "attachment" | "file-read" | "recovery" | "swarm" | "read" | "notifications" | "speech" | "analytics" | "voice" | "hooks" | "test" | "--help" => {
             flags = vec![
@@ -1329,6 +1373,10 @@ fn remote(
             }
         }
         crate::windows_peer::command(&windows_args)?
+    } else if command == "--expect-machine" && args.get(1).is_some_and(|actual| actual=="session-action-status") {
+        // Probe the same executable, without reading the JSON stream. An old
+        // peer must never interpret this reader's name as a program to launch.
+        platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qF 'guarded-create-v1' && ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*lifecycle-receipt-status-v1[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to read lifecycle receipts' >&2; exit 1; fi",platform::join(&remote_args)))
     } else if command == "--expect-machine" {
         platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qF 'guarded-create-v1'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to continue verified creation' >&2; exit 1; fi",platform::join(&remote_args)))
     } else if command == "repository" {
@@ -1613,7 +1661,7 @@ fn attach_command(config: &Config, args: &[String], client: &str, mut dry: bool)
         );
         return Ok(0);
     }
-    nested_guard(false)?;
+    nested_guard(false, None)?;
     // Resolve exact name to an immutable tmux session ID before checking the run.
     // If it disappears later, attach fails instead of creating or selecting a new one.
     const ENDED: &str = "session is no longer running; resume it explicitly";
@@ -1649,7 +1697,7 @@ fn attach(config: &Config, session: &str, client: &str, dry: bool) -> Result<i32
         );
         return Ok(0);
     }
-    nested_guard(false)?;
+    nested_guard(false, None)?;
     terminal().attachable()?;
     if !session_exists(session) && config.state.is_dir() {
         env::set_var("HGS_CLIENT", client);
@@ -2195,7 +2243,12 @@ impl LaunchOptions {
             }
             i += 1;
         }
-        nested_guard(options.dry)?;
+        // Inside a session pane only a detached launch runs: it starts its
+        // session beside that one, as `fork -d` and `resume -d` do, and never
+        // attaches or switches this terminal.
+        if !options.detached {
+            nested_guard(options.dry, Some(DETACHED_LAUNCH))?;
+        }
         if options.launch_id.is_some() && !options.new_only {
             return Err(Error::new(1, "--launch-id requires --new"));
         }
@@ -2376,6 +2429,14 @@ fn launch(
             println!("DeepSeek session ready: {name}\nOpen this session in Zerus.");
         }
         return Ok(0);
+    }
+    // From inside a session only a detached launch or a dry run gets here
+    // (`nested_guard`). The new session takes an identity of its own: tmux
+    // starts its pane from the server's environment and the Windows host drops
+    // the caller's session variables (`host::SESSION_CONTEXT`), and its account
+    // comes from this launch, never from the caller's profile.
+    if terminal().inside() {
+        crate::accounts::forget_session_profile(config);
     }
     let explicit_account = options.account.is_some();
     // Exact conversation lookup is scoped to the chosen account's native home.
@@ -2865,7 +2926,7 @@ mod tests {
     #[test]
     fn repository_preparation_does_not_admit_session_commands_on_control_consoles() {
         for command in ["ls", "machine", "presence", "swarm", "project", "account",
-            "speech", "analytics", "graph", "wait", "team", "mobile", "hooks", "repository"] {
+            "speech", "analytics", "graph", "wait", "team", "mobile", "hooks", "repository", "session-action-status"] {
             assert!(!needs_local_sessions(command), "{command}");
         }
         for command in ["a", "kill", "send", "send-now", "send-cancel", "inspect", "history",
@@ -2987,7 +3048,7 @@ mod tests {
     }
 
     #[test]
-    fn inside_a_session_only_tmux_is_named_and_a_launch_is_refused_even_detached() {
+    fn inside_a_session_only_tmux_is_named_and_only_a_detached_launch_starts() {
         // Unix keeps tmux's wording byte for byte.
         assert_eq!(
             nested_refusal(true, Some("sh/MyProj/work-1"), None),
@@ -3004,6 +3065,10 @@ mod tests {
         assert_eq!(
             nested_refusal(true, None, Some("resume -d")),
             "already inside tmux; use resume -d or open a new tab"
+        );
+        assert_eq!(
+            nested_refusal(true, Some("sh/MyProj/work-1"), Some(DETACHED_LAUNCH)),
+            "already inside tmux session sh/MyProj/work-1; use --new -d or open a new tab"
         );
         // A Windows host session is named as the host resolves it, without tmux.
         assert_eq!(
@@ -3022,9 +3087,14 @@ mod tests {
             nested_refusal(false, None, Some("resume -d")),
             "already inside a session; use resume -d or open a new tab"
         );
+        assert_eq!(
+            nested_refusal(false, Some("sh/MyProj/work-1"), Some(DETACHED_LAUNCH)),
+            "already inside session sh/MyProj/work-1; use --new -d or open a new tab"
+        );
 
-        // On either platform a launch inside a session is refused with or
-        // without -d, as inside tmux; a dry run is not.
+        // On either platform a launch inside a session starts only detached,
+        // as `fork -d` and `resume -d` do: one that would attach this terminal
+        // is refused and names the detached form; a dry run is not refused.
         struct Inside;
         impl TerminalBackend for Inside {
             fn inside(&self) -> bool {
@@ -3040,19 +3110,61 @@ mod tests {
             let args = words.iter().map(|word| word.to_string()).collect::<Vec<_>>();
             LaunchOptions::parse(&args, dry)
         };
+        // What `hgs guide launch` tells agents to run, and shorter forms.
+        let id = "0b6f4c9e-3c1d-4b8f-9a35-6f2e2d6f6a10";
+        let guide = ["/abs/MyProj", "--new", "-n", "x", "-d", "--launch-id", id];
+        let guide = [&guide[..], &["--", "prompt"]].concat();
+        let detached: [&[&str]; 3] = [
+            &guide,
+            &["MyProj", "--new", "-n", "x", "-d"],
+            &["MyProj", "-n", "x", "-d"],
+        ];
+        let without_d = guide.iter().copied().filter(|word| *word != "-d");
+        let without_d = without_d.collect::<Vec<_>>();
+        let attached: [&[&str]; 3] = [
+            &without_d,
+            &["MyProj", "--new", "-n", "x"],
+            &["MyProj", "-n", "x"],
+        ];
         state::backend::with_fake(&Inside, || {
-            for words in [&["MyProj", "-n", "x", "-d"][..], &["MyProj", "-n", "x"]] {
+            for words in detached {
+                assert!(launch(words, false).unwrap().detached, "{words:?}");
+            }
+            let options = launch(detached[0], false).unwrap();
+            assert!(options.new_only);
+            assert_eq!(options.launch_id.as_deref(), Some(id));
+            assert_eq!(options.extra, ["prompt"]);
+            for words in attached {
                 let error = launch(words, false).err().unwrap();
-                assert_eq!(error.code, 2);
+                assert_eq!(error.code, 2, "{words:?}");
                 assert_eq!(
                     error.message,
-                    nested_refusal(cfg!(unix), Some("sh/MyProj/work-1"), None)
+                    nested_refusal(cfg!(unix), Some("sh/MyProj/work-1"), Some(DETACHED_LAUNCH))
                 );
+                assert!(launch(words, true).is_ok(), "{words:?}");
             }
-            assert!(launch(&["MyProj", "-n", "x", "-d"], true).is_ok());
+            // The other launch rules still apply to a detached launch there.
+            for words in [
+                &["MyProj", "-n", "x", "-d", "--launch-id", id][..],
+                &["MyProj", "--new", "-n", "x/y", "-d"],
+                &["MyProj", "--new", "-c", "-d"],
+            ] {
+                assert_eq!(launch(words, false).err().unwrap().code, 1, "{words:?}");
+            }
+            // Attaching names no detached form.
+            let error = nested_guard(false, None).err().unwrap();
+            assert_eq!(error.code, 2);
+            assert_eq!(
+                error.message,
+                nested_refusal(cfg!(unix), Some("sh/MyProj/work-1"), None)
+            );
+            assert!(nested_guard(true, None).is_ok());
         });
         state::backend::with_fake(&Outside, || {
-            assert!(launch(&["MyProj", "-n", "x", "-d"], false).is_ok());
+            for words in detached.into_iter().chain(attached) {
+                assert!(launch(words, false).is_ok(), "{words:?}");
+            }
+            assert!(nested_guard(false, None).is_ok());
         });
     }
 
@@ -3084,12 +3196,15 @@ mod tests {
     fn usage_names_tmux_only_where_it_hosts_the_sessions() {
         // Unix keeps tmux's text byte for byte, capability markers included.
         assert_eq!(usage_text(true), USAGE);
+        let clone_marker = zerus_client_core::desktop::creation_clone::HELP_MARKER;
+        assert!(USAGE.lines().any(|line| line.trim() == clone_marker));
         // Windows has no `hgs paste`, `hgs clip` or `hgs notify`, no Ctrl+V
-        // that pulls a peer's image, and its dry runs print the host's
-        // requests; every other line stays as it is.
+        // that pulls a peer's image, and no POSIX creation-clone executor.
+        // Its dry runs print the host's requests; every other line stays as is.
         let neutral = usage_text(false);
         assert!(!neutral.contains("tmux"), "{neutral}");
         assert!(!neutral.contains("Ctrl+V"), "{neutral}");
+        assert!(!neutral.lines().any(|line| line.trim() == clone_marker));
         assert_eq!(
             neutral,
             USAGE
@@ -3103,6 +3218,10 @@ mod tests {
                 )
                 .replace(
                     "       hgs notify [--bell] <session> [text]   event for the tray (no tray = no-op)\n",
+                    ""
+                )
+                .replace(
+                    "       Desktop creation clone ABI: desktop-creation-clone-v1\n",
                     ""
                 )
                 .replace(

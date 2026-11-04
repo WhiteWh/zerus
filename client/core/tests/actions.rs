@@ -92,11 +92,25 @@ fn a_terminate_with_a_cleanup_line_reports_it() {
 }
 
 #[test]
-fn a_kill_through_the_fake_is_one_call_without_input() {
+fn an_untracked_kill_refuses_without_calling_the_fake() {
     let fake = Fake::new(r#"{"reply":{"exit":0}}"#);
     let mut t = target();
     t.run_id.clear();
     t.conversation_id.clear();
+    assert_eq!(
+        invocation(&t, &Action::Kill, "u").unwrap_err(),
+        zerus_client_core::untracked_shell::UNVERIFIED
+    );
+    assert!(
+        fake.log().is_empty(),
+        "an untracked kill must never reach the fake"
+    );
+}
+
+#[test]
+fn a_tracked_kill_through_the_fake_is_one_call_without_input() {
+    let fake = Fake::new(r#"{"reply":{"exit":0}}"#);
+    let t = target();
     let inv = invocation(&t, &Action::Kill, "u").unwrap();
     assert!(matches!(
         classify(&t, &Action::Kill, &inv, run(&fake.hgs, &inv)),

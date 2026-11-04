@@ -53,16 +53,43 @@
   .mach-log { margin: 0; padding: 10px 12px; max-height: 200px; overflow: auto; border-radius: var(--z-radius-md); background: var(--z-color-terminal-bg); color: var(--z-color-terminal-fg); font-family: var(--z-font-mono); font-size: var(--fs-xs); white-space: pre-wrap; }
   .mach-foot { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 12px; border-top: 1px solid var(--z-color-divider); }
   .mach-phones { margin-top: 14px; padding-top: 6px; border-top: 1px solid var(--z-color-divider); }
+  .cd-preview { padding: 6px 0 12px; }
+  .cd-swatches { display: grid; grid-template-columns: repeat(6, 34px); gap: 8px; margin-bottom: 10px; }
+  .cd-swatch { aspect-ratio: 1; border-radius: var(--z-radius-md); background: var(--sw); border: 2px solid transparent; transition: scale var(--z-motion-fast) var(--ease); }
+  .cd-swatch:hover { scale: 1.06; }
+  .cd-swatch.on { border-color: var(--z-color-text); }
+  .cd-more { position: relative; overflow: hidden; align-self: flex-start; }
+  .cd-more input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 
-  .acct-filter { gap: 10px; }
-  .acct-filter select { width: 260px; }
-  .acct-body { grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); }
-  .acct-row { display: flex; flex-direction: column; gap: 7px; width: 100%; padding: 10px 12px; border-radius: var(--z-radius-lg); border: 1px solid transparent; text-align: left; }
-  .acct-row:hover { background: var(--z-color-row-hover); }
-  .acct-row.on { background: var(--z-color-row-selected); border-color: var(--z-color-row-selected-border); }
-  .acct-row b { font-size: var(--fs-md); font-weight: 600; }
-  .acct-row-tags { gap: 6px; }
-  .acct-machines { gap: 4px; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+  /* Accounts (owner request): the Sessions list's pane on the left, whose header,
+     filter and count stay put while only the cards scroll; the detail is its own
+     scrolling pane, styled like Activity's. */
+  .acct-page { flex: 1; min-width: 0; min-height: 0; display: flex; }
+  .acct-pane { width: var(--pane-w); flex: none; position: relative; display: flex; flex-direction: column; min-height: 0; background: var(--z-color-pane); border-right: 1px solid var(--z-color-divider); }
+  .acct-head h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .acct-summary { padding: 0 4px; font-size: var(--fs-xs); }
+  .acct-filter { width: 100%; }
+  .acct-count { gap: 6px; min-height: 16px; padding: 0 4px; font-size: var(--fs-xs); }
+  .acct-scroll { flex: 1; min-height: 0; margin: 0 -4px; padding: 2px 4px 8px; overflow-y: auto; overflow-x: hidden; outline: none;
+    scrollbar-gutter: stable; scrollbar-width: thin; scrollbar-color: var(--z-color-scrollbar) transparent; }
+  .acct-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; margin: 8px; background: var(--z-color-surface); border: 1px solid var(--z-color-divider); border-radius: 12px; overflow: hidden; }
+  .acct-main-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 22px 28px; scrollbar-width: thin; scrollbar-color: var(--z-color-scrollbar) transparent; }
+  /* Account cards follow the prototype's session cards: a 34 px leading tile,
+     card plate and border, 10 px radius, 9/10/8 padding and 6 px between cards.
+     Plate, hover and border are the Overview session cards' tokens; selection is
+     the session list's. */
+  .acct-row { display: grid; grid-template-columns: 34px minmax(0, 1fr); column-gap: 10px; row-gap: 4px; align-items: center; width: 100%; margin: 0 0 6px; padding: 9px 10px 8px; border-radius: var(--z-radius-xl); border: 1px solid var(--z-color-card-border); background: var(--z-color-card); text-align: left; }
+  .acct-row:hover { background: var(--z-color-card-hover); }
+  .acct-row.on, .acct-row.on:hover { background: var(--z-color-row-selected); border-color: var(--z-color-row-selected-border); }
+  .acct-row > :not(.acct-av) { grid-column: 2; }
+  .acct-av { grid-column: 1; grid-row: 1 / span 3; align-self: start; padding-top: 1px; }
+  .acct-ptile { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; border: 1px solid var(--z-color-card-border); background: var(--z-color-field); color: var(--agent); }
+  .acct-l1 { display: flex; align-items: center; gap: 7px; min-width: 0; height: 22px; }
+  .acct-l1 b { font-size: var(--fs-md); font-weight: 600; }
+  .acct-row-tags { gap: 6px; min-width: 0; }
+  /* Machine chips wrap inside the card, so duplicate tags never clip. */
+  .acct-machines { flex: 1 1 auto; gap: 4px; row-gap: 4px; min-width: 0; flex-wrap: wrap; }
+  .acct-row-tags { align-items: flex-start; }
   .acct-machines .mach-label { height: 18px; font-size: var(--fs-xs); }
   .acct-perm { flex: none; display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: var(--z-radius-sm); background: var(--z-color-hover); color: var(--z-color-text-3); font-size: var(--fs-xs); }
   .acct-perm.bypass { background: var(--z-color-danger-bg); color: var(--z-color-danger); }
@@ -73,9 +100,24 @@
   .acct-identity { align-items: flex-start; gap: 12px; font-size: var(--fs-sm); }
   .acct-card { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
   .acct-card h3, .acct-usage h3 { font-size: var(--fs-md); font-weight: 600; }
-  .acct-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-  /* Machines of an account: a few chips, "+N more" with a searchable list, one Add button. */
-  .acct-tag.more { color: var(--z-color-muted); }
+  /* Machines of an account: one row per profile (the .acct-more-row pattern), "+N more" with a searchable list, one Add button. */
+  .acct-mrows { display: flex; flex-direction: column; gap: 2px; }
+  /* A narrow detail wraps the default action under its row; the machine name keeps its width. */
+  .acct-mrow { display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; min-height: 36px; padding-right: 6px; border-radius: 6px; }
+  .acct-mrow:hover { background: var(--z-color-hover); }
+  .acct-mrow.on { background: var(--z-color-segment-on); }
+  .acct-mrow-pick { flex: 1 1 auto; min-width: 0; min-height: 36px; align-self: stretch; display: flex; align-items: center; gap: 8px; padding: 0 6px; border-radius: 6px; text-align: left; font-size: var(--fs-sm); }
+  .acct-mrow .mtile { --mt-ring: var(--z-color-card); }
+  .acct-mstate { flex: none; font-size: var(--fs-xs); color: var(--z-color-muted); }
+  .acct-mstate[data-tone="warn"] { color: var(--z-color-warn); }
+  .acct-mrow-default { flex: none; display: flex; justify-content: flex-end; margin-left: auto; padding: 4px 0; }
+  /* Rows keep one column for Default or Make default, so the states line up. */
+  .acct-mrows.defaults .acct-mrow-default { min-width: 92px; }
+  .acct-mfoot { gap: 6px; }
+  /* Tells apart two profiles of one account on the same machine. */
+  .acct-pid { flex: none; display: inline-flex; align-items: center; height: 18px; padding: 0 5px; border-radius: var(--z-radius-sm); background: var(--z-color-hover); color: var(--z-color-text-3); font-family: var(--z-font-mono); font-size: var(--fs-2xs); }
+  .acct-mchip { flex: none; display: inline-flex; align-items: center; gap: 3px; }
+  .acct-row-usage { display: flex; min-width: 0; overflow: hidden; }
   .acct-more-anchor { position: relative; display: inline-flex; }
   .acct-more { position: absolute; z-index: 40; top: calc(100% + 6px); left: 0; width: 300px; padding: 8px; border-radius: 10px; border: 1px solid var(--z-color-border); background: var(--z-color-raised); box-shadow: var(--z-shadow-popover); display: flex; flex-direction: column; gap: 6px; animation: rise var(--z-motion-base) var(--ease) both; }
   .acct-more .field { height: 30px; }
@@ -87,22 +129,16 @@
   .acct-more-empty { padding: 6px; font-size: var(--fs-xs); }
   .acct-add { gap: 6px; }
   .acct-add .dim { font-size: var(--fs-2xs); }
-  .acct-tag-wrap { display: inline-flex; align-items: center; gap: 2px; }
   .acct-default { height: 18px; padding: 0 6px; border-radius: 4px; display: inline-flex; align-items: center; font-size: 11px; font-weight: 600; color: var(--z-color-accent); background: var(--z-color-accent-bg); }
-  .acct-make-default { height: 26px; font-size: var(--fs-xs); color: var(--z-color-muted); }
-  .acct-make-default:hover { color: var(--z-color-accent); }
-  .acct-tag { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px; border-radius: var(--z-radius-md); border: 1px solid var(--z-color-border); font-size: var(--fs-sm); color: var(--z-color-text-2); }
-  .acct-tag:hover:not(:disabled) { background: var(--z-color-hover); }
-  .acct-tag.on { background: var(--z-color-segment-on); border-color: var(--z-color-accent-muted); color: var(--z-color-text); }
-  .acct-tag.offline .mach-label { opacity: .6; }
-  .acct-tag.add { border-style: dashed; color: var(--z-color-accent); }
-  .acct-tag:disabled { opacity: .5; cursor: default; }
   .acct-status { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; }
   .acct-status .set-actions { padding: 0; }
   .acct-oc { border: 1px solid var(--z-color-card-border); border-radius: var(--z-radius-md); }
   .acct-oc-row { display: grid; grid-template-columns: 1fr auto minmax(120px, auto); gap: 14px; padding: 6px 10px; font-size: var(--fs-sm); border-bottom: 1px solid var(--z-color-divider); }
   .acct-oc-row:last-child { border-bottom: 0; }
   .acct-setting { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 8px; border-top: 1px solid var(--z-color-divider); font-size: var(--fs-sm); }
+  .acct-perm-select { margin: 8px 0; }
+  dialog[aria-labelledby^="accounts-"] .form-row .field { width: 100%; }
+  dialog[aria-labelledby^="accounts-"] p + p { margin-top: 8px; }
   .acct-usage { padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; font-size: var(--fs-sm); }
   .acct-window { display: flex; flex-direction: column; gap: 5px; padding: 6px 0; }
   .acct-window .row { gap: 8px; }
@@ -116,6 +152,63 @@
   .acct-marker { position: absolute; top: -3px; bottom: -3px; left: var(--x); width: 2px; border-radius: 1px; background: var(--z-color-text); translate: -1px 0; }
   .acct-pace { font-size: var(--fs-xs); }
   .acct-pace.warn { color: var(--z-color-warn); }
-  .acct-loading { display: grid; place-items: center; gap: 8px; padding: 90px 0; }
+  .acct-loading { display: grid; place-items: center; gap: 8px; padding: 60px 0; }
   .acct-empty { padding: 80px 16px; }
 }
+
+  .acct-agents-row { align-items: start; }
+  .acct-agents { display: flex; flex-direction: column; gap: 4px; }
+  .acct-agent { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: var(--z-radius-md); border: 1px solid var(--z-color-border); text-align: left; font-size: var(--fs-sm); }
+  .acct-agent svg { color: var(--agent); flex: none; }
+  .acct-agent .muted { font-size: var(--fs-xs); }
+  .acct-agent:hover:not(:disabled) { background: var(--z-color-hover); }
+  .acct-agent.on { background: var(--z-color-segment-on); border-color: var(--z-color-accent-muted); }
+  .acct-agent:disabled { opacity: .5; cursor: default; }
+  .acct-add-btn { min-width: 150px; }
+
+  /* Add to machines: steps, a virtual machine list, then per-machine outcomes. */
+  .atm-steps { display: flex; gap: 6px; margin: 0 0 12px; padding: 0; list-style: none; font-size: var(--fs-xs); color: var(--z-color-muted); }
+  .atm-steps li { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px 3px 4px; border-radius: 12px; }
+  .atm-steps li b { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--z-color-hover); font-size: 11px; }
+  .atm-steps li.on { color: var(--z-color-text); background: var(--z-color-segment-on); }
+  .atm-steps li.on b { background: var(--z-color-accent); color: var(--z-color-accent-text); }
+  .atm-steps li.done b { background: var(--z-color-accent-bg); color: var(--z-color-accent); }
+  .atm-tools { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .atm-search { flex: 1; height: 32px; }
+  .atm-list { position: relative; height: 336px; overflow-y: auto; border: 1px solid var(--z-color-border); border-radius: 9px; background: var(--z-color-field); contain: strict; }
+  .atm-row { position: absolute; top: 0; left: 0; right: 0; height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 12px 0 10px; cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--z-color-divider) 60%, transparent); }
+  .atm-row .mtile { --mt-ring: var(--z-color-field); }
+  .atm-row:hover:not(.blocked) { background: var(--z-color-hover); }
+  .atm-row:hover:not(.blocked) .mtile { --mt-ring: var(--z-color-hover); }
+  .atm-row.on { background: var(--z-color-segment-on); }
+  .atm-row.on .mtile { --mt-ring: var(--z-color-segment-on); }
+  .atm-row.blocked { cursor: default; }
+  .atm-row.blocked .atm-name, .atm-row.blocked .mtile { opacity: .55; }
+  .atm-check { flex: none; width: 16px; height: 16px; border-radius: 4px; border: 1.5px solid var(--z-color-border); display: grid; place-items: center; color: var(--z-color-accent-text); }
+  .atm-row.on .atm-check { background: var(--z-color-accent); border-color: var(--z-color-accent); }
+  .atm-row.has .atm-check { border-color: transparent; color: var(--z-color-accent); }
+  .atm-row.blocked:not(.has) .atm-check { border-style: dashed; }
+  .atm-name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-size: var(--fs-xs); }
+  .atm-why { flex: none; max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); color: var(--z-color-muted); }
+  .atm-why.ok { color: var(--z-color-accent); }
+  .atm-empty { padding: 14px; font-size: var(--fs-sm); }
+  .atm-count { font-size: var(--fs-xs); }
+  .atm-how { gap: 10px; margin: 10px 0 12px; }
+  .atm-how .check { align-items: center; flex-wrap: wrap; gap: 8px; }
+  .atm-src { height: 28px; width: auto; min-width: 140px; padding: 0 8px; }
+  .field.invalid { border-color: var(--z-color-danger); }
+  .hint.warn { color: var(--z-color-warn); }
+  .atm-summary { font-weight: 600; }
+  .atm-results { display: flex; flex-direction: column; gap: 2px; max-height: 300px; overflow-y: auto; }
+  .atm-result { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 2px 8px; border-radius: 7px; font-size: var(--fs-xs); }
+  .atm-result:nth-child(odd) { background: color-mix(in srgb, var(--z-color-hover) 50%, transparent); }
+  .atm-ricon { flex: none; width: 18px; height: 18px; display: grid; place-items: center; color: var(--z-color-muted); }
+  .r-added .atm-ricon { color: var(--z-color-accent); }
+  .r-needs-signin .atm-ricon { color: var(--z-color-warn); }
+  .r-failed .atm-ricon { color: var(--z-color-danger); }
+  .r-unknown .atm-ricon { color: var(--z-color-warn); }
+  .atm-rtext { flex: 1; min-width: 0; color: var(--z-color-text-2); }
+  .r-failed .atm-rtext { color: var(--z-color-danger); }
+  .atm-spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--z-color-accent); border-right-color: transparent; animation: spin 1s linear infinite; }
+
+.atm-row:focus-visible { outline: 2px solid var(--z-color-accent); outline-offset: -2px; }

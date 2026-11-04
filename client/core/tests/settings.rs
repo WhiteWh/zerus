@@ -108,8 +108,13 @@ fn linux_and_windows_switches_seed_once_and_keep_the_clients_choices() {
         assert_eq!(migrated.get("workspace/theme"), "light");
         assert_eq!(migrated.get("workspace/language"), "ru");
         assert_eq!(migrated.get(QT_AUTOMATIC_APPROVALS), true);
-        assert!(!migrated.all().contains_key("automaticApprovals/enabled"));
+        assert!(!migrated.flag("automaticApprovals/enabled"));
+        assert_eq!(migrated.get("automaticApprovals/error"), "");
         let seed = migrated.seed_record().unwrap();
+        let seeded = seed["keys"].as_array().unwrap();
+        for name in ["automaticApprovals/enabled", "automaticApprovals/error"] {
+            assert!(!seeded.contains(&json!(name)), "{name}");
+        }
         assert!(migrated.flush_within(FLUSH));
         drop(migrated);
         assert_eq!(fs::read(qt.path()).unwrap(), source);
@@ -218,8 +223,15 @@ fn every_key_has_qt_s_default_and_range() {
     assert_eq!(default("updates/channel"), "stable");
     assert_eq!(default("updates/automatic"), true);
     assert_eq!(default("shortcuts/queue.sendNow"), json!([]));
-    // The opt-in itself is not a client setting.
-    assert!(find("automaticApprovals/enabled").is_none());
+    // Qt's historical opt-in never arms the client's worker or imports errors.
+    let automatic = find("automaticApprovals/enabled").unwrap();
+    assert!(matches!(automatic.kind, Kind::Flag(false)));
+    assert_eq!(default(automatic.name), false);
+    assert!(!automatic.seeded);
+    let error = find("automaticApprovals/error").unwrap();
+    assert!(matches!(error.kind, Kind::Text("")));
+    assert_eq!(default(error.name), "");
+    assert!(!error.seeded);
     assert!(find("shortcuts/").is_none() && find("shortcuts/a/b").is_none());
     assert_eq!(default("client/darkSkin"), "zerus-dark");
     assert_eq!(default("client/lightSkin"), "zerus-light");
@@ -478,6 +490,32 @@ fn without_a_seed_source_nothing_is_seeded() {
     let settings = Settings::open(scratch.0.join("settings.json"), None);
     assert_eq!(settings.get("workspace/theme"), "system");
     assert_eq!(settings.seed_record(), None);
+}
+
+#[test]
+fn machine_appearance_editing_is_local_and_color_reset_preserves_style() {
+    let scratch = Scratch::new("machine-appearance-edit");
+    let path = scratch.0.join("settings.json");
+    let settings = Settings::open(path.clone(), None);
+    assert_eq!(
+        settings.set("machines/colors/peer", json!("#abcdef")),
+        Ok(json!("#abcdef"))
+    );
+    assert_eq!(
+        settings.set("machines/vivid/peer", json!(true)),
+        Ok(json!(true))
+    );
+    assert_eq!(
+        settings.set("machines/colors/peer", Value::Null),
+        Ok(Value::Null)
+    );
+    assert!(!settings.all().contains_key("machines/colors/peer"));
+    assert!(settings.flag("machines/vivid/peer"));
+    assert!(settings.flush_within(FLUSH));
+    drop(settings);
+    let reopened = Settings::open(path, None);
+    assert!(!reopened.all().contains_key("machines/colors/peer"));
+    assert!(reopened.flag("machines/vivid/peer"));
 }
 
 #[test]
@@ -1113,4 +1151,114 @@ fn project_vivid_is_exact_local_boolean_state_and_never_an_old_switch_seed() {
     assert!(store.contains("projects/vivid/alpha"));
     assert!(!store.flag("projects/vivid/alpha"));
     assert!(!store.contains("projects/vivid/other"));
+}
+
+fn qt_layout_ini() -> Vec<u8> {
+    fn ints(values: &[i32]) -> Vec<u8> {
+        values.iter().flat_map(|v| v.to_be_bytes()).collect()
+    }
+    fn packed(bytes: &[u8]) -> String {
+        format!(
+            "@ByteArray({})",
+            bytes
+                .iter()
+                .map(|b| format!("\\x{b:02x}"))
+                .collect::<String>()
+        )
+    }
+    fn split(first: i32, orientation: i32) -> Vec<u8> {
+        let mut bytes = ints(&[0xff, 1, 2, first, 800]);
+        bytes.push(0);
+        bytes.extend(ints(&[8]));
+        bytes.push(1);
+        bytes.extend(ints(&[orientation]));
+        bytes.push(1);
+        bytes
+    }
+    let mut geometry = ints(&[0x01d9d0cb]);
+    geometry.extend([0, 3, 0, 0]);
+    geometry.extend(ints(&[20, 30, 1219, 829, 20, 30, 1219, 829, 0]));
+    geometry.extend([2, 0]);
+    geometry.extend(ints(&[1920, 20, 30, 1219, 829]));
+    format!(
+        "[sessions]\ngeometry={}\n[workspace]\nprojectFolderSplit={}\nsplitter={}\n",
+        packed(&geometry),
+        packed(&split(320, 2)),
+        packed(&split(380, 1))
+    )
+    .into_bytes()
+}
+
+#[test]
+fn window_and_splitter_families_import_once_without_mutating_qt_or_replacing_next() {
+    let scratch = Scratch::new("window-and-splitter");
+    let qt = scratch.0.join("qt.ini");
+    let original = qt_layout_ini();
+    fs::write(&qt, &original).unwrap();
+    let path = scratch.0.join("settings.json");
+    legacy_switch(&path, json!({}));
+    let settings = Settings::open(path.clone(), Some(QtStore::Ini(qt.clone())));
+    assert_eq!(settings.number("workspace/projectFolderSplit"), 320.0);
+    assert_eq!(settings.number("workspace/sessionsWidth"), 380.0);
+    let geometry: Value = serde_json::from_str(&settings.text("client/windowGeometry")).unwrap();
+    assert_eq!(geometry["width"], 1200);
+    assert_eq!(geometry["maximized"], true);
+    assert!(settings.flush_within(FLUSH));
+    drop(settings);
+    let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for (family, key) in [
+        ("window-geometry", "sessions/geometry"),
+        ("session-splitter", "workspace/splitter"),
+        ("project-folder-splitter", "workspace/projectFolderSplit"),
+    ] {
+        assert_eq!(saved["g3"]["families"][family]["keys"], json!([key]));
+        assert_eq!(
+            saved["g3"]["families"][family]["sha256"],
+            zerus_desktop_migration::sha256(&original)
+        );
+    }
+    assert_eq!(fs::read(&qt).unwrap(), original);
+    fs::write(&qt, b"[workspace]\nprojectFolderSplit=@Invalid()\n").unwrap();
+    let restarted = Settings::open(path, Some(QtStore::Ini(qt.clone())));
+    assert_eq!(restarted.number("workspace/projectFolderSplit"), 320.0);
+    assert_eq!(restarted.number("workspace/sessionsWidth"), 380.0);
+    assert!(restarted.flush_within(FLUSH));
+    drop(restarted);
+    // Explicit Next null/empty/unsupported values also count as present.
+    let own = scratch.0.join("own.json");
+    legacy_switch(
+        &own,
+        json!({"workspace/projectFolderSplit":null,"workspace/sessionsWidth":600,"client/windowGeometry":""}),
+    );
+    fs::write(&qt, &original).unwrap();
+    let kept = Settings::open(own, Some(QtStore::Ini(qt.clone())));
+    assert_eq!(kept.number("workspace/projectFolderSplit"), 230.0);
+    assert_eq!(kept.number("workspace/sessionsWidth"), 600.0);
+    assert_eq!(kept.text("client/windowGeometry"), "");
+    assert!(kept.flush_within(FLUSH));
+    assert_eq!(fs::read(&qt).unwrap(), original);
+}
+
+#[test]
+fn malformed_splitter_is_unhandled_and_retry_is_family_atomic() {
+    let scratch = Scratch::new("splitter-retry");
+    let qt = scratch.0.join("qt.ini");
+    let path = scratch.0.join("settings.json");
+    fs::write(&qt, b"[workspace]\nprojectFolderSplit=@ByteArray(bad)\n").unwrap();
+    legacy_switch(&path, json!({}));
+    let settings = Settings::open(path.clone(), Some(QtStore::Ini(qt.clone())));
+    assert!(!settings.contains("workspace/projectFolderSplit"));
+    assert!(settings.flush_within(FLUSH));
+    drop(settings);
+    let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert!(saved["g3"]["families"]
+        .get("project-folder-splitter")
+        .is_none());
+    assert!(saved["g3"]["quarantine"]
+        .get("project-folder-splitter")
+        .is_some());
+    fs::write(&qt, qt_layout_ini()).unwrap();
+    let settings = Settings::open(path, Some(QtStore::Ini(qt)));
+    assert_eq!(settings.number("workspace/projectFolderSplit"), 320.0);
+    assert!(settings.flush_within(FLUSH));
 }

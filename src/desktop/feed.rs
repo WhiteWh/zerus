@@ -5,7 +5,7 @@ use anyhow::{ensure, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc, Arc, Condvar, Mutex,
@@ -53,6 +53,10 @@ pub enum Packet {
         computer: String,
         generation: u64,
     },
+    Remove {
+        computer: String,
+        generation: u64,
+    },
 }
 fn page_items<'de, D: serde::Deserializer<'de>>(
     decoder: D,
@@ -80,7 +84,7 @@ fn page_items<'de, D: serde::Deserializer<'de>>(
     decoder.deserialize_seq(Items)
 }
 impl Packet {
-    fn scope(&self) -> Option<(&str, u64)> {
+    pub(super) fn scope(&self) -> Option<(&str, u64)> {
         match self {
             Self::Keepalive {} => None,
             Self::Watch {
@@ -103,6 +107,10 @@ impl Packet {
                 generation,
             }
             | Self::Offline {
+                computer,
+                generation,
+            }
+            | Self::Remove {
                 computer,
                 generation,
             } => Some((computer, *generation)),
@@ -198,12 +206,14 @@ impl Ingress {
 struct Entry {
     source: Source,
     complete: bool,
+    valid: bool,
 }
 pub struct Broker {
     epoch: String,
     next: u64,
     producer: Option<Arc<Producer>>,
     sources: BTreeMap<String, Entry>,
+    expected: Option<BTreeSet<String>>,
     pub ingress: Arc<Ingress>,
     error: bool,
     retry_at: Instant,
@@ -215,6 +225,7 @@ impl Broker {
             next: 0,
             producer: None,
             sources: BTreeMap::new(),
+            expected: None,
             ingress: Arc::default(),
             error: false,
             retry_at: Instant::now(),
@@ -240,6 +251,11 @@ impl Broker {
                 .is_ok_and(|id| id.to_string() == request.producer),
             "invalid producer identity"
         );
+        self.claim_internal()
+    }
+    /// Actor-owned producer, after lifecycle activation. No UI transport role
+    /// or same-user feed connection confers this service ownership.
+    pub(super) fn claim_internal(&mut self) -> Result<Arc<Producer>> {
         ensure!(
             self.producer.is_none(),
             "feed producer already owned or retiring"
@@ -270,7 +286,15 @@ impl Broker {
             && self
                 .sources
                 .get(computer)
-                .is_some_and(|entry| entry.complete)
+                .is_some_and(|entry| entry.complete && entry.valid)
+    }
+    pub fn available(&self, computer: &str) -> bool {
+        !self.error
+            && self.producer.as_ref().is_some_and(|p| p.alive())
+            && self.sources.get(computer).is_some_and(|entry| entry.valid)
+    }
+    pub fn expected(&self) -> Option<&BTreeSet<String>> {
+        self.expected.as_ref()
     }
     pub fn failed(&mut self, producer: &Producer) {
         producer.close();
@@ -282,7 +306,48 @@ impl Broker {
             self.error = true;
         }
     }
+
+    /// Immediately suppress a failed internal observation, even if the batch
+    /// ends before its queued Offline retirement can be applied. This only
+    /// invalidates the same producer/generation, never a replacement source.
+    pub(super) fn invalidate(&mut self, producer: &Producer, packet: &Packet) {
+        let Some((computer, generation)) = packet.scope() else {
+            return;
+        };
+        if let Some(entry) = self.sources.get_mut(computer) {
+            if entry.source.incarnation == producer.incarnation
+                && entry.source.generation == generation
+            {
+                entry.valid = false;
+                entry.complete = false;
+            }
+        }
+    }
     pub fn apply(
+        &mut self,
+        store: &mut Store,
+        producer: &Producer,
+        packet: &Packet,
+    ) -> Result<Option<Value>> {
+        let result = self.apply_inner(store, producer, packet);
+        if result.is_err()
+            && self
+                .producer
+                .as_ref()
+                .is_some_and(|p| p.incarnation == producer.incarnation)
+        {
+            if let Some((computer, generation)) = packet.scope() {
+                if let Some(entry) = self.sources.get_mut(computer) {
+                    if generation >= entry.source.generation {
+                        entry.valid = false;
+                        entry.complete = false;
+                    }
+                }
+            }
+        }
+        result
+    }
+    fn apply_inner(
         &mut self,
         store: &mut Store,
         producer: &Producer,
@@ -327,6 +392,19 @@ impl Broker {
             incarnation: producer.incarnation,
             generation,
         };
+        let expected = if computer.is_empty() {
+            match packet {
+                Packet::Watch { frame, .. } => match &frame.body {
+                    Body::Snapshot(s) if s.topic == watch::topic::CATALOG_META => {
+                        s.value.as_ref().map(expected_peers).transpose()?.flatten()
+                    }
+                    _ => None,
+                },
+                _ => None,
+            }
+        } else {
+            None
+        };
         let outcome = match packet {
             Packet::Watch { frame, .. } if starting => {
                 catalog::connect(&mut store.db, &source, frame)?;
@@ -350,6 +428,15 @@ impl Broker {
                 catalog::disconnect_many(&mut store.db, std::slice::from_ref(&source))?;
                 Applied::Incomplete
             }
+            Packet::Remove { .. } => {
+                catalog::remove_source(&mut store.db, &source)?;
+                self.sources.remove(computer);
+                return Ok(Some(
+                    json!({"computer":computer,"incarnation":producer.incarnation,
+                    "generation":generation,"removed":true,"complete":false,"display_only":true,
+                    "changes_abi":super::catalog_read::CHANGES_ABI,"reset_required":true}),
+                ));
+            }
             Packet::Keepalive {} => unreachable!(),
         };
         let complete = match outcome {
@@ -357,10 +444,40 @@ impl Broker {
             Applied::Staging | Applied::Incomplete => false,
             Applied::Unchanged => old.is_some_and(|e| e.complete),
         };
-        self.sources
-            .insert(computer.into(), Entry { source, complete });
+        self.sources.insert(
+            computer.into(),
+            Entry {
+                source,
+                complete,
+                valid: true,
+            },
+        );
         self.error = false;
-        Ok((outcome != Applied::Unchanged).then(||json!({"computer":computer,"incarnation":producer.incarnation,"generation":generation,"complete":complete,"display_only":true})))
+        if let Some(expected) = expected {
+            self.expected = Some(expected);
+        }
+        if computer.is_empty() && matches!(packet, Packet::LegacyComplete { .. }) {
+            let metadata: String = store.db.query_row(
+                "SELECT meta FROM desktop_catalog_sources WHERE computer=''",
+                [],
+                |r| r.get(0),
+            )?;
+            if let Some(expected) = expected_peers(&serde_json::from_str(&metadata)?)? {
+                self.expected = Some(expected);
+            }
+        }
+        let metadata = matches!(packet, Packet::Watch { frame, .. }
+            if matches!(&frame.body, Body::Snapshot(s) if s.topic==watch::topic::CATALOG_META));
+        if outcome == Applied::Unchanged && !metadata {
+            return Ok(None);
+        }
+        let mark = catalog::changes::watermark(&store.db, computer)?;
+        Ok(Some(
+            json!({"computer":computer,"incarnation":producer.incarnation,"generation":generation,
+            "complete":complete,"display_only":true,"changes_abi":super::catalog_read::CHANGES_ABI,
+            "projection":mark.scope.projection,"revision":mark.revision.map(|r|r.to_string()),
+            "online":mark.online,"last_known":!complete,"reset_required":!complete}),
+        ))
     }
     pub fn retire(&mut self, store: &mut Store) -> Result<bool> {
         if self.producer.as_ref().is_none_or(|p| p.alive()) || Instant::now() < self.retry_at {
@@ -373,6 +490,7 @@ impl Broker {
             return Err(error);
         }
         self.sources.clear();
+        self.expected = None;
         self.producer = None;
         self.error = false;
         Ok(true)
@@ -385,6 +503,26 @@ impl Broker {
         self.retire(store)?;
         Ok(())
     }
+}
+
+fn expected_peers(metadata: &Value) -> Result<Option<BTreeSet<String>>> {
+    let Some(value) = metadata.get("peers") else {
+        return Ok(None);
+    };
+    let peers = value.as_array().context("invalid expected peers")?;
+    let mut expected = BTreeSet::from([String::new()]);
+    for alias in peers {
+        let alias = alias
+            .as_str()
+            .filter(|a| zerus_client_core::fleet::valid_alias(a))
+            .context("invalid expected peer")?;
+        expected.insert(alias.to_owned());
+        ensure!(
+            expected.len() <= catalog::MAX_SOURCES as usize,
+            "expected source capacity reached"
+        );
+    }
+    Ok(Some(expected))
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@ import { adoptSession } from "./creations";
 import { setPage, setSubagentOpen } from "./ui";
 import { createForks } from "./forks";
 import type { ActionRow } from "../ui/sessions/actions-ui";
+import { tr } from "../i18n";
 
 let context = { busy: (_row: ActionRow) => false, terminal: () => {} };
 /** Session wiring supplies composer state and Terminal without importing them into menus. */
@@ -39,7 +40,7 @@ export const sessionForks = createRoot(() => createForks({
   place: (row, group, before) => {
     if (before && memberOf(before) === memberOf(row)) return;
     void moveToProject([row], group, before).then((out) => {
-      if (out.outcome !== "refused") notify("info", "The fork is placed after its original and opens Terminal", false, "session-fork", "Forked");
+      if (out.outcome !== "refused") notify("info", tr("The fork is placed after its original and opens Terminal"), false, "session-fork", "Forked");
     });
     setProjectCollapsed(group, false);
   },

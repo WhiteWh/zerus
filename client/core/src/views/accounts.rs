@@ -7,6 +7,7 @@
 use super::usage::{self, Identity, Usage};
 use super::{flag, items, number, text, FleetEntry};
 use crate::paths::{self, Style};
+use crate::text::Text;
 use crate::ComputerId;
 use serde::Serialize;
 use serde_json::Value;
@@ -153,18 +154,20 @@ pub struct Profile {
     pub online: bool,
     pub state: MemberState,
     /// The status line under the machine tags.
-    pub detail: String,
+    pub detail: Text,
     pub signed_in: bool,
-    /// The stored override (`provider`, `bypass`, legacy `auto` or `native:...`).
+    /// `bypass`, `auto`, `plan`, `default` or `unknown`.
     pub permission: String,
-    pub permission_label: String,
-    pub permission_hint: String,
+    /// Zerus override, separate from the provider's effective permission mode.
+    pub permission_mode: String,
+    pub permission_label: Text,
+    pub permission_hint: Text,
     /// `provider` or `zerus`; never a live-session claim.
     pub permission_source: String,
     pub permission_catalog: Value,
     pub permission_current: Value,
     pub model_supported: bool,
-    pub model_text: String,
+    pub model_text: Text,
     pub usage: Usage,
     pub opencode: Option<OpenCode>,
 }
@@ -181,10 +184,12 @@ pub struct Account {
     /// The better snapshot of the members (betterUsage).
     pub usage: Usage,
     /// Bypass, Auto, Plan, Default, or Varies when the members differ.
-    pub permission: String,
-    pub identity_lines: Vec<String>,
-    /// Shown without identity lines: "Reading account details…" or "Account identity is unavailable.".
-    pub identity_note: String,
+    pub permission: Text,
+    /// Identity values verbatim, then "Plan: %1" and "Sign-in: %1".
+    pub identity_lines: Vec<Text>,
+    /// Shown without identity lines: "Reading account details…" or
+    /// "Account identity is unavailable.", else empty.
+    pub identity_note: Option<Text>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -324,7 +329,7 @@ pub fn refs(fleet: &[FleetEntry], state: &AccountsState) -> Vec<(UsageRef, bool)
     out
 }
 
-pub(crate) fn provider_name(provider: &str) -> String {
+pub fn provider_name(provider: &str) -> String {
     match provider {
         "claude" => "Claude",
         "codex" => "Codex",
@@ -400,42 +405,54 @@ fn member(
     provider: &str,
     u: &Usage,
     machine: &str,
-) -> (MemberState, String, bool) {
+) -> (MemberState, Text, bool) {
     use MemberState::*;
     let status = u.status.as_str();
     let signed_in = status == "ok" || status == "expired" || u.auth_status == "signed_in";
+    let m = || machine.to_owned();
     let (state, detail) = if !online {
-        (Offline, format!("{machine} is offline."))
+        (Offline, crate::text!("%1 is offline.", m()))
     } else if !installed {
         (
             NotInstalled,
-            format!("{} is not installed on {machine}.", provider_name(provider)),
+            crate::text!("%1 is not installed on %2.", provider_name(provider), m()),
         )
     } else {
         match status {
-            "configured" => (Apikey, format!("API key configured on {machine}.")),
-            "signed_out" if provider == "dsh" => (SignedOut, format!("Set a DeepSeek API key on {machine} to use API models.")),
-            "signed_out" => (SignedOut, format!("Sign in on {machine} to use this account.")),
-            "credentials_locked" => (Keychain, format!("The login Keychain on {machine} is locked. Unlock it in Keychain Access, then refresh.")),
-            "desktop_session_unavailable" => (Desktop, format!("Desktop sign-in on {machine} is unavailable. Log in to macOS and check the HGS installation.")),
-            "credentials_unavailable" => (Unavailable, format!("The saved sign-in on {machine} could not be used. Check Keychain access or sign in again.")),
-            "expired" => (Expired, format!("Sign-in expired on {machine}.")),
-            "loading" => (Checking, format!("Checking sign-in on {machine}…")),
-            _ if signed_in => (Ready, format!("Ready on {machine}.")),
-            _ => (Unknown, format!("Account status is unavailable on {machine}.")),
+            "configured" => (Apikey, crate::text!("API key configured on %1.", m())),
+            "signed_out" if provider == "dsh" => (SignedOut, crate::text!("Set a DeepSeek API key on %1 to use API models.", m())),
+            "signed_out" => (SignedOut, crate::text!("Sign in on %1 to use this account.", m())),
+            "credentials_locked" => (Keychain, crate::text!("The login Keychain on %1 is locked. Unlock it in Keychain Access, then refresh.", m())),
+            "desktop_session_unavailable" => (Desktop, crate::text!("Desktop sign-in on %1 is unavailable. Log in to macOS and check the HGS installation.", m())),
+            "credentials_unavailable" => (Unavailable, crate::text!("The saved sign-in on %1 could not be used. Check Keychain access or sign in again.", m())),
+            "expired" => (Expired, crate::text!("Sign-in expired on %1.", m())),
+            "loading" => (Checking, crate::text!("Checking sign-in on %1…", m())),
+            _ if signed_in => (Ready, crate::text!("Ready on %1.", m())),
+            _ => (Unknown, crate::text!("Account status is unavailable on %1.", m())),
         }
     };
     (state, detail, signed_in)
 }
 
 /// The stored override string. `provider` means inherit the native setting.
-fn permission_mode(raw: &Value) -> String {
+fn stored_override(raw: &Value) -> String {
     let stored = text(raw, "permission_mode");
     if stored.is_empty() {
         "provider".into()
     } else {
         stored
     }
+}
+
+/// permissionMode (AccountsPage.cpp:72-74): a Zerus bypass, else the
+/// provider's effective mode.
+fn effective_mode(raw: &Value) -> String {
+    if text(raw, "permission_mode") == "bypass" {
+        return "bypass".into();
+    }
+    Some(text(raw, "effective_permission_mode"))
+        .filter(|mode| !mode.is_empty())
+        .unwrap_or_else(|| "unknown".into())
 }
 
 fn catalog_option_label(catalog: &Value, control: &str, value: &str) -> Option<String> {
@@ -466,24 +483,27 @@ fn native_label(raw: &Value) -> Option<String> {
     (!labels.is_empty()).then(|| labels.join(", "))
 }
 
-fn legacy_label(raw: &Value) -> String {
+fn legacy_label(raw: &Value) -> Text {
     match text(raw, "effective_permission_mode").as_str() {
-        "auto" => "Auto".into(),
-        "plan" => "Plan".into(),
-        "bypass" => "Bypass".into(),
-        _ => "Default".into(),
+        "auto" => crate::text!("Auto"),
+        "plan" => crate::text!("Plan"),
+        "bypass" => crate::text!("Bypass"),
+        _ => crate::text!("Default"),
     }
 }
 
 /// The native label where discovery supplied one; never collapse an unknown
 /// value into "Default". Older peers without the new projection keep their
-/// effective label.
-fn permission_label(raw: &Value) -> String {
-    match permission_mode(raw).as_str() {
-        "bypass" => "Bypass".into(),
-        "auto" => "Auto".into(),
-        "provider" => native_label(raw).unwrap_or_else(|| legacy_label(raw)),
-        mode if mode.starts_with("native:") => native_label(raw).unwrap_or_else(|| "Custom".into()),
+/// effective label. Native labels are the provider's own words, shown verbatim.
+fn permission_label(raw: &Value) -> Text {
+    match stored_override(raw).as_str() {
+        "bypass" => crate::text!("Bypass"),
+        "auto" => crate::text!("Auto"),
+        "provider" => native_label(raw).map(Text::verbatim).unwrap_or_else(|| legacy_label(raw)),
+        // WhiteWh fork: a native choice without a discovered label.
+        mode if mode.starts_with("native:") => {
+            native_label(raw).map_or_else(|| Text::verbatim("Custom"), Text::verbatim)
+        }
         _ => legacy_label(raw),
     }
 }
@@ -492,7 +512,7 @@ fn permission_source(raw: &Value) -> String {
     raw.get("permission_current")
         .and_then(|current| current["source"].as_str())
         .filter(|source| !source.is_empty())
-        .unwrap_or_else(|| match permission_mode(raw).as_str() {
+        .unwrap_or_else(|| match stored_override(raw).as_str() {
             "provider" => "provider",
             _ => "zerus",
         })
@@ -500,12 +520,13 @@ fn permission_source(raw: &Value) -> String {
 }
 
 /// permissionHint (AccountsPage.cpp:89-92), with the native current value kept.
-fn permission_hint(raw: &Value) -> String {
+fn permission_hint(raw: &Value) -> Text {
     let source = if permission_source(raw) == "zerus" {
-        "Set in Zerus"
+        crate::text!("Set in Zerus")
     } else {
-        "From provider settings"
+        crate::text!("From provider settings")
     };
+    // The provider's own detail is shown as it reports it.
     let detail = raw
         .get("permission_current")
         .and_then(|current| current["detail"].as_str())
@@ -515,18 +536,29 @@ fn permission_hint(raw: &Value) -> String {
             let detail = text(raw, "permission_detail");
             (!detail.is_empty()).then_some(detail)
         })
-        .unwrap_or_else(|| "Provider defaults have not been verified.".into());
-    format!("{source}\n{detail}\nApplies to new and resumed sessions; a running session may use a different mode.")
+        .map_or_else(
+            || crate::text!("Provider defaults have not been verified."),
+            Text::verbatim,
+        );
+    crate::text!(
+        "%1\n%2\n%3",
+        source,
+        detail,
+        crate::text!(
+            "Applies to new and resumed sessions; a running session may use a different mode."
+        )
+    )
 }
 
 /// The model line (AccountsPage.cpp:610-612), with the effort in parentheses (the dots rule).
-fn model_text(raw: &Value) -> String {
+fn model_text(raw: &Value) -> Text {
     let defaults = raw.get("model_defaults").unwrap_or(&Value::Null);
     let (model, effort) = (text(defaults, "model"), text(defaults, "effort"));
     match (model.is_empty(), effort.is_empty()) {
-        (true, _) => "New sessions: Provider settings".into(),
-        (false, true) => format!("New sessions: {model}"),
-        (false, false) => format!("New sessions: {model} ({effort})"),
+        (true, _) => crate::text!("New sessions: Provider settings"),
+        // Qt's "New sessions: %1%2", the effort in parentheses as its suffix.
+        (false, true) => crate::text!("New sessions: %1%2", model, String::new()),
+        (false, false) => crate::text!("New sessions: %1%2", model, format!(" ({effort})")),
     }
 }
 
@@ -628,16 +660,16 @@ fn profile(entry: &FleetEntry, raw: &Value, state: &AccountsState) -> Profile {
             String::new()
         };
         detail = if !online {
-            format!("{machine} is offline.")
+            crate::text!("%1 is offline.", machine.clone())
         } else if !reason.is_empty() {
-            reason
+            Text::verbatim(reason)
         } else if !installed {
-            format!("OpenCode is not installed on {machine}.")
+            crate::text!("%1 is not installed on %2.", "OpenCode", machine.clone())
         } else {
-            format!("Configure providers, models and permissions with OpenCode on {machine}. Zerus uses that native configuration.")
+            crate::text!("Configure providers, models and permissions with OpenCode on %1. Zerus uses that native configuration.", machine.clone())
         };
     }
-    let permission = permission_mode(raw);
+    let permission = effective_mode(raw);
     Profile {
         key: format!("{}\u{1f}{}", entry.computer.0, r.id),
         host: entry.computer.clone(),
@@ -656,6 +688,12 @@ fn profile(entry: &FleetEntry, raw: &Value, state: &AccountsState) -> Profile {
         permission_catalog: raw.get("permission_catalog").cloned().unwrap_or(Value::Null),
         permission_current: raw.get("permission_current").cloned().unwrap_or(Value::Null),
         permission,
+        permission_mode: if text(raw, "permission_mode") == "bypass" {
+            "bypass"
+        } else {
+            "provider"
+        }
+        .into(),
         model_supported: flag(raw, "model_defaults_supported"),
         model_text: model_text(raw),
         usage,
@@ -802,41 +840,41 @@ fn better(usage: &Usage, previous: &Usage) -> bool {
 }
 
 /// accountPermission (AccountsPage.cpp:80-88).
-fn account_permission(members: &[Profile]) -> String {
-    let mut label = String::new();
+fn account_permission(members: &[Profile]) -> Text {
+    let mut label: Option<&Text> = None;
     for member in members {
-        if !label.is_empty() && label != member.permission_label {
-            return "Varies".into();
+        if label.is_some_and(|label| *label != member.permission_label) {
+            return crate::text!("Varies");
         }
-        label = member.permission_label.clone();
+        label = Some(&member.permission_label);
     }
-    if label.is_empty() { "Default".into() } else { label }
+    label.filter(|label| !label.is_empty()).cloned().unwrap_or_else(|| crate::text!("Default"))
 }
 
 /// The identity block (AccountsPage.cpp:625-636).
-fn identity_lines(title: &str, u: &Usage) -> (Vec<String>, String) {
+fn identity_lines(title: &str, u: &Usage) -> (Vec<Text>, Option<Text>) {
     let identity = &u.identity;
     let mut lines = Vec::new();
     let mut seen = vec![title.trim().to_lowercase()];
     for field in [&identity.name, &identity.email, &identity.organization] {
         let text = field.trim();
         if !text.is_empty() && !seen.contains(&text.to_lowercase()) {
-            lines.push(text.to_owned());
+            lines.push(Text::verbatim(text));
             seen.push(text.to_lowercase());
         }
     }
     if !identity.plan.is_empty() {
-        lines.push(format!("Plan: {}", identity.plan));
+        lines.push(crate::text!("Plan: %1", identity.plan.clone()));
     }
     if !identity.auth_method.is_empty() && identity.auth_method != "none" {
-        lines.push(format!("Sign-in: {}", identity.auth_method));
+        lines.push(crate::text!("Sign-in: %1", identity.auth_method.clone()));
     }
     let note = if !lines.is_empty() || *identity != Identity::default() {
-        String::new()
+        None
     } else if u.status == "loading" {
-        "Reading account details…".into()
+        Some(crate::text!("Reading account details…"))
     } else {
-        "Account identity is unavailable.".into()
+        Some(crate::text!("Account identity is unavailable."))
     };
     (lines, note)
 }
@@ -879,9 +917,9 @@ pub fn group(profiles: &[Profile]) -> Vec<Account> {
                 machines: Vec::new(),
                 members: Vec::new(),
                 usage: p.usage.clone(),
-                permission: String::new(),
+                permission: Text::default(),
                 identity_lines: Vec::new(),
-                identity_note: String::new(),
+                identity_note: None,
             });
             groups.len() - 1
         });
@@ -1282,14 +1320,17 @@ mod tests {
         );
         let work = &view.accounts[0];
         assert_eq!(work.machines, ["workstation", "studio"]);
-        assert_eq!(work.permission, "Varies");
+        assert_eq!(work.permission.english(), "Varies");
         assert_eq!(
             work.usage.checked_at,
             Some(1793000300.0),
             "the answered inspect is the better snapshot"
         );
         assert_eq!(
-            work.identity_lines,
+            work.identity_lines
+                .iter()
+                .map(Text::english)
+                .collect::<Vec<_>>(),
             [
                 "Example Person",
                 "person@example.com",
@@ -1298,10 +1339,21 @@ mod tests {
             ]
         );
         assert_eq!(
-            view.accounts[2].identity_note,
-            "Account identity is unavailable."
+            view.accounts[2]
+                .identity_note
+                .as_ref()
+                .map(Text::english)
+                .as_deref(),
+            Some("Account identity is unavailable.")
         );
-        assert_eq!(view.accounts[3].identity_note, "Reading account details…");
+        assert_eq!(
+            view.accounts[3]
+                .identity_note
+                .as_ref()
+                .map(Text::english)
+                .as_deref(),
+            Some("Reading account details…")
+        );
         // The Overview leaves out a native, unnamed profile while it loads (native-dsh).
         let overview: Vec<&str> = view.overview.iter().map(|a| a.label.as_str()).collect();
         assert_eq!(
@@ -1323,7 +1375,7 @@ mod tests {
         };
         let state = |view: &AccountsView, id: &str| {
             let m = member(view, id);
-            (m.state, m.detail)
+            (m.state, m.detail.english())
         };
         let fleet = [entry("", "live", 0), entry("studio", "live", 0)];
         let view = project(&fleet, &with_inspects(), &mut AccountsDisplay::default());
@@ -1357,7 +1409,6 @@ mod tests {
             (Checking, "Checking sign-in on studio…".into())
         );
         assert_eq!(member(&view, "kimi-studio").state, Ready);
-        assert_eq!(member(&view, "native-codex").permission_label, "Bypass");
         // Native current values use the discovered labels; an unknown raw value
         // is shown as itself, never collapsed to "Default".
         let native = json!({
@@ -1368,15 +1419,15 @@ mod tests {
             ]}]},
             "permission_current": {"source": "provider", "values": {"mode": "yolo"}}
         });
-        assert_eq!(permission_label(&native), "Ask When Needed");
+        assert_eq!(permission_label(&native).english(), "Ask When Needed");
         assert_eq!(permission_source(&native), "provider");
         let unknown = json!({
             "permission_mode": "provider",
             "permission_catalog": {"controls": []},
             "permission_current": {"source": "provider", "values": {"mode": "future-mode"}}
         });
-        assert_eq!(permission_label(&unknown), "future-mode");
-        assert_ne!(permission_label(&unknown), "Default");
+        assert_eq!(permission_label(&unknown).english(), "future-mode");
+        assert_ne!(permission_label(&unknown).english(), "Default");
         let chosen = json!({
             "permission_mode": "native:{\"mode\":\"acceptEdits\"}",
             "permission_catalog": {"controls": [{"id": "mode", "options": [
@@ -1384,17 +1435,21 @@ mod tests {
             ]}]},
             "permission_current": {"source": "zerus", "values": {"mode": "acceptEdits"}}
         });
-        assert_eq!(permission_label(&chosen), "acceptEdits");
+        assert_eq!(permission_label(&chosen).english(), "acceptEdits");
         assert_eq!(permission_source(&chosen), "zerus");
         assert_eq!(
-            member(&view, "claude-work").model_text,
+            member(&view, "native-codex").permission_label.english(),
+            "Bypass"
+        );
+        assert_eq!(
+            member(&view, "claude-work").model_text.english(),
             "New sessions: opus (high)"
         );
         assert_eq!(
-            member(&view, "claude-studio").model_text,
+            member(&view, "claude-studio").model_text.english(),
             "New sessions: Provider settings"
         );
-        assert_eq!(member(&view, "claude-work").permission_hint,
+        assert_eq!(member(&view, "claude-work").permission_hint.english(),
         "From provider settings\nFrom ~/.claude/settings.json\nApplies to new and resumed sessions; a running session may use a different mode.");
         // studio's stream failed: its profiles are offline, and the cached inspection
         // stands in until the first inspect answers (ruling).
@@ -1402,7 +1457,11 @@ mod tests {
         let view = project(&away, &with_inspects(), &mut AccountsDisplay::default());
         let studio = member(&view, "claude-studio");
         assert_eq!(
-            (studio.state, studio.detail.as_str(), studio.online),
+            (
+                studio.state,
+                studio.detail.english().as_str(),
+                studio.online
+            ),
             (Offline, "studio is offline.", false)
         );
         assert!(studio.usage.offline);
@@ -1565,7 +1624,7 @@ mod tests {
             &mut AccountsDisplay::default(),
         );
         let p = &view.accounts[0].members[0];
-        assert_eq!(p.detail, "OpenCode is not running on studio.");
+        assert_eq!(p.detail.english(), "OpenCode is not running on studio.");
         let oc = p.opencode.as_ref().unwrap();
         assert_eq!(
             oc.providers,
@@ -2006,5 +2065,37 @@ mod tests {
         assert_eq!(view.accounts.len(), 1024);
         assert_eq!(view.truncated, 6 * 256 - 1024);
         assert_eq!(view.notices.len(), 16);
+    }
+}
+
+#[cfg(test)]
+mod permission_source_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn provider_bypass_is_distinct_from_a_zerus_override() {
+        let entry = FleetEntry {
+            computer: ComputerId::local(),
+            status: "live".into(),
+            attempt: 0,
+            local_sessions: true,
+            local_host: false,
+            host: Some("workstation".into()),
+            platform: Some("linux".into()),
+        };
+        let raw = json!({"id":"work","provider":"codex","home":"/accounts/example","installed":false,"permission_mode":"provider","effective_permission_mode":"bypass"});
+        let inherited = profile(&entry, &raw, &AccountsState::default());
+        assert_eq!(inherited.permission, "bypass");
+        assert_eq!(inherited.permission_mode, "provider");
+        assert!(inherited
+            .permission_hint
+            .english()
+            .starts_with("From provider settings"));
+        let mut explicit = raw;
+        explicit["permission_mode"] = json!("bypass");
+        assert_eq!(
+            profile(&entry, &explicit, &AccountsState::default()).permission_mode,
+            "bypass"
+        );
     }
 }

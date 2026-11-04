@@ -1,8 +1,11 @@
 import type { Session } from "../sessions/types";
+import { tr, trNoop } from "../../i18n";
 
 export const STAGES = ["review", "active", "todo", "backlog", "done"] as const;
 export type Stage = typeof STAGES[number];
-export const STAGE_LABEL: Record<Stage, string> = { review: "In review", active: "In progress", todo: "To do", backlog: "Backlog", done: "Done" };
+export const STAGE_LABEL: Record<Stage, string> = { review: trNoop("In review"), active: trNoop("In progress"), todo: trNoop("To do"), backlog: trNoop("Backlog"), done: trNoop("Done") };
+/** A stage as shown; an unknown stage stays as reported. */
+export const stageLabel = (stage: string): string => (stage in STAGE_LABEL ? tr(STAGE_LABEL[stage as Stage]) : stage);
 export const STAGE_ICON: Record<Stage, string> = { review: "inbox", active: "play", todo: "list-todo", backlog: "clock", done: "check" };
 export const RECENT_DONE = 7 * 24 * 60 * 60 * 1000;
 export const TASK_LIMIT = 10_000, TASK_PAGE = 50;
@@ -31,19 +34,19 @@ export function taskItem(value: unknown, queue = 0): Task {
 export const sessionIdentity = (s: Session) => s.launchId ? `launch_id:${s.launchId}` : s.runId ? `run_id:${s.runId}` : "";
 export const sessionLabel = (r: TaskRef) => {
   const label = r.name.split("/").slice(2).join("/") || r.name.split("/")[1] || r.name;
-  return label ? label + (r.host ? ` @${r.host}` : "") : "Any session";
+  return label ? label + (r.host ? ` @${r.host}` : "") : tr("Any session");
 };
 const queued = (t: Task) => t.stage === "todo" || t.stage === "backlog";
 export const executorRef = (t: Task) => queued(t) ? t.target : t.executor;
 export const assignmentLabel = (t: Task) => queued(t)
-  ? t.targetKind === "new_session" ? "New session — create when started"
+  ? t.targetKind === "new_session" ? tr("New session — create when started")
     : t.targetKind === "subagent" ? `Subagent — coordinate through ${sessionLabel(t.target)}`
-    : t.target.name ? sessionLabel(t.target) : "Any available session"
+    : t.target.name ? sessionLabel(t.target) : tr("Any available session")
   : t.executor.name ? sessionLabel(t.executor) : "Unconfirmed";
 export function assignmentText(t: Task, main?: Session): string {
-  if (!queued(t)) return `${t.stage === "active" ? "Executor" : "Last executor"}: ${t.executor.name ? sessionLabel(t.executor) : "Unconfirmed"}`;
-  const assigned = !t.target.name ? "Any available session" : sessionLabel(t.target);
-  const label = t.targetKind === "new_session" ? "New session, created when started" : t.targetKind === "subagent" ? `Subagent coordinated through ${assigned}` : main && t.target.id === sessionIdentity(main) && t.target.host === main.computer ? `Main session: ${assigned}` : assigned;
+  if (!queued(t)) return `${t.stage === "active" ? "Executor" : tr("Last executor")}: ${t.executor.name ? sessionLabel(t.executor) : "Unconfirmed"}`;
+  const assigned = !t.target.name ? tr("Any available session") : sessionLabel(t.target);
+  const label = t.targetKind === "new_session" ? tr("New session, created when started") : t.targetKind === "subagent" ? tr("Subagent coordinated through %1", assigned) : main && t.target.id === sessionIdentity(main) && t.target.host === main.computer ? tr("Main session: %1", assigned) : assigned;
   return `Planned: ${label}`;
 }
 export function belongsTo(t: Task, s: Session): boolean {

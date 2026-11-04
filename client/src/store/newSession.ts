@@ -1,4 +1,5 @@
 import { createEffect, createMemo, createRoot, createSignal, on, untrack } from "solid-js";
+import { trText } from "../text";
 import * as bridge from "../bridge";
 import type {
   Account, ComputerId, CreationAdmission, Details, FolderOut, HeaderOut, LaunchAccounts, LaunchChoices, LaunchForm, LaunchPlan, LaunchProject, LaunchShown, MachineMeta,
@@ -23,6 +24,7 @@ import { machineFilter, selected, setPage } from "./ui";
 import { creationAdmitted, selectedCard } from "./creations";
 import { projectOf } from "../ui/sessions/creations-ui";
 import { snapshotOf } from "../ui/sessions/actions-ui";
+import { tr } from "../i18n";
 
 // The one open New session dialog (tray/src/NewSessionDialog.cpp with
 // SessionsWindow::showNewSession): its members and slots, ported as Qt
@@ -206,7 +208,7 @@ const ACTIONS = Object.keys(ACTION_KEYS) as (keyof NewSessionActions)[];
 const EMPTY: Json = Object.freeze({}) as Json;
 const AGENTS = ["codex", "claude", "kimi", "dsh", "opencode"];
 const INBOX = "ungrouped";
-const FOLDER_CHANGED = "This project folder changed. Select it again.";
+const folderChanged = () => tr("This project folder changed. Select it again.");
 /** The folders of one project the dialog keeps (`project_folders` answers at most these). */
 const FOLDERS = 200;
 /** The verified catalogs one dialog keeps (Qt keeps them for the dialog's life; this bounds them). */
@@ -670,7 +672,7 @@ function createDialog(deps: NewSessionDeps, context: NewSessionContext, init: { 
   function worktreeCreated(target: string, project: string, created: string, catalog: Json) {
     if (!created) return;
     if (host() !== target || projectId() !== project) {
-      setError(`Worktree created at ${created} on ${target || localHostName()}. Select that folder to start a session.`);
+      setError(tr("Worktree created at %1 on %2. Select that folder to start a session.", created, target || localHostName()));
       emit();
       return;
     }
@@ -735,7 +737,7 @@ function createDialog(deps: NewSessionDeps, context: NewSessionContext, init: { 
       accountLoaded = false;
     }
     accountHost = host();
-    accountStatus = "Loading accounts…";
+    accountStatus = tr("Loading accounts…");
     const request = next();
     accountRequest = request;
     accountAwaiting = 0;
@@ -755,7 +757,7 @@ function createDialog(deps: NewSessionDeps, context: NewSessionContext, init: { 
       accountRequest = 0;
       accountAwaiting = 0;
       accountLoaded = true;
-      accountStatus = `Could not load accounts: ${errorText(failure)}`;
+      accountStatus = tr("Could not load accounts: %1", errorText(failure));
       updateAccounts();
     });
     updateAccounts();
@@ -996,7 +998,7 @@ function createDialog(deps: NewSessionDeps, context: NewSessionContext, init: { 
       agent: agent(), accountId: account(),
       ...oc.view(),
       name, branch, openTerminal, form: formView?.shown,
-      error: notice && !(error && errorAt >= formAt) ? notice : error,
+      error: notice && !(error && errorAt >= formAt) ? trText(notice) : error,
       starting, submitted,
     };
   }
@@ -1152,7 +1154,7 @@ export function createNewSessionStore(deps: NewSessionDeps, launches: FolderLaun
         // A folder read that failed says why, not that the folder changed.
         const failure = open.folderFailure();
         open.dispose();
-        deps.notify("error", failure || FOLDER_CHANGED, true);
+        deps.notify("error", failure || folderChanged(), true);
         return;
       }
       if (options.path) open.selectPath(options.path, false);
@@ -1176,7 +1178,7 @@ export function createNewSessionStore(deps: NewSessionDeps, launches: FolderLaun
     // Still the project's folder in the organization the list shows, by its key, computer and path.
     let listed: FolderOut[];
     try { listed = await deps.bridge.projectFolders(projectId); } catch (failure) { return errorText(failure); }
-    if (!listed.some((f) => f.key === folder.key && f.machine === folder.machine && f.path === folder.path)) return FOLDER_CHANGED;
+    if (!listed.some((f) => f.key === folder.key && f.machine === folder.machine && f.path === folder.path)) return folderChanged();
     await launches.ensureBuildStyle();
     const first = folderLaunch(folder);
     const problem = !first.problem && first.local ? folderLaunch(folder, await folderExists(folder)).problem : first.problem;

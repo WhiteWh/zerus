@@ -26,9 +26,6 @@ def main():
     # The Rust mobile connector (services/mobile/connector); its user unit is
     # packaged but never enabled.
     parser.add_argument("--connector", type=Path, required=True)
-    # The optional embedded DeepSeek native UI; it alone links Qt WebEngine,
-    # which the package lists as an optional dependency.
-    parser.add_argument("--native-ui-plugin", type=Path)
     parser.add_argument("--licenses", type=Path, required=True)
     parser.add_argument("--package-name", default="zerus-git")
     args = parser.parse_args()
@@ -39,15 +36,15 @@ def main():
         if not source.is_file():
             parser.error(f"build output missing: {source}")
         install(source, destination / "usr/bin" / name, 0o755)
-    if args.native_ui_plugin:
-        if not args.native_ui_plugin.is_file():
-            parser.error(f"build output missing: {args.native_ui_plugin}")
-        install(args.native_ui_plugin, destination / "usr/lib/hgs-tray/plugins/libhgs-tray-native-ui.so", 0o755)
     for installed, source in ((destination / "usr/bin/hgs_state.py", ROOT / "hgs_state.py"),
                               (destination / "usr/bin/zerus-setup", ROOT / "packaging/linux/zerus-setup"),
                               # zerus-setup --mobile-connector runs it.
                               (destination / "usr/lib/zerus/install-mobile-connector-service.py",
-                               ROOT / "scripts/install-mobile-connector-service.py")):
+                               ROOT / "scripts/install-mobile-connector-service.py"),
+                              (destination / "usr/lib/zerus/install-linux-desktop-service.py",
+                               ROOT / "scripts/install-linux-desktop-service.py"),
+                              (destination / "usr/lib/zerus/desktop-revoke-hold.py",
+                               ROOT / "scripts/desktop-revoke-hold.py")):
         install(source, installed, 0o755)
         # Arch owns /usr/bin/python. Make the runtime dependency visible to
         # package tools while retaining portable source shebangs elsewhere.
@@ -65,13 +62,10 @@ def main():
     for name in ("README.md", "CONTRIBUTING.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "tmux.conf"):
         install(ROOT / name, documentation / name)
     shutil.copytree(ROOT / "docs", documentation / "docs", dirs_exist_ok=True)
-    if args.package_name not in {"zerus", "zerus-git", "zerus-ade-bin"}:
+    if args.package_name not in {"zerus", "zerus-git", "zerus-ade-bin", "zerus-ade-nightly-bin"}:
         parser.error("unsupported package name")
     licenses = destination / "usr/share/licenses" / args.package_name
     install(ROOT / "LICENSE", licenses / "LICENSE")
-    install(ROOT / "tray/vendor/libvterm/LICENSE", licenses / "libvterm-LICENSE")
-    install(ROOT / "tray/vendor/md4c/LICENSE.md", licenses / "md4c-LICENSE")
-    install(ROOT / "tray/vendor/qrcodegen/LICENSE", licenses / "qrcodegen-LICENSE")
     # hgs embeds the Codex greeting and idle-logo data (THIRD_PARTY_NOTICES.md).
     install(ROOT / "docs/licenses/codex-LICENSE.txt", licenses / "codex-LICENSE.txt")
     if not (args.licenses / "inventory.json").is_file():
@@ -85,16 +79,19 @@ def main():
     if (ROOT / ".git").exists():
         manifest["source_commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     with tempfile.TemporaryDirectory(prefix="zerus-build-identity-") as home:
-        env = {key: value for key, value in os.environ.items() if not key.startswith("HGS_")}
-        env["HOME"] = home
+        env = {"PATH": os.defpath, "LANG": "C.UTF-8", "HOME": home,
+               "XDG_CONFIG_HOME": home + "/config", "XDG_DATA_HOME": home + "/data",
+               "XDG_CACHE_HOME": home + "/cache", "XDG_RUNTIME_DIR": home,
+               "TMPDIR": home, "TMUX_TMPDIR": home}
         identity = json.loads(subprocess.check_output([str(args.gui.resolve()), "--build-info"], env=env, text=True, timeout=20))
+    if identity.get("ZerusGUI") != "tauri":
+        parser.error("Linux packages must ship the Zerus Next switch binary")
     if identity.get("version") != manifest["version"] or (manifest.get("source_commit") and identity.get("sourceCommit") != manifest["source_commit"]):
         parser.error("GUI build identity does not match the packaged source/version")
     manifest["desktop_build"] = identity
     install_info = documentation / "build-info.json"
     install_info.write_text(json.dumps(manifest, indent=2) + "\n")
-    print("Staged CLI, desktop, mobile connector" + (", native UI plugin" if args.native_ui_plugin else "")
-          + ", user service definitions, icons, documentation and dependency notices.")
+    print("Staged CLI, Zerus Next, mobile connector, user service definitions, icons, documentation and dependency notices.")
 
 
 if __name__ == "__main__":

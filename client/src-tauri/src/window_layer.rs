@@ -33,12 +33,18 @@ pub struct View {
 struct Shared {
     view: View,
     epoch: u64,
+    #[cfg(any(windows, test))]
+    opening: bool,
+    #[cfg(any(windows, test))]
+    open_epoch: Option<u64>,
 }
 pub struct Layer {
     shared: Arc<Mutex<Shared>>,
     sender: mpsc::SyncSender<Work>,
 }
 enum Work {
+    #[cfg(windows)]
+    Open,
     Show(Box<WebviewWindow>, u64),
     Set(bool, u64, oneshot::Sender<Result<(Value, u64), String>>),
 }
@@ -48,6 +54,10 @@ pub fn init(app: &AppHandle, display: Option<&str>) {
         cfg!(target_os = "linux") && display.is_some_and(|name| name.starts_with("wayland"));
     let shared = Arc::new(Mutex::new(Shared {
         epoch: 0,
+        #[cfg(any(windows, test))]
+        opening: false,
+        #[cfg(any(windows, test))]
+        open_epoch: None,
         view: View {
             supported: !wayland,
             on: false,
@@ -76,6 +86,58 @@ pub fn init(app: &AppHandle, display: Option<&str>) {
     app.manage(Layer { shared, sender });
 }
 
+#[cfg(any(windows, test))]
+fn enqueue_open(
+    shared: &Mutex<Shared>,
+    send: impl FnOnce() -> Result<(), ()>,
+    prepare: impl FnOnce(),
+) -> Result<(), ()> {
+    let mut state = shared.lock().unwrap();
+    if state.opening && state.open_epoch == Some(state.epoch) {
+        return Ok(());
+    }
+    let epoch = state.epoch + 1;
+    if !state.opening {
+        send()?;
+        prepare();
+    }
+    state.opening = true;
+    state.open_epoch = Some(epoch);
+    state.epoch = epoch;
+    state.view.busy = true;
+    state.view.revision += 1;
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn finish_open(shared: &Mutex<Shared>) -> Option<u64> {
+    let mut state = shared.lock().unwrap();
+    state.opening = false;
+    state.open_epoch.take()
+}
+
+#[cfg(windows)]
+pub fn open(app: &AppHandle) -> Result<(), String> {
+    let layer = app
+        .try_state::<Layer>()
+        .ok_or("Window presentation is not ready")?;
+    // Native callbacks call this on the main thread. Only the first admitted
+    // creation reserves a new inbox page; duplicates must not invalidate a
+    // document which is already loading on the worker.
+    let creating = layer.shared.lock().unwrap().opening;
+    let new_page = !creating && crate::main_window(app).is_none();
+    enqueue_open(
+        &layer.shared,
+        || layer.sender.try_send(Work::Open).map_err(|_| ()),
+        || {
+            if new_page {
+                crate::desk::page_loading(app);
+            }
+        },
+    )
+    .map_err(|()| "Window presentation is unavailable".into())
+}
+
 /// Called on the UI thread. It never waits for settings, the compositor or disk.
 pub fn show(app: &AppHandle, window: WebviewWindow) -> bool {
     let Some(layer) = app.try_state::<Layer>() else {
@@ -91,6 +153,10 @@ pub fn show(app: &AppHandle, window: WebviewWindow) -> bool {
         return false;
     }
     state.epoch = epoch;
+    #[cfg(any(windows, test))]
+    {
+        state.open_epoch = None;
+    }
     state.view.busy = true;
     if !state.view.supported {
         state.view.hint = CHECKING.into();
@@ -103,6 +169,10 @@ pub fn hidden(app: &AppHandle) {
     if let Some(layer) = app.try_state::<Layer>() {
         let mut state = layer.shared.lock().unwrap();
         state.epoch += 1;
+        #[cfg(any(windows, test))]
+        {
+            state.open_epoch = None;
+        }
         state.view.busy = false;
     }
 }
@@ -204,38 +274,29 @@ impl Worker {
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             };
             match work {
+                #[cfg(windows)]
+                Work::Open => {
+                    // This is the existing background window-layer thread,
+                    // never a main-thread/event-handler WebView2 constructor.
+                    let window = crate::main_window(&self.app)
+                        .map(Ok)
+                        .unwrap_or_else(|| crate::create_main_window(&self.app));
+                    let requested = finish_open(&self.shared);
+                    match (window, requested) {
+                        (Ok(window), Some(epoch)) => self.show(window, epoch),
+                        (Err(error), requested) => {
+                            if requested.is_some_and(|epoch| self.current(epoch)) {
+                                let mut state = self.shared.lock().unwrap();
+                                state.view.busy = false;
+                                state.view.revision += 1;
+                            }
+                            eprintln!("zerus-client: could not create the Windows window: {error}");
+                        }
+                        (Ok(_), None) => {}
+                    }
+                }
                 Work::Show(window, epoch) => {
-                    if !self.current(epoch) {
-                        continue;
-                    }
-                    let window = *window;
-                    let first = self.window.is_none();
-                    let desired = self.settings.flag(ALWAYS_ON_TOP);
-                    self.window = Some(window.clone());
-                    if self.wayland {
-                        self.id.clear();
-                        self.present(window, epoch);
-                        self.probe(epoch, desired);
-                    } else {
-                        let result = if first {
-                            window.set_always_on_top(desired)
-                        } else {
-                            Ok(())
-                        };
-                        let on = if first {
-                            desired
-                        } else {
-                            window.is_always_on_top().unwrap_or(desired)
-                        };
-                        let _ = self.publish(
-                            epoch,
-                            result.is_ok(),
-                            on,
-                            if result.is_ok() { NORMAL } else { UNAVAILABLE },
-                            result.is_ok(),
-                        );
-                        self.present(window, epoch);
-                    }
+                    self.show(*window, epoch);
                 }
                 Work::Set(on, epoch, reply) => {
                     if !self.current(epoch) {
@@ -246,6 +307,38 @@ impl Worker {
                     let _ = reply.send(result);
                 }
             }
+        }
+    }
+    fn show(&mut self, window: WebviewWindow, epoch: u64) {
+        if !self.current(epoch) {
+            return;
+        }
+        let first = self.window.is_none();
+        let desired = self.settings.flag(ALWAYS_ON_TOP);
+        self.window = Some(window.clone());
+        if self.wayland {
+            self.id.clear();
+            self.present(window, epoch);
+            self.probe(epoch, desired);
+        } else {
+            let result = if first {
+                window.set_always_on_top(desired)
+            } else {
+                Ok(())
+            };
+            let on = if first {
+                desired
+            } else {
+                window.is_always_on_top().unwrap_or(desired)
+            };
+            let _ = self.publish(
+                epoch,
+                result.is_ok(),
+                on,
+                if result.is_ok() { NORMAL } else { UNAVAILABLE },
+                result.is_ok(),
+            );
+            self.present(window, epoch);
         }
     }
     fn change(&mut self, epoch: u64, on: bool) -> Result<(Value, u64), String> {
@@ -372,5 +465,91 @@ impl Worker {
         } else {
             saved
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    fn state() -> Mutex<Shared> {
+        Mutex::new(Shared {
+            epoch: 0,
+            opening: false,
+            open_epoch: None,
+            view: View {
+                supported: true,
+                on: false,
+                busy: false,
+                hint: NORMAL.into(),
+                revision: 0,
+            },
+        })
+    }
+
+    #[test]
+    fn repeated_activations_keep_one_inflight_creation_and_the_original_epoch() {
+        let shared = state();
+        let sends = Cell::new(0);
+        let preparations = Cell::new(0);
+        for _ in 0..32 {
+            enqueue_open(
+                &shared,
+                || {
+                    sends.set(sends.get() + 1);
+                    Ok(())
+                },
+                || preparations.set(preparations.get() + 1),
+            )
+            .unwrap();
+        }
+        assert_eq!(sends.get(), 1);
+        assert_eq!(preparations.get(), 1);
+        assert_eq!(shared.lock().unwrap().epoch, 1);
+        assert_eq!(finish_open(&shared), Some(1));
+        assert!(!shared.lock().unwrap().opening);
+    }
+
+    #[test]
+    fn a_failed_queue_does_not_reserve_creation_or_renew_the_epoch() {
+        let shared = state();
+        assert!(enqueue_open(
+            &shared,
+            || Err(()),
+            || panic!("refused queue must not change page readiness")
+        )
+        .is_err());
+        let state = shared.lock().unwrap();
+        assert!(!state.opening);
+        assert_eq!(state.open_epoch, None);
+        assert_eq!(state.epoch, 0);
+        assert!(!state.view.busy);
+    }
+
+    #[test]
+    fn hide_cancels_the_old_show_but_a_new_activation_survives_inflight_creation() {
+        let shared = state();
+        enqueue_open(&shared, || Ok(()), || {}).unwrap();
+        {
+            let mut state = shared.lock().unwrap();
+            state.epoch += 1;
+            state.open_epoch = None;
+        }
+        // Hide alone never makes the completed creation show its window.
+        assert_eq!(finish_open(&shared), None);
+        enqueue_open(&shared, || Ok(()), || {}).unwrap();
+        {
+            let mut state = shared.lock().unwrap();
+            state.epoch += 1;
+            state.open_epoch = None;
+        }
+        enqueue_open(
+            &shared,
+            || panic!("reuse the one in-flight creation"),
+            || panic!("keep the in-flight document page"),
+        )
+        .unwrap();
+        assert_eq!(finish_open(&shared), Some(5));
     }
 }

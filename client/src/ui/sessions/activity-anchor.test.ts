@@ -7,7 +7,7 @@ function fixture() {
   const frames = new Map<number, () => void>();
   const all = () => { let top = -scrollTop; return rows.map((r) => { const row = { ...r, offset: top }; top += r.height; return row; }); };
   const visible = () => all().filter((r) => r.offset + r.height > 0 && r.offset < 500);
-  const anchor = createActivityAnchor({ visible, offset: (key) => all().find((r) => r.key === key)?.offset, adjust: (delta) => { writes++; scrollTop += delta; } }, () => released, {
+  const anchor = createActivityAnchor({ visible, offset: (key) => all().find((r) => r.key === key)?.offset, adjust: (delta) => { writes++; scrollTop += delta; }, scrollTop: () => scrollTop }, () => released, {
     request: (callback) => { const id = ++serial; frames.set(id, callback); return id; }, cancel: (id) => { frames.delete(id); },
   });
   const frame = () => { const current = [...frames.values()]; frames.clear(); current.forEach((run) => run()); };
@@ -82,4 +82,39 @@ it("never corrects a layout or queued verification frame while a scroll owns the
   anchor.beforeChange();anchor.changed();for(const run of frames.values())run();frames.clear();
   expect(writes).toBe(0);expect(offset).toBe(60);
   busy=false;anchor.changed();expect(writes).toBe(1);expect(offset).toBe(-40);
+});
+
+it("adopts a browser scroll accepted before its scroll event, then preserves later layout changes", () => {
+  let top = 500, above = 100, writes = 0;
+  const anchor = createActivityAnchor({
+    visible: () => [{ key: "reading", offset: above - top }],
+    offset: () => above - top,
+    adjust: delta => { writes++; top += delta; },
+    scrollTop: () => top,
+  }, () => true);
+  anchor.remember();
+  // The compositor moved before the queued DOM scroll handler could remember
+  // it. A streamed layout callback must not restore the prior viewport.
+  top = 640;
+  anchor.beforeChange();
+  expect(top).toBe(640);
+  expect(writes).toBe(0);
+  above += 80;
+  anchor.beforeChange();
+  expect(top).toBe(720);
+  expect(writes).toBe(1);
+  anchor.dispose();
+});
+
+it("a queued verification frame also yields to a newly accepted browser position", () => {
+  let top = 400, writes = 0, serial = 0;
+  const frames = new Map<number, () => void>();
+  const anchor = createActivityAnchor({ visible: () => [{ key: "reading", offset: 100 - top }], offset: () => 100 - top,
+    scrollTop: () => top, adjust: delta => { writes++; top += delta; } }, () => true,
+    { request: run => { frames.set(++serial, run); return serial; }, cancel: id => { frames.delete(id); } });
+  anchor.remember(); anchor.changed();
+  top = 540;
+  for (const run of frames.values()) run();
+  expect(top).toBe(540); expect(writes).toBe(0);
+  anchor.dispose();
 });

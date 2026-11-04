@@ -14,7 +14,35 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  version:
+    if: github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    cache-mode: none
+    outputs:
+      installer: ${{ steps.version.outputs.installer }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: version
+        env:
+          NIGHTLY_RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess, sys
+          sys.path.insert(0, 'scripts')
+          from nightly_common import nightly_version
+          product = pathlib.Path('VERSION').read_text().strip()
+          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          count = int(subprocess.check_output(['git', 'rev-list', '--count', 'HEAD'], text=True))
+          version = nightly_version(product, count, commit, int(os.environ['NIGHTLY_RUN_NUMBER']))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('installer=' + version + '\n')
+          PY
   verify:
+    needs: version
     if: github.event_name == 'schedule' && github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && github.event.repository.private == false
     cache-mode: write
     uses: ./.github/workflows/checks.yml
@@ -24,9 +52,11 @@ jobs:
       run_arch: true
       run_macos: true
       run_windows: true
+      windows_installer_version: ${{ needs.version.outputs.installer }}
       run_ios: true
       save_caches: true
   review:
+    needs: version
     if: github.event_name == 'workflow_dispatch' && github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && github.event.repository.private == false
     cache-mode: read
     uses: ./.github/workflows/checks.yml
@@ -36,6 +66,7 @@ jobs:
       run_arch: true
       run_macos: true
       run_windows: true
+      windows_installer_version: ${{ needs.version.outputs.installer }}
       run_ios: true
   gate:
     name: Nightly verification gate
@@ -120,7 +151,7 @@ jobs:
           path: artifacts/macos-signed
       - name: Arch packaging dependencies
         run: |
-          pacman -Syu --noconfirm --needed base-devel git python qt6-base qt6-webengine qt6-multimedia qt6-svg kstatusnotifieritem kwindowsystem kidletime tmux openssh curl procps-ng hicolor-icon-theme namcap desktop-file-utils
+          pacman -Syu --noconfirm --needed base-devel git python webkit2gtk-4.1 gtk3 alsa-lib gstreamer gst-plugins-base-libs libappindicator dbus gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav tmux openssh curl procps-ng hicolor-icon-theme namcap desktop-file-utils
           useradd -m user
           chown -R user:user "$GITHUB_WORKSPACE"
       - name: Assemble and check exact verified nightly
@@ -139,6 +170,8 @@ jobs:
           if [ "$MACOS_CASK" = true ]; then macos=(--macos artifacts/macos-signed); fi
           runuser -u user -- python3 scripts/prepare-nightly.py --package "${packages[0]}" \
             --windows-zip "${portables[0]}" \
+            --windows-installer artifacts/windows/installer/zerus-windows-x86_64-setup.exe \
+            --windows-installer-info artifacts/windows/installer/windows-installer-info.json \
             --run-id "$NIGHTLY_RUN_ID" --run-number "$NIGHTLY_RUN_NUMBER" --output dist "${macos[@]}"
           runuser -u user -- bash scripts/check-nightly-package.sh dist
           pacman -U --noconfirm dist/*.pkg.tar.zst

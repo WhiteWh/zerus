@@ -2,8 +2,10 @@
 //! tray/src/AutomaticApprovalSettings.cpp and HgsClient::requestApprovalLog
 //! read it: local only, after a `--help` probe for the command (an older
 //! `hgs` treats an unknown word as a session launch), bounded in time and
-//! size, 50 entries a page. This client only reads the journal: it never
-//! approves a tool request.
+//! size, 50 entries a page. Journal reads never authorize input. [`automatic`] contains
+//! the separate dangerous opt-in worker's policy and durable-reservation gate.
+
+pub mod automatic;
 
 use std::path::Path;
 use std::time::Duration;
@@ -61,10 +63,11 @@ pub fn probed(hgs: &Path, exit: Option<Exit>) -> Result<(), String> {
     }
 }
 
-/// The journal's two reads; nothing else of `hgs approval-log` (its begin
-/// and finish record approvals) is ever sent from this client.
+/// The journal reads and the separate opt-in worker's begin/finish writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operation {
+    Begin,
+    Finish,
     List,
     Detail,
 }
@@ -72,13 +75,15 @@ pub enum Operation {
 impl Operation {
     fn word(self) -> &'static str {
         match self {
+            Operation::Begin => "begin",
+            Operation::Finish => "finish",
             Operation::List => "list",
             Operation::Detail => "detail",
         }
     }
 }
 
-/// `hgs approval-log list|detail` with `data` on stdin (10 s).
+/// `hgs approval-log OPERATION` with `data` on stdin (10 s).
 pub fn invocation(operation: Operation, data: &Value) -> Invocation {
     Invocation {
         args: vec!["approval-log".into(), operation.word().into()],

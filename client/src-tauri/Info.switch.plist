@@ -18,5 +18,6 @@
     <key>NSAppleEventsUsageDescription</key><string>Zerus opens your agent sessions in Terminal.</string>
     <!-- tray/update-installed.py tells the clients apart by this key. -->
     <key>ZerusGUI</key>                  <string>tauri</string>
+    <key>HGSDesktopNotificationHostABI</key> <string>desktop-notification-host-v1</string>
 </dict>
 </plist>

@@ -29,6 +29,13 @@ pub const PARK: Duration = Duration::from_millis(250);
 /// Receives every change before the coalescer folds it (the desk thread).
 pub type Tap = Box<dyn Fn(&Change) + Send>;
 
+/// A fixed-budget cursor, never a cloned fleet or an unbounded candidate queue.
+#[derive(Default)]
+pub struct ApprovalCursor {
+    computer: String,
+    row: usize,
+}
+
 #[derive(Default)]
 struct Inner {
     coalescer: Coalescer,
@@ -38,6 +45,8 @@ struct Inner {
     grouping: Grouping,
     tap: Option<Tap>,
     terminations: terminations::Terminations,
+    service: Option<zerus_client_core::desktop::service::Snapshot>,
+    service_changed: bool,
 }
 
 /// Shared by the drain thread and the commands.
@@ -67,6 +76,95 @@ impl WeakPump {
 }
 
 impl Pump {
+    pub fn approval_candidates(
+        &self,
+        cursor: &mut ApprovalCursor,
+        limit: usize,
+        eligible: impl Fn(&zerus_client_core::approvals::automatic::Candidate) -> bool,
+    ) -> Vec<zerus_client_core::approvals::automatic::Candidate> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        use std::ops::Bound::{Excluded, Unbounded};
+        let inner = self.lock();
+        let mut found: Vec<zerus_client_core::approvals::automatic::Candidate> = Vec::new();
+        for _ in 0..512 {
+            let Some((computer, rows)) = inner
+                .mirror
+                .computers
+                .range(cursor.computer.clone()..)
+                .next()
+                .or_else(|| inner.mirror.computers.first_key_value())
+            else {
+                break;
+            };
+            if computer != &cursor.computer {
+                cursor.computer = computer.clone();
+                cursor.row = 0;
+            }
+            let machine = rows.machine.as_ref();
+            if rows.status != Some(ComputerStatus::Live)
+                || machine.is_none_or(|m| m.ok != Some(true) || m.machine_id.is_none())
+                || cursor.row >= rows.order.len()
+            {
+                cursor.computer = inner
+                    .mirror
+                    .computers
+                    .range::<String, _>((Excluded(computer), Unbounded))
+                    .next()
+                    .map_or_else(String::new, |(id, _)| id.clone());
+                cursor.row = 0;
+                continue;
+            }
+            let key = &rows.order[cursor.row];
+            cursor.row += 1;
+            let Some(row) = rows.rows.get(key) else {
+                continue;
+            };
+            if let Some(mut target) =
+                zerus_client_core::approvals::automatic::candidate(computer, row)
+            {
+                target.catalog_key = key.clone();
+                target.machine_id = machine.unwrap().machine_id.clone().unwrap();
+                if !found.iter().any(|old| old.key == target.key) && eligible(&target) {
+                    found.push(target);
+                    if found.len() >= limit.min(2) {
+                        break;
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    pub fn approval_current(
+        &self,
+        target: &zerus_client_core::approvals::automatic::Candidate,
+    ) -> bool {
+        let inner = self.lock();
+        inner
+            .mirror
+            .computers
+            .get(&target.target.computer)
+            .is_some_and(|rows| {
+                rows.status == Some(ComputerStatus::Live)
+                    && rows.machine.as_ref().is_some_and(|m| {
+                        m.ok == Some(true) && m.machine_id.as_deref() == Some(&target.machine_id)
+                    })
+                    && rows.rows.get(&target.catalog_key).is_some_and(|row| {
+                        zerus_client_core::approvals::automatic::same(target, row)
+                    })
+            })
+    }
+    pub fn poster(&self, computer: &str, key: &str, message: &str) -> Option<Arc<[u8]>> {
+        self.lock()
+            .coalescer
+            .poster(&ComputerId::from(computer), key, message)
+    }
+
+    pub fn strip_posters(&self, computer: &ComputerId, key: &str, value: &mut Value) {
+        self.lock().coalescer.strip_posters(computer, key, value);
+    }
     pub(crate) fn downgrade(&self) -> WeakPump {
         WeakPump(
             Arc::downgrade(&self.0),
@@ -127,6 +225,9 @@ impl Pump {
         let (groups, grouping) = inner.grouping.take();
         batch.groups = groups;
         batch.grouping = grouping;
+        if std::mem::take(&mut inner.service_changed) {
+            batch.desktop_service = inner.service.clone();
+        }
         batch
     }
 
@@ -134,11 +235,78 @@ impl Pump {
     pub fn resend(&self) {
         let mut inner = self.lock();
         inner.grouping.resend();
+        inner.service_changed = inner.service.is_some();
         let changes = inner.mirror.changes();
         for change in changes {
             inner.coalescer.push(change);
         }
         self.wake(inner);
+    }
+
+    pub fn service(&self, snapshot: zerus_client_core::desktop::service::Snapshot) {
+        let mut inner = self.lock();
+        if inner.service.as_ref() == Some(&snapshot) {
+            return;
+        }
+        inner.service = Some(snapshot);
+        inner.service_changed = true;
+        self.wake(inner);
+    }
+
+    /// Membership only: do not clone another complete row snapshot while
+    /// bounded service pages flow through the existing mirror and coalescer.
+    pub fn service_catalog_finish(
+        &self,
+        computer: &ComputerId,
+        seen: &std::collections::BTreeSet<String>,
+    ) {
+        let missing: Vec<String> = self
+            .lock()
+            .mirror
+            .computers
+            .get(&computer.0)
+            .map(|rows| {
+                rows.rows
+                    .keys()
+                    .filter(|key| !seen.contains(*key))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        for key in missing {
+            self.push(Change::Remove {
+                computer: computer.clone(),
+                key,
+                reason: None,
+            });
+        }
+    }
+
+    pub fn drain_service(
+        &self,
+        changes: Receiver<crate::desktop_service::Data>,
+        observe: impl Fn(&Change) + Send + 'static,
+    ) -> std::thread::JoinHandle<()> {
+        let pump = self.clone();
+        std::thread::Builder::new()
+            .name("zerus-service-view".into())
+            .spawn(move || {
+                for data in changes {
+                    match data {
+                        crate::desktop_service::Data::Change(change) => {
+                            observe(&change);
+                            pump.push(*change);
+                        }
+                        crate::desktop_service::Data::Catalog(delivery) => {
+                            delivery.apply(&pump, &observe)
+                        }
+                        crate::desktop_service::Data::Detail(delivery) => {
+                            delivery.apply(&pump, &observe)
+                        }
+                    }
+                }
+            })
+            .expect("the service view thread starts")
     }
 
     /// The organization the list shows; `revision` changes whenever it does.
@@ -166,6 +334,13 @@ impl Pump {
         let mut inner = self.lock();
         inner.grouping.edited(intent);
         self.wake(inner);
+    }
+
+    pub fn set_default_project(&self, project: &str) -> Result<(), String> {
+        let mut inner = self.lock();
+        inner.grouping.set_default_project(project)?;
+        self.wake(inner);
+        Ok(())
     }
 
     pub fn set_collapsed(&self, project: &str, collapsed: bool) {
@@ -198,6 +373,38 @@ impl Pump {
         Ok(())
     }
 
+    /// Read projection only, bound to the current local watch hello. A cached,
+    /// polled or offline card cannot establish ownership of device-local data.
+    pub fn local_windows_node(&self) -> Option<String> {
+        let inner = self.lock();
+        let rows = inner.mirror.computers.get("")?;
+        let machine = rows.machine.as_ref()?;
+        (rows.status == Some(ComputerStatus::Live)
+            && machine.platform.as_deref() == Some("windows")
+            && machine.ok == Some(true)
+            && machine.local_sessions != Some(false))
+        .then(|| machine.machine_id.clone())
+        .flatten()
+    }
+
+    pub fn local_windows_projects(&self, organization: &Value, node: &str) -> Option<Value> {
+        let inner = self.lock();
+        let rows = inner.mirror.computers.get("")?;
+        let machine = rows.machine.as_ref()?;
+        if rows.status != Some(ComputerStatus::Live)
+            || machine.platform.as_deref() != Some("windows")
+            || machine.ok != Some(true)
+            || machine.local_sessions == Some(false)
+            || machine.machine_id.as_deref() != Some(node)
+        {
+            return None;
+        }
+        inner
+            .grouping
+            .local_windows_projects(organization, node)
+            .ok()
+    }
+
     pub fn take_runs(&self) -> Option<zerus_client_core::swarm::runs::Snapshot> {
         self.lock().grouping.take_runs()
     }
@@ -227,6 +434,23 @@ impl Pump {
 
     pub fn presentation_seeded(&self) -> Result<bool, &'static str> {
         self.lock().grouping.presentation_seeded()
+    }
+
+    pub fn windows_folders_import_layout(&self) -> Result<Option<Layout>, &'static str> {
+        self.lock().grouping.windows_folders_import_layout()
+    }
+
+    pub fn seed_windows_folders(
+        &self,
+        seed: zerus_client_core::swarm::layout::WindowsFoldersSeed,
+        context: &zerus_client_core::swarm::layout::WindowsFoldersContext<'_>,
+    ) -> Result<bool, &'static str> {
+        let mut inner = self.lock();
+        let changed = inner.grouping.seed_windows_folders(seed, context)?;
+        if changed {
+            self.wake(inner);
+        }
+        Ok(changed)
     }
 
     /// Only the worker reads Qt; merge against the current Next values under
@@ -518,16 +742,41 @@ impl Pump {
     /// Runs the existing observer before queuing, then signals an interested
     /// consumer after the mirror is current. Neither callback holds the pump
     /// lock, and the change is moved without copying its rows.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Preserved unaccounted callback adapter")
+    )]
     pub fn drain_with_after(
         &self,
         changes: Receiver<Change>,
         before: impl Fn(&Change) -> bool + Send + 'static,
         after: impl Fn() + Send + 'static,
     ) {
+        self.drain_after(changes, before, after, None);
+    }
+    /// Retains the source group through EOF, queued changes and both actual
+    /// observer callbacks. No queue, poller or row copy is added.
+    pub fn drain_accounted(
+        &self,
+        changes: Receiver<Change>,
+        before: impl Fn(&Change) -> bool + Send + 'static,
+        after: impl Fn() + Send + 'static,
+        resources: Arc<dyn Send + Sync>,
+    ) {
+        self.drain_after(changes, before, after, Some(resources));
+    }
+    fn drain_after(
+        &self,
+        changes: Receiver<Change>,
+        before: impl Fn(&Change) -> bool + Send + 'static,
+        after: impl Fn() + Send + 'static,
+        resources: Option<Arc<dyn Send + Sync>>,
+    ) {
         let pump = self.clone();
         std::thread::Builder::new()
             .name("zerus-client-pump".into())
             .spawn(move || {
+                let _resources = resources;
                 for change in changes {
                     let interested = before(&change);
                     pump.push(change);
@@ -698,6 +947,55 @@ mod tests {
             status: ComputerStatus::Live,
         });
         assert_eq!(receiver.try_recv(), Ok(ComputerId::from("mac")));
+    }
+
+    #[test]
+    fn accounted_consumer_retains_eof_and_queued_changes_through_both_callbacks() {
+        use zerus_client_core::desktop::drain::{Gate, Observation, Role};
+        let pump = Pump::default();
+        let gate = Gate::new(1).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (entered, events) = std::sync::mpsc::channel();
+        let after_entered = entered.clone();
+        let (resume_before, before) = std::sync::mpsc::channel();
+        let (resume_after, after) = std::sync::mpsc::channel();
+        pump.drain_accounted(
+            rx,
+            move |_| {
+                entered.send("before").unwrap();
+                before.recv_timeout(Duration::from_secs(3)).unwrap();
+                true
+            },
+            move || {
+                after_entered.send("after").unwrap();
+                after.recv_timeout(Duration::from_secs(3)).unwrap();
+            },
+            Arc::new(gate.admit(Role::Fleet).unwrap()),
+        );
+        let closed = gate.close();
+        tx.send(upsert("run:a", "codex/example/a")).unwrap();
+        tx.send(upsert("run:b", "codex/example/b")).unwrap();
+        drop(tx);
+        for key in ["run:a", "run:b"] {
+            assert_eq!(
+                events.recv_timeout(Duration::from_secs(3)).unwrap(),
+                "before"
+            );
+            assert!(pump.row("", key).is_none());
+            assert_eq!(closed.wait_until(Instant::now()), Observation::Pending);
+            resume_before.send(()).unwrap();
+            assert_eq!(
+                events.recv_timeout(Duration::from_secs(3)).unwrap(),
+                "after"
+            );
+            assert!(pump.row("", key).is_some());
+            assert_eq!(closed.wait_until(Instant::now()), Observation::Pending);
+            resume_after.send(()).unwrap();
+        }
+        assert_eq!(
+            closed.wait_until(Instant::now() + Duration::from_secs(3)),
+            Observation::Idle
+        );
     }
 
     #[test]

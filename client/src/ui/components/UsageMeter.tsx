@@ -1,5 +1,6 @@
 import { For, Show } from "solid-js";
 import { current, countdown, pace, period, windowText, type UsageWindow } from "../lib/usage";
+import { tr } from "../../i18n";
 
 // Limit meters, ported from AccountUsage::Button::paintContents (tray/src/AccountUsage.h).
 // Per window: a meter (34 px, 20 compact), 6 px, the "5h 34%" text in the pace
@@ -51,15 +52,15 @@ function Meter(props: { w?: UsageWindow; width: number; indicator: UsageIndicato
   );
 }
 
-/** The meters for one account. `summary` replaces them when the provider reports no windows. */
-export function UsageMeters(props: { windows: UsageWindow[]; loading?: boolean; compact?: boolean; indicator?: UsageIndicator; summary?: string }) {
+/** The meters for one account. `summary` replaces them when the provider reports no windows; `resetFrom` (default 100) is the percent from which the text adds the time to reset. */
+export function UsageMeters(props: { windows: UsageWindow[]; loading?: boolean; compact?: boolean; indicator?: UsageIndicator; summary?: string; resetFrom?: number }) {
   const indicator = () => props.indicator ?? "rails";
   const bar = () => (props.compact ? 20 : 34);
   const slots = () => (props.loading ? [undefined, undefined] : props.windows.slice(0, 2));
   const countdownShown = (w?: UsageWindow) => indicator() === "marker-countdown" && !props.compact && !!w && current(w) && w.resetsIn !== null;
   return (
     <span class="usage-meters" classList={{ compact: props.compact }}>
-      <Show when={props.loading || props.windows.length} fallback={<span class="um-summary">{props.summary ?? "limits n/a"}</span>}>
+      <Show when={props.loading || props.windows.length} fallback={<span class="um-summary">{props.summary ?? tr("limits n/a")}</span>}>
         <For each={slots()}>{(w) => {
           const fresh = () => !!w && current(w);
           const tone = () => (w && fresh() ? pace(w).tone : undefined);
@@ -69,7 +70,7 @@ export function UsageMeters(props: { windows: UsageWindow[]; loading?: boolean; 
               <Show when={w} fallback={<i class="um-skeleton" />}>
                 {/* Percent changes keep a stable slot ("5h 100%"); only a reset countdown widens it. */}
                 <span class="um-text tabular" style={{ color: tone() ? toneVar(tone()!) : undefined, "min-width": props.compact ? undefined : `${period(w!).length + 5}ch` }}>
-                  {windowText(w!, !countdownShown(w))}
+                  {windowText(w!, !countdownShown(w), props.resetFrom)}
                 </span>
                 <Show when={countdownShown(w)}>
                   <span class="um-countdown tabular">

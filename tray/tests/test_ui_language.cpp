@@ -56,8 +56,9 @@ private slots:
         QCOMPARE(QCoreApplication::translate("QWidget", "Settings"), QString::fromUtf8("Настройки"));
         QCOMPARE(translator.translate("Unknown", "Settings", "unreviewed disambiguation"), QString());
         QCOMPARE(QCoreApplication::translate("NativeTranscript", "Synthetic agent reply"), QString("Synthetic agent reply"));
-        QCOMPARE(QCoreApplication::translate("SettingsPage", "Usage and elapsed time bars"),
-                 QString("Usage and elapsed time bars"));
+        // An entry still unfinished in zerus_ru.ts stays English. The Next client
+        // fills only strings it uses, so pick a Qt-only one ("Reset to %1%").
+        QCOMPARE(QCoreApplication::translate("SettingsPage", "Reset to %1%"), QString("Reset to %1%"));
         QCOMPARE(QCoreApplication::translate("QObject", "Russian (preview)"), QString::fromUtf8("Русский (предпросмотр)"));
     }
     void pluralFormsRetainCounts() {

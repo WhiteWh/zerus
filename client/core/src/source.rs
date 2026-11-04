@@ -14,12 +14,15 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use zerus_watch_protocol::{CatalogItem, Frame};
+use zerus_watch_protocol::{CatalogItem, Control, Frame};
 
 pub const INGRESS_BYTES: usize = 16 << 20;
 pub const INGRESS_ITEMS: usize = 1024;
 pub const CONNECTIONS: usize = 4;
 pub const SOURCES: usize = 64;
+pub const CONTROL_BATCH_BYTES: usize = 8192;
+pub const CONTROL_BATCHES: usize = 128;
+pub const CONTROL_BYTES: usize = 1 << 20;
 // Leave room for one lifecycle status per admitted source even when every
 // data permit is held in reader-to-supervisor queues rather than the output.
 const DATA_BYTES: usize = INGRESS_BYTES - SOURCES * 512;
@@ -74,11 +77,24 @@ pub struct Item {
     event: Event,
     _permit: Permit,
 }
+/// Opaque retained ingress admission for a host that moves the decoded payload
+/// into its own event type. Release only after applying or discarding the event.
+pub struct IngressPermit {
+    _permit: Permit,
+}
 impl Item {
     /// Keep this item until its frame has been applied or explicitly discarded.
     /// Its permit counts both queued and consumer-owned work against the cap.
     pub fn event(&self) -> &Event {
         &self.event
+    }
+    pub fn into_parts(self) -> (Event, IngressPermit) {
+        (
+            self.event,
+            IngressPermit {
+                _permit: self._permit,
+            },
+        )
     }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -94,6 +110,21 @@ pub struct Usage {
     pub legacy_reserved_bytes: usize,
     pub high_bytes: usize,
     pub high_items: usize,
+    pub controls: usize,
+    pub control_bytes: usize,
+}
+pub(crate) struct ControlBatch {
+    pub generation: u64,
+    pub bytes: Vec<u8>,
+    shared: Arc<Shared>,
+}
+impl Drop for ControlBatch {
+    fn drop(&mut self) {
+        let mut state = self.shared.lock();
+        state.usage.controls -= 1;
+        state.usage.control_bytes -= self.bytes.len();
+        self.shared.wake.notify_all();
+    }
 }
 #[derive(Default)]
 struct State {
@@ -115,6 +146,43 @@ struct Shared {
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    fn control_batch(
+        self: &Arc<Self>,
+        identity: &Identity,
+        generation: u64,
+        controls: &[Control],
+    ) -> Option<ControlBatch> {
+        use std::io::Write;
+        if generation == 0 || controls.is_empty() || controls.len() > 3 {
+            return None;
+        }
+        let mut encoded = crate::fsx::checkpoint::Bounded {
+            bytes: Vec::new(),
+            limit: CONTROL_BATCH_BYTES,
+        };
+        for control in controls {
+            serde_json::to_writer(&mut encoded, control).ok()?;
+            encoded.write_all(b"\n").ok()?;
+        }
+        let mut state = self.lock();
+        if state.closed
+            || state
+                .sources
+                .get(&identity.computer)
+                .is_none_or(|r| r.incarnation != identity.incarnation)
+            || state.usage.controls >= CONTROL_BATCHES
+            || state.usage.control_bytes > CONTROL_BYTES - encoded.bytes.len()
+        {
+            return None;
+        }
+        state.usage.controls += 1;
+        state.usage.control_bytes += encoded.bytes.len();
+        Some(ControlBatch {
+            generation,
+            bytes: encoded.bytes,
+            shared: self.clone(),
+        })
     }
     fn wait<'a>(&self, state: MutexGuard<'a, State>) -> MutexGuard<'a, State> {
         self.wake
@@ -181,6 +249,10 @@ impl Resnapshot {
     }
     pub fn close(&self) {
         *self.lock() = (0, false);
+    }
+    pub fn accepting(&self, generation: u64) -> bool {
+        let state = self.lock();
+        generation > 0 && state.0 == generation && !state.1
     }
     fn request(&self, generation: u64) -> bool {
         let mut state = self.lock();
@@ -415,6 +487,35 @@ pub struct Handle {
     _slot: Registration,
 }
 impl Handle {
+    /// One atomic, nonblocking queue admission for this original raw source.
+    /// The supervisor rechecks its wire generation before writing any line.
+    /// Admission is not an upstream acknowledgement; callers fence with Pong.
+    pub fn controls(&self, generation: u64, controls: &[Control]) -> bool {
+        if !self.resnapshot.accepting(generation) {
+            return false;
+        }
+        let Some(batch) =
+            self._slot
+                .shared
+                .control_batch(&self._slot.identity, generation, controls)
+        else {
+            return false;
+        };
+        self.stream.source_controls(batch)
+    }
+
+    pub fn request_stop(&self) {
+        self.stream.request_stop();
+    }
+    /// Only joins an already finished supervisor. Pending reader/helper guards
+    /// remain in Sender::usage even after this returns true.
+    pub fn join_if_finished(&mut self) -> bool {
+        self.stream.join_source_if_finished()
+    }
+    /// Early owner drop, without waiting on upstream I/O. Not a drain barrier.
+    pub fn detach(self) {
+        self.stream.detach_source();
+    }
     pub fn identity(&self) -> &Identity {
         &self._slot.identity
     }
@@ -519,6 +620,11 @@ impl Endpoint {
             shared: self.sender.shared.clone(),
             computer: self.identity.computer.clone(),
         })
+    }
+    pub fn resources(&self) -> Option<Arc<dyn Send + Sync>> {
+        self._worker
+            .as_ref()
+            .map(|worker| worker.clone() as Arc<dyn Send + Sync>)
     }
     pub fn spawn(&self, command: &mut Command) -> io::Result<Child> {
         (self.sender.spawn)(command)

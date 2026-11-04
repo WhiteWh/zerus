@@ -1,6 +1,7 @@
 import { batch, createSignal } from "solid-js";
 import type { Session } from "../ui/sessions/types";
 import type { ActivityEvent, ViewRow } from "../types";
+import { tr } from "../i18n";
 
 export const SEARCH_DELAY = 350;
 export const SEARCH_HOSTS = 32;
@@ -63,7 +64,7 @@ export function createContentSearch(port: SearchPort) {
     queue = []; current = 0;
     batch(() => { setHits([]); setErrors([]); setUnavailable(0); setLimited(nextHosts.length > SEARCH_HOSTS); setBusy(false); });
     if (!active || [...query].length < 2) return;
-    if ([...query].length > 256 || /\p{Cc}/u.test(query)) { setErrors(["Search requires 2..256 printable characters."]); return; }
+    if ([...query].length > 256 || /\p{Cc}/u.test(query)) { setErrors([tr("Search requires 2..256 printable characters.")]); return; }
     timer = later(() => {
       timer = undefined;
       setErrors(hosts.filter((h) => !h.online).map((h) => `${h.machine}: machine offline; contents unavailable`));

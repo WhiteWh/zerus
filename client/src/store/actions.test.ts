@@ -187,16 +187,16 @@ describe("perform", () => {
     });
   });
 
-  it("shows a kept worktree as a sticky warning with the reason as given and a removed one as info", async () => {
+  it("keeps cleanup warnings generic without a structured row and never copies CLI reasons", async () => {
     await createRoot(async (dispose) => {
       const a = setup();
       mocked.runAction.mockResolvedValue(done({ status: "kept", path: "/home/example/wt", common_dir: "/home/example/.git", reason: "uncommitted changes" }));
       await a.perform(session(), { kind: "archive" });
-      expect(a.notices().find((n) => n.sticky)).toMatchObject({ tone: "warn", text: "Worktree kept for review: uncommitted changes" });
+      expect(a.notices().find((n) => n.sticky)).toMatchObject({ tone: "warn", text: "Working folder kept for review." });
       for (const n of a.notices()) a.dismiss(n.id);
       mocked.runAction.mockResolvedValue(done({ status: "unconfirmed", path: "/home/example/wt", common_dir: "/home/example/.git", reason: null }));
       await a.perform(session(), { kind: "terminate" });
-      expect(a.notices().find((n) => n.sticky)?.text).toBe("Worktree kept for review: ");
+      expect(a.notices().find((n) => n.sticky)?.text).toBe("Working folder kept for review.");
       for (const n of a.notices()) a.dismiss(n.id);
       mocked.runAction.mockResolvedValue(done({ status: "removed", path: "/home/example/wt", common_dir: "/home/example/.git", reason: null }));
       await a.perform(session(), { kind: "archive" });
@@ -278,10 +278,10 @@ describe("perform", () => {
       expect(a.notices()).toEqual([]);
       mocked.runAction.mockResolvedValueOnce(done({ status: "kept", path: "/home/example/wt", common_dir: "/home/example/.git", reason: "uncommitted changes" }));
       await a.perform(session(), { kind: "terminate" }, { quiet: true });
-      expect(a.notices()).toEqual([expect.objectContaining({ tone: "warn", text: "Worktree kept for review: uncommitted changes", sticky: true })]);
+      expect(a.notices()).toEqual([expect.objectContaining({ tone: "warn", text: "Working folder kept for review.", sticky: true })]);
       mocked.runAction.mockResolvedValueOnce(done({ status: "removed", path: "/home/example/wt", common_dir: "/home/example/.git", reason: null }));
       await a.perform(session(), { kind: "archive" }, { quiet: true });
-      expect(a.notices().map((n) => n.text)).toEqual(["Worktree kept for review: uncommitted changes", "Worktree removed automatically. The branch and archived conversation are kept."]);
+      expect(a.notices().map((n) => n.text)).toEqual(["Working folder kept for review.", "Worktree removed automatically. The branch and archived conversation are kept."]);
       dispose();
     });
   });

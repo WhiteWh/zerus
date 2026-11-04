@@ -241,3 +241,51 @@ fn the_cache_drops_its_least_recently_used_copies_but_never_a_pinned_one() {
     assert!(root.join("stray.txt").exists());
     assert_eq!(prune(&root, 1_000_000, |_| false).removed, 0);
 }
+
+#[test]
+fn prepared_images_carry_geometry_into_local_rows_and_old_records_still_decode() {
+    let scratch = Scratch::new("image-presentation");
+    let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    png.extend(2560_u32.to_be_bytes());
+    png.extend(720_u32.to_be_bytes());
+    let mut image = attachment("wide.png", &png);
+    image.mime = "image/png".into();
+    image.reference = "[Image #1]".into();
+    let files = prepare(&scratch.0.join("cache"), &[image]).unwrap();
+    assert_eq!(
+        files[0].image_size,
+        Some(zerus_client_core::attachments::image::Size {
+            width: 2560,
+            height: 720
+        })
+    );
+    let mut messages = zerus_client_core::local_messages::LocalMessages::default();
+    messages.sending(
+        "session",
+        "request",
+        None,
+        "[Image #1]",
+        &files,
+        "run",
+        "conversation",
+        10.0,
+    );
+    let file = &messages.rows("session")[0].attachments[0];
+    assert_eq!(
+        file["image_size"],
+        serde_json::json!({"width":2560,"height":720})
+    );
+    assert!(file["preview_path"].as_str().unwrap().starts_with("cache/"));
+    assert!(!file["preview_path"]
+        .as_str()
+        .unwrap()
+        .contains(scratch.0.to_str().unwrap()));
+    let mut old = serde_json::to_value(&files[0]).unwrap();
+    old.as_object_mut().unwrap().remove("image_size");
+    assert_eq!(
+        serde_json::from_value::<StoredFile>(old)
+            .unwrap()
+            .image_size,
+        None
+    );
+}

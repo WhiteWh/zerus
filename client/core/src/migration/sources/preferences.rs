@@ -1,5 +1,6 @@
-//! Retained view preferences with no compatible Next seed target. Only the
-//! existing Qt decoder runs; opaque QSplitter bytes are never interpreted.
+//! Original view-preference evidence, independent of the Settings family
+//! imports. This stream retains opaque Qt values without interpreting splitters
+//! or changing the cleanup policy; compatible UI seeds use Settings instead.
 use super::{bounded_json, QtSnapshot, QtValue, SourceError, SourceResult, SourceStream};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Value};

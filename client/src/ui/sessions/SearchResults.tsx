@@ -7,6 +7,7 @@ import { AgentBadge, MachineBadge } from "./SessionCard";
 
 import { dayTime } from "../lib/usage";
 import { SearchHighlight } from "./SearchHighlight";
+import { tr } from "../../i18n";
 export function SearchResults() {
   let element: HTMLDivElement | undefined;
   const [current, setCurrent] = createSignal("");
@@ -33,11 +34,11 @@ export function SearchResults() {
   return <div class="content-search">
     <div class="content-search-status">
       <span role="status" title={contentSearch.errors().join("\n")}>{searchStatus()}</span>
-      <button class="icon-btn small" aria-label="Search again" title="Search again" disabled={contentSearch.busy() || [...search().trim()].length < 2} onClick={contentSearch.refresh}><Icon name="refresh-cw" size={12} /></button>
+      <button class="icon-btn small" aria-label={tr("Search again")} title={tr("Search again")} disabled={contentSearch.busy() || [...search().trim()].length < 2} onClick={contentSearch.refresh}><Icon name="refresh-cw" size={12} /></button>
     </div>
-    <div class="content-search-list sp-scroll" ref={(el) => { element = el; requestAnimationFrame(() => list._willUpdate()); }} role="listbox" aria-label="Matching sessions and messages" aria-activedescendant={current() ? `content-search-${searchItems().findIndex((item) => item.id === current())}` : undefined} tabindex="0" onKeyDown={key}>
+    <div class="content-search-list sp-scroll" ref={(el) => { element = el; requestAnimationFrame(() => list._willUpdate()); }} role="listbox" aria-label={tr("Matching sessions and messages")} aria-activedescendant={current() ? `content-search-${searchItems().findIndex((item) => item.id === current())}` : undefined} tabindex="0" onKeyDown={key}>
       <Show when={searchItems().length} fallback={<Show when={!contentSearch.busy() && !contentSearch.errors().length}>
-        <div class="empty"><Icon name="search" size={26} /><h3>No matching sessions</h3><p>Nothing matches “{search().trim()}” in names, IDs or messages with the current filters.</p></div>
+        <div class="empty"><Icon name="search" size={26} /><h3>{tr("No matching sessions")}</h3><p>Nothing matches “{search().trim()}” in names, IDs or messages with the current filters.</p></div>
       </Show>}>
         <div style={{ height: `${list.getTotalSize()}px`, position: "relative" }}>
           <For each={keys()}>{(id) => {

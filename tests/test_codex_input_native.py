@@ -39,6 +39,19 @@ class NativeCodexInput(unittest.TestCase):
     def screen(self):
         return self.tmux('capture-pane', '-p', '-t', self.pane)
 
+    def test_leading_absolute_path_is_literal_message_text(self):
+        text = '/help/fixture/capture.png\nWhat is shown in this screenshot?'
+        payload = self.payload(text=text)
+        receipt = self.send(payload)
+        self.assertEqual(receipt['submitted_text'], text)
+        self.wait_for(lambda: any(request['texts'][-1:] == [text] for request in self.server.requests))
+        self.wait_for(lambda: 'Fixture turn complete.' in self.screen())
+        self.assertEqual(self.send(payload), receipt)
+        rows = map(json.loads, Path(self.record['transcript']).read_text().splitlines())
+        messages = [row['payload']['message'] for row in rows if row.get('type') == 'event_msg'
+                    and row.get('payload', {}).get('type') == 'user_message']
+        self.assertEqual(messages, ['Previous fixture request', text])
+
     def test_literal_at_mentions_reach_the_model_once_without_file_completion(self):
         # Positive control: the native completion menu really has a matching file.
         # Warm the exact query before hgs sends, so its fixed paste delay cannot

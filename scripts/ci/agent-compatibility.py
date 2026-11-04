@@ -43,11 +43,12 @@ AGENTS = {
         members={'linux-x64': 'package/vendor/x86_64-unknown-linux-musl/bin/codex',
                  WINDOWS: 'package/vendor/x86_64-pc-windows-msvc/bin/codex.exe'},
         coverage='clear, draft preservation, literal at-mentions with file/mention completion, identity, resumed clear and pause before SessionStart, async question panels and their unviewed growth, '
-                 'two terminal sizes, animation modes and the session-start task instructions',
+                 'two terminal sizes, animation modes, manual rate-limit model choices and the session-start task instructions',
         timeout=180,
         suites=['test_clear_context_native.NativeCodexClear', 'test_codex_update.NativeCodexUpdate',
+                'test_codex_rate_limit.NativeCodexRateLimit',
                 'test_external_agents_native.NativeExternalAgents', 'test_codex_async_questions_native',
-                'test_codex_input_native',
+                'test_codex_input_native', 'test_busy_input_native.NativeBusyCodex',
                 'test_task_context_native.NativeCodexTaskContext', 'test_terminate_native.NativeCodexTermination'],
         windows=dict(suites=['test_windows_native_agents.NativeWindowsCodex'], timeout=900, coverage=HOST_COVERAGE)),
     'claude': dict(
@@ -55,10 +56,10 @@ AGENTS = {
         tarball='https://registry.npmjs.org/@anthropic-ai/claude-code-{target}/-/claude-code-{target}-{version}.tgz',
         metadata='https://registry.npmjs.org/@anthropic-ai/claude-code-{target}/{version}', published='{version}',
         members={'linux-x64': 'package/claude', 'darwin-arm64': 'package/claude', WINDOWS: 'package/claude.exe'},
-        coverage='input, questions, approvals, trust, resume, usage-limit and auto-mode choices, clear, compaction, session-only model settings and '
+        coverage='input, dim prompt suggestions and draft preservation, questions, approvals, trust, resume, usage-limit and auto-mode choices, clear, compaction, session-only model settings and '
                  'status line context capacity and the session-start task instructions',
         timeout=900,
-        suites=['test_claude_input_native', 'test_claude_questions_native', 'test_claude_approval_native', 'test_claude_safety_native',
+        suites=['test_claude_input_native', 'test_claude_suggestions_native', 'test_busy_input_native.NativeBusyClaude', 'test_claude_questions_native', 'test_claude_approval_native', 'test_claude_safety_native',
                 'test_claude_trust_native', 'test_claude_resume_native', 'test_claude_usage_limit_native', 'test_clear_context_native.NativeClearContext',
                 'test_compact_context_native', 'test_claude_settings_native', 'test_claude_statusline_native',
                 'test_claude_permission_native', 'test_task_context_native.NativeClaudeTaskContext',

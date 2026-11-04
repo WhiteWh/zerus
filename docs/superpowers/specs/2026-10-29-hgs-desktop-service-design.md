@@ -22,6 +22,11 @@ This implements [inventory G1](2026-10-29-qt-retirement-inventory.md#g1-durable-
 
 On macOS the service reaches G4's adapter over private IPC; if absent, it requests the maintained signed bundle's agent-only launch path, waits for its version/epoch hello, then delivers intent. That entry must create no window or Dock icon. The CLI cannot post or badge as `com.hgdev.hgs-tray`. G4 must prove this while Next's window is closed.
 
+The proposed [macOS notification contract](../../desktop-macos-notifications.md)
+details signed-host ownership, cold-click delivery through the tray LaunchAgent,
+withdrawal and stale-click fencing. Its native admission and activation APIs
+remain unimplemented; the current GUI poster retains authority until handoff.
+
 `hgs desktop status --json` reports generation/version, ownership, upstream freshness, pending counts and component errors. G5 adds maintained installation/removal with configured CLI/state paths. The dev identity `dev.zerus.next` and replay never hand off. Non-default configurations never silently register or take production ownership. Existing units and application identifiers stay intact.
 
 The service holds an OS-backed exclusive lock scoped to the user and canonical configuration identity; a PID or heartbeat alone never proves ownership. EOF from a client detaches only that client. Graceful service exit stops admissions, checkpoints accepted work and closes its own read streams. It never terminates agents, terminals, native hosts or their process trees.

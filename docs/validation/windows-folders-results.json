@@ -1,0 +1,29 @@
+{
+  "scope": "zerus-5wmh.66.2.31, read-only Windows Projects metadata",
+  "runtime": "Linux built app with synthetic Windows local hello and a POSIX peer; not Windows PC qualification",
+  "isolation": [
+    "private Xvfb",
+    "private D-Bus",
+    "private HOME/XDG/TMPDIR/TMUX_TMPDIR",
+    "child environment built from scratch",
+    "fake hgs only"
+  ],
+  "observed": [
+    "Drive and UNC rows appear in the unchanged Projects table",
+    "Edit, Remove, Copy to, Move to, Open and New session are disabled for the local Windows rows",
+    "Add and Clone pickers offer the POSIX peer, not local Windows",
+    "Worktree panel shows the existing unavailable text with no folder probe",
+    "The raw shared catalog still has no local folders; the stored family retains both rows"
+  ],
+  "effect_calls": 0,
+  "worktree_probes": 0,
+  "mockup": "design/webui/src/screens/Projects.tsx and served Projects screen",
+  "gates": {
+    "core_lib": 1068,
+    "native_lib": 1025,
+    "frontend": 2256,
+    "native_projection_regressions": 6,
+    "frontend_projection_regressions": 2,
+    "entry_bytes": 459505
+  }
+}

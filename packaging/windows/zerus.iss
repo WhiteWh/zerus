@@ -4,9 +4,10 @@
 ; script with Inno Setup 6. Nothing here changes a payload file: third-party
 ; DLLs and EXEs keep their bytes and signatures.
 ;
-; The installer never touches the staged CLI (%USERPROFILE%\.local\bin), the
-; session host images (.local\share\hgs\host), configuration, state, desktop
-; settings or drafts. Restart Manager closes only processes that use files in
+; Payload cleanup never touches the staged CLI, session host images,
+; configuration, state, desktop settings or drafts. The maintained passive
+; registration command stages the stable CLI before registering its own task.
+; Restart Manager closes only processes that use files in
 ; the install folder; the session host runs from its staged image, so it and its
 ; sessions keep running through an upgrade.
 
@@ -27,6 +28,9 @@
 #endif
 #ifndef IconFile
   #error Define IconFile
+#endif
+#ifndef TauriDesktop
+  #error Define TauriDesktop
 #endif
 
 [Setup]
@@ -72,14 +76,31 @@ ChangesEnvironment=no
 [Files]
 Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+#if TauriDesktop
+[Tasks]
+Name: "login"; Description: "Start Zerus at login"; Flags: unchecked
+#endif
+
 [Icons]
+#if TauriDesktop
+Name: "{autoprograms}\Zerus"; Filename: "{app}\hgs-tray.exe"; WorkingDir: "{app}"; AppUserModelID: "com.hgdev.hgs-tray"; AppUserModelToastActivatorCLSID: "0F0F70A2-1D40-47D8-AC5E-D6A9B789605F"
+#else
 Name: "{autoprograms}\Zerus"; Filename: "{app}\hgs-tray.exe"; WorkingDir: "{app}"
+#endif
 
 [Run]
+#if TauriDesktop
+Filename: "{app}\hgs-tray.exe"; Parameters: "--install-login-item"; Tasks: login; Flags: runhidden
+#endif
 Filename: "{app}\hgs-tray.exe"; Description: "Start Zerus"; Flags: nowait postinstall skipifsilent
 ; A self-update runs the installer silently with /RELAUNCH after the desktop
 ; app has exited; the new version starts once its files are in place.
 Filename: "{app}\hgs-tray.exe"; Flags: nowait; Check: Relaunch
+
+#if TauriDesktop
+[UninstallRun]
+Filename: "{app}\hgs-tray.exe"; Parameters: "--remove-login-item"; Flags: runhidden
+#endif
 
 [UninstallDelete]
 Type: dirifempty; Name: "{app}"
@@ -101,6 +122,78 @@ begin
   for I := 1 to ParamCount do
     if CompareText(ParamStr(I), '/RELAUNCH') = 0 then
       Result := True;
+end;
+
+{ Only the maintained CLI may stage/register the passive service and Toast
+  companion. Neither command starts a task, grants background consent or runs
+  native agents. A failed/unknown result is kept for manual status inspection. }
+procedure DesktopServiceRegistration(const Installing: Boolean);
+var
+  Code: Integer;
+begin
+  if not Installing then
+  begin
+    Log('UI-only removal keeps the staged CLI, desktop service logon task and Toast registration. UI login is removed separately.');
+    Exit;
+  end;
+  if not Exec(ExpandConstant('{app}\hgs.exe'), 'desktop registration install --json',
+      ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then
+  begin
+    Log('Desktop registration could not be invoked; inspect its original status before retrying.');
+    Exit;
+  end;
+  if Code <> 0 then
+  begin
+    Log('Desktop registration is unavailable (exit ' + IntToStr(Code) + '); selected CLI/state kept.');
+    Exit;
+  end;
+  if not Exec(ExpandConstant('{app}\hgs.exe'), 'desktop notification-registration install --json',
+      ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then
+    Log('Toast registration could not be invoked; inspect status before retrying.')
+  else if Code <> 0 then
+    Log('Toast registration is unavailable (exit ' + IntToStr(Code) + '); selected CLI/state kept.');
+end;
+
+{ WebView2 Evergreen is a shared Microsoft runtime. Detect only its documented
+  own/per-machine registration; never install, update or remove it silently.
+  https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution }
+function RuntimeVersion(const Version: String): Boolean;
+var
+  I, Dots, Digits: Integer;
+  Nonzero: Boolean;
+begin
+  Result := False;
+  if (Length(Version) = 0) or (Length(Version) > 64) then Exit;
+  Dots := 0;
+  Digits := 0;
+  Nonzero := False;
+  for I := 1 to Length(Version) do
+  begin
+    if Version[I] = '.' then
+    begin
+      if Digits = 0 then Exit;
+      Dots := Dots + 1;
+      Digits := 0;
+    end
+    else
+    begin
+      if (Version[I] < '0') or (Version[I] > '9') then Exit;
+      Digits := Digits + 1;
+      if Version[I] <> '0' then Nonzero := True;
+    end;
+  end;
+  Result := (Dots = 3) and (Digits > 0) and Nonzero;
+end;
+
+function WebView2Installed(): Boolean;
+var
+  Version: String;
+  Key: String;
+begin
+  Key := 'Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
+  Result := (RegQueryStringValue(HKCU, Key, 'pv', Version) and RuntimeVersion(Version));
+  if not Result then
+    Result := (RegQueryStringValue(HKLM32, Key, 'pv', Version) and RuntimeVersion(Version));
 end;
 
 { Whether Path itself, not what it may lead to, is a reparse point. }
@@ -176,6 +269,16 @@ var
   Link: String;
 begin
   Result := '';
+  #if TauriDesktop
+  if not WebView2Installed() then
+  begin
+    Result := 'Zerus Next requires Microsoft Edge WebView2 Evergreen Runtime. Install it from ' +
+      'https://developer.microsoft.com/microsoft-edge/webview2/#download-section and run Setup again. ' +
+      'No Zerus files were changed.';
+    Log(Result);
+    Exit;
+  end;
+  #endif
   Link := LinkedPath(ExpandConstant('{app}'));
   if Link = '' then
     Link := FindLink(ExpandConstant('{app}'));
@@ -248,6 +351,10 @@ var
 begin
   if CurStep = ssInstall then
     Upgrade := OwnedFolder();
+  #if TauriDesktop
+  if CurStep = ssPostInstall then
+    DesktopServiceRegistration(True);
+  #endif
   { After every file is in place: a failed install rolls back and removes nothing. }
   if (CurStep = ssPostInstall) and Upgrade then
   begin
@@ -266,4 +373,12 @@ begin
       Payload.Free;
     end;
   end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  #if TauriDesktop
+  if CurUninstallStep = usUninstall then
+    DesktopServiceRegistration(False);
+  #endif
 end;

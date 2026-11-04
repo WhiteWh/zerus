@@ -35,6 +35,20 @@ export function createActivityEnd(read: () => ScrollGeometry, writeEnd: () => vo
     active: () => active,
     pin() { if (disposed) return; release(); active = true; schedule(); },
     changed() { schedule(); },
+    /**
+     * A resize, written now: ResizeObserver delivers after layout and before
+     * paint, so the frame paints the settled end instead of one shifted frame
+     * that the next frame corrects. Never during a user scroll (canWrite).
+     */
+    settle() {
+      if (!active || disposed) return;
+      if (canWrite()) {
+        const now = read();
+        if (Math.abs(now.top - Math.max(0, now.height - now.viewport)) > 1) writeEnd();
+        last = read();
+      }
+      schedule();
+    },
     /** True while a scroll belongs to initial placement or a layout change. */
     scrolled() {
       if (!active || disposed) return false;

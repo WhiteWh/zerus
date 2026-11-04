@@ -52,13 +52,13 @@ pub(super) fn read(job: Job, inspect: impl Fn(&str) -> Result<Value, String>) ->
 
 /// Worker threads that run reads.
 pub(super) struct Pool {
-    jobs: mpsc::Sender<Job>,
+    jobs: mpsc::SyncSender<Job>,
 }
 
 impl Pool {
     /// Starts `workers` threads; `finished` receives every read.
     pub(super) fn spawn(workers: usize, finished: impl Fn(Done) + Clone + Send + 'static) -> Self {
-        let (jobs, queue) = mpsc::channel::<Job>();
+        let (jobs, queue) = mpsc::sync_channel::<Job>(zerus_watch_protocol::PROCESSES_SUBSCRIPTIONS);
         let queue = Arc::new(Mutex::new(queue));
         for index in 0..workers {
             let queue = Arc::clone(&queue);
@@ -75,8 +75,9 @@ impl Pool {
         Self { jobs }
     }
 
-    pub(super) fn run(&self, job: Job) {
-        let _ = self.jobs.send(job);
+    /// Reject without blocking the watch loop or losing the original token.
+    pub(super) fn run(&self, job: Job) -> Result<(), mpsc::TrySendError<Job>> {
+        self.jobs.try_send(job)
     }
 }
 
@@ -249,6 +250,14 @@ impl Processes {
         due.iter().filter_map(|key| self.job(key, now)).collect()
     }
 
+    /// Queue pressure is not a read failure. Retry only the still-current job.
+    pub(super) fn defer(&mut self, job: Job, now: Instant) {
+        if let Some(session) = self.sessions.get_mut(&job.key).filter(|session| session.token == job.token) {
+            session.running = false;
+            session.due = Some(now + GAP);
+        }
+    }
+
     pub(super) fn done(&mut self, done: Done) -> Outcome {
         let Some(session) = self.sessions.get_mut(&done.key).filter(|session| session.token == done.token) else {
             return Outcome::Quiet;
@@ -307,6 +316,45 @@ mod tests {
     fn inventory(run: &str, count: u64, sampled: f64) -> Value {
         json!({"run_id":run,"processes":{"items":[],"active_count":count,"sampled_at":sampled},
                "process_work":{"count":count,"command":"","sampled_at":sampled}})
+    }
+
+    #[test]
+    fn unsubscribed_callback_cannot_cross_the_detail_fence() {
+        let mut state = Processes::new();
+        let old = state.subscribe("run:r", "claude/example/a", Some("r".into()), None, Instant::now());
+        state.unsubscribe("run:r");
+        let current = state.subscribe("run:r", "claude/example/a", Some("r".into()), None, Instant::now());
+        assert!(old.token < current.token);
+        state.done(result(&old, inventory("r", 99, 1.0)));
+        assert!(!state.pending());
+        state.done(result(&current, inventory("r", 1, 2.0)));
+        assert!(state.pending());
+    }
+
+    #[test]
+    fn a_full_queue_defers_the_current_subscription_until_cancelled_jobs_drain() {
+        let start = Instant::now();
+        let (jobs, receiver) = mpsc::sync_channel(zerus_watch_protocol::PROCESSES_SUBSCRIPTIONS);
+        let pool = Pool { jobs };
+        let mut state = Processes::new();
+        for _ in 0..zerus_watch_protocol::PROCESSES_SUBSCRIPTIONS {
+            assert!(pool.run(state.subscribe("run:r", "claude/example/a", Some("r".into()), None, start)).is_ok());
+        }
+        let Err(mpsc::TrySendError::Full(job)) = pool.run(state.subscribe("run:r", "claude/example/a", Some("r".into()), None, start)) else { panic!("bounded queue is full") };
+        state.defer(job, start);
+        assert!(state.pulse(start + GAP / 2).is_empty());
+        for old in receiver.try_iter() {
+            let done = read(old, |_| panic!("a cancelled inventory must not read"));
+            assert!(done.value.is_none());
+            assert_eq!(state.done(done), Outcome::Quiet);
+        }
+        assert!(!state.pending());
+        let retry = state.pulse(start + GAP).pop().expect("retry before the normal interval");
+        assert!(pool.run(retry).is_ok());
+        assert_eq!(state.done(read(receiver.try_recv().unwrap(), |_| Ok(inventory("r", 3, 1.0)))), Outcome::Quiet);
+        let mut count = Value::Null;
+        state.flush(|_, value, _| { count = value["process_work"]["count"].clone(); true });
+        assert_eq!(count, 3);
     }
 
     #[test]

@@ -30,7 +30,8 @@ import stat
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
-from macos_release import cask_fields, cask_for, cask_version_key, render_cask, validate_macos_info
+from macos_release import (cask_fields, cask_for, cask_version_key, render_cask,
+                           reviewed_cask_templates, validate_macos_info)
 
 SHA = re.compile(r"[0-9a-f]{40}")
 TEAM = "XQA263U346"
@@ -115,19 +116,19 @@ def consume_metadata_token():
 
 
 def accepted_cask(text, channel):
-    """Exact current or retained pre-connector template; never normalize input Ruby."""
+    """Exact current or retained templates; never normalize input Ruby."""
     fields = cask_fields(text)
     tag = None
     if channel == "nightly":
         tags = re.findall(r"releases/download/(nightly-[1-9][0-9]*)/", text)
         require(len(tags) == 1, "Expected one exact immutable Nightly tag.")
         tag = tags[0]
-    current = render_cask(fields["version"], fields["sha256"], channel, tag)
+    reviewed = reviewed_cask_templates(fields["version"], fields["sha256"], channel, tag)
     # Literal reviewed 0.43/0.44 template difference. Input text is compared
     # byte-for-byte, including all hooks, rather than parsed as arbitrary Ruby.
-    legacy = current.replace('        "com.hgdev.zerus-mobile-connector",\n', "").replace(
-        '        "~/Library/LaunchAgents/com.hgdev.zerus-mobile-connector.plist",\n', "")
-    require(text in (current, legacy), "Cask differs from the current and retained reviewed templates.")
+    legacy = tuple(template.replace('        "com.hgdev.zerus-mobile-connector",\n', "").replace(
+        '        "~/Library/LaunchAgents/com.hgdev.zerus-mobile-connector.plist",\n', "") for template in reviewed)
+    require(text in (*reviewed, *legacy), "Cask differs from the current and retained reviewed templates.")
     return dict(fields, channel=channel, tag=tag or "v" + fields["version"])
 
 

@@ -1,6 +1,7 @@
 import { inScope } from "../../store/archive";
 import type { MenuEntry } from "../../store/ui";
 import type { Session } from "./types";
+import { trNoop } from "../../i18n";
 
 // Clear archive in the batch menu, after Qt's updateSelectionActions
 // (SessionSelection.cpp 171-181) and clearArchive (226-235). The client's
@@ -10,7 +11,7 @@ import type { Session } from "./types";
 // to the stores.
 
 /** Qt's paged label (`m_archiveBrowser->paged()`). */
-export const CLEAR_ARCHIVE_LABEL = "Remove loaded archived sessions…";
+export const CLEAR_ARCHIVE_LABEL = trNoop("Remove loaded archived sessions…");
 
 type Archived = Pick<Session, "state" | "machine"> & { archivedAt: number; group: string };
 

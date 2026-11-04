@@ -45,15 +45,32 @@ stdin = sys.stdin.read()
 log(stdin)
 time.sleep(config.get("delays", {}).get(args[0] if args else "", 0))
 
+if args[:1] == ["native-ui"] and len(args) >= 2:
+    address = config.get("native_ui", {}).get(args[1])
+    if not address:
+        raise SystemExit(2)
+    if args[2:] == ["--json"]:
+        emit({"url": address})
+    elif args[2:]:
+        raise SystemExit(2)
+    raise SystemExit(0)
+
 if args[:1] == ["inspect"] and len(args) >= 2:
-    if args[1] in config.get("inspect", {}):
+    if "--subagent" in args:
+        agent = args[args.index("--subagent") + 1]
+        key = args[1] + "\n" + agent
+        if key in config.get("subagent_inspect", {}):
+            emit(config["subagent_inspect"][key])
+            raise SystemExit(0)
+    elif args[1] in config.get("inspect", {}):
         emit(config["inspect"][args[1]])
         raise SystemExit(0)
     raise SystemExit(2)
 
 if args[:1] == ["resume"]:
     if args[1:2] and args[1] in config.get("resume_ready", {}):
-        config.setdefault("inspect", {})[args[1]] = config["resume_ready"][args[1]]
+        ready = config.get("resume_inspect_ready", config["resume_ready"])
+        config.setdefault("inspect", {})[args[1]] = ready[args[1]]
         path = os.path.join(here, "config.json")
         temporary = path + ".tmp"
         with open(temporary, "w", encoding="utf-8") as handle:
@@ -87,7 +104,15 @@ if args[:1] == ["session-action"] and args[2:3] == ["--json"]:
     raise SystemExit(0)
 
 if args[:1] in (["compact-context"], ["clear-context"]) and args[2:3] == ["--json"]:
-    emit(request_receipt(json.loads(stdin), "submitted"))
+    request = json.loads(stdin)
+    if args[0] == "compact-context" and config.get("finish_compaction"):
+        config["inspect"][args[1]]["compact_context_request"] = {
+            "request_id": request["request_id"], "status": "completed"}
+        path = os.path.join(here, "config.json")
+        with open(path + ".tmp", "w", encoding="utf-8") as handle:
+            json.dump(config, handle)
+        os.replace(path + ".tmp", path)
+    emit(request_receipt(request, "submitted"))
     raise SystemExit(0)
 
 if args[:1] == ["attachment"] and args[2:4] == ["--stage", "--json"]:

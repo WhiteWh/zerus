@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cell::{Cell, RefCell};
 
+mod status;
+pub(super) use status::dispatch as status_dispatch;
+pub(crate) use status::machine as status_machine;
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
@@ -13,6 +17,8 @@ struct Request {
     action: String,
     expected_run_id: String,
     expected_conversation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    terminal_identity: Option<zerus_client_core::untracked_shell::Identity>,
     #[serde(skip_serializing_if = "Option::is_none")]
     archive_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -106,7 +112,8 @@ pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<(
     let changing = record.get("pausing").is_some() || record["resume_pending"] == true;
     let confirmed = !string(record, "conversation_id").is_empty();
     let recipe = record["base"].is_array() && (Path::new(string(record, "launch_dir")).is_dir() || super::worktree_lifecycle::restorable(record));
-    let restore_pending = !string(record, "restore_archive_id").is_empty();
+    let cleanup_pending = clear_context::cleanup_pending(record);
+    let restore_pending = !string(record, "restore_archive_id").is_empty() || cleanup_pending;
     let decisions = [
         (
             "pause",
@@ -117,9 +124,9 @@ pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<(
         ),
         (
             "resume",
-            !archived && !live_pane && !changing && confirmed && recipe,
+            !archived && !live_pane && !changing && confirmed && recipe && !cleanup_pending,
         ),
-        ("archive", !archived && !live_pane && !changing && confirmed),
+        ("archive", !archived && !live_pane && !changing && confirmed && !cleanup_pending),
         ("rename", !changing),
         (
             "fork",
@@ -128,7 +135,7 @@ pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<(
         ("terminate", !archived),
         (
             "restore",
-            archived && recipe && !record_path(string(record, "name")).exists(),
+            archived && recipe && !cleanup_pending && !record_path(string(record, "name")).exists(),
         ),
         ("forget", !changing && !restore_pending),
     ];
@@ -166,7 +173,11 @@ fn validate(request: &Request, name: &str) -> Result<()> {
     }
     for (value, maximum, nonempty) in [
         (name, 512, true),
-        (request.expected_run_id.as_str(), 128, true),
+        (
+            request.expected_run_id.as_str(),
+            128,
+            request.action != "terminate_shell",
+        ),
         (request.expected_conversation_id.as_str(), 256, false),
     ] {
         if value.len() > maximum
@@ -175,6 +186,25 @@ fn validate(request: &Request, name: &str) -> Result<()> {
         {
             return Err("Invalid session identity".into());
         }
+    }
+    if request.action == "terminate_shell" {
+        if !request.expected_run_id.is_empty()
+            || !request.expected_conversation_id.is_empty()
+            || !request
+                .terminal_identity
+                .as_ref()
+                .is_some_and(|identity| identity.valid())
+            || request.archive_id.is_some()
+            || request.new_name.is_some()
+            || request.tag.is_some()
+            || request.message_id.is_some()
+        {
+            return Err(zerus_client_core::untracked_shell::UNVERIFIED.into());
+        }
+        return Ok(());
+    }
+    if request.terminal_identity.is_some() {
+        return Err("Unexpected terminal identity".into());
     }
     let archived = matches!(
         request.action.as_str(),
@@ -229,6 +259,16 @@ fn validate(request: &Request, name: &str) -> Result<()> {
 }
 
 fn perform(request: &Request, name: &str, scope: &Scope) -> Result<()> {
+    if request.action == "terminate_shell" {
+        return untracked_shell::terminate(
+            name,
+            request
+                .terminal_identity
+                .as_ref()
+                .ok_or(zerus_client_core::untracked_shell::UNVERIFIED)?,
+            scope,
+        );
+    }
     if opencode::exists(name) {
         scope.opencode_error();
         return opencode::session_action(name, &request.action, request.new_name.as_deref(), request.message_id.as_deref(), scope);
@@ -355,6 +395,10 @@ where
         }
     }
     if outcome.is_ok() {
+        if let Some(identity) = &request.terminal_identity {
+            answer["terminal_identity"] = json!(identity);
+            answer["terminal_closed"] = json!(true);
+        }
         if let Some(target) = scope.target.into_inner() {
             answer["result_target"] = target;
         }
@@ -365,9 +409,9 @@ where
     Ok(answer)
 }
 
-pub(super) fn dispatch(args: &[String]) -> Result<i32> {
+fn request_input(args: &[String], command: &str) -> Result<Request> {
     if args.len() != 2 || args[1] != "--json" {
-        return Err("usage: hgs session-action <session> --json".into());
+        return Err(format!("usage: hgs {command} <session> --json"));
     }
     let mut bytes = Vec::new();
     io::stdin()
@@ -378,12 +422,21 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         return Err("Action request is too large".into());
     }
     let request: Request = serde_json::from_slice(crate::state::without_bom(&bytes)).map_err(|e| e.to_string())?;
-    let name = &args[0];
-    validate(&request, name)?;
-    let hash = format!(
+    validate(&request, &args[0])?;
+    Ok(request)
+}
+
+fn request_hash(request: &Request, name: &str) -> String {
+    format!(
         "{:x}",
         Sha256::digest(json!([name, request]).to_string().as_bytes())
-    );
+    )
+}
+
+pub(super) fn dispatch(args: &[String]) -> Result<i32> {
+    let request = request_input(args, "session-action")?;
+    let name = &args[0];
+    let hash = request_hash(&request, name);
     let directory = absolute_root()?.join("action_receipts");
     let path = directory.join(format!("{}.json", request.request_id));
     let _receipt_guard = lock(Some(

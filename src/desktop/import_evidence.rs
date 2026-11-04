@@ -22,7 +22,10 @@ const HEADER: usize = 4096;
 const MAX_BYTES: u64 = 64 << 20;
 const MAX_ITEMS: usize = 2049;
 const IDLE: Duration = Duration::from_secs(10);
-const TOTAL: Duration = Duration::from_secs(120);
+pub(super) const TOTAL: Duration = Duration::from_secs(120);
+
+pub(super) mod held;
+mod stages;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -156,6 +159,31 @@ pub fn cli(location: &Location) -> Result<Value> {
 
 /// No source-store reads, owner.lock, marker writes, worker or consent changes.
 fn publish(location: &Location, input: &mut impl BufRead) -> Result<Value> {
+    publish_with(location, input, |_| Ok(()))
+}
+struct Staged {
+    start: Start,
+    ownership: stages::Lease,
+    stage: tempfile::TempDir,
+    manifest: Vec<u8>,
+    bytes: u64,
+    snapshots: usize,
+    pages: usize,
+}
+
+fn publish_with(
+    location: &Location,
+    input: &mut impl BufRead,
+    after_reservation: impl FnOnce(&Path) -> Result<()>,
+) -> Result<Value> {
+    let staged = stage(location, input)?;
+    match location.try_handoff_lock()? {
+        Some(lock) => staged.commit(location, &lock, after_reservation),
+        None => held::route(location, staged),
+    }
+}
+
+fn stage(location: &Location, input: &mut impl BufRead) -> Result<Staged> {
     let start: Start = header(input)?;
     ensure!(
         start.abi == ABI
@@ -181,6 +209,7 @@ fn publish(location: &Location, input: &mut impl BufRead) -> Result<Value> {
     // protects the creation -> restriction interval on platforms using umask.
     platform::restrict_dir(stage.path())?;
     directory(stage.path())?;
+    let ownership = stages::Lease::input(location, stage.path(), &start.import_id)?;
     for kind in ["snapshots", "pages"] {
         directory(&stage.path().join(kind))?;
     }
@@ -285,34 +314,69 @@ fn publish(location: &Location, input: &mut impl BufRead) -> Result<Value> {
         platform::sync_dir(&stage.path().join(kind))?;
     }
     platform::sync_dir(stage.path())?;
-    let lock = location.handoff_lock()?;
-    lock.verify(location)?;
-    location.check_existing()?;
-    directory(&imports)?;
-    ensure!(
-        platform::verify_private(stage.path(), platform::Private::Directory)?,
-        "unsafe import staging"
-    );
-    // Exclusive mkdir reserves the UUID forever, including a crash/partial
-    // commit. The parent is private during mkdir -> restrict_dir. Only the
-    // synced final manifest makes these staged bytes a committed evidence set.
-    fs::create_dir(&target)?;
-    platform::restrict_dir(&target)?;
-    directory(&target)?;
-    for kind in ["snapshots", "pages"] {
-        fs::rename(stage.path().join(kind), target.join(kind))?;
+    Ok(Staged {
+        ownership,
+        bytes: start.max_bytes - budget,
+        snapshots: snapshots.len(),
+        pages: pages.len(),
+        start,
+        stage,
+        manifest: bytes,
+    })
+}
+
+impl Staged {
+    fn receipt(&self) -> Value {
+        json!({"abi":ABI,"published":true,"evidence":"staged","configuration":self.start.configuration,
+            "import_id":self.start.import_id,"import_record":{"version":1,"sha256":sha256(&self.manifest)},
+            "bytes":self.bytes,"snapshots":self.snapshots,"pages":self.pages})
     }
-    fs::rename(
-        stage.path().join("record-v1.json"),
-        target.join("record-v1.json"),
-    )?;
-    platform::sync_dir(&target)?;
-    platform::sync_dir(&imports)?;
-    Ok(
-        json!({"abi":ABI,"published":true,"evidence":"staged","configuration":start.configuration,
-        "import_id":start.import_id,"import_record":{"version":1,"sha256":sha256(&bytes)},
-        "bytes":start.max_bytes-budget,"snapshots":snapshots.len(),"pages":pages.len()}),
-    )
+    fn not_committed(&self) -> Value {
+        // This invocation has validated all input but attempted no UUID mkdir.
+        // This never settles an earlier unknown attempt or global absence.
+        json!({"abi":ABI,"published":false,
+            "configuration":self.start.configuration,"import_id":self.start.import_id,
+            "import_record":{"version":1,"sha256":sha256(&self.manifest)},
+            "code":"handoff_busy","this_attempt_not_committed":true})
+    }
+    fn commit(
+        &self,
+        location: &Location,
+        lock: &super::store::HandoffLock,
+        after_reservation: impl FnOnce(&Path) -> Result<()>,
+    ) -> Result<Value> {
+        lock.verify(location)?;
+        // Best-effort bounded generated-stage cleanup is never publication or
+        // replay authority. Live input/claim leases are skipped physically.
+        let _ = stages::sweep(location, lock);
+        let start = &self.start;
+        let imports = location.root.join("imports");
+        let target = imports.join(&start.import_id);
+        let stage = &self.stage;
+        location.check_existing()?;
+        directory(&imports)?;
+        ensure!(
+            platform::verify_private(stage.path(), platform::Private::Directory)?,
+            "unsafe import staging"
+        );
+        // Exclusive mkdir reserves the UUID forever, including a crash/partial
+        // commit. The parent is private during mkdir -> restrict_dir. Only the
+        // synced final manifest makes these staged bytes a committed evidence set.
+        fs::create_dir(&target)?;
+        platform::restrict_dir(&target)?;
+        directory(&target)?;
+        after_reservation(&target)?;
+        for kind in ["snapshots", "pages"] {
+            fs::rename(stage.path().join(kind), target.join(kind))?;
+        }
+        fs::rename(
+            stage.path().join("record-v1.json"),
+            target.join("record-v1.json"),
+        )?;
+        platform::sync_dir(&target)?;
+        platform::sync_dir(&imports)?;
+        Ok(self.receipt())
+    }
 }
 
 /// Fixed-path manifest lookup only, never a page/body scan or authority grant.
@@ -358,6 +422,11 @@ pub fn status(location: &Location, id: &str) -> Result<Value> {
         json!({"abi":ABI,"record_present":true,"configuration":location.configuration,"import_id":id,
         "evidence":record.evidence,"pages":record.pages.len(),"import_record":{"version":1,"sha256":sha256(&bytes)}}),
     )
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(in crate::desktop) fn publish_fixture_for_test(location: &Location) -> Result<Value> {
+    publish(location, &mut &tests::bundle("")[..])
 }
 
 #[cfg(test)]

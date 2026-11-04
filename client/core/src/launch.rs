@@ -18,6 +18,7 @@
 use crate::actions::{tag_problem, Exit, Invocation};
 use crate::machine::{LocalHost, MachineMeta};
 use crate::paths::{self, Style};
+use crate::text::Text;
 use crate::worktrees::guard;
 use crate::ComputerId;
 use serde::{Deserialize, Serialize};
@@ -35,29 +36,34 @@ pub const SAVED_PROJECTS: usize = 512;
 /// The Inbox project's ID.
 pub const INBOX: &str = "ungrouped";
 
-pub const START_SESSION: &str = "Start session";
-pub const CLONE_AND_START: &str = "Clone and start";
-pub const USE_CHECKOUT_AND_START: &str = "Use checkout and start";
-pub const CREATING_WORKTREE: &str = "Creating worktree…";
-pub const CHECKING_FOLDER: &str = "Checking folder…";
-pub const CLONING: &str = "Cloning…";
-pub const CHECKING: &str = "Checking…";
+pub const START_SESSION: &str = crate::source!("Start session");
+pub const CLONE_AND_START: &str = crate::source!("Clone and start");
+pub const USE_CHECKOUT_AND_START: &str = crate::source!("Use checkout and start");
+pub const CREATING_WORKTREE: &str = crate::source!("Creating worktree…");
+pub const CHECKING_FOLDER: &str = crate::source!("Checking folder…");
+pub const CLONING: &str = crate::source!("Cloning…");
+pub const CHECKING: &str = crate::source!("Checking…");
 
-pub const PREFILL_PREVIEW: &str = "Checking the session's main working folder…";
-pub const BROWSE_PREVIEW: &str = "Browse to choose a folder on this computer.";
-pub const INBOX_PREVIEW: &str =
-    "A matching project is detected automatically.\nOtherwise this session stays in Inbox.";
-pub const OUTSIDE_PREVIEW: &str =
-    "This folder is outside the project.\nStarting here will add it to this project.";
+pub const PREFILL_PREVIEW: &str = crate::source!("Checking the session's main working folder…");
+pub const BROWSE_PREVIEW: &str = crate::source!("Browse to choose a folder on this computer.");
+pub const INBOX_PREVIEW: &str = crate::source!(
+    "A matching project is detected automatically.\nOtherwise this session stays in Inbox."
+);
+pub const OUTSIDE_PREVIEW: &str = crate::source!(
+    "This folder is outside the project.\nStarting here will add it to this project."
+);
 
-pub const OFFLINE: &str = "This computer is unavailable. Choose another folder or reconnect it.";
-pub const NO_ACCOUNT: &str = "Restore or add an account in Agent accounts to start this agent.";
-pub const LOADING_ACCOUNT: &str = "Loading this session's account…";
-pub const MISSING_ACCOUNT: &str = "This session's account is unavailable. Choose another account.";
+pub const OFFLINE: &str =
+    crate::source!("This computer is unavailable. Choose another folder or reconnect it.");
+pub const NO_ACCOUNT: &str =
+    crate::source!("Restore or add an account in Agent accounts to start this agent.");
+pub const LOADING_ACCOUNT: &str = crate::source!("Loading this session's account…");
+pub const MISSING_ACCOUNT: &str =
+    crate::source!("This session's account is unavailable. Choose another account.");
 pub const REMOTE_ONLY: &str =
-    "Add a remote machine in Machines to start sessions from this computer.";
+    crate::source!("Add a remote machine in Machines to start sessions from this computer.");
 pub const ENABLE_OR_REMOTE: &str =
-    "Enable local sessions for this computer in Machines, or add a remote machine.";
+    crate::source!("Enable local sessions for this computer in Machines, or add a remote machine.");
 pub const PROJECT_CHANGED: &str = "Project changed. Select the checkout again before starting.";
 pub const FOLDER_UNCONFIRMED: &str = "The computer did not confirm this folder. Try again.";
 pub const REPOSITORY_UNCONFIRMED: &str =
@@ -97,9 +103,11 @@ pub fn opens_terminal(agent: &str, checked: bool) -> bool {
 /// The open-terminal box's tooltip.
 pub fn terminal_tooltip(agent: &str) -> &'static str {
     match agent {
-        "dsh" => "DeepSeek opens in the workspace's Native UI.",
-        "opencode" => "OpenCode runs through its native server and opens in Activity.",
-        _ => "Also open an external terminal for this session.",
+        "dsh" => crate::source!("DeepSeek opens in the workspace's Native UI."),
+        "opencode" => {
+            crate::source!("OpenCode runs through its native server and opens in Activity.")
+        }
+        _ => crate::source!("Also open an external terminal for this session."),
     }
 }
 
@@ -699,8 +707,8 @@ pub fn repository_worktree_path(destination: &str, branch: &str) -> String {
 }
 
 /// The worktree target line's tooltip.
-pub fn worktree_tooltip(branch: &str) -> String {
-    format!("New branch: {branch}\nStart from: HEAD")
+pub fn worktree_tooltip(branch: &str) -> Text {
+    crate::text!("New branch: %1\nStart from: HEAD", branch)
 }
 
 /// A saved project folder on one computer; `machine` is empty for this
@@ -1064,15 +1072,15 @@ pub struct Form {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Shown {
     pub start_enabled: bool,
-    pub start_text: String,
+    pub start_text: Text,
     /// The folder line's note, empty for none; `outside_project` shows it as
     /// a warning.
-    pub preview: String,
+    pub preview: Option<Text>,
     pub outside_project: bool,
-    pub name_problem: Option<String>,
+    pub name_problem: Option<Text>,
     /// The standing reason Start cannot run. It replaces whatever error the
     /// form showed, which is then dropped.
-    pub notice: Option<String>,
+    pub notice: Option<Text>,
     /// Auto is checked (else None).
     pub automatic: bool,
     pub auto_enabled: bool,
@@ -1080,7 +1088,7 @@ pub struct Shown {
     /// The generated worktree's path in the computer's form, and its
     /// tooltip; empty without Auto.
     pub worktree_target: String,
-    pub worktree_tooltip: String,
+    pub worktree_tooltip: Option<Text>,
     pub choose_existing_enabled: bool,
     pub create_manually_enabled: bool,
     pub worktree_options_enabled: bool,
@@ -1090,7 +1098,7 @@ pub struct Shown {
     pub browse_enabled: bool,
     pub cancel_enabled: bool,
     pub open_terminal_enabled: bool,
-    pub open_terminal_tooltip: String,
+    pub open_terminal_tooltip: Text,
     /// A finished clone's start is due now.
     pub clone_launch_due: bool,
 }
@@ -1102,7 +1110,7 @@ pub fn shown(form: &Form) -> Shown {
     let busy = form.stage != Stage::Idle || repo_busy;
     let locked = busy || form.clone_launch_pending;
     let automatic = form.auto_preferred && (repository.is_some() || form.automatic_available);
-    let name_problem = tag_problem(&form.name).map(str::to_owned);
+    let name_problem = tag_problem(&form.name).map(Text::new);
     let ready = match repository {
         Some(repository) => {
             form.online
@@ -1183,18 +1191,18 @@ pub fn shown(form: &Form) -> Shown {
         !busy && !form.catalog_pending && form.online && form.automatic_available;
     Shown {
         start_enabled,
-        start_text: start_text.into(),
-        preview: preview.into(),
+        start_text: Text::new(start_text),
+        preview: (!preview.is_empty()).then(|| Text::new(preview)),
         outside_project: outside,
         name_problem,
-        notice: notice.map(str::to_owned),
+        notice: notice.map(Text::new),
         automatic,
         auto_enabled: !busy && (repository.is_some() || form.automatic_available),
         none_enabled: !busy,
         worktree_tooltip: if automatic {
-            worktree_tooltip(&form.branch)
+            Some(worktree_tooltip(&form.branch))
         } else {
-            String::new()
+            None
         },
         worktree_target,
         choose_existing_enabled,
@@ -1206,7 +1214,7 @@ pub fn shown(form: &Form) -> Shown {
         cancel_enabled: form.stage != Stage::CreatingWorktree
             && !repository.is_some_and(|repository| repository.cloning),
         open_terminal_enabled: !busy && detached(&form.agent),
-        open_terminal_tooltip: terminal_tooltip(&form.agent).into(),
+        open_terminal_tooltip: Text::new(terminal_tooltip(&form.agent)),
         clone_launch_due: form.clone_launch_pending && start_enabled,
     }
 }

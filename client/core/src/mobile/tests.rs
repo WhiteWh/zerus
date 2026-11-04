@@ -331,12 +331,15 @@ impl Drop for Scratch {
 
 #[cfg(unix)]
 #[test]
-fn the_connector_is_only_asked_for_its_status() {
+fn the_connector_is_only_asked_for_read_only_status_and_capability() {
     let scratch = Scratch::new("connector");
     let reply = active().to_string().replace('"', "\\\"");
     let connector = scratch.program(
         "zerus-mobile-connector",
-        &[("*--workspace\\ status*", &format!("echo \"{reply}\""))],
+        &[
+            ("*--workspace\\ status*", &format!("echo \"{reply}\"")),
+            ("--help", &format!("echo '{STOP_MARKER}'")),
+        ],
     );
     let config = scratch.0.join("connector.json");
     // As if this client ran in a terminal of an agent's session.
@@ -353,14 +356,18 @@ fn the_connector_is_only_asked_for_its_status() {
     .unwrap();
     assert_eq!(workspace.connection, "Connector: running");
     let calls = scratch.calls("zerus-mobile-connector");
-    assert_eq!(calls.lines().count(), 1);
-    assert!(
-        calls.starts_with(&format!("--workspace status --config {}", config.display())),
-        "{calls}"
-    );
-    assert!(
-        calls.contains("tmux=unset pane=unset session=unset run=unset"),
-        "{calls}"
+    assert!(workspace.stop_supported);
+    let scrubbed = "tmux=unset pane=unset session=unset run=unset";
+    assert_eq!(
+        calls.lines().map(str::to_owned).collect::<Vec<_>>(),
+        [
+            format!(
+                "--workspace status --config {} {scrubbed}",
+                config.display()
+            ),
+            format!("--help {scrubbed}"),
+        ],
+        "Only these two read-only calls may run, with attribution scrubbed on each"
     );
     // Found beside an absolute hgs before anything else.
     let hgs = scratch.0.join("hgs");

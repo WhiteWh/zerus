@@ -11,6 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(Clone)]
 pub struct Config {
     pub home: String,
     pub dir: PathBuf,

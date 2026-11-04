@@ -212,7 +212,12 @@ def publish_github(candidate, info, sums, nightly=False):
             notes += (f"\nWindows x86_64: `{info['windows_portable']}` is a portable control console for "
                       f"remote Linux and macOS machines over OpenSSH; enabling local sessions in Machines "
                       f"also runs agents on the Windows computer itself. Extract it and run `hgs-tray.exe`. "
-                      f"It is unsigned and has no installer or automatic updates.\n")
+                      + ("It is unsigned and has no automatic updates.\n" if info.get("windows_installer") else
+                       "It is unsigned and has no installer or automatic updates.\n"))
+        if info.get("windows_installer"):
+            notes += (f"Windows per-user setup: `{info['windows_installer']['asset']}` installs the same tested payload. "
+                      "WebView2 Evergreen is required. UI login startup is opt-in; local agent hosting remains separate. "
+                      "Verify its SHA256SUMS entry before running the unsigned installer.\n")
         title = f"Zerus {'nightly ' if nightly else ''}{version}"
         flags = ["--prerelease", "--latest=false"] if nightly else []
         with tempfile.TemporaryDirectory(prefix="zerus-notes-") as temporary:
