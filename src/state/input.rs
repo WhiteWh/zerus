@@ -775,7 +775,9 @@ fn composer_empty_for_model(agent: &str, screen: &str, cursor_x: usize, cursor_y
                 return input_background || single_line_footer
                     || lines.last().is_some_and(|line| {
                         let plain: String = styled_row(line).iter().map(|(ch, _)| ch).collect();
-                        plain.trim_start().starts_with("? for shortcuts")
+                        // Codex 0.167 prefixes the help with agent navigation.
+                        let help = plain.trim_start();
+                        help.strip_prefix("← for agents · ").unwrap_or(help).starts_with("? for shortcuts")
                     });
             }
         }
@@ -1548,33 +1550,38 @@ mod tests {
         // Native capture of the unfocused Codex composer; all user content in
         // the status bar is replaced. Colors are optional, not input state.
         let screen = "Working\n\n\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m\n\n  \x1b[38;2;246;226;183mGPT-6-Astra xhigh\x1b[39m · /project · Session title    Pursuing goal (1h)\n  \x1b[1m?\x1b[0m for shortcuts";
-        assert!(composer_empty("codex", screen, 2, 2));
-        // Real drafts, including a blank first line followed by text resembling
-        // a status bar, are still rejected. Never clear or append to them.
-        assert!(!composer_empty(
-            "codex",
-            &screen.replace("\x1b[2mAsk Codex to do anything\x1b[0m", ""),
-            2,
-            2
-        ));
-        assert!(!composer_empty(
-            "codex",
-            &screen.replace("\x1b[2mAsk Codex to do anything\x1b[0m", "a draft"),
-            2,
-            2
-        ));
-        assert!(!composer_empty(
-            "codex",
-            &screen.replace("\n\n  \x1b[38", "\n  draft continuation\n\n  \x1b[38"),
-            2,
-            2
-        ));
-        assert!(!composer_empty(
-            "codex",
-            &screen.replace("?\x1b[0m for shortcuts", "Approve command?"),
-            2,
-            2
-        ));
+        // Codex 0.167 puts the agent-navigation hint before the shortcuts hint.
+        for help in [
+            "\x1b[1m?\x1b[0m for shortcuts",
+            "\x1b[1m←\x1b[0m for agents · \x1b[1m?\x1b[0m for shortcuts",
+        ] {
+            let screen = screen.replace("\x1b[1m?\x1b[0m for shortcuts", help);
+            assert!(composer_empty("codex", &screen, 2, 2), "footer: {help}");
+            assert!(!composer_empty("codex", &screen, 3, 2));
+            // Real drafts, including a blank first line followed by text resembling
+            // a status bar, are still rejected. Never clear or append to them.
+            assert!(!composer_empty(
+                "codex",
+                &screen.replace("\x1b[2mAsk Codex to do anything\x1b[0m", ""),
+                2,
+                2
+            ));
+            assert!(!composer_empty(
+                "codex",
+                &screen.replace("\x1b[2mAsk Codex to do anything\x1b[0m", "a draft"),
+                2,
+                2
+            ));
+            assert!(!composer_empty(
+                "codex",
+                &screen.replace("\n\n  \x1b[38", "\n  draft continuation\n\n  \x1b[38"),
+                2,
+                2
+            ));
+            for unknown_help in ["Approve command?", "Approve command? · ? for shortcuts"] {
+                assert!(!composer_empty("codex", &screen.replace(help, unknown_help), 2, 2));
+            }
+        }
     }
     #[test]
     fn codex_warning_footer_does_not_turn_an_empty_queue_composer_into_a_draft() {
