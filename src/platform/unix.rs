@@ -175,6 +175,10 @@ pub fn verify_private_file(file: &fs::File) -> io::Result<bool> {
 pub fn verify_private_directory(file: &fs::File) -> io::Result<bool> {
     Ok(private_metadata(&file.metadata()?, Private::Directory))
 }
+/// The Unix form of the Windows ancestor check stays owner-only.
+pub fn verify_guarded_directory(file: &fs::File) -> io::Result<bool> {
+    verify_private_directory(file)
+}
 fn private_metadata(metadata: &fs::Metadata, kind: Private) -> bool {
     (match kind {
         Private::Directory => metadata.is_dir(),

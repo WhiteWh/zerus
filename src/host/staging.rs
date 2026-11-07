@@ -727,6 +727,14 @@ fn create_private_dirs(path: &Path) -> io::Result<()> {
 /// junction, verified private to this user (owner and access) and held: on
 /// Windows without delete sharing, so it cannot be renamed while held.
 fn private_directory(path: &Path) -> io::Result<fs::File> {
+    chain_directory(path, true)
+}
+
+/// A folder of the chain, held like `private_directory`. `private` asks for an
+/// owner-only folder; otherwise (WhiteWh fork, an ancestor of the images
+/// folder) another principal may only read it: Codex grants its sandbox group
+/// read access on `~/.local`, and nobody but this user can change any folder.
+fn chain_directory(path: &Path, private: bool) -> io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -748,23 +756,40 @@ fn private_directory(path: &Path) -> io::Result<fs::File> {
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
     }
     let file = options.open(path)?;
-    if !platform::verify_private_directory(&file)? {
+    let safe = if private {
+        platform::verify_private_directory(&file)?
+    } else {
+        platform::verify_guarded_directory(&file)?
+    };
+    if !safe {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "the binding's folder is not private to this user",
+            if private {
+                "the binding's folder is not private to this user"
+            } else {
+                "another account can change a folder above the binding"
+            },
         ));
     }
     Ok(file)
 }
 
 /// The images folder and the three folders above it that hgs keeps below the
-/// home folder (`.local`, `share`, `hgs`, `host`), outermost first, all private
-/// and held while a binding is published or read. Unsafe folders are refused,
-/// never repaired.
+/// home folder (`.local`, `share`, `hgs`, `host`), outermost first, held while
+/// a binding is published or read. The images folder is private; the folders
+/// above it may be readable by another account but changeable only by this
+/// user (WhiteWh fork: Codex's read grant on `~/.local` left every binding
+/// unwritable, so the portable app was never admitted). Unsafe folders are
+/// refused, never repaired here.
 fn private_chain(images: &Path) -> io::Result<Vec<fs::File>> {
     let mut chain: Vec<&Path> = images.ancestors().take(4).collect();
     chain.reverse();
-    chain.into_iter().map(private_directory).collect()
+    let last = chain.len().saturating_sub(1);
+    chain
+        .into_iter()
+        .enumerate()
+        .map(|(index, path)| chain_directory(path, index == last))
+        .collect()
 }
 
 /// The binding file itself, opened without following a link and verified
@@ -812,6 +837,11 @@ pub fn install_bound(
     let cli = stage_cli(source, &layout.cli)?;
     let image = stage_image(source, &layout.images, version)?;
     let enabled = enable(&layout.marker).map_err(at(&layout.marker))?;
+    // WhiteWh fork: the images folder is hgs's own; one that only inherited too
+    // much access (Codex's read grant on `~/.local`) is made private in place,
+    // under the install lock, before a binding is published in it. Another
+    // owner, a link or a reparse point stays as it is and the binding is refused.
+    let _ = platform::repair_private(&layout.images, platform::Private::Directory);
     let frontend = bind(layout, &mut |binding, commit| {
         publish_frontend(layout, binding, commit)
     })?;
@@ -960,6 +990,56 @@ pub fn read_frontend(images: &Path) -> Option<FrontendBinding> {
     }
     let binding: FrontendBinding = serde_json::from_slice(&bytes).ok()?;
     binding.valid().then_some(binding)
+}
+
+#[cfg(all(test, windows))]
+mod guarded_chain_tests {
+    use super::*;
+
+    fn icacls(path: &Path, args: &[&str]) {
+        let status = std::process::Command::new("icacls").arg(path).args(args).output().unwrap();
+        assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stdout));
+    }
+
+    /// WhiteWh fork: Codex grants its sandbox group read access on `~/.local`.
+    /// An ancestor another account can only read keeps the binding usable; one
+    /// another account can change does not, and the images folder itself must
+    /// stay private.
+    #[test]
+    fn an_ancestor_others_can_only_read_is_guarded_and_one_they_can_change_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("ancestor");
+        std::fs::create_dir(&folder).unwrap();
+        let user = format!("{}\\{}", std::env::var("USERDOMAIN").unwrap(), std::env::var("USERNAME").unwrap());
+        icacls(&folder, &["/inheritance:r", "/grant:r", &format!("{user}:(OI)(CI)F")]);
+        assert!(chain_directory(&folder, true).is_ok());
+        // BUILTIN\Users may read and traverse: guarded, no longer private.
+        icacls(&folder, &["/grant", "*S-1-5-32-545:(OI)(CI)RX"]);
+        assert!(chain_directory(&folder, false).is_ok());
+        assert!(chain_directory(&folder, true).is_err());
+        // BUILTIN\Users may change it: refused either way.
+        icacls(&folder, &["/grant", "*S-1-5-32-545:(OI)(CI)M"]);
+        assert!(chain_directory(&folder, false).is_err());
+        assert!(chain_directory(&folder, true).is_err());
+    }
+
+    /// The install makes its own images folder private in place when it only
+    /// inherited a read grant, so the binding can be published below it.
+    #[test]
+    fn the_install_repairs_an_images_folder_that_only_inherited_a_read_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let local = home.join(".local");
+        std::fs::create_dir_all(&local).unwrap();
+        let user = format!("{}\\{}", std::env::var("USERDOMAIN").unwrap(), std::env::var("USERNAME").unwrap());
+        icacls(&home, &["/inheritance:r", "/grant:r", &format!("{user}:(OI)(CI)F")]);
+        icacls(&local, &["/grant", "*S-1-5-32-545:(OI)(CI)RX"]);
+        let layout = Layout::new(&home.to_string_lossy(), &home.join("config"));
+        std::fs::create_dir_all(&layout.images).unwrap();
+        assert!(private_chain(&layout.images).is_err(), "the images folder inherited the read grant");
+        let _ = platform::repair_private(&layout.images, platform::Private::Directory);
+        assert!(private_chain(&layout.images).is_ok());
+    }
 }
 
 #[cfg(test)]
