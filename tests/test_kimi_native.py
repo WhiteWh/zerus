@@ -1012,6 +1012,41 @@ class NativeKimi(lifecycle.Harness):
             self.assertEqual(len(self.requests), requests)
             self.assertEqual(self.held(text), 1)
 
+    def test_manual_compaction_reaches_native_hooks(self):
+        name = self.launch()
+        for text in ('Start the native compaction fixture', 'Resume the native compaction fixture'):
+            receipt = self.send(name, self.payload(name, text))
+            self.until(lambda: self.settled(name, receipt), name)
+            if text.startswith('Start'):
+                before = self.binding(name)
+                self.hgs('pause', name)
+                self.hgs('resume', name, '-d')
+                self.until(lambda: self.binding(name).get('run_id') != before['run_id'] and
+                           self.inspect(name).get('activity') == 'idle', name)
+        before = self.binding(name)
+        observed = before.get('hook_observation', {}).get('events', {}).get('PostCompact', {}).get('count', 0)
+        request = dict(request_id=str(uuid.uuid4()), expected_run_id=before['run_id'],
+                       expected_conversation_id=before['conversation_id'])
+        result = subprocess.run([str(lifecycle.HGS), 'compact-context', name, '--json'], env=self.env,
+                                input=json.dumps(request), text=True, capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr + '\n' + self.screen(name))
+        self.assertEqual(json.loads(result.stdout)['request_id'], request['request_id'])
+
+        def completed():
+            state = self.inspect(name)
+            compact = state.get('compact_context_request', {})
+            count = self.binding(name).get('hook_observation', {}).get('events', {}).get('PostCompact', {}).get('count', 0)
+            return state if compact.get('request_id') == request['request_id'] and compact.get('status') == 'completed' \
+                and count > observed and state.get('activity') == 'idle' else None
+
+        state = self.until(completed, name)
+        self.assertEqual((state['run_id'], state['conversation_id']), (before['run_id'], before['conversation_id']))
+        self.assertEqual(len(self.requests), 3, 'two normal turns and one native compaction request')
+        repeated = subprocess.run([str(lifecycle.HGS), 'compact-context', name, '--json'], env=self.env,
+                                  input=json.dumps(request), text=True, capture_output=True, timeout=60)
+        self.assertNotEqual(repeated.returncode, 0)
+        self.assertEqual(len(self.requests), 3, 'the same request must never type or compact again')
+
     def test_pause_and_resume_keep_the_conversation(self):
         name = self.launch()
         text = 'Start the fixture conversation'
