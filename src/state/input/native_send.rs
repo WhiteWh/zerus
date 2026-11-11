@@ -121,6 +121,7 @@ pub(in crate::state) enum Reply {
     Submitted {
         receipt: Value,
         analytics: Option<crate::analytics::adapters::DeliveryNotice>,
+        index_repair: bool,
     },
     CacheReplay {
         uuid: String,
@@ -130,6 +131,7 @@ pub(in crate::state) enum Reply {
     Failed {
         message: String,
         analytics: Option<crate::analytics::adapters::DeliveryNotice>,
+        index_repair: bool,
     },
 }
 
@@ -243,8 +245,29 @@ pub(in crate::state) fn decode(
     analytics_root: Option<&Path>,
 ) -> Result<Value> {
     let reply: Reply = serde_json::from_slice(bytes).map_err(|e| uncertain(e.to_string()))?;
+    // The caller has settled the original keeper before decoding. A failed
+    // registration must request repair even if invalidation failed too and
+    // the old cache still claims complete coverage on a coarse clock.
+    if analytics_root.is_some() {
+        if matches!(
+            &reply,
+            Reply::Submitted {
+                index_repair: true,
+                ..
+            } | Reply::Failed {
+                index_repair: true,
+                ..
+            }
+        ) {
+            crate::state::receipt_index::request_migration();
+        } else {
+            crate::state::receipt_index::request_committed_reconciliation();
+        }
+    }
     match reply {
-        Reply::Submitted { receipt, analytics } => {
+        Reply::Submitted {
+            receipt, analytics, ..
+        } => {
             if let (Some(root), Some(notice)) = (analytics_root, analytics) {
                 crate::analytics::adapters::emit_delivery_notice(root, notice);
             }
@@ -274,7 +297,9 @@ pub(in crate::state) fn decode(
                 )),
             }
         }
-        Reply::Failed { message, analytics } => {
+        Reply::Failed {
+            message, analytics, ..
+        } => {
             if let (Some(root), Some(notice)) = (analytics_root, analytics) {
                 crate::analytics::adapters::emit_delivery_notice(root, notice);
             }
@@ -898,6 +923,7 @@ mod tests {
         check_reply_size(&Reply::Submitted {
             receipt,
             analytics: None,
+            index_repair: false,
         })
         .unwrap();
         request["text"] = json!("x".repeat(MAX_TEXT + 1));
@@ -918,6 +944,7 @@ mod tests {
         let mut reply = Reply::Failed {
             message: String::new(),
             analytics: None,
+            index_repair: false,
         };
         let overhead = serde_json::to_vec(&reply).unwrap().len() + 8;
         if let Reply::Failed { message, .. } = &mut reply {
@@ -941,7 +968,11 @@ mod tests {
             at: 1.0,
             outcome: crate::analytics::adapters::Delivery::Submitted,
         });
-        let reply = Reply::Submitted { receipt, analytics };
+        let reply = Reply::Submitted {
+            receipt,
+            analytics,
+            index_repair: false,
+        };
         assert!(check_reply_size(&reply).is_ok());
         // Pin the exact boundary with both refreshed timestamp spellings.
         let mut value = serde_json::to_value(&reply).unwrap();
@@ -950,6 +981,13 @@ mod tests {
         value["receipt"]["padding"] = json!("x".repeat(REPLY_BYTES - reserved));
         let boundary: Reply = serde_json::from_value(value.clone()).unwrap();
         assert!(check_reply_size(&boundary).is_ok());
+        let mut repairing = value.clone();
+        repairing["index_repair"] = json!(true);
+        assert_eq!(
+            serde_json::to_vec(&repairing).unwrap().len() + 1,
+            serde_json::to_vec(&value).unwrap().len()
+        );
+        assert!(check_reply_size(&serde_json::from_value(repairing).unwrap()).is_ok());
         let mut over = value.clone();
         over["receipt"]["padding"] = json!(format!(
             "{}x",
@@ -978,6 +1016,7 @@ mod tests {
         let bytes = serde_json::to_vec(&Reply::Failed {
             message: error,
             analytics: None,
+            index_repair: false,
         })
         .unwrap();
         assert!(bytes.len() + 8 <= REPLY_BYTES);

@@ -92,6 +92,11 @@ if os.environ.get('SEND_INDEX_FINAL_FAULT')=='1' and args[:1]==['send-keys'] and
   db.execute("UPDATE receipt_sources SET complete=1 WHERE source='terminal'")
   db.execute("CREATE TRIGGER refuse_final_registration BEFORE DELETE ON receipt_errors BEGIN SELECT RAISE(ABORT,'injected final registration failure'); END")
  db.close();(root/'index-final-fault-fired').touch()
+if os.environ.get('SEND_INDEX_CACHE_LOCK')=='1' and args[:1]==['send-keys'] and args[-1:] == ['Enter'] and read(pathlib.Path(os.environ['SEND_PENDING']))['status']=='applied':
+ (root/'index-cache-enter').touch();until=time.monotonic()+3
+ while not (root/'index-cache-held').exists():
+  assert time.monotonic()<until,'private cache writer did not acquire its transaction'
+  time.sleep(.002)
 fault=os.environ.get('SEND_FAULT','')
 if fault=='pending-receipt' and args[:1]==['list-panes'] and not (root/'fault-fired').exists():
  (root/'fault-fired').touch();p=pathlib.Path(os.environ['SEND_PENDING']);value=read(p);value['status']='applied';p.write_text(json.dumps(value))
@@ -268,9 +273,16 @@ raise SystemExit(result)
         with closing(sqlite3.connect(self.index_database)) as db:
             self.assertEqual(db.execute("SELECT files FROM receipt_rows WHERE source='terminal' AND request=?",
                                         (self.request['request_id'],)).fetchall(), [(1,)])
+            frontier = int(db.execute("SELECT value FROM receipt_meta WHERE key='change_seq'").fetchone()[0])
+            change = db.execute("SELECT change FROM receipt_rows WHERE source='terminal' AND request=?",
+                                (self.request['request_id'],)).fetchone()[0]
+            self.assertEqual(change, frontier)
+            self.assertGreater(change, 0)
         projection = self.receipt_projection()
         self.assertEqual([row['message_id'] for row in projection['attachment_messages']], [self.request['request_id']])
-        self.assertFalse(projection['receipt_projection']['migration_complete'])
+        self.assertTrue(projection['receipt_projection']['migration_complete'])
+        self.assertTrue(projection['receipt_projection']['catalog_complete_at_snapshot'])
+        self.assertFalse((self.case.state / 'receipt-index-attempt.json').exists(), 'successful registration needs no forced reconciliation')
 
     def test_new_original_index_failure_keeps_send_once_and_coverage_incomplete(self):
         self.prepare_receipt_index()
@@ -283,6 +295,8 @@ raise SystemExit(result)
     def test_worker_repair_hint_fifo_cannot_block_the_submitted_send(self):
         import fcntl
         self.prepare_receipt_index()
+        with closing(sqlite3.connect(self.index_database)) as db, db:
+            db.execute("UPDATE receipt_sources SET complete=0 WHERE source='terminal'")
         self.index_lease.close()
         hint = self.case.state / 'receipt-index-attempt.json'
         self.assertFalse(hint.exists())
@@ -305,6 +319,8 @@ raise SystemExit(result)
 
     def assert_worker_lock_fifo_cannot_block_send(self, filename):
         self.prepare_receipt_index()
+        with closing(sqlite3.connect(self.index_database)) as db, db:
+            db.execute("UPDATE receipt_sources SET complete=0 WHERE source='terminal'")
         self.index_lease.close()
         fault = self.case.state / filename
         if fault.exists():
@@ -342,6 +358,59 @@ raise SystemExit(result)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM receipt_rows WHERE request=?",
                                         (self.request['request_id'],)).fetchone(), (1,))
             self.assertEqual(db.execute("SELECT errors FROM receipt_sources WHERE source='terminal'").fetchone(), (1,))
+
+    def test_failed_cache_invalidation_requests_repair_despite_matching_directory_stamp(self):
+        import threading
+        self.prepare_receipt_index()
+        self.case.env['SEND_INDEX_CACHE_LOCK'] = '1'
+        errors = []
+        cancelled = threading.Event()
+        def hold_cache():
+            try:
+                # Follow this exact request's lifetime, including its Settings
+                # step; do not start a shorter unrelated fixture clock first.
+                while not (self.case.root / 'index-cache-enter').exists():
+                    if cancelled.wait(.002):
+                        return
+                with closing(sqlite3.connect(self.index_database)) as db:
+                    db.execute('BEGIN IMMEDIATE')
+                    stamp = db.execute("SELECT stamp FROM receipt_sources WHERE source='terminal'").fetchone()[0]
+                    (self.case.root / 'index-cache-held').touch()
+                    self.case.wait_for(lambda: self.receipt_path.exists() and
+                        json.loads(self.receipt_path.read_bytes()).get('status') == 'submitted')
+                    # Model a coarse filesystem clock without changing the
+                    # original's bytes or the operation's original deadline.
+                    _, seconds, nanos, _ = stamp.split(':', 3)
+                    directory = self.receipt_path.parent
+                    os.utime(directory, ns=(directory.stat().st_atime_ns,
+                                           int(seconds) * 1_000_000_000 + int(nanos)))
+                    time.sleep(.2)  # outlast both bounded advisory SQL writes
+                    db.rollback()
+            except BaseException as error:
+                errors.append(error)
+        thread = threading.Thread(target=hold_cache)
+        thread.start()
+        try:
+            self.assert_submitted(self.call())
+        finally:
+            cancelled.set()
+            thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertTrue((self.case.root / 'index-cache-held').exists())
+        with closing(sqlite3.connect(self.index_database)) as db:
+            # The writer prevented invalidation. The directory stamp alone
+            # therefore looks complete and cannot communicate the failure.
+            self.assertEqual(db.execute("SELECT complete,errors FROM receipt_sources WHERE source='terminal'").fetchone(), (1, 0))
+        projection = self.receipt_projection()['receipt_projection']
+        self.assertTrue(projection['migration_complete'])
+        self.assertTrue((self.case.state / 'receipt-index-launch.lock').exists(),
+                        'explicit failed-registration hint must request repair after keeper exit')
+        rows, received = self.rows(), self.case.received()
+        self.assertEqual(sum(row['args'][0] == 'paste-buffer' for row in rows), 1)
+        self.assert_submitted(self.call(selector='sid'))
+        self.assertEqual(self.rows(), rows)
+        self.assertEqual(self.case.received(), received)
 
     def attachment_request(self, size, count=1):
         import base64

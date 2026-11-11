@@ -1,6 +1,7 @@
 //! Rebuildable, body-free receipt locators. Original JSON alone proves delivery.
-//! Reads never enumerate source directories. Legacy discovery runs separately in
-//! bounded background batches and never deletes or repairs original receipts.
+//! Projection reads never enumerate source directories. Legacy discovery runs
+//! in bounded background batches; publication registration compares bounded
+//! directory-entry metadata. Neither deletes or repairs original receipts.
 use super::*;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
@@ -1210,32 +1211,235 @@ fn receipt_location(path: &Path, source: Source) -> Result<(PathBuf, &str)> {
     Ok((state, filename))
 }
 
-/// Register an original which its custodian has already committed and verified.
-/// This never writes/replaces the original or makes a send outcome depend on
-/// the cache. Without a pre-commit directory stamp, reconciliation must prove
-/// completeness again, even when only an existing receipt's status changed.
-/// The frontend requests that worker after the keeper exits; inspection also
-/// requests it if the frontend is lost. Never spawn a helper inside the fence.
+/// Metadata only, never a permission to write an original. A scan uses at most
+/// 2 MiB of entry digests and retains only their sorted SHA-256 fingerprint.
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
-pub(in crate::state) fn remember_committed(path: &Path, value: &Value) {
+#[derive(Clone)]
+pub(in crate::state) struct BeforeCommit {
+    path: PathBuf,
+    entries: ReceiptEntries,
+}
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+#[derive(Clone)]
+struct ReceiptEntries {
+    object: (u64, u64),
+    stamp: String,
+    others: usize,
+    fingerprint: [u8; 32],
+    receipts: usize,
+    target: bool,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn receipt_entries(path: &Path) -> Option<ReceiptEntries> {
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::{
+            ffi::OsStrExt,
+            fs::{DirEntryExt, MetadataExt},
+        };
+        let started = Instant::now();
+        let parent = path.parent()?;
+        let target = path.file_name()?;
+        let metadata = fs::symlink_metadata(parent).ok()?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return None;
+        }
+        let object = (metadata.dev(), metadata.ino());
+        let unchanged = |other: &fs::Metadata| {
+            other.is_dir()
+                && !other.file_type().is_symlink()
+                && (
+                    other.dev(),
+                    other.ino(),
+                    other.len(),
+                    other.mtime(),
+                    other.mtime_nsec(),
+                    other.ctime(),
+                    other.ctime_nsec(),
+                ) == (
+                    metadata.dev(),
+                    metadata.ino(),
+                    metadata.len(),
+                    metadata.mtime(),
+                    metadata.mtime_nsec(),
+                    metadata.ctime(),
+                    metadata.ctime_nsec(),
+                )
+        };
+        let mut result = ReceiptEntries {
+            object,
+            stamp: migration::stamp(parent).ok()?,
+            others: 0,
+            fingerprint: [0; 32],
+            receipts: 0,
+            target: false,
+        };
+        let mut entries: Vec<[u8; 32]> = Vec::new();
+        for (number, entry) in fs::read_dir(parent).ok()?.enumerate() {
+            if number >= 65_536 || started.elapsed() >= Duration::from_millis(20) {
+                return None;
+            }
+            let entry = entry.ok()?;
+            let name = entry.file_name();
+            if name.as_bytes().ends_with(b".json") {
+                result.receipts += 1;
+            }
+            if name == target {
+                result.target = true;
+                continue;
+            }
+            if entry.ino() == 0 {
+                return None;
+            }
+            let mut hash = Sha256::new();
+            hash.update(entry.ino().to_be_bytes());
+            hash.update(name.as_bytes());
+            entries.push(hash.finalize().into());
+            result.others += 1;
+        }
+        entries.sort_unstable();
+        let mut hash = Sha256::new();
+        for entry in entries {
+            hash.update(entry);
+        }
+        result.fingerprint = hash.finalize().into();
+        if started.elapsed() >= Duration::from_millis(20)
+            || !unchanged(&fs::symlink_metadata(parent).ok()?)
+            || migration::stamp(parent).ok()? != result.stamp
+        {
+            return None;
+        }
+        Some(result)
+    }
+}
+
+/// Capture before staging adds its temporary directory entry. Failure only
+/// disables the optimization; it must never refuse an otherwise valid send.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(in crate::state) fn before_commit(path: &Path) -> Option<BeforeCommit> {
+    Some(BeforeCommit {
+        path: path.to_owned(),
+        entries: receipt_entries(path)?,
+    })
+}
+
+/// Register an original which its custodian has already committed and verified.
+/// Keep the batch's atomic change allocation and witness/epoch rules. Advancing
+/// coverage additionally requires a stable exact directory delta: every other
+/// filename/inode is unchanged, and the prior receipt count agrees with the
+/// verified ledger. Unknown deltas leave coverage for the background worker.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(in crate::state) fn remember_committed(
+    path: &Path,
+    value: &Value,
+    before: Option<&BeforeCommit>,
+) -> bool {
     let Some(source) = receipt_source(path) else {
-        return;
+        return false;
     };
     let remember = (|| -> Result<()> {
-        let (state, _) = receipt_location(path, source)?;
+        let (state, filename) = receipt_location(path, source)?;
         let catalog = Catalog::open(&state, true)?;
-        // Keep this invalidation outside the registration transaction: an
-        // aborted insert/update must not restore an old complete witness.
-        sql(catalog.db.execute(
-            "UPDATE receipt_sources SET complete=0 WHERE source=?",
-            [source.key()],
-        ))?;
-        let transaction = sql(catalog.db.unchecked_transaction())?;
-        catalog.remember(source, path, value)?;
-        sql(transaction.commit())?;
-        Ok(())
+        let registered = (|| -> Result<()> {
+            let transaction = sql(catalog.db.unchecked_transaction())?;
+            let prior: (String, bool, i64, i64) = sql(catalog.db.query_row(
+                "SELECT stamp,complete,indexed,errors FROM receipt_sources WHERE source=?",
+                [source.key()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            ))?;
+            let covered = before
+                .filter(|b| {
+                    b.path == path
+                        && prior.1
+                        && prior.3 == 0
+                        && prior.0 == b.entries.stamp
+                        && prior.2 == b.entries.receipts as i64
+                })
+                .filter(|_| catalog.coverage_verified());
+            catalog.remember(source, path, value)?;
+            let failed: bool = sql(catalog.db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM receipt_errors WHERE source=? AND name=?)",
+                params![source.key(), filename],
+                |r| r.get(0),
+            ))?;
+            if failed {
+                return Err("Receipt registration is incomplete".into());
+            }
+            let mut advanced = false;
+            if let (Some(before), Some(after)) =
+                (covered, covered.and_then(|_| receipt_entries(path)))
+            {
+                if after.target
+                    && after.object == before.entries.object
+                    && after.others == before.entries.others
+                    && after.fingerprint == before.entries.fingerprint
+                    && after.receipts
+                        == before.entries.receipts + usize::from(!before.entries.target)
+                    && catalog.coverage_verified()
+                {
+                    // A legitimate mutable projection update may rotate the
+                    // epoch. Preserve that rotation while restoring coverage.
+                    sql(catalog.db.execute(
+                        "UPDATE receipt_sources SET stamp=?,complete=1 WHERE source=? AND errors=0",
+                        params![after.stamp, source.key()],
+                    ))?;
+                    advanced = true;
+                }
+            }
+            if !advanced {
+                // A coarse clock may leave the same stamp despite a foreign
+                // entry change. Unknown proof must clear the flag as well.
+                sql(catalog.db.execute(
+                    "UPDATE receipt_sources SET complete=0 WHERE source=?",
+                    [source.key()],
+                ))?;
+            }
+            sql(transaction.commit())?;
+            Ok(())
+        })();
+        if registered.is_err() {
+            // Outside the rolled-back transaction: never resurrect its old
+            // complete witness after an allocation or row-write failure.
+            let _ = catalog.db.execute(
+                "UPDATE receipt_sources SET complete=0 WHERE source=?",
+                [source.key()],
+            );
+        }
+        registered
     })();
-    let _ = remember;
+    // Report this advisory failure to the frontend as well: the invalidation
+    // itself may have failed. Neither result can fail or replay the send.
+    remember.is_ok()
+}
+
+/// Called only after the keeper exits. A complete successful registration
+/// needs no forced history walk; incomplete or due verification remains work.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::state) fn request_committed_reconciliation() {
+    let state = root();
+    let ready = (|| -> Result<bool> {
+        let catalog = Catalog::open(&state, false)?;
+        let (stamp, complete, errors): (String, bool, i64) = sql(catalog.db.query_row(
+            "SELECT stamp,complete,errors FROM receipt_sources WHERE source='terminal'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ))?;
+        Ok(complete
+            && errors == 0
+            && catalog.coverage_verified()
+            && !catalog.verification_due()
+            && migration::stamp(&state.join(Source::Terminal.directory()))
+                .is_ok_and(|now| now == stamp))
+    })();
+    if ready != Ok(true) {
+        migration::request(&state);
+    }
 }
 
 /// Preserve the authoritative atomic write and its error exactly. Index failure

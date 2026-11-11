@@ -321,6 +321,8 @@ fn unavailable_index_does_not_change_authoritative_receipt_persistence() {
         .path()
         .join("input_receipts")
         .join(format!("{}.json", value["request_id"].as_str().unwrap()));
+    assert!(before_commit(&path).is_none());
+    assert!(!path.parent().unwrap().exists(), "proof capture must never create a receipt namespace");
     persist(&path, &value).unwrap();
     assert_eq!(read_original(&path).unwrap(), value);
     if let Ok(catalog) = Catalog::open(temp.path(), false) {
@@ -332,7 +334,7 @@ fn unavailable_index_does_not_change_authoritative_receipt_persistence() {
 
 
 #[test]
-fn committed_registration_never_rewrites_originals_or_inherits_completeness() {
+fn committed_registration_never_rewrites_originals_and_refreshes_file_stamps() {
     let temp = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(temp.path(), true).unwrap();
     let mut receipt = value(1, "wanted", "run", "", 1.0);
@@ -353,7 +355,7 @@ fn committed_registration_never_rewrites_originals_or_inherits_completeness() {
         fs::write(&path, &raw).unwrap();
         assert_eq!(migration::stamp(path.parent().unwrap()).unwrap(), stamp);
         let original = crate::platform::FileIdentity::of(&fs::File::open(&path).unwrap()).unwrap();
-        remember_committed(&path, &receipt);
+        assert!(remember_committed(&path, &receipt, None));
         assert_eq!(
             crate::platform::FileIdentity::of(&fs::File::open(&path).unwrap()).unwrap(),
             original
@@ -363,9 +365,184 @@ fn committed_registration_never_rewrites_originals_or_inherits_completeness() {
             .page(&scope("wanted", "run", ""), "", 100, true)
             .unwrap();
         assert_eq!(page.locators.len(), 1);
+        // Without a pre-commit proof, do not inherit completeness even if a
+        // coarse directory clock reports the same stamp after a file change.
         assert_eq!(page.metadata["migration_complete"], false);
         assert_eq!(catalog.original(&page.locators[0]).unwrap(), receipt);
+        let stamp: String = catalog
+            .db
+            .query_row(
+                "SELECT stamp FROM receipt_rows WHERE source='terminal'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stamp, file_stamp(&path).unwrap());
+        assert!(catalog.coverage_verified());
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn committed_registration_advances_only_its_exact_directory_delta() {
+    for existing in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(temp.path(), true).unwrap();
+        let directory = temp.path().join("input_receipts");
+        fs::create_dir_all(&directory).unwrap();
+        let mut receipt = value(1, "wanted", "run", "", 1.0);
+        let path = directory.join(format!("{}.json", string(&receipt, "request_id")));
+        put(
+            &catalog,
+            Source::Terminal,
+            &value(2, "wanted", "run", "", 2.0),
+        );
+        if existing {
+            put(&catalog, Source::Terminal, &receipt);
+        }
+        let mut migration = migration::Migration::new(temp.path()).unwrap();
+        while !migration.step().unwrap() {}
+        let epoch = catalog.change_epoch().unwrap();
+        let page = catalog
+            .page(&scope("wanted", "run", ""), "", 1, true)
+            .unwrap();
+        assert_eq!(page.metadata["migration_complete"], true);
+        let before = before_commit(&path).unwrap();
+        receipt["submitted_at"] = json!(3.0);
+        let raw = format!("\n {} \n", receipt);
+        atomic(&path, &raw).unwrap();
+        let original = crate::platform::FileIdentity::of(&fs::File::open(&path).unwrap()).unwrap();
+        remember_committed(&path, &receipt, Some(&before));
+        assert_eq!(fs::read(&path).unwrap(), raw.as_bytes());
+        assert_eq!(
+            crate::platform::FileIdentity::of(&fs::File::open(&path).unwrap()).unwrap(),
+            original
+        );
+        assert!(catalog.coverage_verified());
+        let next = catalog.change_epoch().unwrap();
+        assert!(next.2 > epoch.2);
+        if existing {
+            // Updating ordering metadata retains batch 5's epoch invalidation.
+            assert_ne!(next.0, epoch.0);
+            assert!(catalog
+                .page(
+                    &scope("wanted", "run", ""),
+                    page.metadata["next_cursor"].as_str().unwrap(),
+                    1,
+                    true
+                )
+                .is_err());
+        }
+        let page = catalog
+            .page(&scope("wanted", "run", ""), "", 100, true)
+            .unwrap();
+        assert_eq!(page.metadata["migration_complete"], true);
+        assert_eq!(page.metadata["catalog_complete_at_snapshot"], true);
+        assert_eq!(page.locators.len(), 2);
+        assert_eq!(page.locators[0].id, string(&receipt, "request_id"));
+        let changed = catalog
+            .changed_page(&scope("wanted", "run", ""), "", 100, true)
+            .unwrap();
+        assert_eq!(changed.coverage, Coverage::Complete);
+        assert!(changed
+            .rows
+            .iter()
+            .any(|row| row.locator.id == string(&receipt, "request_id")
+                && row.stamp == file_stamp(&path).unwrap()));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn concurrent_unregistered_original_prevents_complete_stamp_advance() {
+    for existing in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(temp.path(), true).unwrap();
+        let directory = temp.path().join("input_receipts");
+        fs::create_dir_all(&directory).unwrap();
+        let mut receipt = value(1, "wanted", "run", "", 1.0);
+        let path = directory.join(format!("{}.json", string(&receipt, "request_id")));
+        if existing {
+            put(&catalog, Source::Terminal, &receipt);
+        }
+        let mut migration = migration::Migration::new(temp.path()).unwrap();
+        while !migration.step().unwrap() {}
+        let before = before_commit(&path).unwrap();
+        // An older binary publishes this original after S0 without registering
+        // it. Our own successful row must never silently cover that filename.
+        let foreign = value(2, "wanted", "run", "", 2.0);
+        let foreign_path = directory.join(format!("{}.json", string(&foreign, "request_id")));
+        atomic(&foreign_path, &foreign.to_string()).unwrap();
+        receipt["submitted_at"] = json!(3.0);
+        atomic(&path, &receipt.to_string()).unwrap();
+        remember_committed(&path, &receipt, Some(&before));
+        let page = catalog
+            .page(&scope("wanted", "run", ""), "", 100, true)
+            .unwrap();
+        assert_eq!(page.locators.len(), 1);
+        assert_eq!(page.metadata["migration_complete"], false);
+        assert_eq!(page.metadata["catalog_complete_at_snapshot"], false);
+        let mut migration = migration::Migration::new(temp.path()).unwrap();
+        while !migration.step().unwrap() {}
+        let page = catalog
+            .page(&scope("wanted", "run", ""), "", 100, true)
+            .unwrap();
+        assert_eq!(page.locators.len(), 2);
+        assert_eq!(page.metadata["migration_complete"], true);
+        assert_eq!(
+            fs::read_to_string(foreign_path).unwrap(),
+            foreign.to_string()
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn replacing_a_foreign_filename_cannot_inherit_complete_coverage() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(temp.path(), true).unwrap();
+    let receipt = value(1, "wanted", "run", "", 1.0);
+    let path = put(&catalog, Source::Terminal, &receipt);
+    let old = put(
+        &catalog,
+        Source::Terminal,
+        &value(2, "wanted", "run", "", 2.0),
+    );
+    let mut migration = migration::Migration::new(temp.path()).unwrap();
+    while !migration.step().unwrap() {}
+    let mut before = before_commit(&path).unwrap();
+    let foreign = value(3, "wanted", "run", "", 3.0);
+    fs::remove_file(old).unwrap();
+    atomic(
+        &path.with_file_name(format!("{}.json", string(&foreign, "request_id"))),
+        &foreign.to_string(),
+    )
+    .unwrap();
+    atomic(&path, &receipt.to_string()).unwrap();
+    let after = receipt_entries(&path).unwrap();
+    assert_eq!(before.entries.receipts, after.receipts);
+    assert_eq!(before.entries.others, after.others);
+    assert_ne!(before.entries.fingerprint, after.fingerprint);
+    // Model a coarse stamp collision while keeping the exact S0 entry set.
+    // Leaving the old complete flag untouched is insufficient in this case.
+    before.entries.stamp = after.stamp.clone();
+    catalog
+        .db
+        .execute(
+            "UPDATE receipt_sources SET stamp=? WHERE source='terminal'",
+            [&after.stamp],
+        )
+        .unwrap();
+    remember_committed(&path, &receipt, Some(&before));
+    let page = catalog
+        .page(&scope("wanted", "run", ""), "", 100, true)
+        .unwrap();
+    assert_eq!(page.metadata["migration_complete"], false);
+    assert_eq!(page.metadata["catalog_complete_at_snapshot"], false);
+    assert!(!page
+        .locators
+        .iter()
+        .any(|row| row.id == string(&foreign, "request_id")));
 }
 
 #[test]
@@ -399,7 +576,10 @@ fn failed_registration_of_new_and_final_originals_retains_incomplete_coverage() 
                 [&stamp],
             )
             .unwrap();
-        remember_committed(&path, &receipt);
+        let epoch = catalog.change_epoch().unwrap();
+        assert!(!remember_committed(&path, &receipt, None));
+        // A failed row write must not publish a sequence allocation by itself.
+        assert_eq!(catalog.change_epoch().unwrap().2, epoch.2);
         assert_eq!(fs::read(&path).unwrap(), raw.as_bytes());
         let page = catalog
             .page(&scope("wanted", "run", ""), "", 100, true)

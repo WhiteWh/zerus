@@ -10,6 +10,7 @@ pub(super) struct Progress {
     pub(super) paste_success: AtomicBool,
     pub(super) paste_possible: AtomicBool,
     pub(super) enter_settled: AtomicBool,
+    index_repair: AtomicBool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -337,8 +338,9 @@ impl Publication {
 
 fn receipt_write(owner: &Arc<owner::Owner>, value: Value, final_receipt: bool) -> Result<()> {
     let h = header(owner)?;
-    let (staged, parent, name) = owner.with_scope(|scope| {
+    let (staged, parent, name, before) = owner.with_scope(|scope| {
         let name = format!("{}.json", h.request_id);
+        let before = crate::state::receipt_index::before_commit(&scope.receipts.path.join(&name));
         let staged =
             publication::Staged::prepare(&scope.receipts, &name, value.to_string().as_bytes())?;
         with(owner, |held| {
@@ -347,7 +349,7 @@ fn receipt_write(owner: &Arc<owner::Owner>, value: Value, final_receipt: bool) -
             }
             Ok(())
         })?;
-        Ok((staged, scope.receipts.path.clone(), name))
+        Ok((staged, scope.receipts.path.clone(), name, before))
     })?;
     let receipt_path = parent.join(&name);
     let step = Publication::new(owner, &staged, parent, name.clone(), final_receipt, None)?;
@@ -356,8 +358,11 @@ fn receipt_write(owner: &Arc<owner::Owner>, value: Value, final_receipt: bool) -
     let original = owner.with_scope(|scope| committed.receipt(owner, &scope.receipts, &name))?;
     // Cache registration follows the exact fenced original and its proof. It
     // cannot rewrite that original or turn an accepted send into a refusal.
-    crate::state::receipt_index::remember_committed(&receipt_path, &value);
+    let indexed = crate::state::receipt_index::remember_committed(&receipt_path, &value, before.as_ref());
     with(owner, |held| {
+        if !indexed {
+            held.progress.index_repair.store(true, Ordering::Release);
+        }
         held.receipt = Some(original);
         held.value = value;
         Ok(())
@@ -514,6 +519,7 @@ fn check_replies(record: &Value, value: &Value) -> Result<()> {
     max["status"] = json!("submitted");
     let preview = input::native_send::Reply::Submitted {
         receipt: max,
+        index_repair: false, // false has the longer JSON spelling
         analytics: crate::analytics::adapters::describe_delivery(
             record,
             value,
@@ -523,6 +529,7 @@ fn check_replies(record: &Value, value: &Value) -> Result<()> {
     input::native_send::check_reply_size(&preview)?;
     let error_preview = input::native_send::Reply::Failed {
         message: "\u{1}".repeat(input::native_send::ERROR_BYTES),
+        index_repair: false,
         analytics: crate::analytics::adapters::describe_delivery(
             record,
             value,
@@ -600,6 +607,7 @@ pub(super) fn execute(owner: &Arc<owner::Owner>) -> Result<Vec<u8>> {
         receipt_write(owner, receipt.clone(), true)?;
         let record = owner.snapshot()?.0;
         serde_json::to_vec(&input::native_send::Reply::Submitted {
+            index_repair: progress.index_repair.load(Ordering::Acquire),
             analytics: crate::analytics::adapters::describe_delivery(
                 &record,
                 &receipt,
@@ -629,6 +637,7 @@ pub(super) fn execute(owner: &Arc<owner::Owner>) -> Result<Vec<u8>> {
         };
         serde_json::to_vec(&input::native_send::Reply::Failed {
             message: input::native_send::bounded_error(error),
+            index_repair: progress.index_repair.load(Ordering::Acquire),
             analytics,
         })
         .map_err(|e| e.to_string())
