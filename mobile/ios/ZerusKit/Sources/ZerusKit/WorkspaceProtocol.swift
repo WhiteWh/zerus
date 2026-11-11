@@ -5,7 +5,7 @@ public enum WorkspaceProtocol {
     public static let maxPayload = 30_408_704
     public static func encryptedInvitationCode(_ value: String) -> Bool { value.hasPrefix("ze") && value.contains(".") }
     // Service scheduling hints only. Every request still owns a permanent endpoint identity.
-    static let reads: Set<String> = ["analytics_read", "archive_list", "speech_config", "speech_config_status", "inspect", "history", "history_projection", "hooks_status", "git_status", "process_output", "project_assignment", "terminal_snapshot", "catalog", "dirs", "worktrees", "mark_read", "attachment_read", "file_read", "speech_profiles", "speech_stats", "speech_status", "voice_profiles", "voice_status"]
+    static let reads: Set<String> = ["send_receipt", "analytics_read", "archive_list", "speech_config", "speech_config_status", "inspect", "history", "history_projection", "hooks_status", "git_status", "process_output", "project_assignment", "terminal_snapshot", "catalog", "dirs", "worktrees", "mark_read", "attachment_read", "file_read", "speech_profiles", "speech_stats", "speech_status", "voice_profiles", "voice_status"]
     static func operationClass(_ operation: String) -> String { reads.contains(operation) ? "read" : "mutation" }
     public static func encode(_ data: Data) -> String {
         data.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")

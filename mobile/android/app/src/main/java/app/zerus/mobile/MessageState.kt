@@ -8,7 +8,7 @@ import kotlin.math.abs
 data class OutgoingMessage(val requestId: String, val target: Target, val text: String,
     val attachments: List<Attachment>, val createdAt: Double, val status: String = "sending",
     val submittedAt: Double = 0.0, val submittedText: String = "", val error: String = "",
-    val deliveryDismissed: Boolean = false) {
+    val deliveryDismissed: Boolean = false, val sendIntent: SendIntent? = null, val sendReceiptProof: SendReceiptProof? = null) {
     fun recover() = if (status == "sending") copy(status = "uncertain", error = "Delivery was interrupted. Check its receipt before sending again.", deliveryDismissed = false) else this
     fun belongsTo(current: Target): Boolean = target == current || target.resolvesTo(current)
     val blocksSending get() = status == "sending" || status == "uncertain" && !deliveryDismissed
@@ -33,7 +33,7 @@ data class MessageState(val drafts: List<Draft> = emptyList(), val outgoing: Lis
         val next = contextOperations.filterNot { it.requestId == operation.requestId } + operation
         return copy(contextOperations = next.filter { it.blocksSending } + next.filterNot { it.blocksSending }.takeLast(50))
     }
-    fun enqueue(draft: Draft, requestId: String, at: Double): MessageState {
+    fun enqueue(draft: Draft, requestId: String, at: Double, sendIntent: SendIntent? = null): MessageState {
         require(draft.target.archiveId.isBlank()) { "Archived conversations are read-only." }
         require(draft.detachedId.isBlank() && draft.questionId.isBlank() && draft.status == "editing") { "Review this draft before sending." }
         require(draft.text.isNotBlank() || draft.attachments.isNotEmpty()) { "Write a message or attach a file." }
@@ -46,7 +46,8 @@ data class MessageState(val drafts: List<Draft> = emptyList(), val outgoing: Lis
         val current = drafts.find { it.key == draft.key }
         require(current == null || current.revision == draft.revision) { "The draft changed. Review it before sending." }
         AttachmentPolicy.selection(draft.attachments)
-        val message = OutgoingMessage(requestId, draft.target, draft.text, draft.attachments.toList(), at)
+        val message = OutgoingMessage(requestId, draft.target, draft.text, draft.attachments.toList(), at, sendIntent=sendIntent)
+        require(sendIntent==null || SendReceiptRecovery.matches(message,sendIntent)) { "The saved message intent changed before transport." }
         val cleared = draft.copy(text = "", attachments = emptyList(), revision = UUID.randomUUID().toString(), generation = UUID.randomUUID().toString(), updatedAt = (at * 1000).toLong())
         return copy(drafts = drafts.filterNot { it.key == draft.key } + cleared, outgoing = outgoing + message)
     }
@@ -84,11 +85,16 @@ object MessageCodec {
         .put("attachments", JSONArray(draft.attachments.map(Attachment::toJson))).put("revision", draft.revision).put("detached", draft.detachedId).put("generation", draft.generation)
     fun outgoing(value: JSONObject) = OutgoingMessage(value.getString("request"), target(value), value.getString("text"),
         value.optJSONArray("attachments")?.objects().orEmpty().map(Attachment::fromJson), value.getDouble("created"), value.getString("status"),
-        value.optDouble("submitted", 0.0), value.string("submitted_text"), value.string("error"), value.opt("delivery_dismissed") == true).recover()
+        value.optDouble("submitted", 0.0), value.string("submitted_text"), value.string("error"), value.opt("delivery_dismissed") == true,
+        if(value.has("send_intent")) SendIntent.decode(value.getJSONObject("send_intent")) else null,
+        if(value.has("send_receipt_proof")) SendReceiptProof.decode(value.getJSONObject("send_receipt_proof")) else null).recover()
     fun outgoingJson(message: OutgoingMessage) = targetJson(message.target).put("request", message.requestId).put("text", message.text)
         .put("attachments", JSONArray(message.attachments.map(Attachment::toJson))).put("created", message.createdAt).put("status", message.status)
         .put("submitted", message.submittedAt).put("submitted_text", message.submittedText).put("error", message.error)
-        .put("delivery_dismissed", message.deliveryDismissed)
+        .put("delivery_dismissed", message.deliveryDismissed).also { value ->
+            message.sendIntent?.let { value.put("send_intent",it.json()) }
+            message.sendReceiptProof?.let { value.put("send_receipt_proof",it.json()) }
+        }
     private fun contextOperation(value: JSONObject): ContextOperation {
         val operation = value.getString("operation")
         val dismiss = if (value.has("dismiss_prompt")) {
@@ -133,7 +139,10 @@ object ConversationMerge {
             fun named(source: String) = result.indices.firstOrNull { index -> index !in used && result[index].role == "You" &&
                 result[index].source == source && result[index].requestId.isNotBlank() && result[index].requestId == message.requestId }
             var match = named("hgs_delivery") ?: named("opencode_native")
-            if (match == null && message.status in listOf("submitted", "recorded") && message.submittedAt > 0) {
+            val nativeId=SendReceiptRecovery.exactNativeId(message)
+            if(match==null && nativeId.isNotEmpty()) match=result.indices.singleOrNull { index -> index !in used && result[index].role=="You" &&
+                result[index].inheritedFrom.isEmpty() && result[index].source==message.sendIntent?.value()?.string("provider")+"_native" && result[index].nativeMessageId==nativeId }
+            if (match == null && message.sendIntent==null && message.sendReceiptProof==null && message.status in listOf("submitted", "recorded") && message.submittedAt > 0) {
                 val text = message.submittedText.ifBlank { message.text }.trim()
                 // A fork's inherited row was never sent from this session: it is
                 // no candidate, so it neither takes the send nor makes it ambiguous.
@@ -156,7 +165,7 @@ object ConversationMerge {
                     // The computer accepted it; a native inbox state says whether the agent has it yet.
                     delivery = result[match].delivery.takeIf { it in MessageDeliveryPresentation.inboxStates } ?: "recorded")
             } else result += Event("outgoing:${message.requestId}", "You", message.submittedText.ifBlank { message.text }, "", message.submittedAt.takeIf { it > 0 } ?: message.createdAt, message.requestId,
-                message.attachments.map(Attachment::displayed), "mobile_outbox", message.status, message.requestId)
+                message.attachments.map(Attachment::displayed), "mobile_outbox", if(message.status in listOf("submitted","recorded") && message.sendReceiptProof?.queued==true) "queued" else message.status, message.requestId)
         }
         val ordered = result.take(native.size).toMutableList()
         result.drop(native.size).forEach { fallback ->

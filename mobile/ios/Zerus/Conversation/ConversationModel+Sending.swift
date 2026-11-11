@@ -248,9 +248,11 @@ extension ConversationModel {
             deliveryFlights.remove(id)
             syncOutgoing()
         }
+        let frozen = original.attachments.isEmpty ? captureSendIntent(target, id: id, text: original.text,
+            compactionId: expectedCompactionId.isEmpty ? nil : expectedCompactionId) : nil
         let written: MessageState
         do {
-            written = try await app.durableMessages({ try $0.enqueue(original, requestId: id, at: at) },
+            written = try await app.durableMessages({ try $0.enqueue(original, requestId: id, at: at, sendIntent: frozen) },
                                                     acknowledge: { current, committed in MessageChanges.enqueueAcknowledged(current, original: original, written: committed, requestId: id) })
         } catch {
             app.error = (error as? ZerusError).map(\.message) ?? "Could not save the outgoing message. It was not sent. Your composition is preserved."
@@ -287,6 +289,10 @@ extension ConversationModel {
             payload["text"] = .string(message.text)
             payload["attachments"] = files
             if !expectedCompactionId.isEmpty { payload["expected_compaction_id"] = .string(expectedCompactionId) }
+            if let saved = message.sendIntent {
+                guard let retained = saved.value()?.object("payload") else { throw ZerusError.invalid("The saved message details are unavailable. Review this message.") }
+                payload = retained
+            }
             attempted = true
             let initial: JSONObject
             do { initial = try await app.client.submit(connection, target: target, operation: "send", payload: payload, id: id) }
@@ -314,16 +320,37 @@ extension ConversationModel {
         }
     }
 
-    func settleOutgoing(_ message: OutgoingMessage, _ receipt: JSONObject) async {
+    private func captureSendIntent(_ target: Target, id: String, text: String, compactionId: String? = nil) -> SendIntent? {
+        guard let connection = app.connections.first(where: { $0.id == target.connectionId }),
+              let machine = app.machines.first(where: { $0.connectionId == target.connectionId && $0.id == target.computerId && $0.online && !$0.lastKnown }),
+              let encoding = SendReceiptRecovery.encoding(version: connection.protocolVersion, route: machine.route) else { return nil }
+        let candidates = app.sessions.filter { $0.target.connectionId == target.connectionId && $0.target.computerId == target.computerId &&
+            $0.target.run == target.run && $0.target.agentId.isEmpty && $0.target.archiveId.isEmpty }
+        guard candidates.count == 1, let source = candidates.first else { return nil }
+        return SendReceiptRecovery.freeze(target: target, id: id, text: text, provider: source.agent, machineId: machine.machineId,
+            sessionId: source.raw.string("session_id"), encoding: encoding, compactionId: compactionId)
+    }
+
+    func settleOutgoing(_ message: OutgoingMessage, _ receipt: JSONObject, deadline: Double? = nil) async {
         let result = receipt.object("result"), state = receipt.string("state")
-        let confirmed = receipt.string("request_id") == message.requestId && state == "completed" && ["submitted", "queued"].contains(result?.string("status") ?? "")
+        let proof = message.sendIntent.flatMap { intent in result.flatMap { SendReceiptRecovery.acknowledgement(intent, $0) } }
+        let strict = message.sendIntent != nil && SendReceiptRecovery.supported(relay: app.relayOperations[message.target.connectionId],
+            native: app.machineOperations[MachineKey(connectionId: message.target.connectionId, computerId: message.target.computerId)])
+        let confirmed = receipt.string("request_id") == message.requestId && state == "completed" && ["submitted", "queued"].contains(result?.string("status") ?? "") && (!strict || proof != nil)
         let rejected = state == "failed" && receipt.string("request_id") == message.requestId
         let submittedAt = result?.number("submitted_at"), submittedText = result?.string("submitted_text") ?? ""
         do {
             _ = try await app.durableMessages { current in
-                MessageChanges.result(current, message.requestId) { existing in
+                guard current.outgoing.filter({ $0.requestId == message.requestId }).count == 1 else { return current }
+                return MessageChanges.result(current, message.requestId) { existing in
+                    guard existing.target == message.target, SendReceiptRecovery.exact(existing.text, message.text),
+                          existing.attachments == message.attachments, existing.createdAt == message.createdAt,
+                          existing.sendIntent == message.sendIntent else { return existing }
+                    if let deadline, SendReceiptRecovery.now >= deadline { return existing }
+                    if existing.sendReceiptProof != nil && ["submitted", "recorded"].contains(existing.status) { return existing }
                     var updated = existing
                     if confirmed {
+                        updated.sendReceiptProof = proof
                         updated.status = "submitted"
                         updated.submittedAt = submittedAt ?? existing.createdAt
                         updated.submittedText = submittedText.isEmpty ? existing.text.trimmingCharacters(in: .whitespacesAndNewlines) : submittedText
@@ -352,7 +379,19 @@ extension ConversationModel {
         receiptFlights.insert(flight)
         defer { receiptFlights.remove(flight) }
         do {
-            await settleOutgoing(message, try await app.client.boundedReceipt(connection, id: message.requestId))
+            let supported = SendReceiptRecovery.supported(relay: app.relayOperations[message.target.connectionId],
+                native: app.machineOperations[MachineKey(connectionId: message.target.connectionId, computerId: message.target.computerId)])
+            let intent = supported ? (message.sendIntent ?? captureSendIntent(message.target, id: message.requestId, text: message.text)) : nil
+            switch try await app.client.checkDelivery(connection, message: message, intent: intent) {
+            case .original(let receipt, let deadline): await settleOutgoing(message, receipt, deadline: deadline)
+            case .native(let intent, let proof, let deadline):
+                _ = try await app.durableMessages { current in
+                    SendReceiptRecovery.settle(current, captured: message, intent: intent, proof: proof, deadline: deadline, now: SendReceiptRecovery.now)
+                }
+                if let target = selected?.target, message.belongs(to: target) { refreshActivity() }
+            case .unconfirmed:
+                if !automatic { app.error = "Delivery is still unconfirmed. The original message remains saved." }
+            }
         } catch {
             if !automatic { app.error = "Receipt unavailable. The outgoing message remains saved." }
         }

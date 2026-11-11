@@ -160,7 +160,7 @@ public struct RelayClient: Sendable {
 
     // MARK: Requests
 
-    static let childOperations: Set<String> = ["inspect", "history", "history_projection", "send", "attachment_read", "file_read"]
+    static let childOperations: Set<String> = ["inspect", "history", "history_projection", "send", "send_receipt", "attachment_read", "file_read"]
     static let archiveOperations: Set<String> = ["inspect", "history", "history_projection", "process_output", "restore", "forget", "rename", "fork", "attachment_read", "file_read"]
 
     /// Submits one request with an immutable UUID. The caller has already made it durable.
@@ -195,6 +195,43 @@ public struct RelayClient: Sendable {
                                pollDelay: Duration = .milliseconds(800)) async throws -> JSONObject {
         try await Deadline.within(limit) {
             try await self.waitForReceipt(connection, initial: try await self.receipt(connection, id: id), pollDelay: pollDelay)
+        }
+    }
+
+    public func sendReceipt(_ connection: Connection, message: OutgoingMessage, intent: SendIntent) async throws -> SendReceiptProof? {
+        try Task.checkCancellation()
+        guard connection.id == message.target.connectionId, SendReceiptRecovery.matches(message, intent) else { return nil }
+        let id = UUID().uuidString.lowercased()
+        let payload = try SendReceiptRecovery.request(id, intent)
+        let initial = try await submit(connection, target: message.target, operation: SendReceiptRecovery.operation, payload: payload, id: id)
+        let receipt = try await waitForReceipt(connection, initial: initial, pollDelay: .milliseconds(100))
+        guard receipt.string("request_id") == id, receipt.string("state") == "completed", let result = receipt.object("result") else { return nil }
+        return SendReceiptRecovery.proof(id, intent, result)
+    }
+
+    /// One campaign, including the original journal read, fallback and durable settlement.
+    public func checkDelivery(_ connection: Connection, message: OutgoingMessage, intent: SendIntent?, limit: Duration = .seconds(45)) async throws -> SendReceiptCheck {
+        guard limit > .zero, limit <= .seconds(45) else { throw ZerusError.invalid("Invalid receipt deadline.") }
+        let parts = limit.components
+        let deadline = SendReceiptRecovery.now + Double(parts.seconds) + Double(parts.attoseconds) / 1e18
+        return try await Deadline.within(limit) {
+            var original: JSONObject?
+            do { original = try await self.waitForReceipt(connection, initial: try await self.receipt(connection, id: message.requestId)) }
+            catch is CancellationError { throw CancellationError() }
+            catch { original = nil }
+            if let original, original.string("state") == "failed" { return .original(original, deadline: deadline) }
+            if let original, original.string("state") == "completed", let result = original.object("result"), ["submitted", "queued"].contains(result.string("status")) {
+                if message.sendIntent == nil || intent == nil { return .original(original, deadline: deadline) }
+                if let saved = message.sendIntent, let proof = SendReceiptRecovery.acknowledgement(saved, result) { return .native(saved, proof, deadline: deadline) }
+            }
+            try Task.checkCancellation()
+            guard let intent, SendReceiptRecovery.matches(message, intent), SendReceiptRecovery.now < deadline else { return .unconfirmed }
+            let proof: SendReceiptProof?
+            do { proof = try await self.sendReceipt(connection, message: message, intent: intent) }
+            catch is CancellationError { throw CancellationError() }
+            catch { proof = nil }
+            guard let proof, SendReceiptRecovery.now < deadline else { return .unconfirmed }
+            return .native(intent, proof, deadline: deadline)
         }
     }
 
