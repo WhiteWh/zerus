@@ -175,9 +175,8 @@ establish a unique session identity.
 ### Static agent guidance
 
 The static hint source covers tracked Claude Code, Codex and Kimi Code main
-conversations. Its native delivery contract still requires qualification on the
-reviewed versions before adoption. OpenCode and DeepSeek channels remain
-separate work; older hgs peers inject nothing.
+conversations. Its native delivery is verified on reviewed versions. OpenCode
+and DeepSeek channels remain separate work; older hgs peers inject nothing.
 
 The hint points to `hgs guide` with fixed English text, independent of session
 name, computer and hgs version. Claude Code and Codex use the existing

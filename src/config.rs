@@ -366,7 +366,7 @@ fn read_hint_policy(directory: &Path, home: &str) -> std::result::Result<HintPol
 /// values, including an empty exclusion list, after shell startup and on every
 /// new native process. No config path or policy goes into the saved recipe.
 pub(crate) fn agent_hint_environment(provider: &str) -> Vec<String> {
-    if !["claude", "codex"].contains(&provider) {
+    if !["claude", "codex", "kimi"].contains(&provider) {
         return Vec::new();
     }
     let policy = platform::home()
@@ -597,7 +597,7 @@ mod tests {
             hint_policy_environment(Err(())),
             ["HGS_AGENT_HINT=0", "HGS_AGENT_HINT_OFF="]
         );
-        for provider in ["kimi", "opencode", "dsh", "sh"] {
+        for provider in ["opencode", "dsh", "sh"] {
             assert!(agent_hint_environment(provider).is_empty());
         }
         let absent = tempfile::tempdir().unwrap();

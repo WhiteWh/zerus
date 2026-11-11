@@ -1012,6 +1012,22 @@ class NativeKimi(lifecycle.Harness):
             self.assertEqual(len(self.requests), requests)
             self.assertEqual(self.held(text), 1)
 
+    def test_hint_reaches_model_through_real_hgs_hook(self):
+        name = self.launch()
+        record = self.binding(name)
+        launched = self.environment(record['pid'], {}, record)
+        self.assertEqual(launched.get('HGS_AGENT_HINT'), '1')
+        self.assertEqual(launched.get('HGS_AGENT_HINT_OFF'), '')
+        receipt = self.send(name, self.payload(name, 'Verify the production hgs hint path'))
+        self.until(lambda: self.settled(name, receipt), name)
+        record = self.binding(name)
+        self.assertEqual(record.get('agent_hint'), {'conversation_id': record['conversation_id'], 'revision': 1})
+        hint = ('This agent runs in a Zerus session: the hgs CLI reads, messages, launches and stops other agent '
+                'sessions on this and other computers. Run hgs guide before using it.')
+        copies = sum(json.dumps(message).count(hint) for request in self.requests
+                     for message in request.get('messages', []))
+        self.assertEqual(copies, 1)
+
     def test_pause_and_resume_keep_the_conversation(self):
         name = self.launch()
         text = 'Start the fixture conversation'

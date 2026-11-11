@@ -1656,6 +1656,15 @@ mod windows {
 struct StartOutput {
     started: bool,
     hint: Option<&'static str>,
+    agent: String,
+}
+
+fn format_agent(record: &str, environment: Option<String>) -> String {
+    if record.is_empty() {
+        environment.unwrap_or_default()
+    } else {
+        record.to_owned()
+    }
 }
 
 pub(super) fn hook() -> Result<i32> {
@@ -1682,7 +1691,7 @@ pub(super) fn hook() -> Result<i32> {
         if !context.is_empty() {
             let stdout = io::stdout();
             agent_hint::output_for(
-                &nonempty_env("HGS_AGENT").unwrap_or_default(),
+                &format_agent(&output.agent, nonempty_env("HGS_AGENT")),
                 &mut stdout.lock(),
                 &context.join("\n\n"),
             )?;
@@ -1906,6 +1915,7 @@ fn track(name: String, token: String, mut event: Value, output: &mut StartOutput
         output.started = true;
     }
     output.hint = hint;
+    output.agent = string(&record, "agent").to_owned();
     Ok(0)
 }
 
@@ -1913,6 +1923,13 @@ fn track(name: String, token: String, mut event: Value, output: &mut StartOutput
 mod tests {
     use super::windows::{self as forms, CLAUDE_EXEC_FORM};
     use super::*;
+
+    #[test]
+    fn hint_output_format_comes_from_the_decided_record_not_the_environment() {
+        assert_eq!(format_agent("kimi", Some("claude".into())), "kimi");
+        assert_eq!(format_agent("", Some("kimi".into())), "kimi");
+        assert_eq!(format_agent("", None), "");
+    }
 
     #[test]
     fn health_registration_preserves_personal_and_legacy_hooks_and_never_grants_trust() {

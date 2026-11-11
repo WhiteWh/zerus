@@ -59,8 +59,9 @@ pub(super) fn carry_resume(previous: &Value, record: &mut Value) {
     }
 }
 
-/// The caller has admitted and bound the main SessionStart through the normal
-/// run/pane/provider guards. Optional policy failure cannot break tracking.
+/// The caller has admitted and bound the main native start or prompt event
+/// through the normal run/pane/provider guards. Optional policy failure cannot
+/// break tracking.
 pub(super) fn start(record: &mut Value, event: &Value) -> Option<&'static str> {
     if !admitted(record, event) {
         return None;
@@ -91,11 +92,7 @@ fn decide(record: &mut Value, event: &Value, enabled: bool) -> Option<&'static s
     }
     let conversation = string(record, "conversation_id").to_owned();
     let source = string(event, "source");
-    let replaced = if string(record, "agent") == "kimi" {
-        source == "clear"
-    } else {
-        matches!(source, "compact" | "clear")
-    };
+    let replaced = string(record, "agent") != "kimi" && matches!(source, "compact" | "clear");
     let inherited = record
         .as_object_mut()
         .unwrap()
