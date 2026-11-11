@@ -442,6 +442,12 @@ fn cancel_recovery(owner: &Arc<owner::Owner>, record: &Value) -> Result<()> {
 }
 
 fn mark_input(owner: &Arc<owner::Owner>, at: f64) -> Result<()> {
+    with(owner, |held| {
+        if held.phase != Phase::Staged || held.child.is_some() {
+            return Err("Original Send input marker requires settled Stage".into());
+        }
+        Ok(())
+    })?;
     let mut record = owner.snapshot()?.0;
     record["input_pending_at"] = json!(at);
     record["updated"] = json!(now());
@@ -465,6 +471,9 @@ fn mark_input(owner: &Arc<owner::Owner>, at: f64) -> Result<()> {
     owner.adopt_record(staged.commit(&fence)?)?;
     let (_, version) = owner.snapshot()?;
     with(owner, |held| {
+        if held.phase != Phase::Staged || held.child.is_some() {
+            return Err("Original Send phase changed before input marker".into());
+        }
         held.marker = Some((json!(at), version));
         held.phase = Phase::Marked;
         Ok(())

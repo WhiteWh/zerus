@@ -135,21 +135,20 @@ pub(in crate::state) enum Reply {
     },
 }
 
-/// Reserve the exact JSON shape plus the longest finite f64 spelling for
-/// each timestamp refreshed before paste. Framing is the i32 outcome and u32
-/// byte count. No mutable timestamp can turn an admitted reply into overflow.
+/// Reserve the exact JSON shape and 24 bytes per refreshed finite f64 (the
+/// pinned serde_json formatter's buffer bound). -f64::MAX itself is shorter.
+/// Framing is the i32 outcome and u32 byte count; refresh cannot overflow it.
 pub(in crate::state) fn check_reply_size(reply: &Reply) -> Result<()> {
     let value = serde_json::to_value(reply).map_err(|e| e.to_string())?;
     let mut bytes = serde_json::to_vec(&value).map_err(|e| e.to_string())?.len() + 8;
-    let widest = serde_json::to_vec(&json!(-f64::MAX))
-        .map_err(|e| e.to_string())?
-        .len();
+    let widest = 24usize;
     for timestamp in [&value["receipt"]["submitted_at"], &value["analytics"]["at"]] {
         if timestamp.is_number() {
-            bytes += widest
-                - serde_json::to_vec(timestamp)
+            bytes += widest.saturating_sub(
+                serde_json::to_vec(timestamp)
                     .map_err(|e| e.to_string())?
-                    .len();
+                    .len(),
+            );
         }
     }
     if bytes > REPLY_BYTES {
@@ -213,7 +212,8 @@ fn cached_bytes(
 }
 
 pub(in crate::state) fn cached(header: &Header) -> Result<Option<Vec<u8>>> {
-    let Some((version, sha256, value)) = cached_bytes(header, None, false)? else {
+    // A raced FIFO must not park this keeper with its Root and shared slot.
+    let Some((version, sha256, value)) = cached_bytes(header, None, true)? else {
         return Ok(None);
     };
     match existing_value(value, &header.digest, &header.dispatch_name) {
@@ -869,7 +869,7 @@ mod tests {
     }
     #[test]
     fn maximum_legal_payload_expands_each_hostile_attachment_path_once() {
-        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
         let encoded = STANDARD.encode(vec![b'x'; MAX_TOTAL / 8]);
         let references: Vec<_> = (1..=8).map(|i| format!("[File #{i}]")).collect();
         let label_text = references.join(" ");
@@ -950,10 +950,12 @@ mod tests {
         if let Reply::Failed { message, .. } = &mut reply {
             *message = "x".repeat(REPLY_BYTES - overhead);
         }
+        assert_eq!(serde_json::to_vec(&reply).unwrap().len() + 8, 1 << 20);
         assert!(check_reply_size(&reply).is_ok());
         if let Reply::Failed { message, .. } = &mut reply {
             message.push('x');
         }
+        assert_eq!(serde_json::to_vec(&reply).unwrap().len() + 8, (1 << 20) + 1);
         assert!(check_reply_size(&reply).is_err());
         if let Reply::Failed { message, .. } = &mut reply {
             *message = "\u{1}".repeat((REPLY_BYTES - overhead) / 6 + 1);
@@ -976,7 +978,10 @@ mod tests {
         assert!(check_reply_size(&reply).is_ok());
         // Pin the exact boundary with both refreshed timestamp spellings.
         let mut value = serde_json::to_value(&reply).unwrap();
-        let widest = serde_json::to_vec(&json!(-f64::MAX)).unwrap().len();
+        let widest = serde_json::to_vec(&json!(-f64::MIN_POSITIVE))
+            .unwrap()
+            .len();
+        assert_eq!(widest, 24);
         let reserved = serde_json::to_vec(&value).unwrap().len() + 8 + 2 * (widest - 3);
         value["receipt"]["padding"] = json!("x".repeat(REPLY_BYTES - reserved));
         let boundary: Reply = serde_json::from_value(value.clone()).unwrap();
@@ -994,9 +999,9 @@ mod tests {
             value["receipt"]["padding"].as_str().unwrap()
         ));
         assert!(check_reply_size(&serde_json::from_value(over).unwrap()).is_err());
-        value["receipt"]["submitted_at"] = json!(f64::MAX);
-        value["analytics"]["at"] = json!(f64::MAX);
-        assert!(serde_json::to_vec(&value).unwrap().len() + 8 <= REPLY_BYTES);
+        value["receipt"]["submitted_at"] = json!(-f64::MIN_POSITIVE);
+        value["analytics"]["at"] = json!(-f64::MIN_POSITIVE);
+        assert_eq!(serde_json::to_vec(&value).unwrap().len() + 8, REPLY_BYTES);
         assert!(check_reply_size(&serde_json::from_value(value).unwrap()).is_ok());
     }
 

@@ -20,6 +20,7 @@ fn run(case: &str) {
             .env("HGS_CONFIG_DIR", home.path().join("config"))
             .env("HGS_STATE_DIR", home.path().join("state"))
             .env("TMPDIR", home.path())
+            .env("TMUX_TMPDIR", home.path())
             .env("ZERUS_SEND_CONTROL", case)
             .env("ZERUS_SEND_KIND", kind)
             .args(["--exact", ENTRY, "--ignored", "--test-threads=1"])
@@ -90,6 +91,7 @@ fn cache_replay_follows_existing_semantics_but_rejects_post_settlement_drift() {
         "cache-name",
         "cache-symlink",
         "cache-fifo",
+        "cache-keeper-fifo",
     ] {
         run(case);
     }
@@ -104,6 +106,18 @@ fn pending_capability_is_consumed_only_after_the_exact_applied_receipt_and_recor
         "applied-pending",
         "applied-kind",
         "applied-source",
+    ] {
+        run(case);
+    }
+}
+#[test]
+fn cleanup_and_input_markers_require_the_original_stage_and_refusal() {
+    for case in [
+        "stage-spawn",
+        "mark-phase",
+        "close-sticky",
+        "cleanup-absent",
+        "cleanup-foreign",
     ] {
         run(case);
     }
@@ -159,6 +173,36 @@ fn fixture() {
         .join("settings_receipts")
         .join(format!("{pending_id}.json"));
     atomic(&child_path, &child_value.to_string()).unwrap();
+    if matches!(
+        case.as_str(),
+        "stage-spawn" | "mark-phase" | "cleanup-absent" | "cleanup-foreign"
+    ) {
+        // This is a private, single-test child. Freeze its helper PATH before
+        // constructing the frame; never change the keeper's configuration.
+        use std::os::unix::fs::PermissionsExt;
+        let bin = home().join("fixture-bin");
+        fs::create_dir_all(&bin).unwrap();
+        if case != "stage-spawn" {
+            let missing = if case == "cleanup-foreign" {
+                "other"
+            } else {
+                "$3"
+            };
+            let script = format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/cleanup-argv\"\nprintf 'unknown buffer: %s\\n' \"{missing}\" >&2\nexit 1\n");
+            fs::write(bin.join("tmux"), script).unwrap();
+            fs::set_permissions(bin.join("tmux"), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        // Native birth observations on macOS can still use the original ps.
+        if let Some(ps) = std::env::var_os("PATH")
+            .into_iter()
+            .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+            .map(|p| p.join("ps"))
+            .find(|p| p.is_file())
+        {
+            std::os::unix::fs::symlink(ps, bin.join("ps")).unwrap();
+        }
+        std::env::set_var("PATH", bin);
+    }
     let payload = input::native_send::Payload::parse(&raw).unwrap();
     let frame = host::frame::Frame::new_send(
         raw,
@@ -221,6 +265,93 @@ fn fixture() {
     let sid = super::super::super::tests::input(&record);
     assert!(root_file.try_lock_exclusive().is_err() && sid.try_lock_exclusive().is_err());
     match case.as_str() {
+        "stage-spawn" => {
+            with(&owner, |held| {
+                held.child = None;
+                held.phase = Phase::Ready;
+                Ok(())
+            })
+            .unwrap();
+            context::Observation::begin_kind(context::Kind::SendReady)
+                .unwrap()
+                .unwrap()
+                .complete(&record)
+                .unwrap();
+            let cleanup = send_helpers::Cleanup::reserve(&owner, progress.clone()).unwrap();
+            assert!(send_helpers::stage(&owner, progress.clone()).is_err());
+            assert!(!progress.stage_started.load(Ordering::Acquire));
+            assert!(progress.stage_done.load(Ordering::Acquire));
+            cleanup.finish().unwrap();
+            assert!(!home().join("cleanup-argv").exists());
+        }
+        "mark-phase" => {
+            with(&owner, |held| {
+                held.child = None;
+                held.phase = Phase::Ready;
+                Ok(())
+            })
+            .unwrap();
+            let before = fs::read(
+                crate::state::storage::id_record_path(string(&record, "session_id")).unwrap(),
+            )
+            .unwrap();
+            assert!(mark_input(&owner, now())
+                .unwrap_err()
+                .contains("requires settled Stage"));
+            assert!(
+                !home().join("cleanup-argv").exists(),
+                "wrong phase spawned a helper"
+            );
+            assert_eq!(
+                fs::read(
+                    crate::state::storage::id_record_path(string(&record, "session_id")).unwrap()
+                )
+                .unwrap(),
+                before
+            );
+            with(&owner, |held| {
+                assert!(held.phase == Phase::Ready && held.marker.is_none());
+                Ok(())
+            })
+            .unwrap();
+        }
+        "close-sticky" => {
+            with(&owner, |held| {
+                held.child = None;
+                Ok(())
+            })
+            .unwrap();
+            let request = Request {
+                request_id: owner.control.frame().request_id.clone(),
+                expected_run_id: string(&record, "run_id").into(),
+                expected_conversation_id: string(&record, "conversation_id").into(),
+                effort: "high".into(),
+            };
+            let error =
+                read::close_claude_model(&owner, string(&record, "name"), &request).unwrap_err();
+            assert_eq!(owner.actor().unwrap_err(), error);
+            assert!(owner.epoch.load(Ordering::Acquire) > 0);
+        }
+        "cleanup-absent" | "cleanup-foreign" => {
+            progress.stage_started.store(true, Ordering::Release);
+            progress.stage_done.store(true, Ordering::Release);
+            let cleanup = send_helpers::Cleanup::reserve(&owner, progress.clone()).unwrap();
+            let result = cleanup.finish();
+            if case == "cleanup-absent" {
+                result.unwrap();
+            } else {
+                assert!(result.unwrap_err().contains("cleanup uncertain"));
+            }
+            let logged = fs::read_to_string(home().join("cleanup-argv")).unwrap();
+            assert_eq!(
+                logged.lines().collect::<Vec<_>>(),
+                vec![
+                    "delete-buffer",
+                    "-b",
+                    &format!("hgs-input-{}", owner.control.frame().request_id)
+                ]
+            );
+        }
         "marker" => {
             let mut changed = record.clone();
             changed["settings_unconfirmed_at"] = json!(124.0);
@@ -321,7 +452,7 @@ fn fixture() {
             );
         }
         "cache-original" | "cache-replaced" | "cache-content" | "cache-name" | "cache-symlink"
-        | "cache-fifo" => {
+        | "cache-fifo" | "cache-keeper-fifo" => {
             let h = super::header(&owner).unwrap();
             let mut submitted = value.clone();
             submitted["status"] = json!("submitted");
@@ -334,41 +465,48 @@ fn fixture() {
             } else {
                 fs::write(&outer, submitted.to_string()).unwrap();
             }
-            let wire = input::native_send::cached(h).unwrap().unwrap();
-            assert!(wire.len() + 8 <= input::native_send::REPLY_BYTES);
-            match case.as_str() {
-                "cache-original" | "cache-symlink" => {
-                    assert_eq!(
-                        input::native_send::decode(h, &wire, None).unwrap(),
-                        submitted
-                    );
-                }
-                "cache-name" => {
-                    let mut renamed = h.clone();
-                    renamed.dispatch_name.push_str("-renamed");
-                    assert!(
-                        input::native_send::decode(&renamed, &wire, None)
-                            .unwrap_err()
-                            .starts_with("delivery uncertain")
-                    );
-                }
-                _ => {
-                    if case == "cache-replaced" {
-                        let replacement = root().join("replaced-cache.json");
-                        fs::write(&replacement, submitted.to_string()).unwrap();
-                        fs::rename(replacement, &outer).unwrap();
-                    } else if case == "cache-content" {
-                        submitted["opaque"] = json!("replacement");
-                        fs::write(&outer, submitted.to_string()).unwrap();
-                    } else {
-                        fs::remove_file(&outer).unwrap();
-                        let path =
-                            std::ffi::CString::new(outer.as_os_str().as_encoded_bytes()).unwrap();
-                        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+            if case == "cache-keeper-fifo" {
+                fs::remove_file(&outer).unwrap();
+                let path = std::ffi::CString::new(outer.as_os_str().as_encoded_bytes()).unwrap();
+                assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+                let start = Instant::now();
+                assert!(input::native_send::cached(h).is_err());
+                assert!(start.elapsed() < Duration::from_secs(2));
+            } else {
+                let wire = input::native_send::cached(h).unwrap().unwrap();
+                assert!(wire.len() + 8 <= input::native_send::REPLY_BYTES);
+                match case.as_str() {
+                    "cache-original" | "cache-symlink" => {
+                        assert_eq!(
+                            input::native_send::decode(h, &wire, None).unwrap(),
+                            submitted
+                        );
                     }
-                    let error = input::native_send::decode(h, &wire, None).unwrap_err();
-                    assert!(error.starts_with("delivery uncertain"), "{error}");
-                    assert_eq!(error.matches("delivery uncertain").count(), 1);
+                    "cache-name" => {
+                        let mut renamed = h.clone();
+                        renamed.dispatch_name.push_str("-renamed");
+                        assert!(input::native_send::decode(&renamed, &wire, None)
+                            .unwrap_err()
+                            .starts_with("delivery uncertain"));
+                    }
+                    _ => {
+                        if case == "cache-replaced" {
+                            let replacement = root().join("replaced-cache.json");
+                            fs::write(&replacement, submitted.to_string()).unwrap();
+                            fs::rename(replacement, &outer).unwrap();
+                        } else if case == "cache-content" {
+                            submitted["opaque"] = json!("replacement");
+                            fs::write(&outer, submitted.to_string()).unwrap();
+                        } else {
+                            fs::remove_file(&outer).unwrap();
+                            let path = std::ffi::CString::new(outer.as_os_str().as_encoded_bytes())
+                                .unwrap();
+                            assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+                        }
+                        let error = input::native_send::decode(h, &wire, None).unwrap_err();
+                        assert!(error.starts_with("delivery uncertain"), "{error}");
+                        assert_eq!(error.matches("delivery uncertain").count(), 1);
+                    }
                 }
             }
         }

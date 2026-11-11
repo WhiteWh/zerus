@@ -102,11 +102,18 @@ if fault=='pending-receipt' and args[:1]==['list-panes'] and not (root/'fault-fi
  (root/'fault-fired').touch();p=pathlib.Path(os.environ['SEND_PENDING']);value=read(p);value['status']='applied';p.write_text(json.dumps(value))
 if fault=='stage-denied' and args[:1]==['delete-buffer']:
  print('permission denied',file=sys.stderr);raise SystemExit(1)
-result=subprocess.call([REAL_TMUX,'-S',str(root/'socket'),'-f','/dev/null',*args])
+if args[:1]==['delete-buffer']:
+ completed=subprocess.run([REAL_TMUX,'-S',str(root/'socket'),'-f','/dev/null',*args],capture_output=True)
+ sys.stdout.buffer.write(completed.stdout);sys.stderr.buffer.write(completed.stderr)
+ with (root/'send-cleanup-results.jsonl').open('a') as out:out.write(json.dumps(dict(args=args,returncode=completed.returncode,stderr=completed.stderr.decode()))+'\n')
+ result=completed.returncode
+else:result=subprocess.call([REAL_TMUX,'-S',str(root/'socket'),'-f','/dev/null',*args])
 if os.environ.get('SEND_HOLD_NATIVE')=='1' and args[:1]==['list-panes'] and not (root/'hold-fired').exists():
  (root/'hold-fired').touch();peer=socket.socket(socket.AF_UNIX);peer.connect(str(root/'auto-apply.sock'));peer.sendall(b'ready');assert peer.recv(1)==b'';peer.close()
 if fault=='large-payload' and args[:1]==['load-buffer']:(root/'freeze').touch()
-if fault in ('stage-source','stage-denied') and args[:1]==['load-buffer']:
+if fault=='stage-absent' and args[:1]==['load-buffer']:
+ subprocess.run([REAL_TMUX,'-S',str(root/'socket'),'-f','/dev/null','delete-buffer','-b',args[2]],check=True)
+if fault in ('stage-source','stage-denied','stage-absent') and args[:1]==['load-buffer']:
  p=pathlib.Path(os.environ['SEND_RECORD']);value=read(p);value['activity']='busy';value['phase']='working';p.write_text(json.dumps(value))
 if fault in ('stage-held','paste-held') and args[:1]==(['load-buffer'] if fault=='stage-held' else ['paste-buffer']):
  # Hold this original exchange's stdout/stderr after its tmux process exits.
@@ -693,6 +700,27 @@ raise SystemExit(result)
                       self.case.tmux('list-buffers', '-F', '#{buffer_name}').splitlines())
         self.assertEqual(json.loads(self.receipt_path.read_bytes())['status'], 'in_progress')
 
+    def test_already_absent_stage_buffer_confirms_cleanup_without_retry(self):
+        self.case.env['SEND_FAULT'] = 'stage-absent'
+        result = self.call()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stderr.lower().count('delivery uncertain'), 1)
+        self.assertNotIn('buffer cleanup uncertain', result.stderr)
+        rows = self.rows()
+        self.assertEqual(sum(row['args'][0] == 'load-buffer' for row in rows), 1)
+        self.assertFalse(any(row['args'][0] == 'paste-buffer' for row in rows))
+        self.assertEqual([row['args'] for row in rows if row['args'][0] == 'delete-buffer'],
+                         [['delete-buffer', '-b', 'hgs-input-' + self.request['request_id']]])
+        cleanup = [json.loads(line) for line in
+                   (self.case.root / 'send-cleanup-results.jsonl').read_text().splitlines()]
+        self.assertEqual(len(cleanup), 1)
+        self.assertEqual(cleanup[0]['returncode'], 1)
+        self.assertIn(cleanup[0]['stderr'].strip(),
+                      ('unknown buffer: hgs-input-' + self.request['request_id'],
+                       'no buffer hgs-input-' + self.request['request_id']))
+        self.assertEqual(json.loads(self.receipt_path.read_bytes())['status'], 'in_progress')
+        self.assertNotIn('input_pending_at', json.loads(self.path.read_bytes()))
+
     def held_pipe_cleanup(self, fault):
         import fcntl
         import socket
@@ -731,6 +759,13 @@ raise SystemExit(result)
             self.assertEqual(discards, [['delete-buffer', '-b', 'hgs-input-' + self.request['request_id']]])
             self.assertEqual(sum(row['args'][0] == 'paste-buffer' for row in rows), 1)
             self.assertIn('input_pending_at', json.loads(self.path.read_bytes()))
+            cleanup = [json.loads(line) for line in
+                       (self.case.root / 'send-cleanup-results.jsonl').read_text().splitlines()]
+            self.assertEqual(len(cleanup), 1)
+            self.assertEqual(cleanup[0]['returncode'], 1)
+            self.assertIn(cleanup[0]['stderr'].strip(),
+                          ('unknown buffer: hgs-input-' + self.request['request_id'],
+                           'no buffer hgs-input-' + self.request['request_id']))
         peer.close()
         def released():
             try:
@@ -768,6 +803,27 @@ raise SystemExit(result)
         self.assertEqual(json.loads(stdout), value)
         self.assertEqual(self.rows(), [])
         self.assertEqual(json.loads(self.pending_path.read_bytes())['status'], 'scheduled')
+
+    def test_racing_fifo_cache_refuses_without_blocking_original_root_or_slot(self):
+        import fcntl
+        with (self.case.state / '.lock').open('r+b') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            sender = self.start([str(test_input.HGS), 'send', self.case.name, '--json'], self.raw)
+            self.wait_for_slot()
+            self.receipt_path.parent.mkdir(mode=0o700, exist_ok=True)
+            os.mkfifo(self.receipt_path, 0o600)
+            started = time.monotonic()
+            fcntl.flock(lock, fcntl.LOCK_UN)
+        stdout, stderr = sender.communicate(timeout=20)
+        self.assertNotEqual(sender.returncode, 0, stdout)
+        self.assertEqual(stderr.lower().count('delivery uncertain'), 1, stderr)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(json.loads(self.pending_path.read_bytes())['status'], 'scheduled')
+        with (self.case.state / '.lock').open('r+b') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with (self.case.state / '.native-picker-host.lock').open('r+b') as slot:
+            fcntl.flock(slot, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def test_zero_pending_different_sids_ignore_a_foreign_slot_and_keep_blocking_root(self):
         import fcntl
