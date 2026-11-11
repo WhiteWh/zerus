@@ -870,6 +870,32 @@ class NativeKimi(lifecycle.Harness):
         self.assertEqual(len(self.requests), requests, 'settings submitted a first model turn')
         self.assertFalse(legacy.exists())
 
+    def test_id_unprimed_pending_settings_then_message_makes_one_model_call_and_keeps_defaults(self):
+        import native_effort_id as identity
+        config = self.home / 'config.toml'
+        text = config.read_text()
+        self.assertEqual(text.count('max_context_size = 32768\n'), 1)
+        text = text.replace('max_context_size = 32768\n',
+                            'max_context_size = 32768\ncapabilities = ["thinking"]\n')
+        text += ('\n[models.fixture_next]\nprovider = "fixture"\nmodel = "fixture-next"\n'
+                 'max_context_size = 32768\ncapabilities = ["thinking"]\n')
+        config.write_text(text)
+        name = self.launch()
+        record = self.binding(name)
+        self.assertFalse(record.get('conversation_id'), 'never prime an unconfirmed native CID')
+        before, requests = config.read_bytes(), len(self.requests)
+        record, path, _ = identity.moved_record(self, name, record, existing_machine=True)
+        attempts = identity.key_log(self)
+        message = getattr(self, 'pending_message', 'Continue the unprimed pending fixture\\')
+        receipt = identity.pending_then_message(self, name, record, path,
+                                                'fixture_next', 'on', message, attempts)
+        self.until(lambda: self.held(message), name)
+        self.until(lambda: self.settled(name, receipt), name)
+        self.assertEqual(self.held(message), 1)
+        self.assertEqual(len(self.requests), requests + 1)
+        self.assertEqual(config.read_bytes(), before)
+        self.assertNotIn('Select a model', self.screen(name))
+
     def test_id_effort_preserves_raw_request_identity_and_shared_defaults(self):
         import native_effort_id as contract
         config = self.home / 'config.toml'

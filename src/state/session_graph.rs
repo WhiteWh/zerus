@@ -6,6 +6,8 @@ mod model;
 mod sends;
 
 pub(super) use sends::target_receipt;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) use sends::target_receipt_for_machine;
 pub(crate) use sends::{caller_record, forward_send, send_origin};
 
 use super::*;

@@ -103,9 +103,94 @@ fn write_message<T: Serialize>(
     Ok(())
 }
 
+/// Send's binary segment can fill the small native socket buffer thousands of
+/// times. Wait for that same descriptor instead of adding a sleep per chunk.
+/// Every wake still returns through the original deadline and endpoint I/O.
+fn wait_send(stream: &UnixStream, events: libc::c_short, deadline: Deadline) -> Result<()> {
+    loop {
+        let remaining = deadline.remaining()?;
+        let timeout = remaining.as_millis().saturating_add(1).min(i32::MAX as u128) as i32;
+        let mut descriptor = libc::pollfd {
+            fd: stream.as_raw_fd(),
+            events,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout) };
+        if ready > 0 {
+            deadline.remaining()?;
+            return Ok(());
+        }
+        if ready < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+    }
+}
+
+fn read_send(mut stream: &UnixStream, mut bytes: &mut [u8], deadline: Deadline) -> Result<()> {
+    while !bytes.is_empty() {
+        deadline.remaining()?;
+        match stream.read(bytes) {
+            Ok(0) => return Err("Original Send endpoint closed".into()),
+            Ok(n) => bytes = &mut bytes[n..],
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                wait_send(stream, libc::POLLIN, deadline)?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {},
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(())
+}
+
+fn write_bytes(mut stream: &UnixStream, mut bytes: &[u8], deadline: Deadline) -> Result<()> {
+    while !bytes.is_empty() {
+        deadline.remaining()?;
+        match stream.write(bytes) {
+            Ok(0) => return Err("Original Send endpoint closed".into()),
+            Ok(n) => bytes = &bytes[n..],
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => wait_send(stream, libc::POLLOUT, deadline)?,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {},
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(())
+}
+
+fn write_blob(stream: &UnixStream, bytes: &[u8], deadline: Deadline, limit: usize) -> Result<()> {
+    if bytes.is_empty() || bytes.len() > limit { return Err("Original Send segment exceeds its bound".into()); }
+    write_bytes(stream, &(bytes.len() as u32).to_be_bytes(), deadline)?;
+    write_bytes(stream, bytes, deadline)
+}
+
+fn read_blob(stream: &UnixStream, deadline: Deadline, limit: usize) -> Result<Vec<u8>> {
+    let mut size = [0;4];
+    read_send(stream,&mut size,deadline)?;
+    let size = u32::from_be_bytes(size) as usize;
+    if size == 0 || size > limit { return Err("Original Send segment exceeds its bound".into()); }
+    let mut bytes = vec![0;size];
+    read_send(stream,&mut bytes,deadline)?;
+    Ok(bytes)
+}
+
+fn write_outcome(stream: &UnixStream, outcome: &Outcome, frame: &Frame) -> Result<()> {
+    if frame.operation != Operation::Send { return write_message(stream,outcome,frame.deadline,RESPONSE_BYTES); }
+    let limit = input::native_send::REPLY_BYTES;
+    if outcome.bytes.len() + 8 > limit { return Err("Original Send outcome exceeds 1 MiB".into()); }
+    let mut bytes = outcome.code.to_be_bytes().to_vec();
+    bytes.extend_from_slice(&outcome.bytes);
+    write_blob(stream,&bytes,frame.deadline,limit - 4)
+}
+
 struct Slot {
     file: File,
     identity: crate::platform::FileIdentity,
+}
+
+pub(super) struct SendSlot(Arc<InheritedLock>);
+
+/// Still disposition: failure grants no host and silently selects legacy.
+pub(super) fn send_slot() -> Option<SendSlot> {
+    Slot::reserve().ok().map(SendSlot)
 }
 impl Slot {
     fn reserve() -> Result<Arc<InheritedLock>> {
@@ -175,6 +260,7 @@ pub(super) struct Control {
     frame: Frame,
     slot: Slot,
     caller: super::caller::Held,
+    payload: Option<Arc<input::native_send::Payload>>,
 }
 impl Control {
     #[cfg(test)]
@@ -186,11 +272,13 @@ impl Control {
         }
         stream.set_nonblocking(true).map_err(|e| e.to_string())?;
         let caller = frame.caller.hold()?;
+        let payload = frame.send.as_ref().map(|header| header.verify_raw(&frame.raw).map(Arc::new)).transpose()?;
         let held = Arc::new(Self {
             stream,
             frame,
             slot: Slot::adopt(raw)?,
             caller,
+            payload,
         });
         held.check()?;
         Ok(held)
@@ -203,6 +291,9 @@ impl Control {
     }
     pub(super) fn frame(&self) -> &frame::Frame {
         &self.frame
+    }
+    pub(super) fn payload(&self) -> Result<&input::native_send::Payload> {
+        self.payload.as_deref().ok_or("Original Send payload is unavailable".into())
     }
     fn endpoint(&self) -> Result<()> {
         let mut byte = 0u8;
@@ -277,6 +368,13 @@ impl Frontend {
             return Err("Nested picker host refused".into());
         }
         let slot = Slot::reserve()?;
+        Self::launch_reserved(frame, slot, None)
+    }
+    fn launch_reserved(frame: Frame, slot: Arc<InheritedLock>, offered: Option<&std::cell::Cell<bool>>) -> Result<Self> {
+        if frame.operation==Operation::Send {
+            frame.check_context()?;
+            if std::env::var_os(CONTEXT).is_some() { return Err("Nested picker host refused".into()); }
+        }
         let original = frame.clone();
         let held = slot.clone();
         let (send, ready) = mpsc::sync_channel(1);
@@ -331,12 +429,55 @@ impl Frontend {
         }
         frame.check_context()?;
         front.offered = true; // Raw frame may reach the original; no no-start claim.
-        write_message(&front.stream, &frame, frame.deadline, frame::FRAME_BYTES)?;
+        if let Some(offered) = offered { offered.set(true); }
+        if frame.operation == Operation::Send {
+            let mut envelope = frame.clone();
+            envelope.raw.clear();
+            write_message(&front.stream, &envelope, frame.deadline, frame::FRAME_BYTES)?;
+            write_blob(&front.stream, &frame.raw, frame.deadline, input::native_send::RAW_BYTES)?;
+        } else {
+            write_message(&front.stream, &frame, frame.deadline, frame::FRAME_BYTES)?;
+        }
         Ok(front)
     }
     fn receive(&self) -> Result<Outcome> {
         read_message(&self.stream, self.deadline, RESPONSE_BYTES)
     }
+    fn receive_send(&self) -> Result<Outcome> {
+        let bytes = read_blob(&self.stream,self.deadline,input::native_send::REPLY_BYTES - 4)?;
+        if bytes.len() < 4 { return Err("Original Send outcome is truncated".into()); }
+        Ok(Outcome { code:i32::from_be_bytes(bytes[..4].try_into().map_err(|_| "Invalid Send outcome")?), bytes:bytes[4..].to_vec() })
+    }
+    fn settled(&mut self) -> Result<()> {
+        loop {
+            self.deadline.remaining()?;
+            if self.child.try_wait().map_err(|e| e.to_string())?.is_some() { return Ok(()); }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+}
+
+pub(super) fn request_send(frame: Frame, slot: SendSlot) -> Result<Value> {
+    let offered = std::cell::Cell::new(false);
+    let header = frame.send.as_ref().ok_or("Original Send header missing")?.clone();
+    let result = (|| {
+        let mut frontend = Frontend::launch_reserved(frame.clone(),slot.0,Some(&offered))?;
+        let outcome = frontend.receive_send()?;
+        // The keeper's response follows its Root/SID/helper completion, but its
+        // inherited slot is released on exit. Cache reads and analytics wait
+        // for that same original Child, never a reconstructed PID.
+        frontend.settled()?;
+        if outcome.code != 0 { return Err(String::from_utf8_lossy(&outcome.bytes).into_owned()); }
+        let analytics_root=frame.check_reconcile_context().is_ok().then(||Path::new(&frame.root));
+        input::native_send::decode(&header,&outcome.bytes,analytics_root)
+    })();
+    result.or_else(|error| {
+        if !offered.get() { return Err(error); }
+        if frame.check_reconcile_context().is_ok() {
+            if let Ok(Some(receipt)) = input::native_send::reconcile(&header) { return Ok(receipt); }
+        }
+        Err(input::native_send::uncertain(error))
+    })
 }
 
 pub(super) fn request(frame: Frame) -> Result<Vec<u8>> {
@@ -470,6 +611,7 @@ fn original_receipt(frame: &Frame) -> Result<Option<Vec<u8>>> {
     let directory = match frame.operation {
         Operation::Effort => "effort_receipts",
         Operation::Settings => "settings_receipts",
+        Operation::Send => return input::native_send::cached(frame.send.as_ref().ok_or("Original Send header missing")?),
     };
     if std::fs::symlink_metadata(state.path.join(directory))
         .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
@@ -501,11 +643,13 @@ fn original_receipt(frame: &Frame) -> Result<Option<Vec<u8>>> {
     let complete = match frame.operation {
         Operation::Effort => value["status"] == "confirmed",
         Operation::Settings => matches!(value["status"].as_str(), Some("applied" | "scheduled")),
+        Operation::Send => return Err("Send cache must use existing input receipt semantics".into()),
     };
     if !complete {
         return Err(match frame.operation {
             Operation::Effort => "effort change may already have reached the provider; inspect Terminal before retrying",
             Operation::Settings => "settings change may already have reached the provider; inspect Terminal before retrying",
+            Operation::Send => "delivery uncertain: inspect Terminal before retrying",
         }.into());
     }
     Ok(Some(bytes))
@@ -550,10 +694,17 @@ pub(super) fn entry() -> Result<i32> {
         deadline,
         4096,
     )?;
-    let frame: Frame = read_message(&stream, deadline, frame::FRAME_BYTES)?;
+    let mut frame: Frame = read_message(&stream, deadline, frame::FRAME_BYTES)?;
     if frame.nonce != nonce || frame.deadline != deadline {
         return Err("Original picker frame handshake changed".into());
     }
+    let payload = if frame.operation == Operation::Send {
+        if !frame.raw.is_empty() { return Err("Original Send payload must use its binary segment".into()); }
+        let header = frame.send.as_ref().ok_or("Original Send header missing")?;
+        header.validate()?;
+        frame.raw = read_blob(&stream,deadline,input::native_send::RAW_BYTES)?;
+        Some(Arc::new(header.verify_raw(&frame.raw)?))
+    } else { None };
     frame.check_context()?;
     std::env::set_var(CONTEXT, "1");
     let control = Arc::new(Control {
@@ -561,6 +712,7 @@ pub(super) fn entry() -> Result<i32> {
         frame: frame.clone(),
         slot,
         caller: frame.caller.hold()?,
+        payload,
     });
     control.check()?;
     let writer = acquire(&control)?;
@@ -582,7 +734,7 @@ pub(super) fn entry() -> Result<i32> {
         // reach the frontend as data, not turn into an endpoint failure.
         // A known cache error supplies no replay or no-start authority.
         drop(writer);
-        let _ = write_message(&control.stream, &outcome, deadline, RESPONSE_BYTES);
+        let _ = write_outcome(&control.stream, &outcome, &frame);
         return Ok(outcome.code);
     }
     #[cfg(not(test))]
@@ -603,7 +755,7 @@ pub(super) fn entry() -> Result<i32> {
                 },
             },
         };
-        let _ = write_message(&control.stream, &outcome, deadline, RESPONSE_BYTES);
+        let _ = write_outcome(&control.stream, &outcome, &frame);
         Ok(outcome.code)
     }
     #[cfg(test)]
@@ -613,6 +765,7 @@ pub(super) fn entry() -> Result<i32> {
         let receipts = match frame.operation {
             Operation::Effort => Receipts::Effort,
             Operation::Settings => Receipts::Settings,
+            Operation::Send => Receipts::Send,
         };
         let mut scope = Scope::owned(writer, &record, receipts, until)?;
         let (complete, done) = mpsc::channel();
@@ -648,7 +801,7 @@ pub(super) fn entry() -> Result<i32> {
         // Only after original physical resources are gone can a broken frontend
         // endpoint or result-write error let this private owner process return.
         let code = outcome.code;
-        let _ = write_message(&control.stream, &outcome, deadline, RESPONSE_BYTES);
+        let _ = write_outcome(&control.stream, &outcome, &frame);
         Ok(code)
     }
 }

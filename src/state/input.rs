@@ -16,6 +16,14 @@ use std::time::Duration;
 mod diagnostic;
 pub(crate) mod task_refusal;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::state) mod native_send;
+
+/// Only this module's public dispatch constructs this provenance. Internal
+/// submit* callers, including those using Origin::Person, cannot mint it.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::state) struct PublicSend(());
+
 const MAX_TEXT: usize = 64 * 1024;
 const MAX_FILE: usize = 10 * 1024 * 1024;
 const MAX_TOTAL: usize = 20 * 1024 * 1024;
@@ -322,6 +330,14 @@ fn checked_input(
     // share the label.
     expect(name, run_id, conversation_id)?;
     let record = read(name)?;
+    checked_bound_record(record, run_id, conversation_id, allow_working)
+}
+
+/// The keeper already holds the exact record, Root and SID. Reuse the native
+/// gates without selecting a label, repairing an index or reacquiring input.
+pub(in crate::state) fn checked_bound_record(
+    record: Value, run_id: &str, conversation_id: &str, allow_working: bool,
+) -> Result<Value> {
     terminating::check_mutation(&record)?;
     if string(&record, "run_id") != run_id || string(&record, "conversation_id") != conversation_id
     {
@@ -424,6 +440,10 @@ fn settings_unconfirmed(record: &Value) -> bool {
             Ok(false) => {},
         }
     }
+    settings_unconfirmed_metadata(record)
+}
+
+fn settings_unconfirmed_metadata(record: &Value) -> bool {
     record["settings_unconfirmed_at"]
         .as_f64()
         .is_some_and(|at| record["last_event_at"].as_f64().unwrap_or(0.0) <= at)
@@ -797,7 +817,7 @@ pub(super) fn checked_terminal(record: &Value, empty: bool) -> Result<()> {
     terminal_check(record, empty, false)
 }
 
-fn checked_send_terminal(record: &Value) -> Result<()> {
+pub(in crate::state) fn checked_send_terminal(record: &Value) -> Result<()> {
     terminal_check(record, true, true)
 }
 
@@ -959,6 +979,11 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         .map_err(|e| e.to_string())?;
     if input.len() > MAX_JSON {
         return Err("message payload exceeds 29 MiB".into());
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Some(result) = native_send::front(&PublicSend(()), &args[0], &input) {
+        println!("{}", result?);
+        return Ok(0);
     }
     let receipt = submit(&args[0], &input, None)?;
     println!("{receipt}");
@@ -1296,6 +1321,10 @@ fn existing(receipt_path: &Path, digest: &str, name: &str) -> Existing {
         Ok(receipt) => receipt,
         Err(error) => return Existing::Unknown(error),
     };
+    existing_value(receipt, digest, name)
+}
+
+fn existing_value(receipt: Value, digest: &str, name: &str) -> Existing {
     if string(&receipt, "digest") != digest || string(&receipt, "name") != name {
         return Existing::Unknown("request ID was already used for different content".into());
     }

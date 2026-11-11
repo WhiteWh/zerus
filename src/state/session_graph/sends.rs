@@ -17,7 +17,13 @@ fn machine() -> Option<String> {
 /// A verified native target is useful even when an older caller has no source
 /// attribution. Do not add it to an old receipt on replay.
 pub(crate) fn target_receipt(record: &Value) -> Option<Value> {
-    let endpoint = Endpoint::from_record(&machine()?, record)?;
+    target_receipt_for_machine(record, &machine()?)
+}
+
+/// The same target from an already verified, existing machine identity.
+/// This factory never loads, initializes or saves a machine catalog.
+pub(crate) fn target_receipt_for_machine(record: &Value, machine: &str) -> Option<Value> {
+    let endpoint = Endpoint::from_record(machine, record)?;
     Some(json!({"schema":1,"node":endpoint.key(),"endpoint":endpoint,
         "name":record["name"],"run_id":record["run_id"]}))
 }
@@ -302,4 +308,45 @@ pub(super) fn coverage() -> anyhow::Result<Value> {
         value["unknown_deliveries"]=json!(open(true)?.query_row("SELECT count(*) FROM sends WHERE at>=?1 AND json_extract(payload,'$.status')<>'submitted'",[now()-30.0*24.0*3600.0],|r|r.get::<_,i64>(0))?);
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+    #[test]
+    fn existing_machine_factory_and_initializing_wrapper_keep_identical_shapes() {
+        let home=tempfile::tempdir().unwrap();
+        let output=std::process::Command::new(std::env::current_exe().unwrap())
+            .env_clear().env("PATH",std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME",home.path()).env("HGS_CONFIG_DIR",home.path().join("config"))
+            .env("HGS_STATE_DIR",home.path().join("state"))
+            .args(["--exact","state::session_graph::sends::receipt_tests::private_factory_fixture","--ignored","--test-threads=1"])
+            .stdin(std::process::Stdio::null()).output().unwrap();
+        assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stdout));
+    }
+    #[test]
+    #[ignore="private machine-initialization compatibility fixture"]
+    fn private_factory_fixture() {
+        let config=crate::config::Config::load().unwrap();
+        let catalog=config.dir.join("swarm/catalog.json");
+        let machine=uuid::Uuid::new_v4().to_string();
+        let record=json!({"agent":"codex","run_id":"run","conversation_id":"cid","name":"codex/example/receipt"});
+        let value=target_receipt_for_machine(&record,&machine).unwrap();
+        let endpoint=Endpoint::from_record(&machine,&record).unwrap();
+        assert_eq!(value,json!({"schema":1,"node":endpoint.key(),"endpoint":endpoint,"name":record["name"],"run_id":record["run_id"]}));
+        assert!(!catalog.exists() && !root().join("graph").exists(),"read-only factory created state");
+        let old=target_receipt(&record).unwrap();
+        assert!(catalog.exists(),"ordinary wrapper stopped initializing machine identity");
+        let bytes=fs::read(&catalog).unwrap();
+        let persisted=crate::swarm::existing_node_id(&bytes).unwrap();
+        assert_eq!(old,target_receipt_for_machine(&record,&persisted).unwrap());
+        for agent in ["claude","codex","kimi","dsh","opencode"] {
+            for cid in [Value::Null,json!(""),json!("cid")] {
+                let mut record=record.clone();record["agent"]=json!(agent);record["conversation_id"]=cid;
+                assert_eq!(target_receipt(&record),target_receipt_for_machine(&record,&persisted));
+            }
+        }
+        assert_eq!(fs::read(catalog).unwrap(),bytes,"factory or stable wrapper changed the catalog");
+        assert!(!root().join("graph").exists());
+    }
 }

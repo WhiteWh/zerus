@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Literal Codex message delivery against a keyless localhost Responses provider."""
 import http.server
+import io
 import json
 import os
 from pathlib import Path
@@ -32,7 +33,14 @@ class NativeCodexInput(unittest.TestCase):
     native_features = 'mentions_v2=false\n'
 
     def setUp(self):
-        self.server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), questions.Provider)
+        class Provider(questions.Provider):
+            def do_POST(self):
+                raw = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+                self.server.raw_requests.append(json.loads(raw))
+                self.rfile = io.BytesIO(raw)
+                super().do_POST()
+        self.server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Provider)
+        self.server.raw_requests = []
         self.server.requests, self.server.release, self.server.questions = [], threading.Event(), []
         self.server.collaboration = False
         self.addCleanup(self.server.server_close)
@@ -45,6 +53,67 @@ class NativeCodexInput(unittest.TestCase):
 
     def screen(self):
         return self.tmux('capture-pane', '-p', '-t', self.pane)
+
+    def test_id_pending_settings_then_message_makes_one_model_call_and_keeps_defaults(self):
+        self.pending_message(named=True)
+
+    def test_id_unnamed_pending_settings_then_message_counts_the_auxiliary_title_request(self):
+        self.pending_message(named=False)
+
+    def pending_message(self, *, named):
+        import native_effort_id as identity
+        if named:
+            # An existing explicitly named conversation has no automatic title
+            # request after the message. Use the native action, not a DB edit
+            # or product config change. /rename can generate its own suggestion
+            # before this operation; that request is measured separately.
+            self.tmux('send-keys', '-t', self.pane, '-l', '/rename')
+            self.wait_for(lambda: '/rename' in self.screen())
+            self.tmux('send-keys', '-t', self.pane, 'Enter')
+            self.wait_for(lambda: 'Type a name and press Enter' in self.screen())
+            self.wait_for(lambda: self.server.raw_requests)
+            self.tmux('send-keys', '-t', self.pane, '-l', 'Native pending send fixture')
+            self.wait_for(lambda: 'Native pending send fixture' in self.screen())
+            time.sleep(.2)  # Let Codex finish its native paste-burst handling.
+            self.tmux('send-keys', '-t', self.pane, 'Enter')
+            self.wait_for(lambda: 'Native pending send fixture' in self.screen()
+                          and 'Name thread' not in self.screen() and 'Rename thread' not in self.screen())
+            print('ZERUS_NATIVE_CODEX_RENAMED=' + json.dumps(dict(
+                screen=self.screen(), cursor=self.tmux('display-message', '-p', '-t', self.pane,
+                                                       '#{cursor_x}:#{cursor_y}').strip())), flush=True)
+        models = [dict(slug='gpt-6.1-sol', display_name='GPT-6.1-Sol', default_reasoning_level='medium',
+                       supported_reasoning_levels=[dict(effort=value) for value in
+                                                  ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']])]
+        (self.native_home / 'models_cache.json').write_text(json.dumps(dict(models=models)))
+        self.record.update(model='gpt-6.1-sol', phase='idle', activity='idle', active_tools={})
+        self.write_record()
+        defaults = self.native_home / 'config.toml'
+        before, requests = defaults.read_bytes(), len(self.server.requests)
+        record, path, _ = identity.moved_record(self, self.name, self.record, existing_machine=True)
+        self.record, self.record_path = record, path
+        attempts = identity.key_log(self)
+        text = 'Continue after pending session reasoning @literalreviewer'
+        identity.pending_then_message(self, self.name, record, path,
+                                      'gpt-6.1-sol', 'high', text, attempts)
+        expected = 1 if named else 2
+        self.wait_for(lambda: len(self.server.requests) >= requests + expected)
+        self.assertEqual(len(self.server.requests), requests + expected, self.server.raw_requests)
+        offered = self.server.raw_requests[requests:]
+        def title_request(body):
+            schema = body.get('text', {}).get('format', {}).get('schema', {})
+            return schema.get('required') == ['title'] and 'title' in schema.get('properties', {})
+        titles = sum(title_request(body) for body in offered)
+        self.assertEqual(titles, 0 if named else 1, offered)
+        self.assertEqual(len(offered) - titles, 1, offered)
+        print('ZERUS_NATIVE_CODEX_CALLS=' + json.dumps(dict(
+            case=self.id(), named=named, before=requests, message_calls=len(offered)-titles,
+            title_calls=titles, total_calls=len(offered))), flush=True)
+        rows = map(json.loads, Path(record['transcript']).read_text().splitlines())
+        messages = [row['payload']['message'] for row in rows if row.get('type') == 'event_msg'
+                    and row.get('payload', {}).get('type') == 'user_message']
+        self.assertEqual(messages.count(text), 1)
+        self.assertEqual(defaults.read_bytes(), before)
+        self.assertNotIn('Select Model', self.screen())
 
     def test_leading_absolute_path_is_literal_message_text(self):
         text = '/help/fixture/capture.png\nWhat is shown in this screenshot?'

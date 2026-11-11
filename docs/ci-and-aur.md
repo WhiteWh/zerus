@@ -409,6 +409,13 @@ fixture credentials and a temporary process-local CA. They cover a hidden model
 under **More models**, full-name picker rows, ordinary and effort-only changes,
 failure cleanup and existing-ID cancellation without replay. Every settings or
 effort request checks that the complete account `settings.json` is unchanged.
+`tests/test_existing_id_send.py` exercises the actual public pending-before-message
+controller on private scripted PTYs, using the exact-source ID seed image. It
+pins early outer receipts, the late input marker, GUI auto-apply slot fallback,
+Background routing, large/symlink receipt-cache parity, uncertainty and exact
+buffer cleanup. These controls are separate from official-agent acceptance:
+the Claude, Codex and Kimi native contracts must prove pending Settings followed
+by one unchanged message and exactly one model call with account defaults kept.
 `tests/test_claude_statusline_native.py` starts the real TUI through a tracked
 `hgs claude` launch, with the private home, state folder and socket and the
 loopback API of `tests/model_api_fixture.py`. Claude 2.1.296 and 2.1.308 coverage requires the

@@ -17,6 +17,7 @@ pub(super) struct CommitFence {
     temporary: CString,
     sources: Vec<crate::state::guarded_recovery::Original>,
     schedule: Option<(Value, Value, settings::Liveness, Value)>,
+    send: Option<send::Publication>,
 }
 impl CommitFence {
     pub(super) fn native(owner: &Arc<owner::Owner>, staged: &Staged) -> Result<Self> {
@@ -32,6 +33,7 @@ impl CommitFence {
             temporary: staged.temporary.clone(),
             sources: Vec::new(),
             schedule: None,
+            send: None,
         })
     }
     pub(super) fn recovery(
@@ -53,6 +55,7 @@ impl CommitFence {
             temporary: staged.temporary.clone(),
             sources: sources.iter().map(|source| (*source).clone()).collect(),
             schedule: None,
+            send: None,
         })
     }
     pub(super) fn schedule(
@@ -70,7 +73,15 @@ impl CommitFence {
             temporary: staged.temporary.clone(),
             sources: Vec::new(),
             schedule: Some((record, version, step.class, staged.json()?)),
+            send: None,
         })
+    }
+    pub(super) fn send(owner: &Arc<owner::Owner>, staged: &Staged, step: send::Publication) -> Result<Self> {
+        owner.actor()?;
+        step.check(owner,staged)?;
+        owner.invalidate();
+        Ok(Self { owner:owner.clone(),epoch:owner.epoch.load(std::sync::atomic::Ordering::Acquire),
+            turn:None,temporary:staged.temporary.clone(),sources:Vec::new(),schedule:None,send:Some(step) })
     }
     pub(super) fn record(&self, record: &Value) -> Result<()> {
         if self.turn.as_ref().is_none_or(|turn| turn.record != *record) {
@@ -89,6 +100,7 @@ impl CommitFence {
         for source in &self.sources {
             source.verify()?;
         }
+        if let Some(step) = &self.send { step.check(&self.owner,staged)?; }
         if let Some(turn) = &self.turn {
             if self.owner.snapshot()? != (turn.record.clone(), turn.version.clone()) {
                 return Err("Original Effort commit source changed after observation".into());
@@ -225,6 +237,17 @@ fn name(value: &str) -> Result<CString> {
 }
 
 impl Staged {
+    pub(super) fn destination_is(&self, parent: &Directory, destination: &str) -> Result<bool> {
+        self.parent.verify(parent)?;
+        Ok(self.parent.path == parent.path && self.destination == name(destination)?)
+    }
+    pub(super) fn content_sha(&self) -> Result<String> {
+        let size = self.file.metadata().map_err(|e| e.to_string())?.len();
+        if size > ID_RECORD_BYTES { return Err("Original Send stage exceeds its bound".into()); }
+        let mut bytes = vec![0;size as usize];
+        self.file.read_exact_at(&mut bytes,0).map_err(|e| e.to_string())?;
+        Ok(format!("{:x}",Sha256::digest(&bytes)))
+    }
     pub(super) fn prepare(original: &Directory, destination: &str, bytes: &[u8]) -> Result<Self> {
         if bytes.len() > ID_RECORD_BYTES as usize {
             return Err("Original publication exceeds its bound".into());

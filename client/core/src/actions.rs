@@ -2489,6 +2489,45 @@ mod tests {
     }
 
     #[test]
+    fn pending_send_post_offer_refusals_never_become_definite_failures() {
+        let target = target("");
+        let action = send("ordinary message", vec![]);
+        let invocation = invocation(&target, &action, "request").unwrap();
+        for reason in [
+            "DRAFT",
+            "terminal has a draft, dialog, or unrecognized prompt",
+            "idle-to-busy drift",
+            "Original Root acquisition timed out",
+            "Original picker endpoint closed",
+            "Original picker deadline expired or invalid",
+            "Original Send outcome is truncated",
+            "a request ID was already used with different content",
+            "Claude is waiting for tool or safety approval. Review the request in Activity or Terminal before sending a message.",
+            "Claude is waiting for a conversation resume choice. Choose an option in Activity or Terminal before sending a message.",
+            "Claude is waiting for a usage-limit choice. Choose an option in Activity or Terminal before sending a message.",
+            "Claude is waiting for a permission mode choice. Choose an option in Activity or Terminal before sending a message.",
+            "Claude is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.",
+            "Codex is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.",
+            "Codex is waiting for hook trust review. Choose an option in Activity or Terminal before sending a message.",
+            "Codex is waiting for an update choice. Choose an option in Activity or Terminal before sending a message.",
+            "Codex is waiting for your rate-limit model choice. Choose an option in Activity or open Terminal before sending a message.",
+            "Codex is waiting for your paused goal choice. Choose an option in Activity or Terminal before sending a message.",
+            "Kimi is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.",
+            "Kimi is waiting for your context choice. Choose an option in Activity or Terminal before sending another message.",
+        ] {
+            let message = format!("delivery uncertain: {reason}");
+            assert_eq!(
+                classify(&target, &action, &invocation, exit(1, b"", &message)),
+                uncertain(&message)
+            );
+            assert_eq!(
+                classify(&target, &action, &invocation, exit(1, b"", reason)),
+                failed(reason)
+            );
+        }
+    }
+
+    #[test]
     fn staged_files_are_checked_like_qt() {
         let dir = std::env::temp_dir().join(format!("zerus-stage-unit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

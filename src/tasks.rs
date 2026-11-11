@@ -1827,6 +1827,32 @@ mod tests {
         assert_eq!(uncertain(&format!("{SENT_UNRECORDED}: disk full")), Some(json!(true)));
         assert_eq!(uncertain("no task T-a1b2c3 in this project"), None);
         assert_eq!(refusal("no task")["error"], "no task");
+        for reason in [
+            "DRAFT",
+            "terminal has a draft, dialog, or unrecognized prompt",
+            "idle-to-busy drift",
+            "Original Root acquisition timed out",
+            "Original picker endpoint closed",
+            "Original picker deadline expired or invalid",
+            "Original Send outcome is truncated",
+            "a request ID was already used with different content",
+            "Claude is waiting for tool or safety approval. Review the request in Activity or Terminal before sending a message.",
+            "Claude is waiting for a conversation resume choice. Choose an option in Activity or Terminal before sending a message.",
+            "Claude is waiting for a usage-limit choice. Choose an option in Activity or Terminal before sending a message.",
+            "Claude is waiting for a permission mode choice. Choose an option in Activity or Terminal before sending a message.",
+            "Claude is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.",
+            "Codex is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.",
+            "Codex is waiting for hook trust review. Choose an option in Activity or Terminal before sending a message.",
+            "Codex is waiting for an update choice. Choose an option in Activity or Terminal before sending a message.",
+            "Codex is waiting for your rate-limit model choice. Choose an option in Activity or open Terminal before sending a message.",
+            "Codex is waiting for your paused goal choice. Choose an option in Activity or Terminal before sending a message.",
+            "Kimi is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.",
+            "Kimi is waiting for your context choice. Choose an option in Activity or Terminal before sending another message.",
+        ] {
+            let message=format!("delivery uncertain: {reason}");
+            assert_eq!(uncertain(&message),Some(json!(true)));
+            assert_eq!(uncertain(reason),None);
+        }
     }
 
     #[test]
