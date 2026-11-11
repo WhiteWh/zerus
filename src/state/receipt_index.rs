@@ -213,6 +213,31 @@ impl Binding {
     }
 }
 
+// Rebuildable projection metadata; the original fingerprint and the pinned
+// conversation still have to agree before any of these fields may be repaired.
+struct CachedRow {
+    fingerprint: String,
+    stamp: String,
+    name: String,
+    run: String,
+    conversation: String,
+    agent: String,
+    first: i64,
+    at: f64,
+    files: i64,
+}
+impl CachedRow {
+    fn matches(&self, binding: &Binding) -> bool {
+        self.name == binding.name
+            && self.run == binding.run
+            && self.conversation == binding.conversation
+            && self.agent == binding.agent
+            && self.first == i64::from(binding.first)
+            && self.at == binding.at
+            && self.files == i64::from(binding.files)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct Locator {
     source: Source,
@@ -390,11 +415,12 @@ impl Catalog {
             // ADD COLUMN and its seed leaves rows at change=0 without a
             // published frontier. Repair both in one transaction, so a reader
             // never sees a Complete frontier that does not cover its rows.
-            let columns: Vec<String> = sql(db.prepare("SELECT name FROM pragma_table_info('receipt_rows')"))?
-                .query_map([], |row| row.get(0))
-                .map_err(|_| "Receipt index is unavailable".to_owned())?
-                .collect::<std::result::Result<_, _>>()
-                .map_err(|_| "Receipt index is unavailable".to_owned())?;
+            let columns: Vec<String> =
+                sql(db.prepare("SELECT name FROM pragma_table_info('receipt_rows')"))?
+                    .query_map([], |row| row.get(0))
+                    .map_err(|_| "Receipt index is unavailable".to_owned())?
+                    .collect::<std::result::Result<_, _>>()
+                    .map_err(|_| "Receipt index is unavailable".to_owned())?;
             let has_stamp = columns.iter().any(|column| column == "stamp");
             let has_change = columns.iter().any(|column| column == "change");
             let unseeded = if has_change {
@@ -428,10 +454,14 @@ impl Catalog {
                 None
             };
             if !has_stamp {
-                sql(db.execute_batch("ALTER TABLE receipt_rows ADD COLUMN stamp TEXT NOT NULL DEFAULT '';"))?;
+                sql(db.execute_batch(
+                    "ALTER TABLE receipt_rows ADD COLUMN stamp TEXT NOT NULL DEFAULT '';",
+                ))?;
             }
             if !has_change {
-                sql(db.execute_batch("ALTER TABLE receipt_rows ADD COLUMN change INTEGER NOT NULL DEFAULT 0;"))?;
+                sql(db.execute_batch(
+                    "ALTER TABLE receipt_rows ADD COLUMN change INTEGER NOT NULL DEFAULT 0;",
+                ))?;
             }
             if change_repair {
                 // Seed every unseeded original once; later allocations
@@ -490,7 +520,6 @@ impl Catalog {
                        UPDATE receipt_meta SET value=lower(hex(randomblob(16))) WHERE key='epoch';
                      END;",
                 ))?;
-
             }
             sql(db.execute(
                 "INSERT OR IGNORE INTO receipt_meta VALUES('epoch',?)",
@@ -547,6 +576,29 @@ impl Catalog {
             self.remember_row(source, path, value)
         }
     }
+    fn cached_row(&self, source: Source, request: &str) -> Result<Option<CachedRow>> {
+        sql(self
+            .db
+            .query_row(
+                "SELECT binding,stamp,name,run,conversation,agent,first_message,at,files
+               FROM receipt_rows WHERE source=? AND request=?",
+                params![source.key(), request],
+                |row| {
+                    Ok(CachedRow {
+                        fingerprint: row.get(0)?,
+                        stamp: row.get(1)?,
+                        name: row.get(2)?,
+                        run: row.get(3)?,
+                        conversation: row.get(4)?,
+                        agent: row.get(5)?,
+                        first: row.get(6)?,
+                        at: row.get(7)?,
+                        files: row.get(8)?,
+                    })
+                },
+            )
+            .optional())
+    }
     fn remember_row(&self, source: Source, path: &Path, value: &Value) -> Result<()> {
         let filename = path
             .file_name()
@@ -554,39 +606,34 @@ impl Catalog {
             .ok_or("Invalid receipt name")?;
         let binding = Binding::parse(source, value, filename)?;
         let stamp = file_stamp(path)?;
-        let prior: Option<(String, String, String)> = sql(self
-            .db
-            .query_row(
-                "SELECT binding,conversation,stamp FROM receipt_rows WHERE source=? AND request=?",
-                params![source.key(), binding.id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional())?;
-        if let Some((original, conversation, prior_stamp)) = prior {
-            if original != binding.fingerprint
-                || (!conversation.is_empty() && conversation != binding.conversation)
+        if let Some(prior) = self.cached_row(source, &binding.id)? {
+            if prior.fingerprint != binding.fingerprint
+                || (!prior.conversation.is_empty() && prior.conversation != binding.conversation)
             {
                 return self.error(source, filename, "binding_changed");
             }
-            // A content update keeps the immutable binding: the same original
-            // identity, a new file stamp and one change for consumers. Only the
-            // existing one-way first-prompt resolution may move scope.
-            let resolved = conversation.is_empty();
-            let conversation = if resolved {
-                binding.conversation.clone()
-            } else {
-                conversation
-            };
-            if resolved || prior_stamp != stamp {
+            // An unchanged original can have corrupted cached projection fields.
+            // Restore those too; preserve the immutable fingerprint and the
+            // existing one-way first-prompt conversation pin.
+            let resolved = prior.conversation.is_empty();
+            if resolved || prior.stamp != stamp || !prior.matches(&binding) {
                 let change = self.bump()?;
                 sql(self.db.execute(
                     "UPDATE receipt_rows SET name=?,run=?,conversation=?,agent=?,first_message=?,at=?,files=?,stamp=?,change=? WHERE source=? AND request=?",
-                    params![binding.name, binding.run, conversation, binding.agent, binding.first, binding.at, binding.files, stamp, change, source.key(), binding.id],
+                    params![binding.name, binding.run, binding.conversation, binding.agent, binding.first, binding.at, binding.files, stamp, change, source.key(), binding.id],
                 ))?;
             }
         } else {
             let change = self.bump()?;
             sql(self.db.execute("INSERT INTO receipt_rows(source,request,name,run,conversation,agent,first_message,at,files,binding,stamp,change) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",params![source.key(),binding.id,binding.name,binding.run,binding.conversation,binding.agent,binding.first,binding.at,binding.files,binding.fingerprint,stamp,change]))?;
+        }
+        // Clear a discrepancy only after verifying the actual stored row. A
+        // failed write or another cache trigger must keep explicit unknownness.
+        let verified = self.cached_row(source, &binding.id)?;
+        if verified.is_none_or(|row| {
+            row.fingerprint != binding.fingerprint || row.stamp != stamp || !row.matches(&binding)
+        }) {
+            return self.error(source, filename, "index_row_changed");
         }
         sql(self.db.execute(
             "DELETE FROM receipt_errors WHERE source=? AND name=?",
@@ -932,7 +979,13 @@ impl Catalog {
         ))?;
         Ok((epoch, secret, current))
     }
-    fn changed_page(&self, scope: &Scope, cursor: &str, limit: usize, files: bool) -> Result<ChangedPage> {
+    fn changed_page(
+        &self,
+        scope: &Scope,
+        cursor: &str,
+        limit: usize,
+        files: bool,
+    ) -> Result<ChangedPage> {
         if !(1..=PAGE_LIMIT).contains(&limit) || cursor.len() > 2048 {
             return Err("Invalid receipt change page".into());
         }
@@ -943,7 +996,13 @@ impl Catalog {
         sql(transaction.commit())?;
         Ok(page)
     }
-    fn changed_page_snapshot(&self, scope: &Scope, cursor: &str, limit: usize, files: bool) -> Result<ChangedPage> {
+    fn changed_page_snapshot(
+        &self,
+        scope: &Scope,
+        cursor: &str,
+        limit: usize,
+        files: bool,
+    ) -> Result<ChangedPage> {
         if scope.run.is_empty() && scope.conversation.is_empty() {
             return Err("Invalid receipt change page".into());
         }
@@ -959,9 +1018,15 @@ impl Catalog {
                 .decode(cursor.split_once('.').map_or(cursor, |(body, _)| body))
                 .map_err(|_| CURSOR_REJECTED)?;
             let expected = cursor_mac(&secret, &bytes);
-            let signature = cursor.split_once('.').map(|(_, signature)| signature).unwrap_or("");
+            let signature = cursor
+                .split_once('.')
+                .map(|(_, signature)| signature)
+                .unwrap_or("");
             if signature.len() != expected.len()
-                || !signature.bytes().zip(expected.bytes()).fold(true, |same, (a, b)| same & (a == b))
+                || !signature
+                    .bytes()
+                    .zip(expected.bytes())
+                    .fold(true, |same, (a, b)| same & (a == b))
             {
                 return Err(CURSOR_REJECTED.into());
             }
@@ -1010,7 +1075,11 @@ impl Catalog {
                 params![
                     scope.source.key(),
                     scope.agent,
-                    if initial { &scope.run } else { &scope.conversation },
+                    if initial {
+                        &scope.run
+                    } else {
+                        &scope.conversation
+                    },
                     after,
                     upper,
                     limit
@@ -1045,7 +1114,11 @@ impl Catalog {
         // coverage_verified(): a cache without its invalidation guards proves
         // no coverage.
         let verified = self.coverage_verified();
-        let ready = verified && complete && current_directory.as_ref().is_ok_and(|value| *value == stamp);
+        let ready = verified
+            && complete
+            && current_directory
+                .as_ref()
+                .is_ok_and(|value| *value == stamp);
         let coverage = if ready && errors == 0 {
             Coverage::Complete
         } else if ready || (indexed > 0 && stamp == "absent") {

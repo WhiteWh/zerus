@@ -1162,3 +1162,6 @@ fn restarting_reconciliation_preserves_present_originals_and_heals_lost_rows() {
         .fingerprint
     );
 }
+
+#[path = "scope_tests.rs"]
+mod scope_restore;
