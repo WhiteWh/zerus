@@ -260,4 +260,21 @@ final class OutboxRetentionTests: XCTestCase {
         store.close()
     }
 
+    func testPinOnlyChangeRewalksSameOutgoingAndEvictsReleasedExcessRow() {
+        let rows = (0..<101).map { _ in represented() }, engine = OutboxRetention.Normalizer()
+        let pinned = engine.normalize(MessageState(outgoing: rows), pinned: [rows[0].requestId])
+        XCTAssertEqual(pinned.outgoing.count, 101)
+        let unchanged = pinned
+        XCTAssertTrue(pinned.outgoing.withUnsafeBufferPointer { left in
+            unchanged.outgoing.withUnsafeBufferPointer { right in left.baseAddress == right.baseAddress }
+        })
+        let walks = engine.walks
+        // Only the pin argument changes; the outgoing storage and every row are identical.
+        let released = engine.normalize(unchanged, pinned: [])
+        XCTAssertEqual(released.outgoing.count, 100)
+        XCTAssertEqual(engine.walks, walks + 1)
+        XCTAssertEqual(released.outgoing.map(\.requestId), pinned.outgoing.dropFirst().map(\.requestId))
+        XCTAssertEqual(pinned.outgoing.count, 101)
+    }
+
 }
