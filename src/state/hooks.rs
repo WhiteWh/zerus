@@ -1681,7 +1681,11 @@ pub(super) fn hook() -> Result<i32> {
         let context: Vec<_> = output.hint.into_iter().chain(task_text).collect();
         if !context.is_empty() {
             let stdout = io::stdout();
-            agent_hint::output(&mut stdout.lock(), &context.join("\n\n"))?;
+            agent_hint::output_for(
+                &nonempty_env("HGS_AGENT").unwrap_or_default(),
+                &mut stdout.lock(),
+                &context.join("\n\n"),
+            )?;
         }
     }
     Ok(code)
