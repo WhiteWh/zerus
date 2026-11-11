@@ -51,6 +51,20 @@ pub(super) fn for_account(account: &str) -> Option<&'static str> {
     crate::config::configured_agent_hint(account).then_some(HINT)
 }
 
+/// Claim a native-channel attempt after checking policy and exact identity.
+/// The caller persists the mark before any native effect; it is not a receipt.
+pub(super) fn claim(record: &mut Value) -> bool {
+    let conversation = string(record, "conversation_id");
+    if marked(record, conversation) {
+        return false;
+    }
+    if conversation.is_empty() {
+        return false;
+    }
+    record["agent_hint"] = json!({"conversation_id":conversation,"revision":REVISION});
+    true
+}
+
 /// Only the lifecycle's already-verified same-conversation resume calls this.
 /// A new run ID is expected, while provider and conversation must still match.
 pub(super) fn carry_resume(previous: &Value, record: &mut Value) {

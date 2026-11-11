@@ -176,7 +176,8 @@ establish a unique session identity.
 
 The static hint source covers tracked Claude Code, Codex, Kimi Code and DeepSeek
 main conversations. Its native delivery is verified on reviewed versions.
-OpenCode remains separate work; older hgs peers inject nothing.
+OpenCode 2.2.7 uses the native instruction entry described below; older hgs
+peers inject nothing.
 
 The hint points to `hgs guide` with fixed English text, independent of session
 name, computer and hgs version. Claude Code and Codex use the existing
@@ -199,6 +200,24 @@ suppression only from the exact marked context it forks. Renaming does not
 change the text or hint revision. Arbitrary commands and native subagents
 receive no hint.
 
+For OpenCode, new-session creation writes
+`PUT /api/experimental/session/{id}/instructions/entries/zerus.agent-hint` with
+`{"value": HINT}`. The exact conversation and hint revision are marked before
+the request; the mark is suppression metadata, not a delivery receipt. A failed
+or uncertain request does not block creation or resume and is not replayed,
+because another PUT could duplicate the retained entry. OpenCode retains the
+entry as effective prompt context across resume and compaction, without a
+durable `Instructions updated` history row on the pinned version. A clear/new
+session gets its own entry. Inspection, background polling and resume never
+attach it.
+
+OpenCode persists a noninitial instruction delta as an `Instructions updated`
+system message. On the next turn that duplicates the baseline entry in model
+context, so attaching to a previously unmarked conversation after its first
+turn is not supported. Such conversations remain unmarked rather than receiving
+a duplicate or having native history rewritten. This limitation leaves their
+channel unqualified.
+
 Configure optional injection in the hgs config file or caller environment:
 
 ```sh
@@ -208,11 +227,12 @@ HGS_AGENT_HINT_OFF="native-codex work"   # exclude exact account IDs
 
 Injection defaults to enabled. The global value accepts `0` or `1`; the exclusion
 list is whitespace-separated and uses `native-claude`, `native-codex`,
-`native-kimi` or `native-dsh` for the provider's own login. Environment values
-take precedence, including an explicitly empty exclusion list. Invalid or unreadable hint policy disables only optional
-injection with a bounded diagnostic; unrelated configuration validation is
-unchanged. `hgs guide` and `hgs self` remain available when injection is disabled.
-Opt-out does not remove context already retained by the provider.
+`native-kimi`, `native-dsh` or `native-opencode` for the provider's own login.
+Environment values take precedence, including an explicitly empty exclusion
+list. Invalid or unreadable hint policy disables only optional injection with a
+bounded diagnostic; unrelated configuration validation is unchanged. `hgs
+guide` and `hgs self` remain available when injection is disabled. Opt-out does
+not remove context already retained by the provider.
 
 Each fresh start, resume, recovery, archive restore and fork resolves the current
 caller's effective hint policy again. Only those effective hint values enter the
