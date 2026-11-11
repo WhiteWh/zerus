@@ -85,13 +85,19 @@ pub fn project(payload: &Value, answer: &Value) -> Result<Value, Failure> {
             result["proof"] = json!("original_receipt");
             result["submitted_at"] = answer["submitted_at"].clone();
             result["queued"] = answer["queued"].clone();
-            if let Some(id) = answer.get("native_message_id") {
-                if !id.as_str().is_some_and(|s| {
-                    !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control)
-                }) {
-                    return Err(Failure::text(MISMATCH));
+            match (intent["provider"].as_str(), answer.get("native_message_id")) {
+                (Some("opencode"), Some(Value::String(id)))
+                    if id.starts_with("msg_")
+                        && id.len() > 4
+                        && id.len() <= 128
+                        && id
+                            .bytes()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-')) =>
+                {
+                    result["native_message_id"] = json!(id);
                 }
-                result["native_message_id"] = id.clone();
+                (Some("opencode"), _) | (_, Some(_)) => return Err(Failure::text(MISMATCH)),
+                _ => {}
             }
         }
         Some("unknown") => {

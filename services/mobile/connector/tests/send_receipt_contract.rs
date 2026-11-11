@@ -113,3 +113,50 @@ fn incomplete_foreign_unbounded_or_extra_intents_are_refused() {
         assert!(protocol::request(&bad).is_err(), "{field}");
     }
 }
+
+#[test]
+fn native_proof_ids_follow_the_original_producers_policy() {
+    let mut i = vectors()[0]["intent"].clone();
+    i["provider"] = json!("opencode");
+    let payload = request(i)["payload"].clone();
+    let q = send_receipt::call(&payload).unwrap().payload.unwrap();
+    let mut answer = json!({"schema":1,"name":payload["intent"]["session"],"status":"submitted",
+        "proof":"original_receipt","submitted_at":1.0,"queued":false});
+    for (name, key) in [
+        ("request_id", "request_id"),
+        ("message_request_id", "message_request_id"),
+        ("machine_id", "expected_machine_id"),
+        ("session_id", "expected_session_id"),
+        ("run_id", "expected_run_id"),
+        ("conversation_id", "expected_conversation_id"),
+        ("provider", "provider"),
+        ("agent_id", "agent_id"),
+        ("native_digest", "native_digest"),
+    ] {
+        answer[name] = q[key].clone();
+    }
+    assert!(send_receipt::project(&payload, &answer).is_err());
+    for id in [
+        json!(null),
+        json!("msg_"),
+        json!("wrong"),
+        json!("/private/fixture/session.json"),
+        json!("msg_bad/name"),
+        json!("msg_bad\nname"),
+        json!(format!("msg_{}", "a".repeat(125))),
+    ] {
+        answer["native_message_id"] = id;
+        assert!(send_receipt::project(&payload, &answer).is_err());
+    }
+    answer["native_message_id"] = json!("msg_VALID_123");
+    assert_eq!(
+        send_receipt::project(&payload, &answer).unwrap()["native_message_id"],
+        "msg_VALID_123"
+    );
+    let mut terminal = payload.clone();
+    terminal["intent"]["provider"] = json!("codex");
+    let query = send_receipt::call(&terminal).unwrap().payload.unwrap();
+    answer["provider"] = json!("codex");
+    answer["native_digest"] = query["native_digest"].clone();
+    assert!(send_receipt::project(&terminal, &answer).is_err());
+}

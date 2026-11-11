@@ -360,6 +360,34 @@ async fn a_cold_peer_refuses_without_listing_or_provider_rpc_then_a_ready_scope_
     );
     assert!(n.native.calls.borrow().is_empty());
     peer.snapshot_ready.set();
+    // Both routes are valid and warm. Only the frozen intent disagrees, so a
+    // missing execute guard would spend a native/peer RPC before later refusal.
+    *fleet.local_id.borrow_mut() = Some(MACHINE.into());
+    for local in [false, true] {
+        let mut bad_intent = intent();
+        bad_intent["computer_id"] = json!(SESSION_ID);
+        bad_intent["machine_id"] = json!(ORIGINAL);
+        let mut bad = request(bad_intent);
+        let id = if local {
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        } else {
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        };
+        bad["request_id"] = json!(id);
+        bad["payload"]["request_id"] = json!(id);
+        bad["gateway_route"] = json!({"schema":1,"route_id":if local { Value::Null } else { json!(identity) },
+            "computer_id":SESSION_ID,"machine_id":MACHINE});
+        let answer = finished(n.execute(bad).await.unwrap());
+        assert_eq!(answer["state"], "failed");
+        assert_eq!(
+            answer["error"],
+            "original send computer does not match its immutable route"
+        );
+        assert!(
+            n.native.calls.borrow().is_empty(),
+            "mismatched intent spent an RPC (local={local})"
+        );
+    }
     r["request_id"] = json!(MACHINE);
     r["payload"]["request_id"] = json!(MACHINE);
     assert_eq!(

@@ -368,9 +368,22 @@ fn validate(request: &LocalRequest) -> Result<()> {
     };
     match op {
         "__state" => {
-            ensure!(rest.len() == 4 && rest[0] == "delivery" && rest[1] == "receipt" && session(&rest[2]) && rest[3] == "--json", "delivery requires the exact receipt read ABI");
+            ensure!(
+                rest.len() == 4
+                    && rest[0] == "delivery"
+                    && rest[1] == "receipt"
+                    && session(&rest[2])
+                    && rest[3] == "--json",
+                "delivery requires the exact receipt read ABI"
+            );
             scoped(&request.payload)?;
-            ensure!(request.payload.as_ref().is_some_and(|p| p["expected_machine_id"] == request.target_machine_id), "original receipt computer changed");
+            ensure!(
+                request
+                    .payload
+                    .as_ref()
+                    .is_some_and(|p| p["expected_machine_id"] == request.target_machine_id),
+                "original receipt computer changed"
+            );
         }
         "analytics" => {
             ensure!(rest == ["--json"], "analytics requires its fixed JSON ABI");
@@ -1289,9 +1302,15 @@ fn discovery(config: &Config) -> Result<Value> {
 
 fn local(config: &Config, request: LocalRequest) -> Result<i32> {
     validate(&request)?;
-    let machine = if request.argv.get(..2).is_some_and(|v| v == ["__state", "delivery"]) {
+    let machine = if request
+        .argv
+        .get(..2)
+        .is_some_and(|v| v == ["__state", "delivery"])
+    {
         crate::state::lifecycle_receipt_machine(config).map_err(anyhow::Error::msg)?
-    } else { swarm::local_node_id(config)? };
+    } else {
+        swarm::local_node_id(config)?
+    };
     ensure!(
         machine == request.target_machine_id,
         "mobile target identity changed; refresh computers"
