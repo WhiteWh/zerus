@@ -226,6 +226,16 @@ restarted or changed to install the plugin. If the exact plugin source is not
 active, launch/resume reports that the optional hint is unavailable and
 inspection exposes `agent_hint_status.state` and its reason.
 
+Cold starts reclaim at most 16 verified Zerus plugin folders using a 100 ms
+maintenance deadline. A bounded PID/birth and launch-overlay census protects
+folders still used by older live services as well as the latest service marker.
+Incomplete process inspection, unknown files and links retain assets. The
+256-folder inventory limit suppresses new optional overlays until room is
+available; it never authorizes deletion or changes the person's OpenCode config.
+Forgetting a binding also retires its private hint route. Ambiguous routes stay
+blocked until a complete check finds no remaining binding; the check examines
+at most 64 entries and 1 MiB in 25 ms, retaining the route on any uncertainty.
+
 Each primary model request gets a bounded, read-only lookup of one exact saved
 run/conversation/workspace/service binding. Its decided policy, rather than the
 shared service's environment, controls injection. A stale, malformed, absent or

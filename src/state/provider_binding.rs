@@ -269,6 +269,9 @@ impl Provider {
         };
         let before = native_identity::before_write(self);
         archive::remove_synced(&path)?;
+        if matches!(self, Self::OpenCode) {
+            opencode::forget_hint(record);
+        }
         if native_identity::retire(self, record) {
             native_identity::account(self, &before);
         }
@@ -286,6 +289,7 @@ impl Provider {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
 
     #[test]
     fn native_provider_ids_never_fall_back_or_recreate_a_lost_binding() {
@@ -408,6 +412,9 @@ mod tests {
             );
             assert_eq!(provider.read(&name).unwrap(), selected);
             selected["paused"] = json!(true);
+            if matches!(provider, Provider::OpenCode) {
+                selected["agent_hint_context"] = json!({"state":"off"});
+            }
             provider.save(&mut selected).unwrap();
             assert_eq!(provider.read_id(&id).unwrap(), selected);
             assert_eq!(
@@ -424,7 +431,32 @@ mod tests {
             session_id::select(&new, &id);
             assert_eq!(provider.read(&new).unwrap(), selected);
             assert_eq!(labels::candidates(&name).unwrap().by_id.len(), 1);
+            let hint_route = root().join("opencode/context-hint/bindings").join(format!("{:x}.json",
+                Sha256::digest(string(&selected, "conversation_id").as_bytes())));
+            if matches!(provider, Provider::OpenCode) { assert!(hint_route.exists()); }
             provider.remove(&selected).unwrap();
+            if matches!(provider, Provider::OpenCode) { assert!(!hint_route.exists()); }
+            if matches!(provider, Provider::OpenCode) {
+                // An ambiguity tombstone is reclaimable only after complete
+                // absence evidence; a bounded or malformed walk retains it.
+                atomic(&hint_route, &json!({"ambiguous":true,"session_id":id}).to_string()).unwrap();
+                let mut extra = Vec::new();
+                for _ in 0..65 {
+                    let path = provider.id_path(&uuid::Uuid::new_v4().to_string()).unwrap();
+                    atomic(&path, r#"{"conversation_id":"ses_unrelated"}"#).unwrap();
+                    extra.push(path);
+                }
+                opencode::forget_hint(&selected);
+                assert!(hint_route.exists(), "an incomplete scan retains ambiguity");
+                for path in extra { std::fs::remove_file(path).unwrap(); }
+                let unreadable = provider.directory().join("unreadable.json");
+                atomic(&unreadable, "{").unwrap();
+                opencode::forget_hint(&selected);
+                assert!(hint_route.exists(), "malformed evidence retains ambiguity");
+                std::fs::remove_file(unreadable).unwrap();
+                opencode::forget_hint(&selected);
+                assert!(!hint_route.exists(), "the last holder's tombstone can be retired");
+            }
             assert!(provider.read(&new).is_err());
             assert!(provider.save(&mut selected).is_err());
             assert!(!provider.id_path(&id).unwrap().exists());
