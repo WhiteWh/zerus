@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { createComponent, Show, Suspense, type Accessor } from "solid-js";
+import { createComponent, ErrorBoundary, Show, Suspense, type Accessor } from "solid-js";
 import { render } from "solid-js/web";
 const native = vi.hoisted(() => ({ clear: vi.fn(), offer: vi.fn(), cancel: vi.fn(), confirm: vi.fn(), sync: vi.fn(), dismiss: vi.fn(), remove: vi.fn(), inspect: vi.fn(), restore: vi.fn(), manual: vi.fn(), manualCancel: vi.fn(), check: vi.fn() }));
 vi.mock("../../bridge", () => ({ inTauri: () => false, terminationCleanupKeep: native.clear, terminationCleanupDismiss: native.dismiss, terminationCleanupRemove: native.remove, terminationCleanupInspect: native.inspect, terminationCleanupManualOffer: native.manual, terminationCleanupManualCancel: native.manualCancel,
@@ -384,10 +384,12 @@ it("treats a reply for another path as a failed check, never as this folder's bl
 // The reviewer's probe: a MutationObserver records any moment the review leaves the DOM, even if it comes back.
 function detachProbe(host: HTMLElement) {
   const review = host.querySelector("dialog.worktree-cleanup")!; expect(review).not.toBeNull();
+  // Records-based: a removal that is undone a microtask later still counts.
   let detached = false;
-  const observer = new MutationObserver(() => { if (!review.isConnected) detached = true; });
+  const scan = (records: MutationRecord[]) => { for (const record of records) for (const node of record.removedNodes) if (node === review || node.contains(review)) detached = true; };
+  const observer = new MutationObserver(scan);
   observer.observe(host, { childList: true, subtree: true });
-  return { detached: () => { observer.takeRecords(); return detached || !review.isConnected; }, stop: () => observer.disconnect() };
+  return { detached: () => { scan(observer.takeRecords()); return detached || !review.isConnected; }, stop: () => observer.disconnect() };
 }
 
 it("keeps the review attached while the Remove anyway offer is pending (zerus-nq26a.2)", async () => {
@@ -437,12 +439,25 @@ it("shows why the archive confirmation cannot list sessions instead of throwing 
     names.forEach((name, i) => { catalogState.rows[name] = { key: `run:${i}`, computer: "", name }; });
     native.inspect.mockResolvedValue(reviewOf("/srv/example/a", names));
     applyCleanup({ ...emptyCleanup(), revision: ++revision, rows: [keptFolder("a", { sessions: names })], kept: 1 });
-    const host = mountSuspended(); review(host).click(); await flush();
+    // An error boundary owns the A2 case: a read of the errored resource throws,
+    // and that must fail this test by assertion, not only as an unhandled error.
+    const caught: unknown[] = [];
+    const host = document.createElement("div"); document.body.append(host);
+    dispose = render(() => createComponent(ErrorBoundary, { fallback: (error: unknown) => { caught.push(error); return "boundary caught an error"; }, get children() {
+      return [createComponent(CleanupReviewButton, {}), Show({ get when() { return cleanupDialog(); }, children: (_current: Accessor<NonNullable<ReturnType<typeof cleanupDialog>>>) =>
+        createComponent(Suspense, { get children() { return createComponent(WorktreeCleanup, {}); } }) })];
+    } }), host);
+    review(host).click(); await flush();
     const probe = detachProbe(host);
     button(host, "Archive these 2 sessions…").click();
     const confirmation = document.querySelector<HTMLElement>("dialog.bc-archive")!;
-    await vi.waitFor(() => expect(confirmation.querySelector("[role=alert]")?.textContent).toContain("Session actions are unavailable."));
+    await vi.waitFor(() => expect(confirmation.querySelector("[role=alert]")).not.toBeNull());
+    const alert = confirmation.querySelector<HTMLElement>("[role=alert]")!;
+    // A plain sentence with a next step first; the raw detail only as secondary text.
+    expect(alert.querySelector("p:not(.hint)")?.textContent).toBe("Zerus could not load the session actions. Close this dialog and choose Archive again. If it keeps failing, restart Zerus.");
+    expect(alert.querySelector("p.hint")?.textContent).toContain("Session actions are unavailable.");
     expect(button(confirmation, "Archive 2 sessions").disabled).toBe(true);
+    expect(caught).toEqual([]);
     expect(probe.detached()).toBe(false); probe.stop();
     expect(archiveCalls.calls).toEqual([]);
   } finally { archiveCalls.fail = false; }
