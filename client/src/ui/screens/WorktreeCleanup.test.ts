@@ -14,8 +14,8 @@ vi.mock("../../store/actions", () => ({ notify: vi.fn() }));
 vi.mock("../../i18n", () => ({ tr: (s: string, ...args: unknown[]) => s.replace(/%(\d+)/g, (_, n) => String(args[Number(n) - 1])), trNoop: (s: string) => s }));
 vi.mock("../lib/icons", () => ({ Icon: () => null }));
 vi.mock("../components/MachineLabel", () => ({ MachineLabel: () => null }));
-const archiveCalls = vi.hoisted(() => ({ calls: [] as string[], disabled: new Set<string>() }));
-vi.mock("../sessions/ActionDialogs", () => ({ actionEntries: (row: { name: string }) => ({ archive: { label: "Move to archive", disabled: archiveCalls.disabled.has(row.name), hint: "Busy", action: () => { archiveCalls.calls.push(row.name); } } }) }));
+const archiveCalls = vi.hoisted(() => ({ calls: [] as string[], disabled: new Set<string>(), fail: false }));
+vi.mock("../sessions/ActionDialogs", () => ({ actionEntries: (row: { name: string }) => { if (archiveCalls.fail) throw new Error("Session actions are unavailable."); return { archive: { label: "Move to archive", disabled: archiveCalls.disabled.has(row.name), hint: "Busy", action: () => { archiveCalls.calls.push(row.name); } } }; } }));
 import WorktreeCleanup, { CleanupInspection } from "./WorktreeCleanup";
 import { CleanupChip, CleanupReviewButton } from "./CleanupChip";
 import { applyCleanup, cleanup, cleanupDialog, closeCleanup, emptyCleanup, openCleanup, type CleanupRow, groupCleanupRows } from "../../store/terminationCleanup";
@@ -379,4 +379,71 @@ it("treats a reply for another path as a failed check, never as this folder's bl
   const host = mountSuspended(); review(host).click(); await flush();
   expect(host.querySelector(".bc-blockers")!.textContent).not.toContain("codex/elsewhere");
   expect(live(host)).toContain("Could not check what uses this folder now.");
+});
+
+// The reviewer's probe: a MutationObserver records any moment the review leaves the DOM, even if it comes back.
+function detachProbe(host: HTMLElement) {
+  const review = host.querySelector("dialog.worktree-cleanup")!; expect(review).not.toBeNull();
+  let detached = false;
+  const observer = new MutationObserver(() => { if (!review.isConnected) detached = true; });
+  observer.observe(host, { childList: true, subtree: true });
+  return { detached: () => { observer.takeRecords(); return detached || !review.isConnected; }, stop: () => observer.disconnect() };
+}
+
+it("keeps the review attached while the Remove anyway offer is pending (zerus-nq26a.2)", async () => {
+  const offer = deferred<unknown>(); native.manual.mockReturnValue(offer.promise);
+  applyCleanup({ ...emptyCleanup(), revision: ++revision, rows: [keptFolder("a", { can_remove_anyway: true })], kept: 1 });
+  const host = mountSuspended(); review(host).click(); await flush();
+  const probe = detachProbe(host);
+  button(host, "Remove anyway…").click(); await flush();
+  expect(probe.detached()).toBe(false);
+  const manual = document.querySelector<HTMLElement>("dialog[aria-labelledby=manual-remove-title]")!;
+  expect(manual.textContent).toContain("Checking the folder…");
+  expect(button(manual, "Remove working folder").disabled).toBe(true);
+  expect(probe.detached()).toBe(false);
+  offer.resolve({ confirmation: "native-manual", path: "/srv/example/a", computer: "this computer", branch: "kept-branch", size: "1 KB", changes: 0, untracked: 0, reason: "Not created by Zerus.", sessions: [], processes: [], ready: false,
+    required: { local_files: false, discard_changes: false, unchecked_processes: false, merged_branches: false } });
+  await flush();
+  expect(manual.textContent).toContain("Not created by Zerus.");
+  expect(button(manual, "Remove working folder").disabled).toBe(true);
+  expect(probe.detached()).toBe(false); probe.stop();
+  expect(native.remove).not.toHaveBeenCalled();
+});
+
+it("keeps the review attached while the archive confirmation loads its sessions (zerus-nq26a.2)", async () => {
+  archiveCalls.calls = []; archiveCalls.disabled = new Set();
+  const names = ["codex/one", "codex/two"];
+  names.forEach((name, i) => { catalogState.rows[name] = { key: `run:${i}`, computer: "", name }; });
+  native.inspect.mockResolvedValue(reviewOf("/srv/example/a", names));
+  applyCleanup({ ...emptyCleanup(), revision: ++revision, rows: [keptFolder("a", { sessions: names })], kept: 1 });
+  const host = mountSuspended(); review(host).click(); await flush();
+  const probe = detachProbe(host);
+  button(host, "Archive these 2 sessions…").click();
+  // Same tick as the click: the review is still attached and the confirmation is loading.
+  expect(probe.detached()).toBe(false);
+  const confirmation = document.querySelector<HTMLElement>("dialog.bc-archive")!;
+  expect(confirmation).not.toBeNull();
+  expect(button(confirmation, "Archive 2 sessions").disabled).toBe(true);
+  await vi.waitFor(() => expect(confirmation.textContent).toContain("codex/two"));
+  expect(button(confirmation, "Archive 2 sessions").disabled).toBe(false);
+  expect(probe.detached()).toBe(false); probe.stop();
+  expect(archiveCalls.calls).toEqual([]);
+});
+
+it("shows why the archive confirmation cannot list sessions instead of throwing (zerus-nq26a.2)", async () => {
+  archiveCalls.calls = []; archiveCalls.disabled = new Set(); archiveCalls.fail = true;
+  try {
+    const names = ["codex/one", "codex/two"];
+    names.forEach((name, i) => { catalogState.rows[name] = { key: `run:${i}`, computer: "", name }; });
+    native.inspect.mockResolvedValue(reviewOf("/srv/example/a", names));
+    applyCleanup({ ...emptyCleanup(), revision: ++revision, rows: [keptFolder("a", { sessions: names })], kept: 1 });
+    const host = mountSuspended(); review(host).click(); await flush();
+    const probe = detachProbe(host);
+    button(host, "Archive these 2 sessions…").click();
+    const confirmation = document.querySelector<HTMLElement>("dialog.bc-archive")!;
+    await vi.waitFor(() => expect(confirmation.querySelector("[role=alert]")?.textContent).toContain("Session actions are unavailable."));
+    expect(button(confirmation, "Archive 2 sessions").disabled).toBe(true);
+    expect(probe.detached()).toBe(false); probe.stop();
+    expect(archiveCalls.calls).toEqual([]);
+  } finally { archiveCalls.fail = false; }
 });

@@ -100,7 +100,11 @@ export function ArchiveSessionsDialog(props: { names: string[]; session: (name: 
       return { name, machine: row?.machine ?? "", item, reason: !row ? tr("Open the session list to find this session.") : !item ? tr("This session cannot be archived.") : item.disabled ? item.hint ?? tr("This session cannot be archived now.") : "" };
     });
   });
-  const archivable = () => (entries() ?? []).filter((e) => e.item && !e.item.disabled);
+  // Loading and error first: a pending entries() read would suspend the review,
+  // and a failed import would throw from the read.
+  const archivable = () => entries.loading || entries.error ? [] : (entries() ?? []).filter((e) => e.item && !e.item.disabled);
+  // Until the list is known the disabled button names the requested count.
+  const count = () => entries.loading || entries.error ? props.names.length : archivable().length;
   const confirm = () => {
     const ready = archivable(); if (!ready.length || busy()) return;
     setBusy(true);
@@ -113,13 +117,13 @@ export function ArchiveSessionsDialog(props: { names: string[]; session: (name: 
     <div class="dlg-head"><Icon name="archive" size={18} class="accent" /><h2 id="bc-archive-title">{props.names.length === 1 ? tr("Archive this session?") : tr("Archive these %1 sessions?", props.names.length)}</h2></div>
     <div class="dlg-body">
       <p>{tr("Archiving stops each session and moves it to the archive. Conversations are kept and can be restored. The folder is removed only after you check it again and confirm removal.")}</p>
-      <Show when={!entries.loading} fallback={<p role="status">{tr("Loading…")}</p>}>
+      <Show when={!entries.loading} fallback={<p role="status">{tr("Loading…")}</p>}><Show when={!entries.error} fallback={<p role="alert">{String(entries.error)}</p>}>
         <ul class="bc-list"><For each={entries()}>{(entry) => <li><span class="ell" title={entry.name}>{entry.name}</span><span class="hint">{entry.machine}</span><Show when={entry.reason}><span class="hint warn">{entry.reason}</span></Show></li>}</For></ul>
-      </Show>
+      </Show></Show>
     </div>
     <div class="dlg-foot"><span class="grow" />
       <button class="btn" disabled={busy()} onClick={props.close}>{tr("Cancel")}</button>
-      <button class="btn solid-danger" disabled={busy() || entries.loading || !archivable().length} onClick={confirm}>{archivable().length === 1 ? tr("Archive session") : tr("Archive %1 sessions", archivable().length)}</button>
+      <button class="btn solid-danger" disabled={busy() || !archivable().length} onClick={confirm}>{count() === 1 ? tr("Archive session") : tr("Archive %1 sessions", count())}</button>
     </div>
   </dialog>;
 }
