@@ -839,12 +839,15 @@ class NativeKimi(lifecycle.Harness):
 
     def held(self, text):
         """How often the newest model request's conversation holds `text` as a
-        user message of its own. Kimi adds its reminders as separate messages."""
+        user message of its own. Kimi adds reminders as separate messages and
+        hook results as parts, so only the hook envelope is excluded."""
         found = []
         for message in (self.requests[-1].get('messages', []) if self.requests else []):
             content = message.get('content')
             if isinstance(content, list):
-                content = ''.join(part.get('text', '') for part in content if isinstance(part, dict))
+                content = ''.join(part.get('text', '') for part in content if isinstance(part, dict)
+                                  and not re.fullmatch(r'<hook_result hook_event="[^"]+">\n.*</hook_result>',
+                                                       part.get('text', ''), re.S))
             if message.get('role') == 'user':
                 found.append(content)
         return found.count(text)
@@ -1027,6 +1030,57 @@ class NativeKimi(lifecycle.Harness):
         copies = sum(json.dumps(message).count(hint) for request in self.requests
                      for message in request.get('messages', []))
         self.assertEqual(copies, 1)
+        before = record
+        self.hgs('pause', name)
+        self.hgs('resume', name, '-d')
+        self.until(lambda: self.binding(name).get('run_id') != before['run_id'] and
+                   self.inspect(name).get('activity') == 'idle', name)
+        self.assertEqual(self.binding(name).get('agent_hint'), record['agent_hint'])
+        receipt = self.send(name, self.payload(name, 'Verify the resumed hgs hint path'))
+        self.until(lambda: self.settled(name, receipt), name)
+        copies = [sum(json.dumps(message).count(hint) for message in request.get('messages', []))
+                  for request in self.requests]
+        self.assertEqual(copies, [1, 1])
+        self.assertEqual(self.binding(name).get('agent_hint'), record['agent_hint'])
+
+        def control(command):
+            state = self.binding(name)
+            payload = dict(request_id=str(uuid.uuid4()), expected_run_id=state['run_id'],
+                           expected_conversation_id=state['conversation_id'])
+            result = subprocess.run([str(lifecycle.HGS), command, name, '--json'], env=self.env,
+                                    input=json.dumps(payload), text=True, capture_output=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return payload
+
+        compacted = (self.binding(name).get('hook_observation', {}).get('events', {})
+                     .get('PostCompact', {}).get('count', 0))
+        self.t('set-buffer', '--', '/compact')
+        self.t('paste-buffer', '-t', '=' + name + ':')
+        time.sleep(.2)
+        self.t('send-keys', '-t', '=' + name + ':', 'Enter')
+        self.until(lambda: (self.binding(name).get('hook_observation', {}).get('events', {})
+                            .get('PostCompact', {}).get('count', 0)) > compacted
+                   and len(self.requests) >= 3 and self.inspect(name).get('activity') == 'idle', name)
+        receipt = self.send(name, self.payload(name, 'Verify the compacted hgs hint path'))
+        self.until(lambda: self.settled(name, receipt), name)
+        previous = record['conversation_id']
+        control('clear-context')
+        self.until(lambda: self.binding(name).get('conversation_id') not in (None, previous)
+                   and self.inspect(name).get('activity') == 'idle', name)
+        receipt = self.send(name, self.payload(name, 'Verify the cleared hgs hint path'))
+        self.until(lambda: self.settled(name, receipt), name)
+        copies = [sum(json.dumps(message).count(hint) for message in request.get('messages', []))
+                  for request in self.requests]
+        self.assertEqual(copies, [1, 1, 1, 1, 1])
+        record = self.binding(name)
+        self.assertEqual(record.get('agent_hint'), {'conversation_id': record['conversation_id'], 'revision': 1})
+        destination = os.environ.get('HGS_KIMI_EVIDENCE_DIR')
+        if destination:
+            path = Path(destination)
+            path.mkdir(parents=True, exist_ok=True)
+            (path / 'kimi-real-hgs-lifecycle.json').write_text(json.dumps(dict(
+                version=self.version, image_sha256=self.image_digest,
+                requests=self.requests, binding=record), indent=2))
 
     def test_pause_and_resume_keep_the_conversation(self):
         name = self.launch()

@@ -348,6 +348,12 @@ mod tests {
         let mut resumed = record("kimi", "one");
         resumed["run_id"] = json!("new-run");
         carry_resume(&previous, &mut resumed);
+        for kind in ["SessionStart", "PreCompact", "PostCompact"] {
+            let mut lifecycle = event("one", "resume");
+            lifecycle["hook_event_name"] = json!(kind);
+            assert_eq!(decide(&mut resumed, &lifecycle, true), None);
+            assert!(marked(&resumed, "one"));
+        }
         assert_eq!(decide(&mut resumed, &prompt("one", "resume"), true), None);
         resumed["conversation_id"] = json!("two");
         assert_eq!(

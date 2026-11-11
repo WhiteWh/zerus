@@ -90,7 +90,7 @@ Path(sys.argv[2]).write_text(json.dumps(state))
 ''')
         command = shlex.join(['/usr/bin/python3', str(self.hook), str(self.root / 'events.jsonl'),
                               str(self.root / 'state.json'), HINT])
-        for event in ('SessionStart', 'UserPromptSubmit', 'PreCompact', 'PostCompact'):
+        for event in ('SessionStart', 'UserPromptSubmit', 'PreCompact', 'PostCompact', 'Stop'):
             with (self.home / 'config.toml').open('a') as output:
                 output.write('\n[[hooks]]\nevent = %s\ncommand = %s\ntimeout = 10\n' %
                              (json.dumps(event), json.dumps(command)))
@@ -145,15 +145,26 @@ Path(sys.argv[2]).write_text(json.dumps(state))
             ('after clear', 5),
         ]:
             if prompt == 'second native prompt':
+                pid = int(self.tmux('display-message', '-p', '-t', '=hint:', '#{pane_pid}'))
                 self.tmux('kill-session', '-t', '=hint:')
+                def exited():
+                    try:
+                        os.kill(pid, 0)
+                    except ProcessLookupError:
+                        return True
+                    return False
+                self.wait_for(exited)
                 self.tmux('new-session', '-d', '-s', 'hint', '-x', '120', '-y', '35',
                           str(self.image), '--continue')
                 self.wait_for(lambda: any(event.get('source') == 'resume' for event in self.events()))
+            stopped = sum(event.get('hook_event_name') == 'Stop' for event in self.events())
             self.submit(prompt)
             if expected is not None:
                 self.wait_for(lambda: len(self.server.requests) >= expected)
+                self.wait_for(lambda: sum(event.get('hook_event_name') == 'Stop'
+                                          for event in self.events()) > stopped)
             elif prompt == '/compact':
-                self.wait_for(lambda: any(event.get('hook_event_name') == 'PreCompact'
+                self.wait_for(lambda: any(event.get('hook_event_name') == 'PostCompact'
                                           for event in self.events()))
             else:
                 self.wait_for(self.new_session_started)
