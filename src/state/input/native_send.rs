@@ -615,6 +615,9 @@ mod tests {
     use super::*;
     #[test]
     fn every_non_admitted_submission_keeps_the_original_core_body() {
+        // Combined with #2055: the only changes to the original core body
+        // are its two atomic receipt writes becoming receipt_index::persist.
+        // Routing, receipt bytes and native input order stay pinned below.
         let source = include_str!("../input.rs");
         let body = source
             .split_once("fn submit_core(")
@@ -626,7 +629,7 @@ mod tests {
         let original = format!("fn submit_core({body}");
         assert_eq!(
             format!("{:x}", Sha256::digest(original.as_bytes())),
-            "d788180c8a2af8b34c151f67f3cceb7e7c69275f8d19379a2b9b2894eb35e200"
+            "19e8db18358f810a31e43ed431a568eac503bb12569d57b89131968b169d8282"
         );
     }
     fn fixture() -> (Value, Value, Guard<'static>) {

@@ -1182,13 +1182,66 @@ pub(super) fn request_migration() {
     migration::request(&root());
 }
 
+fn receipt_source(path: &Path) -> Option<Source> {
+    Source::ALL.into_iter().find(|source| {
+        path.parent()
+            .is_some_and(|p| p.ends_with(source.directory()))
+    })
+}
+
+fn receipt_location(path: &Path, source: Source) -> Result<(PathBuf, &str)> {
+    let parent = path.parent().ok_or("Invalid receipt path")?;
+    let owner = if matches!(source, Source::Terminal | Source::Question) {
+        parent.parent()
+    } else {
+        parent.parent().and_then(Path::parent)
+    }
+    .ok_or("Invalid receipt owner")?;
+    let state = crate::platform::canonical(owner).map_err(|_| "Receipt owner is unavailable")?;
+    if crate::platform::canonical(parent).map_err(|_| "Receipt directory is unavailable")?
+        != state.join(source.directory())
+    {
+        return Err("Foreign receipt directory".into());
+    }
+    let filename = path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .ok_or("Invalid receipt name")?;
+    Ok((state, filename))
+}
+
+/// Register an original which its custodian has already committed and verified.
+/// This never writes/replaces the original or makes a send outcome depend on
+/// the cache. Without a pre-commit directory stamp, reconciliation must prove
+/// completeness again, even when only an existing receipt's status changed.
+/// The frontend requests that worker after the keeper exits; inspection also
+/// requests it if the frontend is lost. Never spawn a helper inside the fence.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(in crate::state) fn remember_committed(path: &Path, value: &Value) {
+    let Some(source) = receipt_source(path) else {
+        return;
+    };
+    let remember = (|| -> Result<()> {
+        let (state, _) = receipt_location(path, source)?;
+        let catalog = Catalog::open(&state, true)?;
+        // Keep this invalidation outside the registration transaction: an
+        // aborted insert/update must not restore an old complete witness.
+        sql(catalog.db.execute(
+            "UPDATE receipt_sources SET complete=0 WHERE source=?",
+            [source.key()],
+        ))?;
+        let transaction = sql(catalog.db.unchecked_transaction())?;
+        catalog.remember(source, path, value)?;
+        sql(transaction.commit())?;
+        Ok(())
+    })();
+    let _ = remember;
+}
+
 /// Preserve the authoritative atomic write and its error exactly. Index failure
 /// never turns a possibly delivered send into a refusal or allows its replay.
 pub(super) fn persist(path: &Path, value: &Value) -> Result<()> {
-    let source = Source::ALL.into_iter().find(|source| {
-        path.parent()
-            .is_some_and(|p| p.ends_with(source.directory()))
-    });
+    let source = receipt_source(path);
     let before = source
         .and_then(|_| path.parent())
         .and_then(|p| migration::stamp(p).ok());
@@ -1196,19 +1249,7 @@ pub(super) fn persist(path: &Path, value: &Value) -> Result<()> {
     if let Some(source) = source {
         let remember = (|| -> Result<()> {
             let parent = path.parent().ok_or("Invalid receipt path")?;
-            let owner = if matches!(source, Source::Terminal | Source::Question) {
-                parent.parent()
-            } else {
-                parent.parent().and_then(Path::parent)
-            }
-            .ok_or("Invalid receipt owner")?;
-            let state =
-                crate::platform::canonical(owner).map_err(|_| "Receipt owner is unavailable")?;
-            if crate::platform::canonical(parent).map_err(|_| "Receipt directory is unavailable")?
-                != state.join(source.directory())
-            {
-                return Err("Foreign receipt directory".into());
-            }
+            let (state, _) = receipt_location(path, source)?;
             let catalog = Catalog::open(&state, true)?;
             catalog.remember(source, path, value)?;
             // Only advance an already reconciled snapshot. A missed/legacy

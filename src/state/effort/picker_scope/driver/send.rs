@@ -349,10 +349,14 @@ fn receipt_write(owner: &Arc<owner::Owner>, value: Value, final_receipt: bool) -
         })?;
         Ok((staged, scope.receipts.path.clone(), name))
     })?;
+    let receipt_path = parent.join(&name);
     let step = Publication::new(owner, &staged, parent, name.clone(), final_receipt, None)?;
     let fence = publication::CommitFence::send(owner, &staged, step)?;
     let committed = staged.commit(&fence)?;
     let original = owner.with_scope(|scope| committed.receipt(owner, &scope.receipts, &name))?;
+    // Cache registration follows the exact fenced original and its proof. It
+    // cannot rewrite that original or turn an accepted send into a refusal.
+    crate::state::receipt_index::remember_committed(&receipt_path, &value);
     with(owner, |held| {
         held.receipt = Some(original);
         held.value = value;

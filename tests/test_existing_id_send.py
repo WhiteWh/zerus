@@ -3,10 +3,12 @@
 This is controller qualification; official-agent contracts run separately.
 """
 import hashlib
+from contextlib import closing
 import json
 import os
 from pathlib import Path
 import shlex
+import sqlite3
 import subprocess
 import sys
 import unittest
@@ -73,7 +75,7 @@ class ExistingIdSend(unittest.TestCase):
         self.calls = self.case.root / 'send-calls.jsonl'
         script = self.case.root / 'send-observer.py'
         script.write_text('REAL_TMUX=' + repr(test_input.TMUX) + '\n' + r'''
-import fcntl,json,os,pathlib,socket,subprocess,sys,time
+import fcntl,json,os,pathlib,socket,sqlite3,subprocess,sys,time
 root=pathlib.Path(os.environ['INPUT_FIXTURE']);state=pathlib.Path(os.environ['HGS_STATE_DIR']);args=sys.argv[1:]
 def read(path):
  try:return json.loads(path.read_bytes())
@@ -81,6 +83,15 @@ def read(path):
 if args[:1] in (['send-keys'],['load-buffer'],['paste-buffer'],['delete-buffer']):
  row=dict(at=time.monotonic(),args=args,receipt=read(pathlib.Path(os.environ['SEND_RECEIPT'])),record=read(pathlib.Path(os.environ['SEND_RECORD'])),pending=read(pathlib.Path(os.environ['SEND_PENDING'])),recovery=read(pathlib.Path(os.environ['SEND_RECOVERY'])) if 'SEND_RECOVERY' in os.environ else None)
  with (root/'send-calls.jsonl').open('a') as out:out.write(json.dumps(row)+'\n')
+if os.environ.get('SEND_INDEX_FINAL_FAULT')=='1' and args[:1]==['send-keys'] and args[-1:] == ['Enter'] and read(pathlib.Path(os.environ['SEND_PENDING']))['status']=='applied':
+ # This is the message Enter, after both in-progress receipt registrations.
+ # The final original must still commit even when cache error clearing fails.
+ db=sqlite3.connect(state/'delivery-receipts-v1.sqlite3')
+ with db:
+  db.execute("INSERT INTO receipt_errors VALUES('terminal',?,'injected')",(pathlib.Path(os.environ['SEND_RECEIPT']).name,))
+  db.execute("UPDATE receipt_sources SET complete=1 WHERE source='terminal'")
+  db.execute("CREATE TRIGGER refuse_final_registration BEFORE DELETE ON receipt_errors BEGIN SELECT RAISE(ABORT,'injected final registration failure'); END")
+ db.close();(root/'index-final-fault-fired').touch()
 fault=os.environ.get('SEND_FAULT','')
 if fault=='pending-receipt' and args[:1]==['list-panes'] and not (root/'fault-fired').exists():
  (root/'fault-fired').touch();p=pathlib.Path(os.environ['SEND_PENDING']);value=read(p);value['status']='applied';p.write_text(json.dumps(value))
@@ -206,6 +217,131 @@ raise SystemExit(result)
         self.assertEqual(self.case.received(), after)
         self.assertEqual(self.case.cache.read_bytes(), before)
         self.assertFalse((self.case.root / '.codex/config.toml').exists())
+
+    def prepare_receipt_index(self):
+        import fcntl
+        self.receipt_path.parent.mkdir(mode=0o700, exist_ok=True)
+        migrated = subprocess.run([str(test_input.HGS), '__state', 'receipt-index-worker'],
+                                 env=self.case.env, text=True, capture_output=True, timeout=20)
+        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        lease = (self.case.state / 'receipt-index-worker.lock').open('a+b')
+        self.index_lease = lease
+        self.addCleanup(lease.close)
+        fcntl.flock(lease, fcntl.LOCK_EX)
+        self.index_database = self.case.state / 'delivery-receipts-v1.sqlite3'
+        with closing(sqlite3.connect(self.index_database)) as db:
+            self.assertEqual(db.execute("SELECT complete FROM receipt_sources WHERE source='terminal'").fetchone(), (1,))
+
+    def receipt_projection(self):
+        result = subprocess.run([str(test_input.HGS), '__state', 'receipt-index-page',
+                                 self.case.name, '--json'], env=self.case.env,
+                                input=json.dumps(dict(expected_run_id=self.case.run_id,
+                                                      expected_conversation_id=self.case.conversation_id)),
+                                text=True, capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def assert_index_failure_never_replays(self):
+        self.assert_submitted(self.call())
+        self.case.wait_for(lambda: self.case.received().endswith(b'\r'))
+        rows, received = self.rows(), self.case.received()
+        self.assertEqual(sum(row['args'][0] == 'paste-buffer' for row in rows), 1)
+        self.assert_pending_custodian()
+        with closing(sqlite3.connect(self.index_database)) as db:
+            self.assertEqual(db.execute("SELECT complete FROM receipt_sources WHERE source='terminal'").fetchone(), (0,))
+        projection = self.receipt_projection()['receipt_projection']
+        self.assertFalse(projection['migration_complete'])
+        self.assertFalse(projection['catalog_complete_at_snapshot'])
+        self.assertFalse(projection['absence_confirmed'])
+        original = self.receipt_path.read_bytes()
+        self.assert_submitted(self.call(selector='sid'))
+        self.assertEqual(self.receipt_path.read_bytes(), original)
+        self.assertEqual(self.rows(), rows)
+        self.assertEqual(self.case.received(), received)
+
+    def test_pending_send_registers_fenced_original_in_locator_and_projection(self):
+        self.prepare_receipt_index()
+        data = self.attachment_request(17)
+        receipt = self.assert_submitted(self.call())
+        self.assert_pending_custodian()
+        self.assertEqual(Path(receipt['attachments'][0]['path']).read_bytes(), data)
+        with closing(sqlite3.connect(self.index_database)) as db:
+            self.assertEqual(db.execute("SELECT files FROM receipt_rows WHERE source='terminal' AND request=?",
+                                        (self.request['request_id'],)).fetchall(), [(1,)])
+        projection = self.receipt_projection()
+        self.assertEqual([row['message_id'] for row in projection['attachment_messages']], [self.request['request_id']])
+        self.assertFalse(projection['receipt_projection']['migration_complete'])
+
+    def test_new_original_index_failure_keeps_send_once_and_coverage_incomplete(self):
+        self.prepare_receipt_index()
+        with closing(sqlite3.connect(self.index_database)) as db, db:
+            db.execute("CREATE TRIGGER refuse_new_registration BEFORE INSERT ON receipt_rows BEGIN SELECT RAISE(ABORT,'injected new registration failure'); END")
+        self.assert_index_failure_never_replays()
+        with closing(sqlite3.connect(self.index_database)) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM receipt_rows').fetchone(), (0,))
+
+    def test_worker_repair_hint_fifo_cannot_block_the_submitted_send(self):
+        import fcntl
+        self.prepare_receipt_index()
+        self.index_lease.close()
+        hint = self.case.state / 'receipt-index-attempt.json'
+        self.assertFalse(hint.exists())
+        os.mkfifo(hint)
+        self.assert_submitted(self.call())
+        self.assertTrue(hint.is_file(), 'repair replaced the corrupt throttle hint')
+        self.assert_pending_custodian()
+        def worker_settled():
+            with (self.case.state / 'receipt-index-worker.lock').open('a+b') as lease:
+                try:
+                    fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return True
+                except BlockingIOError:
+                    return False
+        self.case.wait_for(worker_settled)
+        rows, received = self.rows(), self.case.received()
+        self.assert_submitted(self.call(selector='sid'))
+        self.assertEqual(self.rows(), rows)
+        self.assertEqual(self.case.received(), received)
+
+    def assert_worker_lock_fifo_cannot_block_send(self, filename):
+        self.prepare_receipt_index()
+        self.index_lease.close()
+        fault = self.case.state / filename
+        if fault.exists():
+            self.assertTrue(fault.is_file())
+            fault.unlink()
+        os.mkfifo(fault)
+        try:
+            self.assert_submitted(self.call())
+        except subprocess.TimeoutExpired:
+            # Pin the regression's real state: this is an accepted send whose
+            # frontend is parked in advisory cache work, never a new offer.
+            self.assertEqual(json.loads(self.receipt_path.read_bytes())['status'], 'submitted')
+            self.assertEqual(sum(row['args'][0] == 'paste-buffer' for row in self.rows()), 1)
+            print('ZERUS_CACHE_LOCK_FAULT=' + json.dumps(dict(path=filename, status='submitted', pastes=1)), flush=True)
+            raise
+        self.assertTrue(fault.is_fifo(), 'refuse the corrupt lock without replacing it')
+        self.assertFalse((self.case.state / 'receipt-index-attempt.json').exists())
+        rows, received = self.rows(), self.case.received()
+        self.assert_submitted(self.call(selector='sid'))
+        self.assertEqual(self.rows(), rows)
+        self.assertEqual(self.case.received(), received)
+
+    def test_worker_launch_lock_fifo_cannot_block_the_submitted_send(self):
+        self.assert_worker_lock_fifo_cannot_block_send('receipt-index-launch.lock')
+
+    def test_worker_probe_lock_fifo_cannot_block_the_submitted_send(self):
+        self.assert_worker_lock_fifo_cannot_block_send('receipt-index-worker.lock')
+
+    def test_final_original_index_failure_keeps_send_once_and_coverage_incomplete(self):
+        self.prepare_receipt_index()
+        self.case.env['SEND_INDEX_FINAL_FAULT'] = '1'
+        self.assert_index_failure_never_replays()
+        self.assertTrue((self.case.root / 'index-final-fault-fired').exists())
+        with closing(sqlite3.connect(self.index_database)) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM receipt_rows WHERE request=?",
+                                        (self.request['request_id'],)).fetchone(), (1,))
+            self.assertEqual(db.execute("SELECT errors FROM receipt_sources WHERE source='terminal'").fetchone(), (1,))
 
     def attachment_request(self, size, count=1):
         import base64

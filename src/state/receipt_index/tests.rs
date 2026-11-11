@@ -332,6 +332,97 @@ fn unavailable_index_does_not_change_authoritative_receipt_persistence() {
 
 
 #[test]
+fn committed_registration_never_rewrites_originals_or_inherits_completeness() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(temp.path(), true).unwrap();
+    let mut receipt = value(1, "wanted", "run", "", 1.0);
+    receipt["status"] = json!("in_progress");
+    let path = put(&catalog, Source::Terminal, &receipt);
+    for status in ["in_progress", "submitted"] {
+        let stamp = migration::stamp(path.parent().unwrap()).unwrap();
+        catalog
+            .db
+            .execute(
+                "UPDATE receipt_sources SET complete=1,stamp=? WHERE source='terminal'",
+                [&stamp],
+            )
+            .unwrap();
+        receipt["status"] = json!(status);
+        let raw = format!("\n  {}  \n", receipt);
+        // Updating an existing original in place need not change its directory.
+        fs::write(&path, &raw).unwrap();
+        assert_eq!(migration::stamp(path.parent().unwrap()).unwrap(), stamp);
+        let original = crate::platform::FileIdentity::of(&fs::File::open(&path).unwrap()).unwrap();
+        remember_committed(&path, &receipt);
+        assert_eq!(
+            crate::platform::FileIdentity::of(&fs::File::open(&path).unwrap()).unwrap(),
+            original
+        );
+        assert_eq!(fs::read(&path).unwrap(), raw.as_bytes());
+        let page = catalog
+            .page(&scope("wanted", "run", ""), "", 100, true)
+            .unwrap();
+        assert_eq!(page.locators.len(), 1);
+        assert_eq!(page.metadata["migration_complete"], false);
+        assert_eq!(catalog.original(&page.locators[0]).unwrap(), receipt);
+    }
+}
+
+#[test]
+fn failed_registration_of_new_and_final_originals_retains_incomplete_coverage() {
+    for existing in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(temp.path(), true).unwrap();
+        let mut receipt = value(1, "wanted", "run", "", 1.0);
+        let directory = temp.path().join("input_receipts");
+        fs::create_dir_all(&directory).unwrap();
+        let filename = format!("{}.json", string(&receipt, "request_id"));
+        let path = directory.join(&filename);
+        if existing {
+            receipt["status"] = json!("in_progress");
+            put(&catalog, Source::Terminal, &receipt);
+            catalog
+                .error(Source::Terminal, &filename, "injected")
+                .unwrap();
+            catalog.db.execute_batch("CREATE TRIGGER refuse_registration BEFORE DELETE ON receipt_errors BEGIN SELECT RAISE(ABORT,'injected final registration failure'); END;").unwrap();
+        } else {
+            catalog.db.execute_batch("CREATE TRIGGER refuse_registration BEFORE INSERT ON receipt_rows BEGIN SELECT RAISE(ABORT,'injected new registration failure'); END;").unwrap();
+        }
+        receipt["status"] = json!("submitted");
+        let raw = format!("\n{}\n", receipt);
+        fs::write(&path, &raw).unwrap();
+        let stamp = migration::stamp(&directory).unwrap();
+        catalog
+            .db
+            .execute(
+                "UPDATE receipt_sources SET complete=1,stamp=? WHERE source='terminal'",
+                [&stamp],
+            )
+            .unwrap();
+        remember_committed(&path, &receipt);
+        assert_eq!(fs::read(&path).unwrap(), raw.as_bytes());
+        let page = catalog
+            .page(&scope("wanted", "run", ""), "", 100, true)
+            .unwrap();
+        assert_eq!(page.metadata["migration_complete"], false);
+        assert_eq!(page.locators.len(), usize::from(existing));
+        catalog
+            .db
+            .execute_batch("DROP TRIGGER refuse_registration")
+            .unwrap();
+        let mut migration = migration::Migration::new(temp.path()).unwrap();
+        while !migration.step().unwrap() {}
+        let repaired = catalog
+            .page(&scope("wanted", "run", ""), "", 100, true)
+            .unwrap();
+        assert_eq!(repaired.locators.len(), 1);
+        assert_eq!(repaired.metadata["migration_complete"], true);
+        assert_eq!(repaired.metadata["unattributed_errors"], 0);
+        assert_eq!(fs::read(path).unwrap(), raw.as_bytes());
+    }
+}
+
+#[test]
 fn a_lost_row_invalidates_cursors_and_is_rediscovered_without_original_changes() {
     let temp = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(temp.path(), true).unwrap();

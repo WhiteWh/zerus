@@ -469,6 +469,9 @@ pub(super) fn request_send(frame: Frame, slot: SendSlot) -> Result<Value> {
         frontend.settled()?;
         if outcome.code != 0 { return Err(String::from_utf8_lossy(&outcome.bytes).into_owned()); }
         let analytics_root=frame.check_reconcile_context().is_ok().then(||Path::new(&frame.root));
+        // Registration never launches a worker under the original keeper's
+        // Root/SID/slot. Cache repair is advisory and starts only after exit.
+        if analytics_root.is_some() { crate::state::receipt_index::request_migration(); }
         input::native_send::decode(&header,&outcome.bytes,analytics_root)
     })();
     result.or_else(|error| {
