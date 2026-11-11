@@ -15,7 +15,9 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 mod migration;
+mod point;
 mod question;
+pub(super) use point::{delivery_binding, delivery_receipt, DeliveryQuery};
 // The independently developed recovery consumer stacks on this interface.
 #[allow(unused_imports)]
 pub(crate) use question::{question_page, Coverage, QuestionReceiptPage, QuestionReceiptRow};

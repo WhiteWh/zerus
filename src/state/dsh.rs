@@ -1665,8 +1665,9 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
                 receipt["submitted_text"] = json!(text);
                 receipt["submitted_at"] = json!(now());
                 receipt["status"] = json!("pending");
-                if agent_id.is_empty() {
-                    if let Some(target) = session_graph::target_receipt(&record) {
+                if let Some(target) = session_graph::target_receipt(&record) {
+                    delivery::bind(&mut receipt, &record, &target);
+                    if agent_id.is_empty() {
                         receipt["graph_target"] = target;
                     }
                 }

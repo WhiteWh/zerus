@@ -15,6 +15,7 @@ mod claude_question;
 mod claude_statusline;
 mod claude_subagents;
 mod attachments;
+mod delivery;
 mod receipt_index;
 mod computer_files;
 pub(crate) mod voice;
@@ -1406,6 +1407,7 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
     }
     // Receipt observation needs neither a native host nor a state writer.
     if args.first().map(String::as_str)==Some("session-action-status") { return session_action::status_dispatch(&args[1..]); }
+    if args.first().map(String::as_str)==Some("delivery") { return delivery::dispatch(&args[1..]); }
     // Coordination metadata never starts or controls a native session host.
     if args.first().map(String::as_str)==Some("wait") { return waits::dispatch(&args[1..]); }
     if args.first().map(String::as_str)==Some("repository") { return repositories::dispatch(&args[1..]); }

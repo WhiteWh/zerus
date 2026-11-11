@@ -643,6 +643,8 @@ class OpenCodeNative(unittest.TestCase):
         request = self.payload(binding, text=text)
         receipt = self.hgs(['send', binding['name'], '--json'], request)
         self.assertEqual(receipt['status'], 'submitted')
+        from delivery_receipt_checks import check_delivery_lookup
+        check_delivery_lookup(self, HGS, self.env, binding, receipt, 'opencode')
         done = self.wait(binding['name'], lambda v: v['phase'] == 'idle' and v.get('reply_id'))
         self.assertEqual([e['detail'] for e in done['events'] if e['type'] == 'UserPromptSubmit'], [text])
         self.assertEqual([message for _, message in self.user_messages(binding['conversation_id'])], [text])

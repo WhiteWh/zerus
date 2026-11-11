@@ -154,6 +154,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        hgs @host download --path REMOTE_PATH --output LOCAL_FILE   download a file through configured SSH
        hgs [@host] answer <session> --json   answer an exact pending question from JSON stdin
        hgs [@host] answer <session> --observe --json   read a pending question's consent identity, changing nothing
+       hgs [@host] delivery receipt <original-session-name> --json   read exact original send evidence from JSON stdin
        hgs [@host] parent <session> --json   read, adopt (as the calling agent), set or clear its parent session from JSON stdin
        hgs [@host] read <session> --json   mark the current reply/attention read (JSON stdin)
        hgs [@host] subagent retire <session> --json   retire an exact stale child record (JSON stdin)
@@ -231,6 +232,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        Mobile clear-context ABI: dismiss-prompt-v1
        session-notifications-v1
        session-keep-warm-v1
+       delivery-receipt-v1
        session-parent-v1
        launch-parent-v1
        claimed-parent-v1
@@ -299,7 +301,7 @@ fn local_sessions() -> Result<()> {
 // Repository preparation owns only its checkout and receipt. Like the existing
 // configuration/control commands, it does not require or enable a session host.
 fn needs_local_sessions(command: &str) -> bool {
-    !matches!(command, "ls" | "watch" | "machine" | "presence" | "swarm" | "project" | "account" | "speech" | "analytics" | "graph" | "wait" | "mobile" | "hooks" | "repository" | "session-action-status" | "subagent" | "path-info")
+    !matches!(command, "ls" | "watch" | "machine" | "presence" | "swarm" | "project" | "account" | "speech" | "analytics" | "graph" | "wait" | "mobile" | "hooks" | "repository" | "session-action-status" | "delivery" | "subagent" | "path-info")
 }
 
 /// Fails unless this process may run what the processes of a session run:
@@ -700,7 +702,7 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
             return Err(Error::new(1,"Mobile target identity changed; refresh computers"));
         }
         let guarded_at = if args.get(2).is_some_and(|a| a=="--client") {4} else {2};
-        let actual = if args.get(guarded_at).is_some_and(|a| a=="session-action-status") {
+        let actual = if args.get(guarded_at).is_some_and(|a| a=="session-action-status"||a=="delivery") {
             state::lifecycle_receipt_machine(&config).map_err(|_| Error::new(1,"Native machine identity is unavailable"))?
         } else {
             crate::swarm::local_node_id(&config).map_err(|_| Error::new(1,"Native machine identity is unavailable"))?
@@ -1084,7 +1086,8 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
             state_command(command, &args)
         }
         "inspect" | "processes" | "worktrees" | "git-status" | "repository" | "dirs" | "send" | "send-now" | "session-action" | "session-action-status" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "read" | "notifications" | "keep-warm"
-        | "attachment" | "file-read" | "recovery" | "voice" | "schedules" | "graph" | "wait" | "parent" => {
+        | "attachment" | "file-read" | "recovery" | "voice" | "schedules" | "graph" | "wait" | "parent" | "delivery" => {
+            if command == "delivery" && dry { return Err(Error::new(1,"Delivery receipt reads do not support --dry-run")); }
             if command == "session-action-status" && dry { return Err(Error::new(1,"Lifecycle receipt reads do not support --dry-run")); }
             if command == "repository" && dry { return Err(Error::new(1,"Repository operations do not support --dry-run")); }
             if command == "wait" && dry { return Err(Error::new(1,"Wait operations do not support --dry-run")); }
@@ -1781,7 +1784,7 @@ fn remote_via(
         "--expect-machine" => {
             let expected=require(&args,0,"Missing expected machine identity")?;
             let actual=require(&args,1,"Missing guarded command")?;
-            let terminal=!has(&args,"-d")&&!matches!(actual,"dirs"|"path-info"|"worktrees"|"repository"|"session-action-status"|"--help"|"dsh"|"opencode");
+            let terminal=!has(&args,"-d")&&!matches!(actual,"dirs"|"path-info"|"worktrees"|"repository"|"session-action-status"|"delivery"|"--help"|"dsh"|"opencode");
             flags=vec!["-o".into(),"BatchMode=yes".into(),"-o".into(),"ConnectTimeout=3".into()];
             if terminal { flags.insert(0,"-t".into()); }
             let mut all=vec!["--expect-machine".into(),expected.into(),"--client".into(),config.host().into()];
@@ -1789,7 +1792,7 @@ fn remote_via(
         }
         "session-action-status" if machine.is_none() => return Err(Error::new(2,"A remote lifecycle receipt read requires --expect-machine ID before session-action-status")),
         "archives" | "session-action-status" | "kill" | "terminate" | "pause" | "inspect" | "reference" | "processes" | "worktrees" | "git-status" | "repository" | "dirs" | "project" | "archive" | "rename"
-        | "send" | "send-now" | "session-action" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "schedules" | "graph" | "wait" | "guide" | "dsh" | "opencode" | "attachment" | "file-read" | "recovery" | "swarm" | "read" | "notifications" | "keep-warm" | "speech" | "analytics" | "voice" | "hooks" | "parent" | "path-info" | "--help" => {
+        | "send" | "send-now" | "session-action" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "schedules" | "graph" | "wait" | "guide" | "dsh" | "opencode" | "attachment" | "file-read" | "recovery" | "swarm" | "read" | "notifications" | "keep-warm" | "speech" | "analytics" | "voice" | "hooks" | "parent" | "delivery" | "path-info" | "--help" => {
             flags = vec![
                 "-o".into(),
                 "BatchMode=yes".into(),
@@ -1872,6 +1875,8 @@ fn remote_via(
         // Probe the same installed executable without consuming JSON stdin.
         // These probes are POSIX scripts; a fish login shell runs them under sh.
         platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qF 'hgs [@host] wait'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to track waits' >&2; exit 1; fi",platform::join(&remote_args)))
+    } else if command == "delivery" {
+        platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*delivery-receipt-v1[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to read original send receipts' >&2; exit 1; fi",platform::join(&remote_args)))
     } else if command == "parent" {
         // An older peer would read an unknown command as an agent launch.
         platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*session-parent-v1[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to change parent sessions' >&2; exit 1; fi",platform::join(&remote_args)))
@@ -1910,10 +1915,12 @@ fn remote_via(
     let remote = if global_dry || has(&args, "--dry-run") { remote } else {
         let mut markers: Vec<(&str, bool)> = match command {
             "--expect-machine" if args.get(1).is_some_and(|v| v == "session-action-status") => vec![("guarded-create-v1", false), ("lifecycle-receipt-status-v1", true)],
+            "--expect-machine" if args.get(1).is_some_and(|v| v == "delivery") => vec![("guarded-create-v1", false), ("delivery-receipt-v1", true)],
             "--expect-machine" if wrapped_path_info => vec![("guarded-create-v1", false), ("hgs [@host] path-info --path", false)],
             "--expect-machine" => vec![("guarded-create-v1", false)],
             "subagent" => vec![("Subagent retirement ABI: subagent-retire-v1", false)],
             "repository" => vec![("repository-clone-v1", false)],
+            "delivery" => vec![("delivery-receipt-v1", true)],
             "wait" => vec![("hgs [@host] wait", false)],
             "notifications" => vec![("session-notifications-v1", true)],
             "keep-warm" => vec![("session-keep-warm-v1", true)],
