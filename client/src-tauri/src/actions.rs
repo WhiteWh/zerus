@@ -1178,12 +1178,9 @@ pub async fn run_action(
     delay: Option<crate::action_delay::Reference>,
 ) -> Result<ActionReply, String> {
     use tauri::Manager;
-    if let Some(refused) = undelayed_end(&action, delay.as_ref()) {
-        return Ok(ActionReply {
-            outcome: refused,
-            cleanup_capture: None,
-        });
-    }
+    // Without a delay reference an Archive, Terminate, Kill or Forget is
+    // refused at the dispatcher's entry, before any lane, probe or hgs call
+    // (`uncaptured_end`, zerus-sa9qn.25).
     let ending = matches!(action, Action::Archive | Action::Terminate);
     let machine = if ending {
         crate::worktree_cleanup::machine(&source, &target.computer).unwrap_or_default()
@@ -1216,15 +1213,13 @@ pub async fn run_action(
     })
 }
 
-/// zerus-sa9qn.25: Archive, Terminate, Kill and Forget run only from their
-/// undo window's capture (or a confirmed cleanup's, which has its own
-/// command). Without a delay reference nothing runs: no lane, probe, hgs call
-/// or cleanup observation. `actions::invocation` refuses them as well.
-fn undelayed_end(
-    action: &Action,
-    delay: Option<&crate::action_delay::Reference>,
-) -> Option<Outcome> {
-    (delay.is_none() && zerus_client_core::end_action::needs_capture(action))
+/// zerus-sa9qn.25: Archive, Terminate, Kill and Forget run only from a
+/// capture: their undo window's, a confirmed worktree cleanup's or a native
+/// termination confirmation's. Without one the dispatcher refuses them at its
+/// entry, for run_action and every other caller alike: no lane, probe, hgs
+/// call or cleanup observation. `actions::invocation` refuses them as well.
+fn uncaptured_end(action: &Action) -> Option<Outcome> {
+    zerus_client_core::end_action::needs_capture(action)
         .then(|| failed(zerus_client_core::end_action::UNDELAYED))
 }
 
@@ -1746,6 +1741,11 @@ async fn dispatch_reserved_original(
     }
     if let Some(refusal) = refused_before_claim(&target, &action) {
         return Ok(failed(refusal));
+    }
+    if delayed.is_none() && cleanup.is_none() && native.is_none() {
+        if let Some(refused) = uncaptured_end(&action) {
+            return Ok(refused);
+        }
     }
     // Pause all and Resume all are computer-wide: one per computer at a time,
     // whatever session name the caller sent.
@@ -2749,16 +2749,12 @@ mod tests {
         }
     }
 
-    /// zerus-sa9qn.25: an end action without its undo window's capture runs
-    /// nothing. run_action refuses it before any lane, probe or hgs call, and
-    /// behind that boundary the dispatcher builds no call for it either.
+    /// zerus-sa9qn.25: an end action without its capture runs nothing. The
+    /// dispatcher refuses it at its entry, before any lane, probe or hgs call,
+    /// and the core builds no call for it either.
     #[test]
     fn an_end_action_without_its_capture_runs_nothing() {
         use zerus_client_core::{end_action::UNDELAYED, Exit};
-        let reference = crate::action_delay::Reference {
-            id: "delay-1".into(),
-            index: 0,
-        };
         for action in [
             Action::Archive,
             Action::Terminate,
@@ -2766,11 +2762,31 @@ mod tests {
             Action::Forget,
         ] {
             assert_eq!(
-                undelayed_end(&action, None),
+                uncaptured_end(&action),
                 Some(failed(UNDELAYED)),
                 "{action:?}"
             );
-            assert_eq!(undelayed_end(&action, Some(&reference)), None, "{action:?}");
+            // Refused at the dispatcher's entry, before its lane: a lane another
+            // call holds still reads as refused, not busy.
+            let held = Actions::new(std::env::temp_dir().join(format!(
+                "zerus-undelayed-held-{}.json",
+                uuid::Uuid::new_v4()
+            )));
+            let holder = held.begin(Lane::key(&review(), &action), &action).unwrap();
+            let refused = tauri::async_runtime::block_on(dispatch_with_plan(
+                &held,
+                review(),
+                action.clone(),
+                uuid::Uuid::new_v4().to_string(),
+                |_, _, _| unreachable!("an uncaptured end runs nothing"),
+                None,
+            ));
+            assert_eq!(
+                refused,
+                Ok(failed(UNDELAYED)),
+                "{action:?}: refused before the lane"
+            );
+            drop(holder);
             let actions = Actions::new(
                 std::env::temp_dir()
                     .join(format!("zerus-undelayed-end-{}.json", uuid::Uuid::new_v4())),
@@ -2817,7 +2833,7 @@ mod tests {
                 dismiss_prompt: false,
             },
         ] {
-            assert_eq!(undelayed_end(&action, None), None, "{action:?}");
+            assert_eq!(uncaptured_end(&action), None, "{action:?}");
         }
     }
 
