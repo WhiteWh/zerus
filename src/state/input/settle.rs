@@ -36,12 +36,12 @@ pub(super) fn applies(agent: &str) -> bool {
     agent == "claude"
 }
 
-fn plain(row: &str) -> String {
+pub(super) fn plain(row: &str) -> String {
     styled_row(row).iter().map(|(ch, _)| ch).collect()
 }
 
 /// Claude's unindented full-width rule above and below its composer.
-fn separator(plain: &str) -> bool {
+pub(super) fn separator(plain: &str) -> bool {
     !plain.starts_with(char::is_whitespace)
         && plain.chars().count() >= 12
         && plain.chars().all(|ch| "─━╌".contains(ch))
@@ -309,10 +309,12 @@ mod tests {
     }
     const SETTLED: &str = "[Image #1] [Image #2][Pasted text #3 +35 lines]";
 
+    /// One captured screen with its cursor column and row.
+    type Shown = (String, usize, usize);
     /// Frames shown in order, one per capture; the last one stays.
-    struct Frames(Mutex<(Vec<(String, usize, usize)>, usize)>);
+    struct Frames(Mutex<(Vec<Shown>, usize)>);
     impl Frames {
-        fn new(frames: Vec<(String, usize, usize)>) -> Self {
+        fn new(frames: Vec<Shown>) -> Self {
             Frames(Mutex::new((frames, 0)))
         }
         fn current(&self) -> (String, usize, usize) {
