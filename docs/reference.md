@@ -6727,17 +6727,28 @@ Claude Code attaches a pasted line that is only an image path asynchronously:
 until it has read the image its composer is empty with a `Pasting…` footer, and
 an Enter then submits nothing (zerus-iitw8). For Claude the single Enter
 therefore waits until the composer shows the paste settled, and `submitted`
-requires Claude's own transcript to record the message: a new user row
-(`native: transcript`) or, while it works, a queue `enqueue` (`native: queue`).
-A new conversation with no transcript yet counts its settled composer emptying
-after Enter (`native: composer`). Both waits share one 8-second window from the
-paste. Otherwise the receipt stays `in_progress` with `delivery: uncertain`, its
-reason and the composer's text (at most 2,000 characters, never image bytes),
-and the error names that text; it is never retyped. Codex and Kimi show a paste
-at once, so their Enter still confirms the receipt. A busy agent's tool events
-never confirm the previous input: only an input-acceptance event (a submitted
-or queued prompt, a turn or task start) or that native proof lets the next
-request through. `agent_id` is supported only for
+requires Claude's own transcript to record exactly this message after the
+paste: a new typed user row (`native: transcript`) or, while it works, a new
+queue `enqueue` (`native: queue`). The row must hold the same lines in the same
+order, none added, apart from Claude's image tokens and blank lines, and be
+stamped no earlier than the paste. A prompt queued earlier that Claude takes
+now (a `queued` user row, a `queued_command` attachment, `remove` or `dequeue`)
+never proves a later send. A new conversation with no transcript yet counts
+its settled composer emptying after Enter (`native: composer`). Both waits
+share one 8-second window from the paste and hold no state lock, so other
+sessions' hooks run meanwhile. The send's `input_typing` marker on the session
+keeps every other input out until it ends (other sends and session actions,
+Terminal input and Clear input), and expires with the window. Before its single
+Enter the send takes the lock again, by the same deadline, and checks that its
+marker still holds and the composer still shows the settled text. Otherwise the
+receipt stays `in_progress` with `delivery: uncertain`, its reason and the
+composer's text (at most 2,000 characters, never image bytes), and the error
+names that text; it is never retyped. Codex and Kimi show a paste at once, so
+their Enter still confirms the receipt. A busy agent's tool events never
+confirm the previous input: only an input-acceptance event (a submitted or
+queued prompt, a turn or task start) or Claude's native proof lets the next
+request through. While a busy agent may still hold the previous message in its
+own queue, the refusal says so. `agent_id` is supported only for
 verified DeepSeek continuable children. Questions carry request identity/hash
 through `pending_questions`; answers use the exact unchanged request.
 

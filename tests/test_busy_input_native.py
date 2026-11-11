@@ -1,5 +1,6 @@
 """Busy native queue contracts: private homes, own tools and localhost providers."""
 import base64
+import datetime
 import http.server
 import json
 import struct
@@ -253,6 +254,39 @@ class NativeBusyClaude(claude.NativeClaudeInput):
     def test_busy_tool_queue_80x24(self):
         self.test_busy_tool_queue_preserves_drafts_and_accepts_exactly_once()
 
+    def enqueued(self, content):
+        return [r for r in self.rows() if r.get('type') == 'queue-operation'
+                and r.get('operation') == 'enqueue' and r.get('content') == content]
+
+    def test_an_identical_earlier_queued_prompt_never_proves_a_new_send(self):
+        # zerus-iitw8.4: an identical prompt already waits in Claude's queue.
+        # Only this send's own new enqueue may prove it, and both arrive.
+        release = self.root / 'tool-release'
+        self.busy_ready = True
+        try:
+            terminal_send(self, PROMPT)
+            self.wait_for((self.root / 'tool-started').exists)
+            self.record.update(activity='busy', phase='tool', active_tools={'toolu_busy': {'tool_name': 'Bash'}})
+            self.write_record()
+            terminal_send(self, 'continue')
+            self.wait_for(lambda: 'Press up to edit queued messages' in self.screen())
+            # Claude writes rows late: the earlier enqueue may land after the
+            # banner, even after this send's start. The stamps tell them apart.
+            sent_at = time.time()
+            receipt = self.send(self.payload(text='continue'))
+            self.assertEqual((receipt['status'], receipt['native']), ('submitted', 'queue'), self.screen())
+            def stamped(row):
+                return datetime.datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00')).timestamp()
+            self.wait_for(lambda: len(self.enqueued('continue')) == 2)
+            earlier, own = self.enqueued('continue')
+            self.assertLess(stamped(earlier), sent_at)
+            self.assertGreaterEqual(stamped(own), sent_at, 'the proof is this send\'s own enqueue')
+            release.touch()
+            self.wait_for(lambda: self.queued_messages().count('continue') == 2)
+            self.assertEqual(self.queued_messages(), ['continue', 'continue'])
+        finally:
+            release.touch()
+
     def rows(self):
         return [json.loads(line) for line in Path(self.record['transcript']).read_text().splitlines()]
 
@@ -319,6 +353,7 @@ class NativeHookedImagesClaude(NativeBusyClaude):
     test_busy_tool_queue_preserves_drafts_and_accepts_exactly_once = None
     test_busy_tool_queue_80x24 = None
     test_busy_pasted_images_are_queued_with_native_proof_and_delivered_once = None
+    test_an_identical_earlier_queued_prompt_never_proves_a_new_send = None
 
     @property
     def native_env(self):
