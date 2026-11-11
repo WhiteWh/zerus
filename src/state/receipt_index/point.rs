@@ -105,7 +105,7 @@ pub(in crate::state) fn delivery_binding(record: &Value, target: &Value) -> Opti
         .then(|| json!(binding))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct GraphTarget {
     schema: u8,
@@ -125,12 +125,16 @@ struct GraphEndpoint {
     provisional_run: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct Original {
     request_id: String,
     name: String,
     run_id: String,
     conversation_id: String,
+    // Keep the existing binding reader's treatment of absent/non-string
+    // resolution metadata, without retaining any payload fields.
+    #[serde(default)]
+    resolved_conversation_id: Value,
     digest: String,
     status: String,
     transport: String,
@@ -182,11 +186,28 @@ fn original(state: &Path, source: Source, id: &str) -> std::result::Result<Origi
         return Err("changed");
     }
     directory.verify().map_err(|_| "source_unavailable")?;
-    let value: Value = serde_json::from_slice(&bytes).map_err(|_| "corrupt")?;
-    Binding::parse(source, &value, &format!("{id}.json")).map_err(|_| "binding_changed")?;
-    // Deserialize from the original bytes as well: typed identity fields,
-    // including nested bindings, reject duplicates before a Value can hide them.
-    serde_json::from_slice(&bytes).map_err(|_| "invalid_receipt")
+    decode_metadata(&bytes, source, id)
+}
+
+fn decode_metadata(
+    bytes: &[u8],
+    source: Source,
+    id: &str,
+) -> std::result::Result<Original, &'static str> {
+    // Unknown payload fields are validated and skipped by serde. Only metadata
+    // is retained; typed identities/nested bindings still reject duplicates.
+    let receipt: Original = serde_json::from_slice(bytes).map_err(|error| {
+        if error.is_syntax() || error.is_eof() {
+            "corrupt"
+        } else {
+            "invalid_receipt"
+        }
+    })?;
+    // Reuse every existing source/binding constraint on a metadata-only view.
+    // In particular, do not lose resolved-CID agreement or identity bounds.
+    let metadata = serde_json::to_value(&receipt).map_err(|_| "invalid_receipt")?;
+    Binding::parse(source, &metadata, &format!("{id}.json")).map_err(|_| "binding_changed")?;
+    Ok(receipt)
 }
 
 fn controlled_directory(directory: &Directory) -> std::result::Result<bool, &'static str> {
@@ -279,4 +300,56 @@ pub(in crate::state) fn delivery_receipt(state: &Path, name: &str, query: &Deliv
         proof["native_message_id"] = json!(id);
     }
     proof
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn receipt() -> Value {
+        json!({"request_id":"11111111-1111-4111-8111-111111111111","name":"codex/example/read",
+            "run_id":"run","conversation_id":"conversation","digest":"a".repeat(64),
+            "status":"submitted","transport":"terminal","submitted_at":1.0})
+    }
+
+    #[test]
+    fn typed_metadata_skips_payloads_but_keeps_resolved_binding_checks() {
+        let mut value = receipt();
+        value["text"] = json!("private fixture body".repeat(4000));
+        value["submitted_text"] = value["text"].clone();
+        value["attachments"] = json!([{"data_base64":"private fixture bytes"}]);
+        let id = value["request_id"].as_str().unwrap().to_owned();
+        let parsed =
+            decode_metadata(&serde_json::to_vec(&value).unwrap(), Source::Terminal, &id).unwrap();
+        let metadata = serde_json::to_value(parsed).unwrap();
+        for field in ["text", "submitted_text", "attachments"] {
+            assert!(metadata.get(field).is_none(), "{field}");
+        }
+        for resolved in [Value::Null, json!(""), json!("conversation"), json!(false)] {
+            value["resolved_conversation_id"] = resolved;
+            assert!(
+                decode_metadata(&serde_json::to_vec(&value).unwrap(), Source::Terminal, &id)
+                    .is_ok()
+            );
+        }
+        value["resolved_conversation_id"] = json!("foreign");
+        assert!(matches!(
+            decode_metadata(&serde_json::to_vec(&value).unwrap(), Source::Terminal, &id),
+            Err("binding_changed")
+        ));
+    }
+
+    #[test]
+    fn duplicate_metadata_and_malformed_skipped_payloads_remain_unknown() {
+        let value = receipt();
+        let id = value["request_id"].as_str().unwrap();
+        let bytes = value.to_string();
+        let duplicate = format!("{},\"name\":\"foreign\"}}", &bytes[..bytes.len() - 1]);
+        assert!(decode_metadata(duplicate.as_bytes(), Source::Terminal, id).is_err());
+        let malformed = format!("{},\"text\":\"unterminated", &bytes[..bytes.len() - 1]);
+        assert!(matches!(
+            decode_metadata(malformed.as_bytes(), Source::Terminal, id),
+            Err("corrupt")
+        ));
+    }
 }
