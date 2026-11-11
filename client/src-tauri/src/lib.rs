@@ -1721,6 +1721,8 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         actions::set_keep_warm,
         actions::set_parent,
         actions::inspect_session,
+        actions::composer_state,
+        actions::clear_input,
         actions::inspect_subagent_identity,
         session_folders::session_folder_status,
         session_folders::session_folder_open,

@@ -887,6 +887,76 @@ class Input(Contract):
         self.assertEqual(self.received(pid), b"\x1b[200~" + text.encode() + b"\x1b[201~\r\x1b[200~second\x1b[201~\r")
         self.assertEqual([token["kind"] for token in self.tokens(pid)].count("enter"), 2)
 
+    def composer(self, row):
+        """The Terminal tab's Clear input read: the composer's text and whether it can be cleared (zerus-wkj9l)."""
+        return self.json("terminal", row["name"], "--json", input=json.dumps(dict(
+            request_id=str(uuid.uuid4()), action="composer", expected_run_id=row["run_id"],
+            expected_conversation_id=row["conversation_id"])))
+
+    def clear(self, state, text):
+        request = dict(request_id=str(uuid.uuid4()), action="clear-input", expected_run_id=state["run_id"],
+                       expected_conversation_id=state["conversation_id"], terminal_binding_id=state["terminal_binding_id"],
+                       expires_at=time.time() + 5, text=text)
+        return request, self.json("terminal", state["name"], "--json", input=json.dumps(request))
+
+    def test_clear_input_discards_exactly_the_confirmed_text_once_without_ctrl_c(self):
+        self.configure(ECHO="1")
+        name, row, agent = self.launch()
+        pid = agent["pid"]
+        frame = self.snapshot(row)
+        # A residue left in the composer, as an unconfirmed delivery leaves it.
+        self.assertEqual(self.terminal(frame, text="stale residue", enter=False)[1]["status"], "submitted")
+        self.screen(row, lambda frame, rows: rows[0] == PROMPT + "stale residue", "the residue")
+        state = self.composer(row)
+        self.assertEqual(state["composer"], dict(state="text", text="stale residue", clearable=True, reason=""))
+        typed = len(self.tokens(pid))
+        # Only the exact text the person confirmed is cleared; nothing is typed otherwise.
+        _, refused = self.clear(state, "other text")
+        self.assertEqual((refused["status"], refused["error"]), ("failed", "The input changed; review it again before clearing"))
+        self.assertEqual(len(self.tokens(pid)), typed)
+        request, receipt = self.clear(state, "stale residue")
+        self.assertEqual((receipt["status"], receipt["discarded"], receipt["rounds"]), ("cleared", "stale residue", 1), receipt)
+        self.screen(row, lambda frame, rows: rows[0] == PROMPT.strip() and frame["cursor"] == dict(x=2, y=0), "an empty prompt")
+        self.assertEqual(self.composer(row)["composer"]["state"], "empty")
+        keys = self.tokens(pid)[typed:]
+        self.assertNotIn(b"\x03", self.received(pid), "Ctrl+C would quit an agent whose composer just emptied")
+        self.assertIn("15", [token["hex"] for token in keys])
+        # The same request returns its receipt and never types again.
+        count = len(self.tokens(pid))
+        self.assertEqual(self.json("terminal", name, "--json", input=json.dumps(request)), receipt)
+        self.assertEqual(len(self.tokens(pid)), count)
+        self.assertEqual(self.sessions()[name]["run_id"], row["run_id"])
+
+    def test_clear_input_is_refused_while_busy_and_stops_when_the_composer_stops_changing(self):
+        self.configure(ECHO="1", TURN_MS="never")
+        name, row, agent = self.launch()
+        pid = agent["pid"]
+        frame = self.snapshot(row)
+        # Two lines: Ctrl+U clears the last, then the empty line does not change.
+        self.assertEqual(self.terminal(frame, text="first line\nsecond line", enter=False)[1]["status"], "submitted")
+        self.screen(row, lambda frame, rows: rows[:2] == [PROMPT + "first line", "second line"], "a two-line draft")
+        state = self.composer(row)
+        self.assertEqual(state["composer"]["text"], "first line\nsecond line")
+        _, receipt = self.clear(state, "first line\nsecond line")
+        self.assertEqual((receipt["status"], receipt["error"], receipt["composer"]),
+                         ("uncertain", "The input did not change after clearing", "first line"), receipt)
+        # A busy agent is never cleared: Ctrl+C empties the fake's composer and
+        # a sent message starts a turn that does not stop.
+        self.key(frame, pid, "C-c")
+        self.control(pid, "write \\e[2J\\e[H" + PROMPT + "\\e[1;3H")
+        self.screen(row, lambda frame, rows: rows[0] == PROMPT.strip() and frame["cursor"] == dict(x=2, y=0), "an empty prompt")
+        self.assertEqual(self.send(name, self.message(row, "a working turn"))["status"], "submitted")
+        self.wait_for(lambda: self.sessions()[name]["activity"] == "busy", "the working turn")
+        frame = self.snapshot(row)
+        self.assertEqual(self.terminal(frame, text="residue", enter=False)[1]["status"], "submitted")
+        self.screen(row, lambda frame, rows: any(row.endswith("residue") for row in rows), "a residue")
+        state = self.composer(row)
+        self.assertEqual((state["composer"]["clearable"], state["composer"]["reason"]), (False, "Wait until the agent is idle"))
+        typed = len(self.tokens(pid))
+        _, refused = self.clear(state, "residue")
+        self.assertEqual((refused["status"], refused["error"]), ("failed", "The agent is busy; clear its input once it is idle"))
+        self.assertEqual(len(self.tokens(pid)), typed)
+
     def test_send_needs_an_empty_composer_read_from_the_screen(self):
         self.configure(ECHO="1")
         name, row, agent = self.launch()

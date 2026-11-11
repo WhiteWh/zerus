@@ -279,6 +279,17 @@ export async function setParent(target: Target, change: ParentChange): Promise<R
 }
 
 /** The inspect fields of a session; null when they are unavailable. */
+/** Terminal's Clear input read (zerus-wkj9l, core clear_input::ComposerState). */
+export interface ComposerState { binding: string; state: "empty" | "text" | "unknown"; text: string; clearable: boolean; reason: string }
+/** What one explicit clear did: `failed` typed nothing, `uncertain` may have sent keys. */
+export interface ClearOutcome { status: "cleared" | "failed" | "uncertain"; error: string; composer: string | null }
+export async function composerState(target: Target): Promise<ComposerState | null> {
+  return invoke<ComposerState | null>("composer_state", { target });
+}
+export async function clearInput(target: Target, binding: string, text: string): Promise<ClearOutcome> {
+  return invoke<ClearOutcome>("clear_input", { target, binding, text });
+}
+
 export async function inspectSession(target: Target, archiveId: string | null): Promise<Details | null> {
   if (!inTauri()) return null;
   return (await invoke<Details | null>("inspect_session", { target, archiveId })) ?? null;

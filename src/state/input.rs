@@ -13,8 +13,9 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::time::Duration;
 
+pub(crate) mod composer;
 mod diagnostic;
-mod settle;
+pub(crate) mod settle;
 pub(crate) mod task_refusal;
 
 const MAX_TEXT: usize = 64 * 1024;
@@ -318,9 +319,12 @@ pub(crate) fn resumed_readiness(record: &Value) -> Readiness {
 /// `input_seen_at` and keeps the event rule it was written under.
 pub(crate) fn input_unconfirmed(record: &Value) -> bool {
     let seen = if record.get("input_seen_at").is_some() { "input_seen_at" } else { "last_event_at" };
-    record["input_pending_at"]
-        .as_f64()
-        .is_some_and(|pending| record[seen].as_f64().unwrap_or(0.0) <= pending)
+    record["input_pending_at"].as_f64().is_some_and(|pending| {
+        record[seen].as_f64().unwrap_or(0.0) <= pending
+            // The person cleared the composer since (Terminal's Clear input,
+            // zerus-wkj9l): what was typed is gone from it, by their choice.
+            && record["input_cleared_at"].as_f64().unwrap_or(0.0) <= pending
+    })
 }
 
 fn checked_input(

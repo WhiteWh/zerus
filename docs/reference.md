@@ -5822,6 +5822,27 @@ so path characters are not individual native approval shortcuts. It still sends
 no Enter. Generic typing, text paste and Windows file-drop framing are unchanged.
 **Open externally** and **Copy connect command** retain access from other clients.
 
+**Clear input** (an eraser icon in the Terminal bar) discards text left in the
+native agent's own composer, such as a message whose delivery was uncertain
+(zerus-wkj9l). It shows only while the selected live session's composer is
+recognized and not empty, its agent is not working, and nothing is being sent
+to it; the Terminal tab reads the composer every few seconds while it is shown.
+The confirmation shows the exact text that will be discarded. After **Clear
+input**, `hgs terminal SESSION --json` (`action: "clear-input"`, the composer
+read's `terminal_binding_id`, a 5-second deadline and that exact `text`) takes
+the input lock and refuses a busy agent, a changed terminal or any other
+composer text before a key is sent. It then presses End and Ctrl+U, which clear
+a line in Claude Code, Codex and Kimi Code and do nothing on an empty composer.
+Ctrl+C is never sent: Codex quits on it once the composer is empty. It reads
+the composer again after every round and stops once it is empty (`cleared`),
+or reports `uncertain` with the remaining text when it stops changing, as a
+multi-line draft can. A request ID is never replayed. The clear is recorded with
+the session (`input_cleared`) and settles an unconfirmed earlier input whose
+residue it was. It is only ever the person's action: no delivery or retry uses
+it. The read is `action: "composer"`, which returns the text, `clearable` and
+the reason when it is not. A Codex session started in the home folder itself
+is not recognized and is cleared in Terminal.
+
 In Zerus Next on Linux and macOS, an image-bearing browser paste event stays in
 the selected Terminal. On Arch with WebKitGTK, use **Shift+Insert** for an image
 on the clipboard; Ctrl+Shift+V retains the engine's text-paste behavior and
