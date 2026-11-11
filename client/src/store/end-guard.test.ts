@@ -36,7 +36,7 @@ vi.mock("../bridge", () => ({
 }));
 import * as bridge from "../bridge";
 import { applyBatch, catalog } from "./catalog";
-import { end } from "./actions";
+import { end, forget } from "./actions";
 import { endAfter } from "./batch";
 import { actionEntries } from "../ui/sessions/ActionDialogs";
 import { snapshotOf } from "../ui/sessions/actions-ui";
@@ -96,6 +96,21 @@ describe("the app's end actions always carry a delay reference", () => {
       { target: target(tracked), action: { kind: "terminate" }, state: "running" },
       { target: target(plain), action: { kind: "kill" }, state: "running" },
     ]);
+  });
+
+  it("the Forget saved session confirmation (zerus-sa9qn.27)", async () => {
+    const [saved] = rows(["saved", { state: "stopped" }]);
+    await forget(snapshotOf(listed(saved)), { binding: false, run: "", conversation: "" });
+    expect(calls()).toEqual([[`claude/p/${saved}`, "forget", { id: "delay-1", index: 0 }]]);
+    expect(scheduled[0]).toEqual([{ target: target(saved), action: { kind: "forget" }, state: "stopped" }]);
+  });
+
+  it("the Forget confirmation of an OpenCode binding, with the run and conversation it opened with (zerus-sa9qn.27)", async () => {
+    const [bound] = rows(["bound", { agent: "opencode", allowed_actions: ["forget", "rename"] }]);
+    const row = snapshotOf(listed(bound));
+    await forget(row, { binding: true, run: `run-${bound}`, conversation: `conv-${bound}` });
+    expect(calls()).toEqual([[`claude/p/${bound}`, "forget_binding", { id: "delay-1", index: 0 }]]);
+    expect(scheduled[0]).toEqual([{ target: target(bound), action: { kind: "forget_binding" }, state: "running" }]);
   });
 
   it("each child a parent's Terminate or Move to archive confirmation ends, with its listed run and conversation", async () => {

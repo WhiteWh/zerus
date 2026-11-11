@@ -448,13 +448,17 @@ Nothing in this version creates such a lock.
 
 The desktop client adds `--session-id` only to explicit actions: send, send
 now, answer, queued-message removal, clear and compact, interrupt, model
-settings, pause, resume, start fresh, rename, fork, archive, terminate, kill
-and forget. It does so when the listed row for the action's exact run carries a
-session ID and that computer's `hgs --help` lists `session-id-selector-v1`; the
-answer is kept for ten minutes. Reads, polls, history, status, watch, terminal
-input and read marks keep the name until a label index exists. Confirmed
-delayed and worktree-cleanup end actions keep their scoped envelope, which
-already names the exact run and conversation. A refused ID shows as a changed
+settings, pause, resume, start fresh, rename and fork. It does so when the
+listed row for the action's exact run carries a session ID and that computer's
+`hgs --help` lists `session-id-selector-v1`; the answer is kept for ten minutes.
+Reads, polls, history, status, watch, terminal input and read marks keep the
+name until a label index exists. Confirmed delayed and worktree-cleanup end
+actions keep their scoped envelope, which already names the exact run and
+conversation. Archive, Terminate, Kill and Forget run only that way: without
+their undo window's capture (or a confirmed worktree cleanup) the desktop runs
+none of them, and it never sends a name-only `hgs archive` or `hgs kill` or a
+run-only `hgs terminate` (zerus-sa9qn.25). Clear archive's Forget stays bound to
+each entry's archive ID. A refused ID shows as a changed
 session, but only when the CLI refused it while resolving it: another name, no
 session or several sessions. A later read's "no longer names", which can
 follow an effect, keeps the action's own result.

@@ -3048,8 +3048,10 @@ fn check_blocking<A: Send + 'static>(
     }
     #[test]
     fn legacy_end_actions_complete_without_offering_guarded_restore() {
-        use zerus_client_core::{Action, Exit};
-        for action in [Action::Archive, Action::Terminate] {
+        use zerus_client_core::{end_action::Captured, Action, Exit};
+        // Each end runs from its undo window's capture (zerus-sa9qn.25); the
+        // guard probe and its legacy fallback apply to that call.
+        for (action, state) in [(Action::Archive, "paused"), (Action::Terminate, "running")] {
             for probe in ["supported", "legacy", "timeout", "failed"] {
                 let target = source();
                 let actions = crate::actions::Actions::new(
@@ -3061,11 +3063,15 @@ fn check_blocking<A: Send + 'static>(
                 let held = actions.clone();
                 let original = target.clone();
                 let expected = action.clone();
+                let captured = Captured {
+                    target: target.clone(),
+                    action: action.clone(),
+                    state: state.into(),
+                };
                 let (outcome, supported) =
-                    tauri::async_runtime::block_on(crate::actions::dispatch_end_with(
+                    tauri::async_runtime::block_on(crate::actions::dispatch_captured_end_with(
                         &actions,
-                        target.clone(),
-                        action.clone(),
+                        captured,
                         MACHINE.into(),
                         move |_, inv| {
                             assert!(held
@@ -3094,10 +3100,27 @@ fn check_blocking<A: Send + 'static>(
                                 zerus_client_core::worktrees::guarded(inv),
                                 probe == "supported"
                             );
+                            if inv.args.iter().any(|s| s == "inspect") {
+                                // The capture's fresh metadata read.
+                                let value = serde_json::json!({"name":original.name,"run_id":original.run_id,
+                                    "conversation_id":original.conversation_id,"state":state});
+                                return Exit::Code {
+                                    code: 0,
+                                    stdout: serde_json::to_vec(&value).unwrap(),
+                                    stderr: String::new(),
+                                };
+                            }
+                            assert!(inv.args.iter().any(|s| s == "session-action"), "{inv:?}");
+                            let body: serde_json::Value =
+                                serde_json::from_slice(inv.stdin.as_deref().unwrap()).unwrap();
+                            assert_eq!(body["expected_run_id"], original.run_id.as_str());
+                            assert_eq!(body["expected_conversation_id"], original.conversation_id.as_str());
                             seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let receipt = serde_json::json!({"request_id":body["request_id"],"name":original.name,
+                                "run_id":original.run_id,"conversation_id":original.conversation_id,"status":"completed"});
                             Exit::Code {
                                 code: 0,
-                                stdout: Vec::new(),
+                                stdout: serde_json::to_vec(&receipt).unwrap(),
                                 stderr: format!(
                                     "ZERUS_WORKTREE_CLEANUP {}\n",
                                     serde_json::to_string(&report("kept")).unwrap()

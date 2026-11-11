@@ -1178,6 +1178,12 @@ pub async fn run_action(
     delay: Option<crate::action_delay::Reference>,
 ) -> Result<ActionReply, String> {
     use tauri::Manager;
+    if let Some(refused) = undelayed_end(&action, delay.as_ref()) {
+        return Ok(ActionReply {
+            outcome: refused,
+            cleanup_capture: None,
+        });
+    }
     let ending = matches!(action, Action::Archive | Action::Terminate);
     let machine = if ending {
         crate::worktree_cleanup::machine(&source, &target.computer).unwrap_or_default()
@@ -1198,8 +1204,6 @@ pub async fn run_action(
             None,
         )
         .await?
-    } else if ending && !machine.is_empty() {
-        dispatch_guarded_end(&state, target.clone(), action, machine.clone()).await?
     } else {
         (dispatch(&state, target.clone(), action).await?, false)
     };
@@ -1212,28 +1216,44 @@ pub async fn run_action(
     })
 }
 
-async fn dispatch_guarded_end(
-    state: &Actions,
-    target: Target,
-    action: Action,
-    machine: String,
-) -> Result<(Outcome, bool), String> {
-    dispatch_end_with(state, target, action, machine, run).await
+/// zerus-sa9qn.25: Archive, Terminate, Kill and Forget run only from their
+/// undo window's capture (or a confirmed cleanup's, which has its own
+/// command). Without a delay reference nothing runs: no lane, probe, hgs call
+/// or cleanup observation. `actions::invocation` refuses them as well.
+fn undelayed_end(
+    action: &Action,
+    delay: Option<&crate::action_delay::Reference>,
+) -> Option<Outcome> {
+    (delay.is_none() && zerus_client_core::end_action::needs_capture(action))
+        .then(|| failed(zerus_client_core::end_action::UNDELAYED))
 }
 
-/// Legacy peers retain their original end action. Only a successful probe
-/// explicitly lacking the marker permits that fallback; transport failures
-/// never authorize a second attempt or a weaker Restore.
-pub(crate) async fn dispatch_end_with(
+/// A captured end through the reserved lane, as its undo window runs it, for
+/// the guard-probe fixtures. A legacy peer keeps its original call without
+/// `--expect-machine` only when a successful probe explicitly lacks the
+/// marker; transport failures never authorize a second attempt or a weaker
+/// Restore.
+#[cfg(test)]
+pub(crate) async fn dispatch_captured_end_with(
     state: &Actions,
-    target: Target,
-    action: Action,
+    captured: zerus_client_core::end_action::Captured,
     machine: String,
     runner: impl Fn(&std::path::Path, &zerus_client_core::Invocation) -> zerus_client_core::Exit
         + Send
         + 'static,
 ) -> Result<(Outcome, bool), String> {
-    dispatch_end_reserved_with(state, target, action, machine, runner, None, None).await
+    let claim = state.reserve_end(&captured.target).ok_or(BUSY)?;
+    let (target, action) = (captured.target.clone(), captured.action.clone());
+    dispatch_end_reserved_with(
+        state,
+        target,
+        action,
+        machine,
+        runner,
+        Some((captured, claim)),
+        None,
+    )
+    .await
 }
 
 async fn dispatch_end_reserved_with(
@@ -1464,7 +1484,11 @@ pub(crate) async fn terminal_image_test_dispatch(
 }
 
 /// `dispatch_as` past its replay guard, with the runner that starts `hgs`:
-/// the core's `run`, or in tests a stand-in that starts no process.
+/// the core's `run`, or in tests a stand-in that starts no process. Archive,
+/// Terminate, Kill and Forget run only from a capture (zerus-sa9qn.25), so
+/// they run here as their undo window runs them: the stand-in's own answer
+/// to the fresh metadata read is the captured source, and its successful
+/// exit becomes the exact completed receipt of the scoped call.
 #[cfg(test)]
 async fn dispatch_with(
     state: &Actions,
@@ -1475,6 +1499,48 @@ async fn dispatch_with(
         + Send
         + 'static,
 ) -> Result<Outcome, String> {
+    if zerus_client_core::end_action::needs_capture(&action) {
+        use zerus_client_core::Exit;
+        let lifecycle = if matches!(action, Action::Terminate | Action::Kill) {
+            "running"
+        } else {
+            "paused"
+        };
+        let captured = zerus_client_core::end_action::Captured {
+            target: target.clone(),
+            action,
+            state: lifecycle.into(),
+        };
+        let source = target;
+        return dispatch_captured_end_with(state, captured, String::new(), move |hgs, inv| {
+            if inv.args.iter().any(|s| s == "inspect") {
+                let value = serde_json::json!({"name":source.name,"run_id":source.run_id,
+                    "conversation_id":source.conversation_id,"state":lifecycle});
+                return Exit::Code {
+                    code: 0,
+                    stdout: serde_json::to_vec(&value).unwrap(),
+                    stderr: String::new(),
+                };
+            }
+            match runner(hgs, inv) {
+                Exit::Code { code: 0, stderr, .. } => {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(inv.stdin.as_deref().unwrap_or_default())
+                            .unwrap_or_default();
+                    let receipt = serde_json::json!({"request_id":body["request_id"],"name":source.name,
+                        "run_id":source.run_id,"conversation_id":source.conversation_id,"status":"completed"});
+                    Exit::Code {
+                        code: 0,
+                        stdout: serde_json::to_vec(&receipt).unwrap(),
+                        stderr,
+                    }
+                }
+                other => other,
+            }
+        })
+        .await
+        .map(|(outcome, _)| outcome);
+    }
     dispatch_with_plan(
         state,
         target,
@@ -2680,6 +2746,78 @@ mod tests {
                 matches!(out, Outcome::Done { cleanup: None, .. }),
                 scenario == "exact"
             );
+        }
+    }
+
+    /// zerus-sa9qn.25: an end action without its undo window's capture runs
+    /// nothing. run_action refuses it before any lane, probe or hgs call, and
+    /// behind that boundary the dispatcher builds no call for it either.
+    #[test]
+    fn an_end_action_without_its_capture_runs_nothing() {
+        use zerus_client_core::{end_action::UNDELAYED, Exit};
+        let reference = crate::action_delay::Reference {
+            id: "delay-1".into(),
+            index: 0,
+        };
+        for action in [
+            Action::Archive,
+            Action::Terminate,
+            Action::Kill,
+            Action::Forget,
+        ] {
+            assert_eq!(
+                undelayed_end(&action, None),
+                Some(failed(UNDELAYED)),
+                "{action:?}"
+            );
+            assert_eq!(undelayed_end(&action, Some(&reference)), None, "{action:?}");
+            let actions = Actions::new(
+                std::env::temp_dir()
+                    .join(format!("zerus-undelayed-end-{}.json", uuid::Uuid::new_v4())),
+            );
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let c = Arc::clone(&calls);
+            let out = tauri::async_runtime::block_on(dispatch_with_plan(
+                &actions,
+                review(),
+                action.clone(),
+                uuid::Uuid::new_v4().to_string(),
+                move |_, _, _| {
+                    c.fetch_add(1, Ordering::Relaxed);
+                    Exit::Code {
+                        code: 0,
+                        stdout: Vec::new(),
+                        stderr: String::new(),
+                    }
+                },
+                None,
+            ))
+            .unwrap();
+            assert_eq!(out, failed(UNDELAYED), "{action:?}");
+            assert_eq!(
+                calls.load(Ordering::Relaxed),
+                0,
+                "{action:?}: no probe and no hgs call"
+            );
+            assert!(
+                actions
+                    .begin(Lane::key(&review(), &action), &action)
+                    .is_some(),
+                "{action:?}: no lane is left held"
+            );
+        }
+        // The other actions keep their own calls, delayed or not.
+        for action in [
+            Action::Pause,
+            Action::ForgetBinding,
+            Action::ForgetArchive {
+                archive_id: "20000000-0000-4000-8000-000000000001".into(),
+            },
+            Action::ClearContext {
+                dismiss_prompt: false,
+            },
+        ] {
+            assert_eq!(undelayed_end(&action, None), None, "{action:?}");
         }
     }
 
