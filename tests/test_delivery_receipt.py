@@ -59,6 +59,7 @@ class DeliveryReceipt(unittest.TestCase):
                      submitted_text='private original body', attachments=[], transport={'dsh': 'native_dsh', 'opencode': 'native_opencode'}.get(provider, 'terminal'),
                      delivery_binding=dict(schema=1, machine_id=MACHINE, session_id=SESSION, provider=provider,
                                            namespace='account:' + 'a' * 64))
+        if provider == 'opencode': value['native_message_id'] = 'msg_VALID_123'
         value.update(changes)
         path = directory / (MESSAGE + '.json')
         path.write_text(json.dumps(value)); path.chmod(0o600)
@@ -81,6 +82,32 @@ class DeliveryReceipt(unittest.TestCase):
             self.assertNotIn('private original body', json.dumps(response))
             self.assertNotIn('text', response)
             self.assertEqual(self.snapshot(), before)
+
+    def test_source_specific_native_ids_are_required_and_never_leak_paths(self):
+        query = {**self.query, 'provider': 'opencode'}
+        for ident in (None, '', 'msg_', 'not-an-opencode-message-id', '/private/fixture/session.json',
+                      'msg_bad/name', 'msg_bad\\name', 'msg_bad\nname', 'msg_' + 'a' * 125, 17):
+            with self.subTest(ident=ident):
+                path = self.write('opencode', native_message_id=ident)
+                before = self.snapshot()
+                response = self.call(query)
+                self.assertEqual(response['status'], 'unknown')
+                self.assertNotIn('proof', response)
+                self.assertNotIn('native_message_id', response)
+                self.assertEqual(self.snapshot(), before)
+        path = self.write('opencode'); value = json.loads(path.read_text()); del value['native_message_id']
+        path.write_text(json.dumps(value))
+        self.assertEqual(self.call(query)['status'], 'unknown')
+        for ident in ('msg_VALID_123', 'msg_' + 'a' * 124):
+            self.write('opencode', native_message_id=ident)
+            response = self.call(query)
+            self.assertEqual(response['status'], 'submitted')
+            self.assertEqual(response['native_message_id'], ident)
+        for provider in ('codex', 'claude', 'kimi', 'dsh'):
+            self.write(provider, native_message_id='/private/fixture/session.json')
+            response = self.call({**self.query, 'provider': provider})
+            self.assertEqual(response['status'], 'unknown')
+            self.assertNotIn('native_message_id', response)
 
     def test_every_original_binding_and_digest_mismatch_stays_unknown(self):
         path = self.write(); original = json.loads(path.read_text())

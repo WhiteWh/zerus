@@ -1716,6 +1716,8 @@ The request's machine and durable session binding must match the original.
 The native digest is the unchanged producer digest: SHA-256 of the exact stdin
 bytes for terminal sends, or of the compact JSON `[original_name, request]` for
 DeepSeek and OpenCode. It is distinct from a phone's canonical intent digest.
+OpenCode proof requires the original provider-valid `msg_` message ID; missing,
+malformed or unsupported native IDs remain unknown and are never exposed as delivery evidence.
 
 A verified submitted original returns body-free metadata, its submission time,
 queue flag and an exact native message ID only when the original records one.

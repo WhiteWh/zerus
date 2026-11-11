@@ -258,11 +258,15 @@ pub(in crate::state) fn delivery_receipt(state: &Path, name: &str, query: &Deliv
     if !receipt.submitted_at.is_finite() || receipt.submitted_at < 0.0 {
         return fail("invalid_receipt");
     }
-    if receipt
-        .native_message_id
-        .as_deref()
-        .is_some_and(|id| id.is_empty() || !bounded_identity(id, 256))
-    {
+    // OpenCode allocates this exact provider ID before its first offer. Other
+    // producers record no native message ID; unsupported metadata is not proof.
+    let native_id_valid = match query.source() {
+        Source::OpenCode => receipt.native_message_id.as_deref().is_some_and(|id| {
+            id.len() > "msg_".len() && crate::state::opencode::native_id(id, "msg_")
+        }),
+        _ => receipt.native_message_id.is_none(),
+    };
+    if !native_id_valid {
         return fail("invalid_receipt");
     }
     let mut proof = query.response(name, "");
