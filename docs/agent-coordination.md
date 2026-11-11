@@ -14,12 +14,12 @@ effective copy means the latest prompt, not every hint retained in history:
 opting out does not remove old hint-bearing system messages, and re-enabling
 can retain them beside a new one. OpenCode uses an experimental per-session
 instruction entry, not SessionStart or an Activity message. After-turn adoption
-remains unqualified because OpenCode would persist an update that duplicates
-the baseline instruction in model context. Global and exact-account opt-outs
-affect new injection attempts, while `guide` and `self` remain available. Hint
-policy is resolved for each new process, including resume, and inherited
-environment overrides are a process snapshot, not live configuration reload.
-Native children and arbitrary commands are outside this hint channel.
+remains unqualified because OpenCode would persist an `Instructions updated`
+system row in native history. Global and exact-account opt-outs affect new
+injection attempts, while `guide` and `self` remain available. Hint policy is
+resolved for each new process, including resume, and inherited environment
+overrides are a process snapshot, not live configuration reload. Native
+children and arbitrary commands are outside this hint channel.
 
 An independent session is not a native subagent. Declare dependencies through
 `hgs wait`. Prose, a submitted message, Beads status, a native Stop and an idle

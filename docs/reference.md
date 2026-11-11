@@ -212,11 +212,11 @@ session gets its own entry. Inspection, background polling and resume never
 attach it.
 
 OpenCode persists a noninitial instruction delta as an `Instructions updated`
-system message. On the next turn that duplicates the baseline entry in model
-context, so attaching to a previously unmarked conversation after its first
-turn is not supported. Such conversations remain unmarked rather than receiving
-a duplicate or having native history rewritten. This limitation leaves their
-channel unqualified.
+system message. That makes the channel a durable transcript update rather than
+a history-free instruction entry, so attaching to a previously unmarked
+conversation after its first turn is not supported. Such conversations remain
+unmarked rather than receiving a durable update or having native history
+rewritten. This limitation leaves their channel unqualified.
 
 Configure optional injection in the hgs config file or caller environment:
 
