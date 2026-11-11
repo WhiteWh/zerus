@@ -500,7 +500,8 @@ mod tests {
     /// parent is renamed away and another session takes its label, or the
     /// parent is restarted into another run. Both commands refuse, and the
     /// label's new holder, the renamed parent and the child all stay; the same
-    /// parent unchanged ends with its child.
+    /// parent unchanged ends with its child. A dry run is bound the same way
+    /// (zerus-sa9qn.31): it refuses a changed parent, and none ends anything.
     #[cfg(unix)]
     #[test]
     #[ignore = "process-isolated private state fixture"]
@@ -516,18 +517,29 @@ mod tests {
                 .count()
         };
         let mut n = 100;
-        for command in ["archive", "terminate"] {
+        for (command, dry) in [
+            ("archive", false),
+            ("terminate", false),
+            ("archive", true),
+            ("terminate", true),
+        ] {
             for change in ["", "relabel", "restart"] {
                 n += 3;
                 let label = format!(
-                    "{command}-{}",
+                    "{command}{}-{}",
+                    if dry { "-dry" } else { "" },
                     if change.is_empty() { "same" } else { change }
                 );
                 let parent = saved(n, &format!("{label}-lead"), None);
                 let child = saved(n + 1, &format!("{label}-child"), Some(&parent));
                 let name = string(&parent, "name").to_owned();
                 session_id::clear();
-                let planned = plan(command, &[name.clone(), FLAG.into()]).unwrap();
+                let mut args = vec![name.clone(), FLAG.into()];
+                if dry {
+                    args.push("--dry-run".into());
+                }
+                let planned = plan(command, &args).unwrap();
+                assert_eq!(planned.dry, dry, "{label}");
                 assert_eq!(
                     planned.parent.session_id,
                     string(&parent, "session_id"),
@@ -555,9 +567,10 @@ mod tests {
                 }
                 let result = run(&planned);
                 if change.is_empty() {
+                    let ended = usize::from(!dry);
                     assert_eq!(result, Ok(0), "{label}");
-                    assert_eq!(archived(&name), 1, "{label}");
-                    assert_eq!(archived(string(&child, "name")), 1, "{label}");
+                    assert_eq!(archived(&name), ended, "{label}");
+                    assert_eq!(archived(string(&child, "name")), ended, "{label}");
                     continue;
                 }
                 assert!(
@@ -584,6 +597,46 @@ mod tests {
                     assert!(legacy_record_path(&renamed).exists(), "{label}");
                 }
             }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_parent_listed_without_a_session_id_still_ends_with_its_child() {
+        isolated("legacy_parent_fixture");
+    }
+
+    /// The parent's binding checks only the identities the listing showed
+    /// (zerus-sa9qn.29): a parent saved without a session ID, whose child links
+    /// it by conversation, still ends with that child under both commands.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "process-isolated private state fixture"]
+    fn legacy_parent_fixture() {
+        if std::env::var("ZERUS_END_CHILDREN_FIXTURE").as_deref() != Ok("1") {
+            return;
+        }
+        let archived = |name: &str| {
+            archive::records()
+                .unwrap()
+                .iter()
+                .filter(|entry| string(entry, "name") == name)
+                .count()
+        };
+        for (n, command) in [(200, "archive"), (203, "terminate")] {
+            let label = format!("legacy-{command}");
+            let mut parent = saved(n, &format!("{label}-lead"), None);
+            parent.as_object_mut().unwrap().remove("session_id");
+            write_saved(&parent);
+            let child = saved(n + 1, &format!("{label}-child"), Some(&parent));
+            let name = string(&parent, "name").to_owned();
+            session_id::clear();
+            let planned = plan(command, &[name.clone(), FLAG.into()]).unwrap();
+            assert_eq!(planned.parent.session_id, "", "{label}");
+            assert_eq!(planned.children.len(), 1, "{label}");
+            assert_eq!(run(&planned), Ok(0), "{label}");
+            assert_eq!(archived(&name), 1, "{label}");
+            assert_eq!(archived(string(&child, "name")), 1, "{label}");
         }
     }
 }

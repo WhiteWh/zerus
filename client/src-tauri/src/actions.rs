@@ -2751,16 +2751,26 @@ mod tests {
 
     /// zerus-sa9qn.25: an end action without its capture runs nothing. The
     /// dispatcher refuses it at its entry, before any lane, probe or hgs call,
-    /// and the core builds no call for it either.
+    /// and the core builds no call for it either. This computer's sessions
+    /// are refused there as a peer's are (zerus-sa9qn.30).
     #[test]
     fn an_end_action_without_its_capture_runs_nothing() {
         use zerus_client_core::{end_action::UNDELAYED, Exit};
-        for action in [
+        let local = Target {
+            computer: String::new(),
+            ..review()
+        };
+        let ends = [
             Action::Archive,
             Action::Terminate,
             Action::Kill,
             Action::Forget,
-        ] {
+        ];
+        for (target, action) in [local, review()]
+            .into_iter()
+            .flat_map(|target| ends.clone().map(|action| (target.clone(), action)))
+        {
+            let computer = target.computer.clone();
             assert_eq!(
                 uncaptured_end(&action),
                 Some(failed(UNDELAYED)),
@@ -2772,10 +2782,10 @@ mod tests {
                 "zerus-undelayed-held-{}.json",
                 uuid::Uuid::new_v4()
             )));
-            let holder = held.begin(Lane::key(&review(), &action), &action).unwrap();
+            let holder = held.begin(Lane::key(&target, &action), &action).unwrap();
             let refused = tauri::async_runtime::block_on(dispatch_with_plan(
                 &held,
-                review(),
+                target.clone(),
                 action.clone(),
                 uuid::Uuid::new_v4().to_string(),
                 |_, _, _| unreachable!("an uncaptured end runs nothing"),
@@ -2784,7 +2794,7 @@ mod tests {
             assert_eq!(
                 refused,
                 Ok(failed(UNDELAYED)),
-                "{action:?}: refused before the lane"
+                "{action:?} on {computer:?}: refused before the lane"
             );
             drop(holder);
             let actions = Actions::new(
@@ -2795,7 +2805,7 @@ mod tests {
             let c = Arc::clone(&calls);
             let out = tauri::async_runtime::block_on(dispatch_with_plan(
                 &actions,
-                review(),
+                target.clone(),
                 action.clone(),
                 uuid::Uuid::new_v4().to_string(),
                 move |_, _, _| {
@@ -2809,17 +2819,17 @@ mod tests {
                 None,
             ))
             .unwrap();
-            assert_eq!(out, failed(UNDELAYED), "{action:?}");
+            assert_eq!(out, failed(UNDELAYED), "{action:?} on {computer:?}");
             assert_eq!(
                 calls.load(Ordering::Relaxed),
                 0,
-                "{action:?}: no probe and no hgs call"
+                "{action:?} on {computer:?}: no probe and no hgs call"
             );
             assert!(
                 actions
-                    .begin(Lane::key(&review(), &action), &action)
+                    .begin(Lane::key(&target, &action), &action)
                     .is_some(),
-                "{action:?}: no lane is left held"
+                "{action:?} on {computer:?}: no lane is left held"
             );
         }
         // The other actions keep their own calls, delayed or not.
