@@ -16,12 +16,17 @@ export const CHILD_DEPTH = 8;
  * first: every child before any grandchild. One pass over `rows` builds a
  * bounded child index; the walk never visits a session twice and stops after
  * CHILD_DEPTH levels. A session on another computer is never listed: its link
- * there is a claim this computer cannot verify.
+ * there is a claim this computer cannot verify. Nor is one whose link its own
+ * listing marks `missing` (zerus-sa9qn.22): a link another computer forwarded
+ * is always `missing` there, whatever session here its IDs name
+ * (`parent_link::decorate`), and `hgs --with-children` never matches it
+ * (`end_children::descendants`). The list may still nest such a row; only the
+ * offer to end it is withheld.
  */
 export function liveDescendants(parent: Pick<Session, "key" | "computer">, rows: Iterable<Session>, parentKey: (s: Session) => string | undefined): Session[] {
   const children = new Map<string, Session[]>();
   for (const s of rows) {
-    if (s.computer !== parent.computer || s.state === "archived") continue;
+    if (s.computer !== parent.computer || s.state === "archived" || s.parent?.state === "missing") continue;
     const up = parentKey(s);
     if (!up || up === s.key) continue;
     const list = children.get(up);
