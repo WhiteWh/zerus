@@ -425,6 +425,28 @@ raise SystemExit(result)
         self.assertEqual(json.loads(result.stdout), receipt)
         self.assertEqual(self.rows(), [])
 
+    def test_missing_account_catalog_refuses_before_offering_input_or_receipt(self):
+        self.case.cache.unlink()
+        result = self.call()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('No model catalog is available for this account', result.stderr)
+        self.assertNotIn('delivery uncertain', result.stderr.lower())
+        self.assertFalse(self.receipt_path.exists())
+        self.assertEqual(self.rows(), [])
+        self.assertNotIn('input_pending_at', json.loads(self.path.read_bytes()))
+        self.assertEqual(json.loads(self.pending_path.read_bytes())['status'], 'scheduled')
+
+    def test_empty_account_catalog_refuses_before_offering_input_or_receipt(self):
+        self.case.cache.write_text(json.dumps(dict(models=[])))
+        result = self.call()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('No model catalog is available for this account', result.stderr)
+        self.assertNotIn('delivery uncertain', result.stderr.lower())
+        self.assertFalse(self.receipt_path.exists())
+        self.assertEqual(self.rows(), [])
+        self.assertNotIn('input_pending_at', json.loads(self.path.read_bytes()))
+        self.assertEqual(json.loads(self.pending_path.read_bytes())['status'], 'scheduled')
+
     def test_changed_pending_receipt_after_admission_does_not_offer_input(self):
         self.case.env['SEND_FAULT'] = 'pending-receipt'
         result = self.call()

@@ -575,6 +575,11 @@ fn snapshot(name: &str, raw: &[u8]) -> Option<Candidate> {
 
 pub(super) fn front(public: &PublicSend, name: &str, raw: &[u8]) -> Option<Result<Value>> {
     let candidate = snapshot(name, raw)?;
+    // An unavailable account catalog is knowable before selection/offer.
+    // Preserve the ordinary path, including its pre-input-receipt refusal.
+    if !effort::pending_catalog_available(&candidate.record) {
+        return None;
+    }
     effort::front_pending_send(public, candidate, raw)
 }
 

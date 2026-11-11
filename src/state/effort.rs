@@ -762,6 +762,12 @@ fn catalog(record: &Value) -> Vec<ModelOption> {
     result
 }
 
+/// Read-only admission probe; it grants no Settings or input capability.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn pending_catalog_available(record: &Value) -> bool {
+    !catalog(record).is_empty()
+}
+
 pub(super) fn account_models(provider: &str, home: &Path) -> Value {
     let models = catalog(&json!({"agent":provider,"agent_home":home}));
     json!({"models":models.iter().take(64).map(|m| json!({"id":m.id,"label":m.label,

@@ -39,6 +39,7 @@ def terminal_send(case, text):
 class BusyProvider(responses.Provider):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
+        self.server.raw_requests.append(body)
         self.server.requests.append(body)
         main = any(i.get('role') == 'user' and any(p.get('text') == PROMPT for p in i.get('content', []) if isinstance(p, dict)) for i in body.get('input', []))
         if main and not self.server.called:
@@ -81,6 +82,7 @@ class NativeBusyCodex(codex.NativeCodexInput):
 
     def setUp(self):
         self.server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), BusyProvider)
+        self.server.raw_requests = []
         self.server.requests, self.server.called = [], False
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)

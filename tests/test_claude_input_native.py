@@ -85,6 +85,9 @@ class NativeClaudeInput(unittest.TestCase):
         self.assertEqual(self.accepted(text), 1)
 
     def test_id_hidden_pending_settings_then_message_makes_one_model_call_and_keeps_defaults(self):
+        self.pending_message()
+
+    def pending_message(self):
         import native_effort_id as identity
         defaults = self.root / '.claude/settings.json'
         before = defaults.read_bytes()
@@ -93,13 +96,17 @@ class NativeClaudeInput(unittest.TestCase):
         self.record, self.record_path = record, path
         attempts = identity.key_log(self)
         text = 'Continue after the pending session model choice\\'
-        identity.pending_then_message(self, self.name, record, path,
-                                      'claude-fable-5-2', 'xhigh', text, attempts)
+        receipt = identity.pending_then_message(self, self.name, record, path,
+                                                'claude-fable-5-2', 'xhigh', text, attempts)
         self.wait_for(lambda: self.accepted(text))
         self.assertEqual(self.accepted(text), 1)
-        self.wait_for(lambda: len(self.native_requests) >= requests + 1)
-        self.assertEqual(len(self.native_requests), requests + 1)
-        self.assertEqual(self.native_requests[-1]['model'], 'claude-fable-5-2')
+        self.assert_pending_requests(requests, text, 'claude-fable-5-2')
         self.assertEqual(defaults.read_bytes(), before)
         self.assertNotIn('Select model', self.screen())
         self.assertEqual(json.loads(path.read_bytes())['model'], 'claude-fable-5-2')
+        return receipt, attempts
+
+    def assert_pending_requests(self, before, text, model):
+        self.wait_for(lambda: len(self.native_requests) >= before + 1)
+        self.assertEqual(len(self.native_requests), before + 1, self.native_requests[before:])
+        self.assertEqual(self.native_requests[-1]['model'], model)
