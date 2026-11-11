@@ -12,7 +12,8 @@ vi.mock("../../store/ui", () => ({ setPage: navigation.page, setSelectedKey: nav
 vi.mock("../../store/cleanupNotices", () => ({ anyCleanupRestore: () => false, cleanupRestoring: () => false, restoreCleanupRow: native.restore, syncCleanupNotices: native.sync }));
 vi.mock("../../store/actions", () => ({ notify: vi.fn() }));
 vi.mock("../../i18n", () => ({ tr: (s: string, ...args: unknown[]) => s.replace(/%(\d+)/g, (_, n) => String(args[Number(n) - 1])), trNoop: (s: string) => s }));
-vi.mock("../lib/icons", () => ({ Icon: () => null }));
+// An empty marker naming the icon: no text, so the copy assertions are unchanged.
+vi.mock("../lib/icons", () => ({ Icon: (props: { name: string }) => { const marker = document.createElement("i"); marker.dataset.icon = props.name; return marker; } }));
 vi.mock("../components/MachineLabel", () => ({ MachineLabel: () => null }));
 const archiveCalls = vi.hoisted(() => ({ calls: [] as string[], disabled: new Set<string>(), fail: false }));
 vi.mock("../sessions/ActionDialogs", () => ({ actionEntries: (row: { name: string }) => { if (archiveCalls.fail) throw new Error("Session actions are unavailable."); return { archive: { label: "Move to archive", disabled: archiveCalls.disabled.has(row.name), hint: "Busy", action: () => { archiveCalls.calls.push(row.name); } } }; } }));
@@ -453,6 +454,9 @@ it("shows why the archive confirmation cannot list sessions instead of throwing 
     const confirmation = document.querySelector<HTMLElement>("dialog.bc-archive")!;
     await vi.waitFor(() => expect(confirmation.querySelector("[role=alert]")).not.toBeNull());
     const alert = confirmation.querySelector<HTMLElement>("[role=alert]")!;
+    // The mockup's danger notice: its tone and the circle-alert icon (zerus-nq26a.5).
+    expect([...alert.classList]).toEqual(expect.arrayContaining(["notice", "danger"]));
+    expect(alert.querySelector(":scope > [data-icon]")?.getAttribute("data-icon")).toBe("circle-alert");
     // A plain sentence with a next step first; the raw detail only as secondary text.
     expect(alert.querySelector("p:not(.hint)")?.textContent).toBe("Zerus could not load the session actions. Close this dialog and choose Archive again. If it keeps failing, restart Zerus.");
     expect(alert.querySelector("p.hint")?.textContent).toContain("Session actions are unavailable.");

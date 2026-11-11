@@ -117,7 +117,7 @@ export function ArchiveSessionsDialog(props: { names: string[]; session: (name: 
     <div class="dlg-head"><Icon name="archive" size={18} class="accent" /><h2 id="bc-archive-title">{props.names.length === 1 ? tr("Archive this session?") : tr("Archive these %1 sessions?", props.names.length)}</h2></div>
     <div class="dlg-body">
       <p>{tr("Archiving stops each session and moves it to the archive. Conversations are kept and can be restored. The folder is removed only after you check it again and confirm removal.")}</p>
-      <Show when={!entries.loading} fallback={<p role="status">{tr("Loading…")}</p>}><Show when={!entries.error} fallback={<div role="alert" class="bc-load-failed"><p>{tr("Zerus could not load the session actions. Close this dialog and choose Archive again. If it keeps failing, restart Zerus.")}</p><p class="hint">{String(entries.error)}</p></div>}>
+      <Show when={!entries.loading} fallback={<p role="status">{tr("Loading…")}</p>}><Show when={!entries.error} fallback={<div role="alert" class="notice danger bc-load-failed"><Icon name="circle-alert" size={14} /><div><p>{tr("Zerus could not load the session actions. Close this dialog and choose Archive again. If it keeps failing, restart Zerus.")}</p><p class="hint">{String(entries.error)}</p></div></div>}>
         <ul class="bc-list"><For each={entries()}>{(entry) => <li><span class="ell" title={entry.name}>{entry.name}</span><span class="hint">{entry.machine}</span><Show when={entry.reason}><span class="hint warn">{entry.reason}</span></Show></li>}</For></ul>
       </Show></Show>
     </div>
