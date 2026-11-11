@@ -12,17 +12,20 @@ public final class OrderedStatePersistence<S: Sendable> {
     /// Called with nil after a successful write, or with the failure.
     public var onResult: ((Error?) -> Void)?
 
+    private let normalize: @Sendable (S) -> S
     private var acceptedSequence: Int64 = 0
     private let queue = CommandQueue<S>()
     private var loop: Task<Void, Never>?
 
     public init(initial: S, debounce: Duration = .milliseconds(200), maxDelay: Duration = .milliseconds(800),
+                normalize: @escaping @Sendable (S) -> S = { $0 },
                 write: @escaping @Sendable (S) throws -> Void) {
         state = initial
+        self.normalize = normalize
         let queue = self.queue
         let owner = WeakOwner<S>()
         loop = Task.detached(priority: .utility) {
-            await Self.run(initial: initial, queue: queue, debounce: debounce, maxDelay: maxDelay, write: write, owner: owner)
+            await Self.run(initial: initial, queue: queue, debounce: debounce, maxDelay: maxDelay, normalize: normalize, write: write, owner: owner)
         }
         owner.value = self
     }
@@ -30,7 +33,7 @@ public final class OrderedStatePersistence<S: Sendable> {
     /// Applies a reducer now and schedules a debounced write.
     @discardableResult
     public func edit(_ reduce: @escaping @Sendable (S) throws -> S) rethrows -> S {
-        let next = try reduce(state)
+        let next = normalize(try reduce(state))
         acceptedSequence += 1
         queue.push(.edit(acceptedSequence, reduce))
         publish(next)
@@ -75,15 +78,16 @@ public final class OrderedStatePersistence<S: Sendable> {
     }
 
     fileprivate func acknowledged(_ value: S, merge: @Sendable (S, S) -> S) {
-        publish(merge(state, value))
+        publish(normalize(merge(state, value)))
     }
 
     fileprivate func report(_ error: Error?) { onResult?(error) }
 
     private nonisolated static func run(initial: S, queue: CommandQueue<S>, debounce: Duration, maxDelay: Duration,
-                                        write: @Sendable (S) throws -> Void, owner box: WeakOwner<S>) async {
+                                        normalize: @Sendable (S) -> S, write: @Sendable (S) throws -> Void, owner box: WeakOwner<S>) async {
         var owner: OrderedStatePersistence<S>? { box.value }
         var current = initial
+        var processedSequence: Int64 = 0
         var dirty = false
         var firstDirty = ContinuousClock.now
         var deadline = ContinuousClock.now
@@ -102,17 +106,23 @@ public final class OrderedStatePersistence<S: Sendable> {
                 command = await queue.next(until: nil)
             }
             guard let command else {
-                do { try await persist(current) } catch { await owner?.report(error) }
+                do {
+                    let next = normalize(current)
+                    try await persist(next)
+                    current = next
+                    await owner?.caughtUp(processedSequence, next)
+                } catch { await owner?.report(error) }
                 dirty = false
                 continue
             }
             switch command {
             case .close:
-                if dirty { try? write(current) }
+                if dirty { try? write(normalize(current)) }
                 return
             case .edit(let sequence, let reduce):
                 do {
-                    current = try reduce(current)
+                    current = normalize(try reduce(current))
+                    processedSequence = sequence
                     let value = current
                     await owner?.caughtUp(sequence, value)
                     let now = clock.now
@@ -122,9 +132,9 @@ public final class OrderedStatePersistence<S: Sendable> {
                 } catch {
                     await owner?.report(error)
                 }
-            case .durable(_, let reduce, let merge, let reply):
+            case .durable(let sequence, let reduce, let merge, let reply):
                 let next: S
-                do { next = try reduce(current) } catch {
+                do { next = normalize(try reduce(current)) } catch {
                     // A failed precondition changes nothing and is the caller's error to show.
                     reply.resume(throwing: error)
                     continue
@@ -132,6 +142,7 @@ public final class OrderedStatePersistence<S: Sendable> {
                 do {
                     try write(next)
                     current = next
+                    processedSequence = sequence
                     dirty = false
                     await owner?.report(nil)
                     await owner?.acknowledged(next, merge: merge)
@@ -142,7 +153,10 @@ public final class OrderedStatePersistence<S: Sendable> {
                 }
             case .flush(let sequence, let reply):
                 do {
-                    try await persist(current)
+                    let next = normalize(current)
+                    try await persist(next)
+                    current = next
+                    processedSequence = sequence
                     dirty = false
                     let value = current
                     await owner?.caughtUp(sequence, value)

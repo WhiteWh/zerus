@@ -206,4 +206,29 @@ class SendReceiptRecoveryTest {
         }
     }
 
+    @Test fun compactIdentityNeverDowngradesToLegacyReceiptHandling()=runBlocking {
+        val i=intent(compaction=read)
+        val positive=answer(original,i).put("name",target.session).put("digest",SendReceiptRecovery.nativeDigest(i.value()!!))
+            .put("delivery_binding",JSONObject().put("schema",1).put("machine_id",machine).put("session_id",session).put("provider","codex"))
+        val seen=mutableListOf<String>()
+        val client=OkHttpClient.Builder().addInterceptor { chain ->
+            val request=chain.request();seen+=request.method
+            val response=JSONObject().put("request_id",original).put("state","completed").put("result",positive)
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK").body(response.toString().toResponseBody()).build()
+        }.build()
+        try {
+            val api=RelayApi(client);val c=Connection("gateway","Fixture","https://gateway.example.test","synthetic")
+            val compact=OutboxRetention.compact(message(i).copy(status="submitted"))
+            val confirmed=api.checkDelivery(c,compact,compact.originalSendIntent(),1000)
+            assertTrue(confirmed is SendReceiptCheck.Native);assertEquals(i,(confirmed as SendReceiptCheck.Native).intent)
+            val bad=compact.copy(sendCorrelation=SendCorrelation(compact.sendCorrelation!!.json().put("schema",2).toString()))
+            assertEquals(SendReceiptCheck.Unconfirmed,api.checkDelivery(c,bad,null,1000))
+            assertEquals(SendReceiptCheck.Unconfirmed,api.checkDelivery(c,bad,i,1000))
+            assertTrue(api.checkDelivery(c,compact.copy(sendCorrelation=null),null,1000) is SendReceiptCheck.Original)
+            assertEquals(listOf("GET","GET","GET","GET"),seen)
+            val broken=bad.copy(status="uncertain");val state=MessageState(outgoing=listOf(broken))
+            assertEquals(state,SendReceiptRecovery.settle(state,broken,i,SendReceiptRecovery.proof(read,i,answer(read,i))!!,100,99))
+        } finally { client.connectionPool.evictAll();client.dispatcher.executorService.shutdown() }
+    }
+
 }

@@ -18,7 +18,8 @@ class OrderedStatePersistence<S>(initial: S, scope: CoroutineScope,
     private val uiDispatcher: CoroutineDispatcher = Dispatchers.Main.immediate,
     private val debounceMillis: Long = 200,
     private val maxDelayMillis: Long = 800,
-    private val onResult: (Throwable?) -> Unit = {}) {
+    private val onResult: (Throwable?) -> Unit = {},
+    private val normalize: (S) -> S = { it }) {
     private sealed interface Command<S> {
         data class Edit<S>(val sequence: Long, val reduce: (S) -> S) : Command<S>
         data class Durable<S>(val sequence: Long, val reduce: (S) -> S, val acknowledge: (S, S) -> S, val reply: CompletableDeferred<S>) : Command<S>
@@ -32,7 +33,7 @@ class OrderedStatePersistence<S>(initial: S, scope: CoroutineScope,
     private val commands = Channel<Command<S>>(Channel.UNLIMITED)
     init { scope.launch(Dispatchers.IO) { runWriter(initial) } }
     fun edit(reduce: (S) -> S): S = synchronized(lock) {
-        val next = reduce(mutable.value)
+        val next = normalize(reduce(mutable.value))
         check(commands.trySend(Command.Edit(++acceptedSequence, reduce)).isSuccess) { "Private state writer is unavailable." }
         mutable.value = next
         next
@@ -50,6 +51,7 @@ class OrderedStatePersistence<S>(initial: S, scope: CoroutineScope,
     }
     private suspend fun runWriter(initial: S) {
         var current = initial
+        var processedSequence = 0L
         var dirty = false
         var firstDirty = 0L
         var deadline = 0L
@@ -66,14 +68,15 @@ class OrderedStatePersistence<S>(initial: S, scope: CoroutineScope,
         while (true) {
             val command = if (!dirty) commands.receive() else withTimeoutOrNull((deadline - now()).coerceAtLeast(1)) { commands.receive() }
             if (command == null) {
-                try { persisted(current) } catch (error: Exception) { failure(error) }
+                try { val next = normalize(current); persisted(next); current = next; publishCaughtUp(processedSequence, next) } catch (error: Exception) { failure(error) }
                 dirty = false // Retry only on a new edit, explicit flush or a critical user action.
                 continue
             }
             when (command) {
                 is Command.Edit -> {
                     try {
-                        current = command.reduce(current)
+                        current = normalize(command.reduce(current))
+                        processedSequence = command.sequence
                         publishCaughtUp(command.sequence, current)
                         if (!dirty) firstDirty = now()
                         dirty = true
@@ -82,15 +85,15 @@ class OrderedStatePersistence<S>(initial: S, scope: CoroutineScope,
                 }
                 is Command.Durable -> {
                     try {
-                        val next = command.reduce(current)
+                        val next = normalize(command.reduce(current))
                         persisted(next)
-                        current = next; dirty = false
-                        withContext(uiDispatcher) { synchronized(lock) { mutable.value = command.acknowledge(mutable.value, next) } }
+                        current = next; processedSequence = command.sequence; dirty = false
+                        withContext(uiDispatcher) { synchronized(lock) { mutable.value = normalize(command.acknowledge(mutable.value, next)) } }
                         command.reply.complete(next)
                     } catch (error: Exception) { failure(error); command.reply.completeExceptionally(error) }
                 }
                 is Command.Flush -> {
-                    try { persisted(current); dirty = false; publishCaughtUp(command.sequence, current); command.reply?.complete(current) }
+                    try { val next = normalize(current); persisted(next); current = next; processedSequence = command.sequence; dirty = false; publishCaughtUp(command.sequence, current); command.reply?.complete(current) }
                     catch (error: Exception) { dirty = false; failure(error); command.reply?.completeExceptionally(error) }
                 }
             }

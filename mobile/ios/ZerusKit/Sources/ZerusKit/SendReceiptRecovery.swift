@@ -179,7 +179,7 @@ public enum SendReceiptRecovery {
               state.outgoing.filter({ $0.requestId == captured.requestId }).count == 1 else { return state }
         let current = state.outgoing[i]
         guard current.status == "uncertain", current.target == captured.target, exact(current.text, captured.text), current.attachments == captured.attachments,
-              current.createdAt == captured.createdAt, current.sendIntent == captured.sendIntent, matches(current, intent), proof.messageRequestId == current.requestId,
+              current.createdAt == captured.createdAt, current.originalSendIntent() == captured.originalSendIntent(), (!current.hasOriginalSendIdentity || current.originalSendIntent() == intent), matches(current, intent), proof.messageRequestId == current.requestId,
               proof.intentSha256 == intent.intentSha256, let v = intent.value(), proof.nativeDigest == nativeDigest(v),
               proof.nativeMessageId.isEmpty || validNativeId(proof.nativeMessageId, provider: v.string("provider")) else { return state }
         var copy = state
@@ -188,7 +188,7 @@ public enum SendReceiptRecovery {
         return copy
     }
     public static func exactNativeId(_ message: OutgoingMessage) -> String? {
-        guard let i = message.sendIntent, let p = message.sendReceiptProof, let v = i.value(), matches(message, i),
+        guard let i = message.originalSendIntent(), let p = message.sendReceiptProof, let v = i.value(), matches(message, i),
               p.messageRequestId == message.requestId, p.intentSha256 == i.intentSha256, p.nativeDigest == nativeDigest(v),
               p.submittedAt.isFinite, p.submittedAt >= 0, validNativeId(p.nativeMessageId, provider: v.string("provider")) else { return nil }
         return p.nativeMessageId

@@ -987,15 +987,22 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (changed) syncOutgoing()
     }
+    private fun retainOutbox() {
+        messageRepository.retainOutbox(deliveryFlights + receiptFlights.map { it.substringAfterLast(':') } +
+            conversationEvents.mapNotNull { it.outgoingId.takeIf(String::isNotEmpty) })
+    }
     private fun syncOutgoing() {
+        retainOutbox()
         normalizedOutgoing = messageState.outgoing.map { if (it.status == "sending" && it.requestId !in deliveryFlights) it.recover() else it }
         preparePresentation()
     }
     private fun editState(reduce: (MessageState) -> MessageState) {
+        retainOutbox()
         updateMessageState(checkNotNull(persistence) { "Private storage is not ready." }.edit(reduce))
     }
     private suspend fun durable(reduce: (MessageState) -> MessageState,
         acknowledge: (MessageState, MessageState) -> MessageState = { current, _ -> reduce(current) }): MessageState {
+        retainOutbox()
         val writer = checkNotNull(persistence) { "Private storage is not ready." }
         val written = writer.durable(reduce, acknowledge)
         updateMessageState(writer.state.value)
@@ -1144,8 +1151,8 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
                         HistoryRequests.refreshAtHead(window)?.let { (direction,cursor) -> loadHistory(frame.target,direction,cursor) }
                 }
             }
-            if (activityVerified && messages.any { it.requestId in merged.recordedRequestIds && it.status != "recorded" }) {
-                editState { state -> state.copy(outgoing = state.outgoing.map { if (it.requestId in merged.recordedRequestIds && it.status != "reviewed") it.copy(status = "recorded", error = "") else it }) }
+            if (activityVerified && messages.any { it.requestId in merged.recordedRequestIds && (it.status != "recorded" || merged.exactRepresentations[it.requestId]?.let { proof -> proof != it.coverage } == true) }) {
+                editState { state -> OutboxRetention.recorded(state, merged.recordedRequestIds, merged.exactRepresentations) }
             }
             if (activityVerified) messages.lastOrNull { it.status == "uncertain" && it.requestId !in merged.recordedRequestIds }?.let { message ->
                 if (outgoingReceiptProbe.claim(target, navigationId, message,
@@ -2310,7 +2317,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
             if (selected?.target?.let { ContextPolicies.sameSessionRun(it, operation.target) } == true) refreshActivity()
         } catch (failure: CancellationException) { throw failure }
         catch (_: Exception) { contextNotice = "The original receipt is unavailable. Its saved identity has been preserved." }
-        finally { receiptFlights -= flight }
+        finally { receiptFlights -= flight; retainOutbox() }
     }
     fun reviewContextOperation(operation: ContextOperation) {
         if ("context:${operation.requestId}" in receiptFlights) return
@@ -3308,12 +3315,12 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
     }
     private suspend fun settleOutgoing(message: OutgoingMessage, receipt: JSONObject, deadlineMs:Long?=null) {
         val result = receipt.optJSONObject("result"); val state = receipt.string("state")
-        val proof=if(result!=null) message.sendIntent?.let { SendReceiptRecovery.acknowledgement(it,result) } else null
-        val strict=message.sendIntent!=null && SendReceiptRecovery.supported(relayOperations[message.target.connectionId],machineOperations[MachineKey(message.target.connectionId,message.target.computerId)])
-        val confirmed = receipt.string("request_id") == message.requestId && state == "completed" && result?.string("status") in listOf("submitted", "queued") && (!strict || proof!=null)
+        val proof=if(result!=null) message.originalSendIntent()?.let { SendReceiptRecovery.acknowledgement(it,result) } else null
+        val strict=message.hasOriginalSendIdentity && SendReceiptRecovery.supported(relayOperations[message.target.connectionId],machineOperations[MachineKey(message.target.connectionId,message.target.computerId)])
+        val confirmed = receipt.string("request_id") == message.requestId && state == "completed" && result?.string("status") in listOf("submitted", "queued") && (!strict || proof!=null) && (!message.hasOriginalSendIdentity || message.originalSendIntent()!=null)
         val rejected = state == "failed" && receipt.string("request_id") == message.requestId
         try { durable({ current -> if(current.outgoing.count { it.requestId==message.requestId }!=1) current else MessageChanges.result(current, message.requestId) { existing ->
-            if(existing.target!=message.target || existing.text!=message.text || existing.attachments!=message.attachments || existing.createdAt!=message.createdAt || existing.sendIntent!=message.sendIntent ||
+            if(existing.target!=message.target || existing.text!=message.text || existing.attachments!=message.attachments || existing.createdAt!=message.createdAt || existing.originalSendIntent()!=message.originalSendIntent() ||
                 deadlineMs!=null && SendReceiptRecovery.nowMs()>=deadlineMs || existing.sendReceiptProof!=null && existing.status in setOf("submitted","recorded")) existing
             else if (confirmed) existing.copy(status = "submitted", submittedAt = result!!.optDouble("submitted_at", existing.createdAt), submittedText = result.string("submitted_text").ifBlank { existing.text.trim() }, error = "",sendReceiptProof=proof)
             else existing.copy(status = if (rejected) "failed" else "uncertain", error = if (rejected) "The computer rejected this message. Review it before trying again." else "Delivery is unconfirmed. Check its receipt before sending again.")
@@ -3327,7 +3334,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         receiptFlights += flight
         try {
             val supported=SendReceiptRecovery.supported(relayOperations[message.target.connectionId],machineOperations[MachineKey(message.target.connectionId,message.target.computerId)])
-            val intent=if(!supported) null else message.sendIntent ?: captureSendIntent(message.target,message.requestId,message.text)
+            val intent=if(!supported) null else if(message.hasOriginalSendIdentity) message.originalSendIntent() else captureSendIntent(message.target,message.requestId,message.text)
             when(val checked=api.checkDelivery(connection,message,intent)) {
                 is SendReceiptCheck.Original -> settleOutgoing(message,checked.receipt,checked.deadlineMs)
                 is SendReceiptCheck.Native -> {
@@ -3340,7 +3347,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         catch (_: kotlinx.coroutines.TimeoutCancellationException) { if (!automatic) error = "Receipt check timed out. You can dismiss the warning and continue; the original message remains saved." }
         catch (e: CancellationException) { throw e }
         catch (_: Exception) { if (!automatic) error = "Receipt unavailable. The outgoing message remains saved." }
-        finally { receiptFlights -= flight }
+        finally { receiptFlights -= flight; retainOutbox() }
     }
     fun dismissOutgoing(message: OutgoingMessage) = viewModelScope.launch {
         val flight = "dismiss:${message.requestId}"
@@ -3348,7 +3355,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         receiptFlights += flight
         try { durable({ state -> MessageChanges.dismissOutgoing(state, message, recoverInterruptedSending = true) }) }
         catch (_: Exception) { error = "Could not save the dismissal. Your message and current composition are preserved." }
-        finally { receiptFlights -= flight }
+        finally { receiptFlights -= flight; retainOutbox() }
     }
     fun prepareOutgoing(message: OutgoingMessage) {
         if (message.status != "failed" || "outgoing:${message.requestId}" in receiptFlights) return
@@ -3360,7 +3367,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
                 val editor = state.drafts.find { it.target == message.target && it.questionId.isBlank() && it.detachedId.isBlank() }
                 val parked = editor?.takeIf { it.text.isNotBlank() || it.attachments.isNotEmpty() }?.copy(detachedId = parkedId)
                 state.copy(drafts = state.drafts.filterNot { it.key == restored.key } + listOfNotNull(parked) + restored,
-                    outgoing = state.outgoing.map { if (it.requestId == message.requestId) it.copy(status = "reviewed") else it })
+                    outgoing = state.outgoing.map { if (it.requestId == message.requestId) it.copy(status = "reviewed", coverage = OutgoingCoverage.draft(it, restored)) else it })
             }
         }; flushDrafts() } catch (e: Exception) { error = e.message.orEmpty() }
     }

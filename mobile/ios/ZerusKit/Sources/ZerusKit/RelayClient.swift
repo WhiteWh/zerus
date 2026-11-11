@@ -221,11 +221,11 @@ public struct RelayClient: Sendable {
             catch { original = nil }
             if let original, original.string("state") == "failed" { return .original(original, deadline: deadline) }
             if let original, original.string("state") == "completed", let result = original.object("result"), ["submitted", "queued"].contains(result.string("status")) {
-                if message.sendIntent == nil || intent == nil { return .original(original, deadline: deadline) }
-                if let saved = message.sendIntent, let proof = SendReceiptRecovery.acknowledgement(saved, result) { return .native(saved, proof, deadline: deadline) }
+                if !message.hasOriginalSendIdentity { return .original(original, deadline: deadline) }
+                if let saved = message.originalSendIntent(), let proof = SendReceiptRecovery.acknowledgement(saved, result) { return .native(saved, proof, deadline: deadline) }
             }
             try Task.checkCancellation()
-            guard let intent, SendReceiptRecovery.matches(message, intent), SendReceiptRecovery.now < deadline else { return .unconfirmed }
+            guard let intent, (!message.hasOriginalSendIdentity || message.originalSendIntent() == intent), SendReceiptRecovery.matches(message, intent), SendReceiptRecovery.now < deadline else { return .unconfirmed }
             let proof: SendReceiptProof?
             do { proof = try await self.sendReceipt(connection, message: message, intent: intent) }
             catch is CancellationError { throw CancellationError() }

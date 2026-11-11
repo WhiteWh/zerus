@@ -107,7 +107,7 @@ final class ConversationModel {
     var activityVerified = false
     var historyCached = false
     var historyTruncated = false
-    var events: [Event] = []
+    var events: [Event] = [] { didSet { app.retainOutbox() } }
     var questions: [Question] = []
     var outgoing: [OutgoingMessage] = []
     var detailBusy = false
@@ -137,7 +137,7 @@ final class ConversationModel {
 
     // MARK: Delivery
 
-    var receiptFlights: Set<String> = []
+    var receiptFlights: Set<String> = [] { didSet { app.retainOutbox() } }
     @ObservationIgnored var outgoingReceiptProbe = OutgoingReceiptProbe()
     var answerFlights: [String: String] = [:]
     var preparingTargets: Set<String> = []
@@ -160,7 +160,7 @@ final class ConversationModel {
     @ObservationIgnored var terminalReceivedAt: TimeInterval = 0
     @ObservationIgnored var terminalTask: Task<Void, Never>?
     @ObservationIgnored var emptyTerminalBuffers: [String: TerminalBuffer] = [:]
-    var deliveryFlights: Set<String> = []
+    var deliveryFlights: Set<String> = [] { didSet { app.retainOutbox() } }
     /// Outbox rows, with interrupted sends shown as unconfirmed.
     var normalizedOutgoing: [OutgoingMessage] = []
     var pendingQuestionSend: QuestionSendIntent?
@@ -668,9 +668,10 @@ final class ConversationModel {
                 self.lastHistoryObservation = frame.observedAt
                 if let request = HistoryRequests.refreshAtHead(window) { self.loadHistory(frame.target, request.direction, request.cursor) }
             }
-            if messages.contains(where: { merged.recordedRequestIds.contains($0.requestId) && $0.status != "recorded" }) {
-                let recorded = merged.recordedRequestIds
-                self.app.editMessages { MessageChanges.recorded($0, recorded) }
+            if messages.contains(where: { row in merged.recordedRequestIds.contains(row.requestId) &&
+                (row.status != "recorded" || merged.exactRepresentations[row.requestId].map { $0 != row.coverage } == true) }) {
+                let recorded = merged.recordedRequestIds, exact = merged.exactRepresentations
+                self.app.editMessages { OutboxRetention.recorded($0, recorded, exact: exact) }
             }
             // One status-only receipt read per navigation for the newest unconfirmed message; it never resends.
             if let message = messages.last(where: { $0.status == "uncertain" && !merged.recordedRequestIds.contains($0.requestId) }),

@@ -333,10 +333,10 @@ extension ConversationModel {
 
     func settleOutgoing(_ message: OutgoingMessage, _ receipt: JSONObject, deadline: Double? = nil) async {
         let result = receipt.object("result"), state = receipt.string("state")
-        let proof = message.sendIntent.flatMap { intent in result.flatMap { SendReceiptRecovery.acknowledgement(intent, $0) } }
-        let strict = message.sendIntent != nil && SendReceiptRecovery.supported(relay: app.relayOperations[message.target.connectionId],
+        let proof = message.originalSendIntent().flatMap { intent in result.flatMap { SendReceiptRecovery.acknowledgement(intent, $0) } }
+        let strict = message.hasOriginalSendIdentity && SendReceiptRecovery.supported(relay: app.relayOperations[message.target.connectionId],
             native: app.machineOperations[MachineKey(connectionId: message.target.connectionId, computerId: message.target.computerId)])
-        let confirmed = receipt.string("request_id") == message.requestId && state == "completed" && ["submitted", "queued"].contains(result?.string("status") ?? "") && (!strict || proof != nil)
+        let confirmed = receipt.string("request_id") == message.requestId && state == "completed" && ["submitted", "queued"].contains(result?.string("status") ?? "") && (!strict || proof != nil) && (!message.hasOriginalSendIdentity || message.originalSendIntent() != nil)
         let rejected = state == "failed" && receipt.string("request_id") == message.requestId
         let submittedAt = result?.number("submitted_at"), submittedText = result?.string("submitted_text") ?? ""
         do {
@@ -345,7 +345,7 @@ extension ConversationModel {
                 return MessageChanges.result(current, message.requestId) { existing in
                     guard existing.target == message.target, SendReceiptRecovery.exact(existing.text, message.text),
                           existing.attachments == message.attachments, existing.createdAt == message.createdAt,
-                          existing.sendIntent == message.sendIntent else { return existing }
+                          existing.originalSendIntent() == message.originalSendIntent() else { return existing }
                     if let deadline, SendReceiptRecovery.now >= deadline { return existing }
                     if existing.sendReceiptProof != nil && ["submitted", "recorded"].contains(existing.status) { return existing }
                     var updated = existing
@@ -381,7 +381,7 @@ extension ConversationModel {
         do {
             let supported = SendReceiptRecovery.supported(relay: app.relayOperations[message.target.connectionId],
                 native: app.machineOperations[MachineKey(connectionId: message.target.connectionId, computerId: message.target.computerId)])
-            let intent = supported ? (message.sendIntent ?? captureSendIntent(message.target, id: message.requestId, text: message.text)) : nil
+            let intent = supported ? (message.hasOriginalSendIdentity ? message.originalSendIntent() : captureSendIntent(message.target, id: message.requestId, text: message.text)) : nil
             switch try await app.client.checkDelivery(connection, message: message, intent: intent) {
             case .original(let receipt, let deadline): await settleOutgoing(message, receipt, deadline: deadline)
             case .native(let intent, let proof, let deadline):
@@ -432,6 +432,7 @@ extension ConversationModel {
                 guard existing.requestId == message.requestId else { return existing }
                 var updated = existing
                 updated.status = "reviewed"
+                updated.coverage = OutgoingCoverage.draft(existing, restored)
                 return updated
             }
             return copy
