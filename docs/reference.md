@@ -823,8 +823,12 @@ ones; an offline computer or a write in flight leaves one out too) are listed
 as staying. The count and the list cover every level, not only the direct
 children, and the confirmation says so. As on the command line, a session whose
 link its own listing marks `missing` (a link another computer forwarded is
-always `missing`) is never offered, although the list may still nest it. At
-most 50 are named; the rest are counted. When chosen, the children run after
+always `missing`) is never offered, although the list may still nest it. One
+deliberate difference remains: when a child's link falls back to its parent's
+conversation ID because the parent was listed without a session ID, the
+desktop still offers that child, by name, but
+`hgs terminate --with-children` does not end it. At most 50 are named; the
+rest are counted. When chosen, the children run after
 the parent's own outcome is done as one preconfirmed selection batch: each
 through its own guarded action, rechecked as the same instance, one at a time
 and never retried, without the parent's Remove working folder choice. Like
