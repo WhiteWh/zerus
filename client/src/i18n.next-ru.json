@@ -5,6 +5,7 @@
   "%1\nOpen About": "%1\nОткрыть «О программе»",
   "%1 %2": "%1 %2",
   "%1 (PID %2)": "%1 (PID %2)",
+  "%1 (no HGS archive)": "%1 (без архива HGS)",
   "%1 / %2: notifications cannot change for this session now": "%1 / %2: уведомления этой сессии сейчас нельзя изменить",
   "%1 active, %2": "Активно: %1, %2",
   "%1 added": "Добавлено: %1",
@@ -79,6 +80,11 @@
     "%n сообщения",
     "%n сообщений"
   ],
+  "%n of them have no HGS archive and are killed: they leave the list, and any native conversation history is kept.": [
+    "%n из них без архива HGS и будет принудительно завершена: она исчезнет из списка, а любая собственная история разговоров сохранится.",
+    "%n из них без архива HGS и будут принудительно завершены: они исчезнут из списка, а любая собственная история разговоров сохранится.",
+    "%n из них без архива HGS и будут принудительно завершены: они исчезнут из списка, а любая собственная история разговоров сохранится."
+  ],
   "%n selected session(s)": [
     "%n выбранная сессия",
     "%n выбранные сессии",
@@ -118,6 +124,7 @@
   "1 child session cannot be archived now and stays as it is:": "1 дочернюю сессию сейчас нельзя переместить в архив, она остаётся как есть:",
   "1 child session cannot be terminated now and stays as it is:": "1 дочернюю сессию сейчас нельзя завершить, она остаётся как есть:",
   "1 needs attention": "Требует внимания: 1",
+  "1 of them has no HGS archive and is killed: it leaves the list, and any native conversation history is kept.": "1 из них без архива HGS и будет принудительно завершена: она исчезнет из списка, а любая собственная история разговоров сохранится.",
   "1 other program will be asked to stop. Save its work before continuing.": "Будет запрошена остановка ещё 1 программы. Прежде чем продолжить, сохраните её данные.",
   "1 session is on an offline or stale machine. Its last known status is shown on the machine cards.": "1 сессия находится на компьютере, который не в сети или давно не отвечал. Её последнее известное состояние показано на карточках компьютеров.",
   "<1 m": "<1 мин",
@@ -426,8 +433,6 @@
   "Drop onto a session in the list to assign it; onto the project header for Any session.": "Перетащите на сессию в списке, чтобы назначить её; на заголовок проекта — для «Любой сессии».",
   "Each computer keeps its own permission mode. Changing it on one computer leaves the others as they are.": "У каждого компьютера свой режим разрешений. Изменение на одном компьютере не затрагивает остальные.",
   "Each delay must be at least the one before.": "Каждая задержка должна быть не меньше предыдущей.",
-  "Each one moves to Archive through its own Move to archive after this session does.": "Каждая перемещается в архив собственным действием «Переместить в архив» после этой сессии.",
-  "Each one stops through its own Terminate after this session ends. Their working folders are kept.": "Каждая останавливается собственным завершением после этой сессии. Их рабочие папки сохраняются.",
   "Each ping reads the whole cached context (about %1 tokens) from this account's usage.": "Каждый пинг читает весь закэшированный контекст (около %1 токенов) за счёт лимитов этого аккаунта.",
   "Each ping reads the whole cached context from this account's usage.": "Каждый пинг читает весь закэшированный контекст за счёт лимитов этого аккаунта.",
   "Each theme uses one skin. Follow system appearance switches between your dark and light skin.": "Каждая тема использует одно оформление. «Как в системе» переключается между вашим тёмным и светлым оформлением.",
@@ -1014,6 +1019,7 @@
   "Stop and preview": "Остановить и прослушать",
   "Stop the listed programs and sessions first, then review this folder again. No folder will be removed from this review.": "Сначала остановите перечисленные программы и сессии, затем проверьте папку снова. Сейчас папка не будет удалена.",
   "Stopped by you. It stays stopped until you choose Start connector.": "Остановлен вами. Он не запустится, пока вы не выберете «Запустить коннектор».",
+  "Stopped or paused child sessions keep their state here. On the command line, hgs terminate --with-children moves them to Archive.": "Остановленные и приостановленные дочерние сессии здесь сохраняют своё состояние. В командной строке hgs terminate --with-children перемещает их в архив.",
   "Stopped. Choose Start connector once and Zerus will start it automatically from then on.": "Остановлен. Выберите «Запустить коннектор» один раз, и дальше Zerus будет запускать его автоматически.",
   "Stopped. It starts the next time Zerus starts.": "Остановлен. Запустится при следующем запуске Zerus.",
   "Stopping programs…": "Остановка программ…",
@@ -1096,6 +1102,8 @@
   "The computer or project catalog changed. It is checked again the next time Zerus starts.": "Компьютер или каталог проектов изменился. Проверка повторится при следующем запуске Zerus.",
   "The confirmation could not be shown.": "Не удалось показать подтверждение.",
   "The connection changed meanwhile. Check its state and try again.": "Подключение тем временем изменилось. Проверьте его состояние и повторите.",
+  "The count and the list include child sessions of child sessions, up to %1 levels deep. Each one moves to Archive through its own Move to archive after this session does.": "Число и список включают дочерние сессии дочерних сессий, до %1 уровней вложенности. Каждая перемещается в архив собственным действием «Переместить в архив» после этой сессии.",
+  "The count and the list include child sessions of child sessions, up to %1 levels deep. Each one stops through its own Terminate after this session ends. Their working folders are kept.": "Число и список включают дочерние сессии дочерних сессий, до %1 уровней вложенности. Каждая останавливается собственным завершением после этой сессии. Их рабочие папки сохраняются.",
   "The current draft cannot be replaced while it is loading, sending or waiting to send.": "Текущий черновик нельзя заменить, пока он загружается, отправляется или ждёт отправки.",
   "The current filters hide every session. Filters change only this list, never the open conversation.": "Текущие фильтры скрывают все сессии. Фильтры меняют только этот список, а не открытый разговор.",
   "The desktop service did not confirm the message. Its original was kept for review and will not be sent again.": "Служба рабочего стола не подтвердила сообщение. Оригинал сохранён для проверки и не будет отправлен повторно.",

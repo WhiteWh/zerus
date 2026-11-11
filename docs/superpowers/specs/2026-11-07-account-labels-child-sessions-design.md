@@ -367,7 +367,11 @@ amber badge and edge.
 * **Terminate** and **Move to archive** of a session with live child sessions on
   its computer list them and offer **Also end N child sessions** (Archive:
   **Also archive N child sessions**), off by default (zerus-sa9qn.17). Children
-  the action does not apply to now are listed as staying. Only that choice ends
+  the action does not apply to now are listed as staying. The count and the
+  list cover every level, not only the direct children; Terminate marks and
+  counts children without an HGS archive (they are killed, as by their own
+  Terminate) and notes that a stopped or paused child it keeps is archived by
+  `hgs terminate --with-children`. Only that choice ends
   children: each one runs after the parent's own outcome is done, through its
   own guarded action and never with the parent's Remove working folder choice,
   one at a time, rechecked as the same instance and never retried; one notice

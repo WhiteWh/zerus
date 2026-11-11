@@ -1,5 +1,5 @@
 import { tr } from "../../i18n";
-import type { SelectionRow } from "./selection";
+import { selectionCall, type SelectionRow } from "./selection";
 import type { Session } from "./types";
 
 // zerus-sa9qn.17: the Terminate and Archive confirmations of a parent with live
@@ -60,12 +60,40 @@ export function childChoiceText(a: ChildAction, n: number): string {
   return n === 1 ? tr("Also archive 1 child session") : tr("Also archive %n child sessions", n);
 }
 
-/** How the chosen children run, under the opt-in. */
+/**
+ * How the chosen children run, under the opt-in. The count and the list are
+ * every live descendant, not only the direct children (#2086 review).
+ */
 export function childHintText(a: ChildAction): string {
   return a === "terminate"
-    ? tr("Each one stops through its own Terminate after this session ends. Their working folders are kept.")
-    : tr("Each one moves to Archive through its own Move to archive after this session does.");
+    ? tr("The count and the list include child sessions of child sessions, up to %1 levels deep. Each one stops through its own Terminate after this session ends. Their working folders are kept.", CHILD_DEPTH)
+    : tr("The count and the list include child sessions of child sessions, up to %1 levels deep. Each one moves to Archive through its own Move to archive after this session does.", CHILD_DEPTH);
 }
+
+/**
+ * A Terminate child without an HGS archive: the batch kills it, as its own
+ * Terminate and a selection's Terminate do (`selectionCall`), and Zerus no
+ * longer lists it.
+ */
+export function killedByTerminate(s: SelectionRow): boolean {
+  const step = selectionCall(s, "terminate");
+  return "call" in step && step.call.kind === "kill";
+}
+
+/** A chosen child's line in the Terminate list: one without an HGS archive is marked. */
+export const childLineText = (a: ChildAction, s: SelectionRow) => (a === "terminate" && killedByTerminate(s) ? tr("%1 (no HGS archive)", s.name) : s.name);
+
+/** Terminate's chosen children without an HGS archive, by count. */
+export function childKillText(n: number): string {
+  return n === 1
+    ? tr("1 of them has no HGS archive and is killed: it leaves the list, and any native conversation history is kept.")
+    : tr("%n of them have no HGS archive and are killed: they leave the list, and any native conversation history is kept.", n);
+}
+
+/** Terminate keeps a stopped or paused child as it is; the command line's Terminate archives it. */
+export const stoppedChild = (s: Pick<SelectionRow, "state">) => s.state === "stopped" || s.state === "paused";
+export const childStoppedText = () =>
+  tr("Stopped or paused child sessions keep their state here. On the command line, hgs terminate --with-children moves them to Archive.");
 
 /**
  * The children the action does not apply to now (Terminate takes running
