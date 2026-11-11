@@ -489,8 +489,8 @@ class DeepSeekHint(unittest.TestCase):
             self.rpc('resume', {'sessionId': session})
             census = self.turn(step, session, host)
             self.assertEqual((census['effective'], census['other']), (expected, 0), step)
-            if step == 'resumed':
-                self.assertEqual(sum(census['system']), 1, step)
+            totals = {'resumed': 1, 'opted-out': 1 if in_history else 0, 'enabled-again': 2 if in_history else 1}
+            self.assertEqual(sum(census['system']), totals[step], step)
             self.stop(host)
 
     def test_an_in_history_route_reads_the_hint_once_per_effective_prompt(self):

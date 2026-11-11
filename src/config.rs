@@ -391,7 +391,6 @@ fn hint_policy_environment(policy: std::result::Result<HintPolicy, ()>) -> Vec<S
 
 /// A native host or session launch resolves its own current policy. Unlike a
 /// tracked hook, it does not require a previously forwarded process snapshot.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn configured_agent_hint(account: &str) -> bool {
     let policy = platform::home()
         .ok_or(())
