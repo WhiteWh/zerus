@@ -8,6 +8,7 @@ import { tr } from "../i18n";
 
 export interface ModelsPort {
   apply(target: Target, model: string, effort: string, pending: string | undefined, openCode: boolean): Promise<Outcome>;
+  refresh(target: Target): Promise<{ run_id: unknown; conversation_id: unknown; pending_settings_id?: unknown; model?: unknown; effort?: unknown } | null>;
   catalog(computer: string, folder: string, name: string): Promise<Record<string, unknown>>;
   favorite(computer: string, model: string, favorite: boolean, name: string): Promise<unknown>;
   notice(text: string): void;
@@ -111,7 +112,10 @@ export function createSessionModels(port: ModelsPort) {
       picker = new ModelPicker(); configurePicker(); confirmedFavorites.clear();
     }
     const previous = next ? pending.get(next.row.key) : undefined;
-    if (next && previous?.applied && scope(previous.target) === nextScope && !text(next.details?.pending_settings_id)
+    if (next && previous?.scheduled && previous.attempted && scope(previous.target) === nextScope
+      && text(next.details?.pending_settings_id) !== previous.id) {
+      pending.delete(next.row.key); publishKeys();
+    } else if (next && previous?.applied && scope(previous.target) === nextScope && !text(next.details?.pending_settings_id)
       && text(next.details?.model) === previous.model && text(next.details?.effort) === previous.effort) {
       pending.delete(next.row.key); publishKeys();
     }
@@ -154,8 +158,23 @@ export function createSessionModels(port: ModelsPort) {
     try {
       const out = await port.apply(change.target, change.model, change.effort, automatic ? change.id : undefined, change.openCode);
       if (out.outcome !== "done") {
+        const detail = out.detail.replace(/^hgs: /, "");
+        if (out.outcome === "failed" && automatic && detail.startsWith("Original picker host is busy")) {
+          let current = null;
+          try { current = await port.refresh(change.target); } catch { /* Keep the original failure below. */ }
+          if (current) {
+            const sameTarget = text(current.run_id) === change.target.run_id && text(current.conversation_id) === change.target.conversation_id;
+            if (!sameTarget || text(current.pending_settings_id) !== change.id) {
+              change.scheduled = false; change.blocked = false;
+              if (pending.get(change.key) === change) { pending.delete(change.key); publishKeys(); }
+            } else {
+              change.scheduled = true; change.blocked = false;
+            }
+            return;
+          }
+        }
         change.scheduled = false; change.blocked = true;
-        const stale = automatic && ["pending settings changed; refresh before applying", "pending settings target changed; refresh before applying"].includes(out.detail.replace(/^hgs: /, ""));
+        const stale = automatic && ["pending settings changed; refresh before applying", "pending settings target changed; refresh before applying"].includes(detail);
         if (!stale) port.notice(tr("Model settings for %1: %2", change.target.name, out.detail));
         return;
       }
@@ -229,6 +248,7 @@ export function createSessionModels(port: ModelsPort) {
 
 export const sessionModels = createSessionModels({
   apply: (target, model, effort, expected_pending_id, without_terminal) => bridge.runAction(target, { kind: "settings", model, effort, expected_pending_id, without_terminal }),
+  refresh: (target) => bridge.inspectSession(target, null),
   catalog: (...args) => bridge.openCodeModels(...args), favorite: (...args) => bridge.openCodeFavorite(...args),
   notice: (message) => modelNotice?.(message),
 });
