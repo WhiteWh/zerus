@@ -1743,7 +1743,8 @@ The inspection's `receipt_projection` reports index coverage, its next cursor
 and explicit missing, corrupt or changed-original gaps. An unavailable or still
 building index is unknown coverage, not evidence that no message was sent.
 Legacy discovery runs in one coalesced background worker per state directory,
-with transactions limited to 64 directory entries or 25 ms and a pause between
+with transactions limited to 64 directory entries or indexed bindings, or 25 ms,
+and a pause between
 batches. An interrupted worker retains committed locators and their sequence
 numbers; discovery reopens in the background. It never deletes or rewrites
 receipt history. New sends retain the original atomic receipt write and update
@@ -1753,6 +1754,11 @@ Older caches remain unverified until the worker reconciles their originals.
 Removing a locator or changing its indexed identity invalidates coverage and
 snapshot cursors. Every worker restart reconciles the original directory even
 when its modification time is unchanged; inspection never does that walk.
+The worker also checks indexed bindings not encountered in that walk. A missing
+original keeps its binding and becomes an explicit gap with a history change
+sequence. Discovery can finish with a gap; question recovery still refuses
+unverifiable evidence. Restoring the same original clears its gap, while a
+replacement with another binding remains untrusted.
 
 The same locator exposes exact name, run and conversation pages for question
 recovery. Deadline-bounded inspection never walks the question receipt directory;
