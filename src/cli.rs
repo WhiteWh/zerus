@@ -656,6 +656,13 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
         && args.get(1).map(String::as_str)==Some("native-picker-custodian-v1") {
         return state::dispatch(&args[1..]).map_err(|e| Error::new(1, e));
     }
+    // A connector read uses the long-lived closed namespace so a downgraded
+    // executable refuses it instead of falling through to a session launch.
+    // This one read needs neither a native session host nor a writer.
+    if args.first().map(String::as_str)==Some("__state")
+        && args.get(1).map(String::as_str)==Some("delivery") {
+        return state::dispatch(&args[1..]).map_err(|e| Error::new(1, e));
+    }
     if crate::desktop::launchd_command(&args) {
         args.pop();
         return dispatch(args).map_err(|mut error| {

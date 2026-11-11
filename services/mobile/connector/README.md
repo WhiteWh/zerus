@@ -60,6 +60,39 @@ journal class within the shared read quota. Delivered terminal rows expire
 after one hour; existing persisted SQL predicates and mutation tombstones stay
 unchanged. The Python connector does not list or advertise this operation.
 
+The Rust-only `send_receipt` READ requires the exact `delivery-receipt-v1`
+native help line. It carries `{schema:1,request_id,intent,intent_sha256}`;
+`request_id` identifies this read, never a new send. The immutable intent is
+`{schema:1,computer_id,machine_id,session_id,session,provider,native_encoding,payload}`.
+`payload` is the original ordinary text-only send payload, with its original
+UUID, exact text and all original options. Text remains bounded to 64 KiB;
+attachments must be absent or empty. The original historical name is data,
+never a route to its current holder. The listed original run must still map
+unambiguously to the same durable session ID.
+A cold peer context refuses until its ordinary background snapshot is ready;
+receipt recovery never forces a listing, reconciliation or provider RPC.
+
+`intent_sha256` is SHA-256 of sorted-key compact ASCII-escaped canonical JSON,
+without Unicode normalization or trimming. `native_digest` is a different
+digest computed with the unchanged native producer encoding. `native_encoding`
+freezes `python_default` for direct native stdin or `compact` for the v1 mobile
+peer helper's reserialization. DeepSeek/OpenCode retain their existing compact
+`[original_name,payload]` digest. The shared exact-byte vectors live in
+`../vectors/send_receipt/intents.json`; CRLF is an encoding control, while the
+existing send admission still refuses carriage returns.
+
+The connector invokes the same reader through the stable closed
+`hgs __state delivery receipt ORIGINAL_NAME --json` entry, within five seconds
+and an 8 KiB result cap. A downgraded executable refuses that unknown operation
+instead of treating a cached capability as a session launch. The reader checks
+the physical machine directly without an older outer guard initializing state. It validates every returned identity and
+digest, then projects body-free `submitted` proof or `unknown`. An error is a
+failed read, never evidence that the original was Not sent. This read has its
+own journal UUID and the shared read quota; delivered results expire after one
+hour through indexed cleanup. The original uncertain mutation and native
+receipt remain unchanged. v2 authenticates the same READ operation and retains
+its permanent encrypted identity. Phone settlement ships separately.
+
 With the exact native help line
 `Mobile repository acquisition ABI: repository-acquisition-v1`, this Rust connector
 also advertises `repository_check`, `repository_clone` and `repository_status`.

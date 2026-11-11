@@ -10,6 +10,7 @@ use uuid::Uuid;
 pub const MIB: usize = 1024 * 1024;
 pub const REQUEST_MAX: usize = 29 * MIB;
 pub const READS: &[&str] = &[
+    "send_receipt",
     "repository_check",
     "repository_status",
     "analytics_read",
@@ -85,6 +86,7 @@ pub const MOBILE_DELIVERY: &[&str] = &[
     "away_30",
 ];
 pub const OPERATIONS: &[&str] = &[
+    "send_receipt",
     "repository_check",
     "repository_clone",
     "repository_status",
@@ -476,7 +478,14 @@ pub fn request(v: &Value) -> Result<()> {
             || SPEECH.contains(&op)
             || TASKS.contains(&op),
     )?;
-    if crate::repositories::OPERATIONS.contains(&op) {
+    if op == crate::send_receipt::OPERATION {
+        crate::send_receipt::validate(
+            p,
+            id,
+            &v["computer_id"],
+            v["session"].as_str().ok_or(Error::BAD)?,
+        )?;
+    } else if crate::repositories::OPERATIONS.contains(&op) {
         if v["session"] != "" {
             return Err(Error::BAD);
         }
