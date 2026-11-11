@@ -190,6 +190,16 @@
     "%2 — %3 из %n выбранных сессий",
     "%2 — %3 из %n выбранных сессий"
   ],
+  "%n child sessions cannot be archived now and stay as they are:": [
+    "%n дочернюю сессию сейчас нельзя переместить в архив, она остаётся как есть:",
+    "%n дочерние сессии сейчас нельзя переместить в архив, они остаются как есть:",
+    "%n дочерних сессий сейчас нельзя переместить в архив, они остаются как есть:"
+  ],
+  "%n child sessions cannot be terminated now and stay as they are:": [
+    "%n дочернюю сессию сейчас нельзя завершить, она остаётся как есть:",
+    "%n дочерние сессии сейчас нельзя завершить, они остаются как есть:",
+    "%n дочерних сессий сейчас нельзя завершить, они остаются как есть:"
+  ],
   "%n connection(s) unavailable. Changes are saved here and will sync when reachable.": [
     "%n подключение недоступно. Изменения сохранены локально и синхронизируются после восстановления связи.",
     "%n подключения недоступны. Изменения сохранены локально и синхронизируются после восстановления связи.",
@@ -253,6 +263,8 @@
   ". Showing recent activity.": ". Показаны недавние действия.",
   "/path/to/file, ~/file or C:\\path\\file": "/путь/к/файлу, ~/файл или C:\\путь\\файл",
   "1 account": "1 учётная запись",
+  "1 child session cannot be archived now and stays as it is:": "1 дочернюю сессию сейчас нельзя переместить в архив, она остаётся как есть:",
+  "1 child session cannot be terminated now and stays as it is:": "1 дочернюю сессию сейчас нельзя завершить, она остаётся как есть:",
   "1 machine loaded": "загружен 1 компьютер",
   "1 needs attention": "Требует внимания: 1",
   "1 other program will be asked to stop. Save its work before continuing.": "Будет запрошена остановка ещё 1 программы. Прежде чем продолжить, сохраните её данные.",
@@ -414,8 +426,20 @@
   "Allow unencrypted HTTP for a local or private server": "Разрешить незашифрованный HTTP для локального или частного сервера",
   "Allows agents to run commands and change files without waiting for you, including destructive actions and paid usage. Resuming after an expired cache may process the full conversation again. Applies to all reachable sessions while this Zerus is running, including with its window hidden. Ordinary questions, folder trust and permanent permission changes still need you.": "Позволяет агентам выполнять команды и изменять файлы, не дожидаясь вас, включая разрушительные действия и расход платной квоты. Возобновление после истечения кэша может заново обработать весь разговор. Действует для всех доступных сессий, пока работает этот Zerus, в том числе со скрытым окном. Обычные вопросы, доверие к папкам и постоянные изменения разрешений по-прежнему требуют вашего участия.",
   "Already used by %1. Reassign?": "Уже используется: %1. Переназначить?",
+  "Also archive %n child sessions": [
+    "Также переместить в архив %n дочернюю сессию",
+    "Также переместить в архив %n дочерние сессии",
+    "Также переместить в архив %n дочерних сессий"
+  ],
+  "Also archive 1 child session": "Также переместить в архив 1 дочернюю сессию",
   "Also delete branches proven merged by Git": "Также удалить ветки, слияние которых подтверждено Git",
   "Also delete merged branches": "Также удалить слитые ветки",
+  "Also end %n child sessions": [
+    "Также завершить %n дочернюю сессию",
+    "Также завершить %n дочерние сессии",
+    "Также завершить %n дочерних сессий"
+  ],
+  "Also end 1 child session": "Также завершить 1 дочернюю сессию",
   "Also open an external terminal for this session.": "Также откройте внешний терминал для этой сессии.",
   "Alternate": "Дополнительное",
   "Always": "Всегда",
@@ -708,6 +732,8 @@
   "Checkouts": "Рабочие копии",
   "Child of %1, level %2": "Дочерняя сессия %1, уровень %2",
   "Child session ID": "ID дочерней сессии",
+  "Child sessions": "Дочерние сессии",
+  "Child sessions of %1": "Дочерние сессии %1",
   "Child sessions waiting for their parent's answer": "Дочерние сессии ждут ответа родительской",
   "Child sessions with a request only you can answer": "Дочерние сессии с запросом, на который можете ответить только вы",
   "Choice saved. No conflicts remain.": "Выбор сохранен. Никаких конфликтов не осталось.",
@@ -1147,6 +1173,8 @@
   "Each computer keeps its own permission mode. Changing it on one computer leaves the others as they are.": "У каждого компьютера свой режим разрешений. Изменение на одном компьютере не затрагивает остальные.",
   "Each delay must be at least the one before.": "Каждая задержка должна быть не меньше предыдущей.",
   "Each file must be readable, nonempty, and at most 10 MiB.": "Каждый файл должен быть читаемым, непустым и иметь размер не более 10 МБ.",
+  "Each one moves to Archive through its own Move to archive after this session does.": "Каждая перемещается в архив собственным действием «Переместить в архив» после этой сессии.",
+  "Each one stops through its own Terminate after this session ends. Their working folders are kept.": "Каждая останавливается собственным завершением после этой сессии. Их рабочие папки сохраняются.",
   "Each ping reads the whole cached context (about %1 tokens) from this account's usage.": "Каждый пинг читает весь закэшированный контекст (около %1 токенов) за счёт лимитов этого аккаунта.",
   "Each ping reads the whole cached context from this account's usage.": "Каждый пинг читает весь закэшированный контекст за счёт лимитов этого аккаунта.",
   "Each positive number is a delay before the next attempt. End with −1 to stop, or 0 to repeat the previous delay forever.\nExample: 300, 0 retries every 5 minutes until stopped.\n\nNew messages and Stop cancel recovery. Sign-in, balance, other quota and context errors require your action.": "Каждое положительное число — задержка перед следующей попыткой. Завершите список числом −1, чтобы остановиться, или 0, чтобы бесконечно повторять предыдущую задержку.\nПример: 300, 0 — повтор каждые 5 минут до остановки.\n\nНовые сообщения и «Остановить» отменяют восстановление. Ошибки входа, баланса, других квот и контекста требуют вашего вмешательства.",
@@ -1697,6 +1725,7 @@
   "More tasks could not be read: %1": "Не удалось прочитать следующие задачи: %1",
   "More than 64 cleanup candidates. Filter by project or computer first.": "Кандидатов на очистку больше 64. Сначала отфильтруйте по проекту или компьютеру.",
   "Motion": "Анимация",
+  "Move %1 to Archive? Its live child sessions stay listed under it until they end too.": "Переместить %1 в архив? Её активные дочерние сессии останутся в списке под ней, пока тоже не завершатся.",
   "Move and open in lists": "Перемещаться и открывать в списках",
   "Move aside the damaged local copy of task %1 and accept its next received copy? Attempt history and unsent local edits may be missing from that copy.": "Отложить повреждённую локальную копию задачи %1 и принять следующую полученную копию? В ней могут отсутствовать история попыток и неотправленные локальные правки.",
   "Move copy aside": "Отложить копию",
@@ -1708,6 +1737,7 @@
   "Move to Backlog": "Переместить в «Бэклог»",
   "Move to To do": "Переместить в «К выполнению»",
   "Move to archive": "Переместить в архив",
+  "Move to archive?": "Переместить в архив?",
   "Move to project": "Переместить в проект",
   "Move to project…": "Переместить в проект…",
   "Move to the top of To do": "Переместить в начало «К выполнению»",
@@ -3019,6 +3049,9 @@
   "The change request may have reached the executor, but its delivery could not be confirmed. Its original was kept for review and will not be sent again. Check the executor’s session before you send anything else.": "Запрос изменений мог дойти до исполнителя, но его доставку не удалось подтвердить. Оригинал оставлен для проверки и не будет отправлен повторно. Проверьте сессию исполнителя, прежде чем отправлять что-то ещё.",
   "The change request was not sent: it was refused before it reached the executor, and the task was not reopened. It stays in the task history as a note. Your draft was kept, so you can send it again.": "Запрос изменений не отправлен: он был отклонён до того, как дошёл до исполнителя, и задача не открыта заново. Он остаётся в истории задачи как заметка. Черновик сохранён, его можно отправить снова.",
   "The change request was not sent: it was refused before it reached the executor. Your draft has changed since, so the original was kept for review: release the record to send your current draft as a new message.": "Запрос изменений не отправлен: он был отклонён до того, как дошёл до исполнителя. С тех пор черновик изменился, поэтому оригинал оставлен для проверки: освободите запись, чтобы отправить текущий черновик как новое сообщение.",
+  "The child sessions of %1 were kept because it did not end.": "Дочерние сессии %1 сохранены, потому что сама сессия не завершилась.",
+  "The child sessions of %1 were kept: another selection action is running. Nothing was retried.": "Дочерние сессии %1 сохранены: выполняется другое действие с выделением. Ничего не повторялось.",
+  "The child sessions of %1 were kept: its own outcome is unknown.": "Дочерние сессии %1 сохранены: результат самой сессии неизвестен.",
   "The clipboard is unavailable": "Буфер обмена недоступен",
   "The comment stays in the task; nothing was cancelled or sent again.": "Комментарий остаётся в задаче; ничего не отменено и не отправлено повторно.",
   "The compact row limit has been reached. Expand another session row first.": "Достигнут лимит свёрнутых строк. Сначала разверните другую строку сессии.",

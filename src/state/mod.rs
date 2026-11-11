@@ -29,6 +29,7 @@ pub(crate) mod backend;
 pub(crate) mod dsh;
 pub(crate) mod opencode;
 mod effort;
+mod end_children;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod guarded_recovery;
 mod external_agents;
@@ -1409,6 +1410,12 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
     let Some((command, args)) = args.split_first() else {
         return Err("missing state operation".into());
     };
+    // Only this explicit flag ends a parent's live child sessions after it
+    // (zerus-sa9qn.17). Before provider routing, so a DeepSeek or OpenCode
+    // parent refuses with its own message and no child is touched.
+    if matches!(command.as_str(), "terminate" | "archive") && args.iter().any(|arg| arg == end_children::FLAG) {
+        return end_children::dispatch(command, args);
+    }
     if command == "worktrees" { return worktrees::dispatch(args); }
     if command == "git-status" { return git_status::dispatch(args); }
     if command == "dirs" {

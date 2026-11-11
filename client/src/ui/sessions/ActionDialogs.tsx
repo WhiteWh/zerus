@@ -3,14 +3,16 @@ import { For, Show, createEffect, createMemo, createSignal, lazy, onCleanup, onM
 import { Icon } from "../lib/icons";
 import { catalog, computerOffline } from "../../store/catalog";
 import { GONE, change, copyCommand, copyFolder, copyName, copySessionId, copyReference, end, forget, interrupting, notify, perform, stillListed, pendingNotifications, toggleMute, updating } from "../../store/actions";
-import { bindBatchConfirm, running } from "../../store/batch";
+import { bindBatchConfirm, endAfter, running } from "../../store/batch";
+import { childOfferFor } from "../../store/endChildren";
 import { bindResumeTerminalConfirm } from "../../store/sessionTerminal";
 import { cancelRestoreFollow, forgetArchived, refreshArchiveWhenDone, restoreSession } from "../../store/restores";
 import type { MenuEntry } from "../../store/ui";
 import type { Details, Outcome } from "../../types";
 import type { Session } from "./types";
 import { FRESH_CHANGED, STATE_CHANGED, archiveNameOccupied, canStartStopped, FRESH_TIP, copyState, dialogReducer, freshCopy, freshEntry, freshStillValid, menuState, notificationsState, renameParts, renameProblem, forgetArchivedCopy, forgetCopy, forgetOpening, snapshotOf, terminateCopy, terminates, type ForgetScope, type ActionRow, type DialogEvent } from "./actions-ui";
-import type { BatchConfirmation } from "./selection";
+import type { BatchConfirmation, SelectionRow } from "./selection";
+import { childChoiceText, childHintText, childStayText, type ChildAction, type ChildOffer } from "./end-children";
 import { terminationCleanupOffer, terminationCleanupCancel } from "../../bridge";
 import { targetOf } from "../../store/actions";
 import { setSetting } from "../../store/settings";
@@ -27,7 +29,10 @@ const ForkDialog = lazy(() => import("./ForkDialog"));
 
 // The guarded session actions: the entries both menus share, the Rename,
 // Terminate, Forget (saved or archived), Start fresh and selection dialogs.
-// Their notices go to the window's notice bus (store/notices.ts). An archived row's change entry is
+// Their notices go to the window's notice bus (store/notices.ts). The
+// Terminate and Move to archive confirmations of a parent with live child
+// sessions also offer to end those, off by default (zerus-sa9qn.17); Move to
+// archive asks only then. An archived row's change entry is
 // Restore session (store/restores.ts). While a selection batch runs
 // (store/batch.ts, Qt's m_pending) every write entry here is off. A
 // successful Rename or Move to archive reloads the archive pages (Qt's
@@ -82,7 +87,12 @@ export function actionEntries(s: Session, details?: Details, options: { context?
     rename: { label: tr("Rename…"), icon: "pencil", disabled: !m.rename, action: () => send({ type: "open", kind: "rename", row }) },
     fork: forkEntry(s, details),
     archive: m.archive.visible
-      ? { label: tr("Move to archive"), icon: "archive", disabled: !m.archive.enabled, hint: hint(m.archive.enabled, m.archive.reason), action: () => { void perform(row, { kind: "archive" }).then(refreshArchiveWhenDone); } }
+      ? { label: tr("Move to archive"), icon: "archive", disabled: !m.archive.enabled, hint: hint(m.archive.enabled, m.archive.reason), action: () => {
+        // A parent with live child sessions confirms first and may end them too.
+        const children = childOfferFor(row, "archive");
+        if (children.ending.length || children.staying.length) { send({ type: "open", kind: "archive", row }); return; }
+        void perform(row, { kind: "archive" }).then(refreshArchiveWhenDone);
+      } }
       : undefined,
     end: {
       label: tr(m.end.label), icon: m.end.label === "Terminate session…" ? "circle-stop" : "trash", danger: true, disabled: !m.end.enabled, hint: hint(m.end.enabled, m.end.reason),
@@ -220,6 +230,9 @@ export function TerminateDialog(props: { row: ActionRow; close: () => void }) {
   const [remove, setRemove] = createSignal(false);
   const [programs, setPrograms] = createSignal<readonly CleanupProgram[]>([]);
   const [offerError, setOfferError] = createSignal("");
+  // The live child sessions as the dialog opened; a verified shell has none.
+  const children = shell ? { ending: [], staying: [] } : untrack(() => childOfferFor(props.row, "terminate"));
+  const [alsoChildren, setAlsoChildren] = createSignal(false);
   let closed = false, consumed = false;
   onMount(() => {
     if (shell) {
@@ -237,6 +250,7 @@ export function TerminateDialog(props: { row: ActionRow; close: () => void }) {
   onCleanup(() => { closed = true; const id = offer(); if (id && !consumed) void terminationCleanupCancel(id); });
   const submit = async () => {
     if (shell && !terminal()) return;
+    const chosen = alsoChildren() ? children.ending : [];
     const id = remove() ? offer() : undefined;
     const released = !id ? offer() : undefined;
     consumed = !!id || !!released;
@@ -244,9 +258,10 @@ export function TerminateDialog(props: { row: ActionRow; close: () => void }) {
     props.close();
     if (released) {
       try { await terminationCleanupCancel(released); }
-      catch (error) { notify("error", String(error), true); return; }
+      catch (error) { notify("error", String(error), true); void endAfter("terminate", props.row, undefined, chosen); return; }
     }
-    void end(props.row, terminal() ?? copy.action, id);
+    // The children only after this session's own outcome, never with its folder choice.
+    void end(props.row, terminal() ?? copy.action, id).then((out) => endAfter("terminate", props.row, out, chosen));
   };
   return (
     <>
@@ -270,10 +285,73 @@ export function TerminateDialog(props: { row: ActionRow; close: () => void }) {
           <Show when={remove()}><TerminationPrograms programs={programs()} /></Show>
           <p class="hint" style={{ "margin-top": "6px" }}>{tr("Removal runs in the background after exact successful termination, only for a verified generated worktree. Unknown local data keeps the folder for review. Computer: %1", props.row.machine)}</p>
         </Show>
+        <ChildSessions action="terminate" offer={children} checked={alsoChildren()} onChange={setAlsoChildren} />
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
         <button type="button" class="btn solid-danger" onClick={submit} disabled={shell && !terminal()}>{offer() ? remove() ? tr("Stop and remove folder") : tr("Stop and archive") : copy.confirm}</button>
+        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
+      </div>
+    </>
+  );
+}
+
+/** The most child sessions a confirmation names one by one; the rest are counted. */
+const CHILDREN_SHOWN = 50;
+
+/**
+ * A parent's live child sessions in its Terminate or Archive confirmation
+ * (zerus-sa9qn.17): the opt-in, off by default, with the children the action
+ * would end, and the children it cannot end now, which stay as they are.
+ */
+function ChildSessions(props: { action: ChildAction; offer: ChildOffer; checked: boolean; onChange: (checked: boolean) => void }) {
+  const names = (rows: readonly SelectionRow[]) => (
+    <ul class="dlg-children" style={{ "max-height": "140px", overflow: "auto", margin: "4px 0 6px", "padding-left": "24px", "list-style": "none", color: "var(--z-color-dim)", "font-size": "var(--fs-sm)" }}>
+      <For each={rows.slice(0, CHILDREN_SHOWN)}>{(s) => <li dir="auto" class="ell" title={s.name}>{s.name}</li>}</For>
+      <Show when={rows.length > CHILDREN_SHOWN}><li>{tr("+%1 more", rows.length - CHILDREN_SHOWN)}</li></Show>
+    </ul>
+  );
+  return (
+    <Show when={props.offer.ending.length + props.offer.staying.length > 0}>
+      <section class="dlg-child-sessions" aria-label={tr("Child sessions")}>
+        <Show when={props.offer.ending.length > 0}>
+          <label class="check" style={{ "margin-top": "10px" }}><input type="checkbox" checked={props.checked} onChange={(e) => props.onChange(e.currentTarget.checked)} /> {childChoiceText(props.action, props.offer.ending.length)}</label>
+          {names(props.offer.ending)}
+          <p class="hint">{childHintText(props.action)}</p>
+        </Show>
+        <Show when={props.offer.staying.length > 0}>
+          <p class="hint" style={{ "margin-top": "8px" }}>{childStayText(props.action, props.offer.staying.length)}</p>
+          {names(props.offer.staying)}
+        </Show>
+      </section>
+    </Show>
+  );
+}
+
+/**
+ * Move to archive of a parent with live child sessions (zerus-sa9qn.17): the
+ * archive runs as from the menu, then, only when chosen, each listed child
+ * through its own Move to archive.
+ */
+export function ArchiveDialog(props: { row: ActionRow; close: () => void }) {
+  const children = untrack(() => childOfferFor(props.row, "archive"));
+  const [alsoChildren, setAlsoChildren] = createSignal(false);
+  const submit = () => {
+    const chosen = alsoChildren() ? children.ending : [];
+    props.close();
+    void perform(props.row, { kind: "archive" }).then(refreshArchiveWhenDone).then((out) => endAfter("archive", props.row, out, chosen));
+  };
+  return (
+    <>
+      <div class="dlg-head"><Icon name="archive" size={18} class="accent" /><h2 id="action-dlg-title">{tr("Move to archive?")}</h2></div>
+      <div class="dlg-body">
+        <div class="confirm-body" id="action-dlg-body">{tr("Move %1 to Archive? Its live child sessions stay listed under it until they end too.", props.row.name)}</div>
+        <div class="dlg-detail">{tr("Computer: %1", props.row.machine)}</div>
+        <ChildSessions action="archive" offer={children} checked={alsoChildren()} onChange={setAlsoChildren} />
+      </div>
+      <div class="dlg-foot">
+        <span class="spacer" />
+        <button type="button" class="btn" onClick={submit}>{tr("Move to archive")}</button>
         <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
       </div>
     </>
@@ -398,6 +476,7 @@ export function ActionDialogs() {
         {(p) => (p.kind === "fork" ? <ForkDialog row={p.row} details={p.details} close={closeDialog} /> : p.kind === "rename" ? <RenameDialog row={p.row} close={closeDialog} />
           : p.kind === "fresh" ? <FreshDialog row={p.row} close={closeDialog} /> : p.kind === "forget" ? <ForgetDialog row={p.row} bound={p.bound} close={closeDialog} />
           : p.kind === "batch" ? <BatchDialog copy={p.copy} answer={p.answer} close={closeDialog} /> : p.kind === "terminate" ? <TerminateDialog row={p.row} close={closeDialog} />
+          : p.kind === "archive" ? <ArchiveDialog row={p.row} close={closeDialog} />
           : p.kind === "resume_terminal" ? <ResumeTerminalDialog row={p.row} answer={p.answer} close={closeDialog} /> : null)}
       </Show>
     </dialog>

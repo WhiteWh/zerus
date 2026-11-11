@@ -12,6 +12,11 @@ start for this task. Check every exit code.
       Saved; hgs [@h] resume SESSION -d restores it.
   hgs [@h] archive SESSION
       Move an already stopped conversation to Archive.
+  hgs [@h] terminate SESSION --with-children
+  hgs [@h] archive SESSION --with-children
+      After the session itself, the same action for each of its live child
+      sessions on that computer, each by its own rules; a refused child is
+      reported, never retried. Without the flag no child is touched.
   hgs [@h] kill SESSION
       Last resort: ends the terminal session at once and forgets its binding.
       Native history stays, but Zerus no longer lists the session.

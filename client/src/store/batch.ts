@@ -11,6 +11,7 @@ import {
 } from "../ui/sessions/selection";
 import type { Session } from "../ui/sessions/types";
 import type { Action, Outcome } from "../types";
+import { tr } from "../i18n";
 
 // A multi-selection's actions, after Qt's runSelectionAction,
 // runNextSelectionAction and finishSelectionAction (SessionSelection.cpp
@@ -77,6 +78,14 @@ export interface RunOptions {
   clearArchive?: boolean;
   /** Only the loaded archive entries are in scope (Qt's paged archive browser). */
   paged?: boolean;
+  /**
+   * The person already confirmed exactly these rows in another dialog (a
+   * parent's Also end its child sessions, `endAfter`): no second question,
+   * and a row that no longer applies is counted as changed, not left out.
+   */
+  preconfirmed?: boolean;
+  /** The summary's first line, naming what the batch was. */
+  heading?: string;
 }
 
 const errorText = (error: unknown) => (typeof error === "string" ? error : error instanceof Error ? error.message : String(error));
@@ -137,9 +146,9 @@ export function createBatch(deps: BatchDeps) {
     }
     // Move to project waits for the organisation stream's move (MOVE_LATER).
     if (a === "move" || running()) return;
-    const targets = rows.filter((r) => appliesNow(r)).map(selectionSnapshot);
+    const targets = (options.preconfirmed ? [...rows] : rows.filter((r) => appliesNow(r))).map(selectionSnapshot);
     if (!targets.length) return;
-    if (a === "forget" || a === "terminate") {
+    if (!options.preconfirmed && (a === "forget" || a === "terminate")) {
       const copy = confirmationCopy(a, targets, rows.length, options.clearArchive ? { paged: !!options.paged } : undefined);
       if (!(await deps.confirm(copy)) || running()) return;
     }
@@ -218,7 +227,7 @@ export function createBatch(deps: BatchDeps) {
       }
       if (progress !== undefined) deps.dismiss(progress);
       const summary = summaryText(a, done, targets.length, failed, errors, unknown);
-      deps.notify(summary.failed ? "error" : "info", summary.text, summary.failed, noticeKey);
+      deps.notify(summary.failed ? "error" : "info", options.heading ? `${options.heading}\n${summary.text}` : summary.text, summary.failed, noticeKey);
       // Qt refreshes the archive when the batch is over (SessionsWindow.cpp 1916).
       try { deps.archive()?.refresh(); } catch { /* the summary stands; a refresh is only a read */ }
     };
@@ -238,7 +247,24 @@ export function createBatch(deps: BatchDeps) {
     return true;
   }
 
-  return { applies, run, running, exclusive };
+  /**
+   * zerus-sa9qn.17: the child sessions a parent's Terminate or Archive
+   * confirmation listed, when the person chose to end them too. They start
+   * only after the parent's own outcome is done, as one preconfirmed batch:
+   * each child through its own guarded call, looked up again and still the
+   * same instance to which the action applies, one at a time, never retried;
+   * one summary counts done, failed and unknown outcomes. A parent that did
+   * not end, or ended with an unknown outcome, keeps every child as it is.
+   */
+  async function endAfter(a: "terminate" | "archive", parent: ActionRow, out: Outcome | undefined, children: readonly SelectionRow[]): Promise<void> {
+    if (!children.length) return;
+    if (out?.outcome === "uncertain") { deps.notify("error", tr("The child sessions of %1 were kept: its own outcome is unknown.", parent.name), true); return; }
+    if (out?.outcome !== "done") { deps.notify("info", tr("The child sessions of %1 were kept because it did not end.", parent.name), true); return; }
+    if (running()) { deps.notify("error", tr("The child sessions of %1 were kept: another selection action is running. Nothing was retried.", parent.name), true); return; }
+    await run(a, children, { preconfirmed: true, heading: tr("Child sessions of %1", parent.name) });
+  }
+
+  return { applies, run, running, exclusive, endAfter };
 }
 
 let confirmer: ((copy: BatchConfirmation) => Promise<boolean>) | undefined;
@@ -275,7 +301,7 @@ const app = createBatch({
   archive: () => archiveCalls,
 });
 
-export const { applies, run, running, exclusive } = app;
+export const { applies, run, running, exclusive, endAfter } = app;
 
 /**
  * Pause all or Resume all on one computer (Qt's pauseAll and resumeAll with

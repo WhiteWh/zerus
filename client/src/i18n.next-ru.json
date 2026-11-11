@@ -59,6 +59,16 @@
     "%2 — %3 из %n выбранных сессий",
     "%2 — %3 из %n выбранных сессий"
   ],
+  "%n child sessions cannot be archived now and stay as they are:": [
+    "%n дочернюю сессию сейчас нельзя переместить в архив, она остаётся как есть:",
+    "%n дочерние сессии сейчас нельзя переместить в архив, они остаются как есть:",
+    "%n дочерних сессий сейчас нельзя переместить в архив, они остаются как есть:"
+  ],
+  "%n child sessions cannot be terminated now and stay as they are:": [
+    "%n дочернюю сессию сейчас нельзя завершить, она остаётся как есть:",
+    "%n дочерние сессии сейчас нельзя завершить, они остаются как есть:",
+    "%n дочерних сессий сейчас нельзя завершить, они остаются как есть:"
+  ],
   "%n creation(s)": [
     "%n создание",
     "%n создания",
@@ -105,6 +115,8 @@
   ", %1 sessions total": ", всего сессий: %1",
   ", 1 session total": ", всего сессий: 1",
   "/path/to/file, ~/file or C:\\path\\file": "/путь/к/файлу, ~/файл или C:\\путь\\файл",
+  "1 child session cannot be archived now and stays as it is:": "1 дочернюю сессию сейчас нельзя переместить в архив, она остаётся как есть:",
+  "1 child session cannot be terminated now and stays as it is:": "1 дочернюю сессию сейчас нельзя завершить, она остаётся как есть:",
   "1 needs attention": "Требует внимания: 1",
   "1 other program will be asked to stop. Save its work before continuing.": "Будет запрошена остановка ещё 1 программы. Прежде чем продолжить, сохраните её данные.",
   "1 session is on an offline or stale machine. Its last known status is shown on the machine cards.": "1 сессия находится на компьютере, который не в сети или давно не отвечал. Её последнее известное состояние показано на карточках компьютеров.",
@@ -159,6 +171,18 @@
   "All accounts": "Все учётные записи",
   "All agents": "Все агенты",
   "Allow tools": "Разрешать инструменты",
+  "Also archive %n child sessions": [
+    "Также переместить в архив %n дочернюю сессию",
+    "Также переместить в архив %n дочерние сессии",
+    "Также переместить в архив %n дочерних сессий"
+  ],
+  "Also archive 1 child session": "Также переместить в архив 1 дочернюю сессию",
+  "Also end %n child sessions": [
+    "Также завершить %n дочернюю сессию",
+    "Также завершить %n дочерние сессии",
+    "Также завершить %n дочерних сессий"
+  ],
+  "Also end 1 child session": "Также завершить 1 дочернюю сессию",
   "Always": "Всегда",
   "An earlier change of the background service mode needs review in Settings > About.": "Предыдущее изменение режима фоновой службы нужно проверить в разделе «Настройки > О программе».",
   "An unknown result is never retried automatically: the copy may have finished. Open the machine in Accounts to check it.": "Операции с неизвестным результатом не повторяются автоматически: копирование могло завершиться. Проверьте этот компьютер в разделе «Учётные записи».",
@@ -286,6 +310,8 @@
   "Checkouts": "Рабочие копии",
   "Child of %1, level %2": "Дочерняя сессия %1, уровень %2",
   "Child session ID": "ID дочерней сессии",
+  "Child sessions": "Дочерние сессии",
+  "Child sessions of %1": "Дочерние сессии %1",
   "Child sessions waiting for their parent's answer": "Дочерние сессии ждут ответа родительской",
   "Child sessions with a request only you can answer": "Дочерние сессии с запросом, на который можете ответить только вы",
   "Choose 1 to 7 hours or Always.": "Выберите от 1 до 7 часов или «Всегда».",
@@ -400,6 +426,8 @@
   "Drop onto a session in the list to assign it; onto the project header for Any session.": "Перетащите на сессию в списке, чтобы назначить её; на заголовок проекта — для «Любой сессии».",
   "Each computer keeps its own permission mode. Changing it on one computer leaves the others as they are.": "У каждого компьютера свой режим разрешений. Изменение на одном компьютере не затрагивает остальные.",
   "Each delay must be at least the one before.": "Каждая задержка должна быть не меньше предыдущей.",
+  "Each one moves to Archive through its own Move to archive after this session does.": "Каждая перемещается в архив собственным действием «Переместить в архив» после этой сессии.",
+  "Each one stops through its own Terminate after this session ends. Their working folders are kept.": "Каждая останавливается собственным завершением после этой сессии. Их рабочие папки сохраняются.",
   "Each ping reads the whole cached context (about %1 tokens) from this account's usage.": "Каждый пинг читает весь закэшированный контекст (около %1 токенов) за счёт лимитов этого аккаунта.",
   "Each ping reads the whole cached context from this account's usage.": "Каждый пинг читает весь закэшированный контекст за счёт лимитов этого аккаунта.",
   "Each theme uses one skin. Follow system appearance switches between your dark and light skin.": "Каждая тема использует одно оформление. «Как в системе» переключается между вашим тёмным и светлым оформлением.",
@@ -567,8 +595,10 @@
   "More tasks could not be read: %1": "Не удалось прочитать следующие задачи: %1",
   "More than 64 cleanup candidates. Filter by project or computer first.": "Кандидатов на очистку больше 64. Сначала отфильтруйте по проекту или компьютеру.",
   "Motion": "Анимация",
+  "Move %1 to Archive? Its live child sessions stay listed under it until they end too.": "Переместить %1 в архив? Её активные дочерние сессии останутся в списке под ней, пока тоже не завершатся.",
   "Move aside the damaged local copy of task %1 and accept its next received copy? Attempt history and unsent local edits may be missing from that copy.": "Отложить повреждённую локальную копию задачи %1 и принять следующую полученную копию? В ней могут отсутствовать история попыток и неотправленные локальные правки.",
   "Move copy aside": "Отложить копию",
+  "Move to archive?": "Переместить в архив?",
   "Move to project…": "Переместить в проект…",
   "Mute notifications": "Отключить уведомления",
   "Navigation": "Навигация",
@@ -1057,6 +1087,9 @@
   "The change request may have reached the executor, but its delivery could not be confirmed. Its original was kept for review and will not be sent again. Check the executor’s session before you send anything else.": "Запрос изменений мог дойти до исполнителя, но его доставку не удалось подтвердить. Оригинал оставлен для проверки и не будет отправлен повторно. Проверьте сессию исполнителя, прежде чем отправлять что-то ещё.",
   "The change request was not sent: it was refused before it reached the executor, and the task was not reopened. It stays in the task history as a note. Your draft was kept, so you can send it again.": "Запрос изменений не отправлен: он был отклонён до того, как дошёл до исполнителя, и задача не открыта заново. Он остаётся в истории задачи как заметка. Черновик сохранён, его можно отправить снова.",
   "The change request was not sent: it was refused before it reached the executor. Your draft has changed since, so the original was kept for review: release the record to send your current draft as a new message.": "Запрос изменений не отправлен: он был отклонён до того, как дошёл до исполнителя. С тех пор черновик изменился, поэтому оригинал оставлен для проверки: освободите запись, чтобы отправить текущий черновик как новое сообщение.",
+  "The child sessions of %1 were kept because it did not end.": "Дочерние сессии %1 сохранены, потому что сама сессия не завершилась.",
+  "The child sessions of %1 were kept: another selection action is running. Nothing was retried.": "Дочерние сессии %1 сохранены: выполняется другое действие с выделением. Ничего не повторялось.",
+  "The child sessions of %1 were kept: its own outcome is unknown.": "Дочерние сессии %1 сохранены: результат самой сессии неизвестен.",
   "The clipboard is unavailable": "Буфер обмена недоступен",
   "The comment stays in the task; nothing was cancelled or sent again.": "Комментарий остаётся в задаче; ничего не отменено и не отправлено повторно.",
   "The computer did not confirm the keep-warm change. Refresh the session.": "Компьютер не подтвердил изменение прогрева кэша. Обновите сессию.",
