@@ -91,6 +91,8 @@ struct Walk {
     started: String,
     covered: bool,
     after: Option<String>,
+    indexed: i64,
+    epoch: String,
 }
 pub(super) struct Migration {
     catalog: Catalog,
@@ -183,6 +185,12 @@ impl Migration {
                     started,
                     covered,
                     after: None,
+                    indexed: 0,
+                    epoch: sql(self.catalog.db.query_row(
+                        "SELECT value FROM receipt_meta WHERE key='epoch'",
+                        [],
+                        |row| row.get(0),
+                    ))?,
                 });
             }
             let walk = self.walk.as_mut().unwrap();
@@ -243,7 +251,16 @@ impl Migration {
                         )?;
                         self.walk = None;
                     }
-                    None => walk.entries = None,
+                    None => {
+                        walk.entries = None;
+                        // Discovery may repair a lost row and rotate the epoch.
+                        // The retained-row count starts only after that repair.
+                        walk.epoch = sql(self.catalog.db.query_row(
+                            "SELECT value FROM receipt_meta WHERE key='epoch'",
+                            [],
+                            |row| row.get(0),
+                        ))?;
+                    }
                 }
                 continue;
             }
@@ -260,6 +277,7 @@ impl Migration {
             ).optional())?;
             if let Some((id, seen)) = row {
                 examined += 1;
+                walk.indexed += 1;
                 walk.after = Some(id.clone());
                 if seen {
                     continue;
@@ -304,12 +322,22 @@ impl Migration {
             }
             let source = walk.source;
             let current = stamp(&self.catalog.state.join(source.directory()));
-            let complete = current.as_ref().is_ok_and(|stamp| *stamp == walk.started);
+            let epoch: String = sql(self.catalog.db.query_row(
+                "SELECT value FROM receipt_meta WHERE key='epoch'",
+                [],
+                |row| row.get(0),
+            ))?;
+            let complete =
+                current.as_ref().is_ok_and(|stamp| *stamp == walk.started) && epoch == walk.epoch;
+            // Count each retained binding in the already budgeted indexed
+            // pass, including missing originals and previously seen paths.
+            // A backdated arrival or a changed row set can pass the cursor:
+            // keep the live trigger count until a fresh stable walk finishes.
             sql(self.catalog.db.execute(
-                        "UPDATE receipt_sources SET stamp=?1,complete=?2,
-                           indexed=(SELECT COUNT(*) FROM receipt_rows WHERE source=?3) WHERE source=?3",
-                        params![walk.started, complete, source.key()],
-                    ))?;
+                "UPDATE receipt_sources SET stamp=?1,complete=?2,
+                   indexed=CASE WHEN ?2 THEN ?3 ELSE indexed END WHERE source=?4",
+                params![walk.started, complete, walk.indexed, source.key()],
+            ))?;
             sql(self.catalog.db.execute(
                 "DELETE FROM receipt_errors WHERE source=? AND name IN('@source','@enumeration')",
                 [source.key()],
@@ -350,3 +378,6 @@ pub(super) fn worker(state: &Path) -> Result<i32> {
     }
     Ok(0)
 }
+
+#[cfg(test)]
+mod tests;

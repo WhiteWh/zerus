@@ -1754,8 +1754,9 @@ Older caches remain unverified until the worker reconciles their originals.
 Removing a locator or changing its indexed identity invalidates coverage and
 snapshot cursors. Every worker restart reconciles the original directory even
 when its modification time is unchanged; inspection never does that walk.
-The worker also checks indexed bindings not encountered in that walk. A missing
-original keeps its binding and becomes an explicit gap with a history change
+The worker also checks indexed bindings not encountered in that walk, counting
+retained bindings within the same bounded pass. Finishing a source does not
+rescan its rows. A missing original keeps its binding and becomes an explicit gap with a history change
 sequence. Discovery can finish with a gap; question recovery still refuses
 unverifiable evidence. Restoring the same original clears its gap, while a
 replacement with another binding remains untrusted.
