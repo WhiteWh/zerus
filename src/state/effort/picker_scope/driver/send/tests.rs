@@ -123,6 +123,10 @@ fn cleanup_and_input_markers_require_the_original_stage_and_refusal() {
     }
 }
 #[test]
+fn index_repair_failure_stays_sticky_after_the_same_original_registers_successfully() {
+    run("index-sticky");
+}
+#[test]
 #[ignore = "bounded private Send original-object fixture"]
 fn fixture() {
     let case = std::env::var("ZERUS_SEND_CONTROL").unwrap();
@@ -265,6 +269,31 @@ fn fixture() {
     let sid = super::super::super::tests::input(&record);
     assert!(root_file.try_lock_exclusive().is_err() && sid.try_lock_exclusive().is_err());
     match case.as_str() {
+        "index-sticky" => {
+            with(&owner, |held| {
+                held.child = None;
+                held.phase = Phase::Entered;
+                Ok(())
+            }).unwrap();
+            progress.enter_settled.store(true, Ordering::Release);
+            let mut submitted = value.clone();
+            submitted["status"] = json!("submitted");
+            receipt_write(&owner, submitted.clone(), true).unwrap();
+            assert!(!progress.index_repair.load(Ordering::Acquire));
+            let db = rusqlite::Connection::open(root().join("delivery-receipts-v1.sqlite3")).unwrap();
+            db.execute("INSERT INTO receipt_errors VALUES('terminal',?,'private registration fault')",
+                [outer.file_name().unwrap().to_str().unwrap()]).unwrap();
+            db.execute_batch("CREATE TRIGGER refuse_registration BEFORE DELETE ON receipt_errors BEGIN SELECT RAISE(ABORT,'private registration fault'); END").unwrap();
+            receipt_write(&owner, submitted.clone(), true).unwrap();
+            assert!(progress.index_repair.load(Ordering::Acquire));
+            db.execute_batch("DROP TRIGGER refuse_registration").unwrap();
+            receipt_write(&owner, submitted.clone(), true).unwrap();
+            // The same filename heals the row today, making a non-sticky bit
+            // nearly equivalent. Keep the promised report sticky so a future
+            // publication to another filename cannot lose this earlier fault.
+            assert!(progress.index_repair.load(Ordering::Acquire));
+            assert_eq!(serde_json::from_slice::<Value>(&fs::read(&outer).unwrap()).unwrap(), submitted);
+        }
         "stage-spawn" => {
             with(&owner, |held| {
                 held.child = None;

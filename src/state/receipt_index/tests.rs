@@ -498,6 +498,50 @@ fn concurrent_unregistered_original_prevents_complete_stamp_advance() {
 
 #[cfg(unix)]
 #[test]
+fn stale_complete_ledger_missing_a_prior_original_cannot_be_restamped() {
+    for existing in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(temp.path(), true).unwrap();
+        let indexed = value(1, "wanted", "run", "", 1.0);
+        let indexed_path = put(&catalog, Source::Terminal, &indexed);
+        let mut migration = migration::Migration::new(temp.path()).unwrap();
+        while !migration.step().unwrap() {}
+        let prior: (String, bool, i64) = catalog.db.query_row(
+            "SELECT stamp,complete,indexed FROM receipt_sources WHERE source='terminal'",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        assert!(prior.1 && catalog.coverage_verified());
+        // An earlier publication lost both registration and invalidation.
+        // Its original predates S0, so this send's exact one-file delta cannot
+        // detect it. A coarse directory clock also kept the old ledger stamp.
+        let hidden = value(2, "wanted", "run", "", 2.0);
+        let hidden_path = indexed_path.with_file_name(format!("{}.json", string(&hidden, "request_id")));
+        let hidden_bytes = hidden.to_string();
+        atomic(&hidden_path, &hidden_bytes).unwrap();
+        let mut own = if existing { indexed.clone() } else { value(3, "wanted", "run", "", 3.0) };
+        let own_path = indexed_path.with_file_name(format!("{}.json", string(&own, "request_id")));
+        let mut before = before_commit(&own_path).unwrap();
+        assert_eq!(before.entries.receipts as i64, prior.2 + 1);
+        before.entries.stamp = prior.0;
+        own["submitted_at"] = json!(4.0);
+        atomic(&own_path, &own.to_string()).unwrap();
+        assert!(remember_committed(&own_path, &own, Some(&before)));
+        let page = catalog.page(&scope("wanted", "run", ""), "", 100, true).unwrap();
+        assert_eq!(page.metadata["migration_complete"], false);
+        assert_eq!(page.metadata["catalog_complete_at_snapshot"], false);
+        assert!(!page.locators.iter().any(|row| row.id == string(&hidden, "request_id")));
+        assert_eq!(fs::read_to_string(&hidden_path).unwrap(), hidden_bytes);
+        let mut migration = migration::Migration::new(temp.path()).unwrap();
+        while !migration.step().unwrap() {}
+        let repaired = catalog.page(&scope("wanted", "run", ""), "", 100, true).unwrap();
+        assert_eq!(repaired.metadata["migration_complete"], true);
+        assert!(repaired.locators.iter().any(|row| row.id == string(&hidden, "request_id")));
+        assert_eq!(fs::read_to_string(hidden_path).unwrap(), hidden_bytes);
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn replacing_a_foreign_filename_cannot_inherit_complete_coverage() {
     let temp = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(temp.path(), true).unwrap();
