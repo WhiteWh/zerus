@@ -1759,8 +1759,11 @@ against its validated original and repairs compatible metadata. A conflicting
 original fingerprint or pinned conversation remains an explicit gap.
 The worker also checks indexed bindings not encountered in that walk, counting
 retained bindings within the same bounded pass. Finishing a source does not
-rescan its rows. A missing original keeps its binding and becomes an explicit gap with a history change
-sequence. Discovery can finish with a gap; question recovery still refuses
+rescan its rows. It publishes that count only if the source stamp, epoch and
+trigger-maintained count stayed unchanged during counting; a racing walk keeps
+the live count and incomplete coverage. A missing original keeps its binding and
+becomes an explicit gap with a history change sequence. Discovery can finish
+with a gap; question recovery still refuses
 unverifiable evidence. Restoring the same original clears its gap, while a
 replacement with another binding remains untrusted.
 

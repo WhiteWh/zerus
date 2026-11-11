@@ -26,6 +26,7 @@ fn finishing(migration: &mut Migration, count: u128) {
         covered: false,
         after: Some(uuid::Uuid::from_u128(count).to_string()),
         indexed: count as i64,
+        count_at_start: state(migration).0,
         epoch: migration
             .catalog
             .db
@@ -214,3 +215,6 @@ fn discovery_repair_can_rotate_the_epoch_before_the_count_starts() {
     assert!(repaired.catalog.coverage_verified());
     assert_eq!(fs::read(&kept).unwrap(), bytes);
 }
+
+#[path = "race_tests.rs"]
+mod insert_race;

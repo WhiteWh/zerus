@@ -93,6 +93,15 @@ struct Walk {
     after: Option<String>,
     indexed: i64,
     epoch: String,
+    count_at_start: i64,
+}
+fn source_witness(catalog: &Catalog, source: Source) -> Result<(String, i64)> {
+    sql(catalog.db.query_row(
+        "SELECT (SELECT value FROM receipt_meta WHERE key='epoch'),indexed
+           FROM receipt_sources WHERE source=?",
+        [source.key()],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ))
 }
 pub(super) struct Migration {
     catalog: Catalog,
@@ -179,6 +188,7 @@ impl Migration {
                     Some(fs::read_dir(&directory).map_err(|_| "Receipt source is unavailable")?)
                 };
                 let covered = prior.is_some_and(|(stamp, complete)| complete && stamp == started);
+                let (epoch, count_at_start) = source_witness(&self.catalog, source)?;
                 self.walk = Some(Walk {
                     source,
                     entries,
@@ -186,11 +196,8 @@ impl Migration {
                     covered,
                     after: None,
                     indexed: 0,
-                    epoch: sql(self.catalog.db.query_row(
-                        "SELECT value FROM receipt_meta WHERE key='epoch'",
-                        [],
-                        |row| row.get(0),
-                    ))?,
+                    epoch,
+                    count_at_start,
                 });
             }
             let walk = self.walk.as_mut().unwrap();
@@ -255,11 +262,8 @@ impl Migration {
                         walk.entries = None;
                         // Discovery may repair a lost row and rotate the epoch.
                         // The retained-row count starts only after that repair.
-                        walk.epoch = sql(self.catalog.db.query_row(
-                            "SELECT value FROM receipt_meta WHERE key='epoch'",
-                            [],
-                            |row| row.get(0),
-                        ))?;
+                        (walk.epoch, walk.count_at_start) =
+                            source_witness(&self.catalog, walk.source)?;
                     }
                 }
                 continue;
@@ -322,17 +326,16 @@ impl Migration {
             }
             let source = walk.source;
             let current = stamp(&self.catalog.state.join(source.directory()));
-            let epoch: String = sql(self.catalog.db.query_row(
-                "SELECT value FROM receipt_meta WHERE key='epoch'",
-                [],
-                |row| row.get(0),
-            ))?;
-            let complete =
-                current.as_ref().is_ok_and(|stamp| *stamp == walk.started) && epoch == walk.epoch;
+            let (epoch, count) = source_witness(&self.catalog, source)?;
+            let complete = current.as_ref().is_ok_and(|stamp| *stamp == walk.started)
+                && epoch == walk.epoch
+                && count == walk.count_at_start;
             // Count each retained binding in the already budgeted indexed
             // pass, including missing originals and previously seen paths.
             // A backdated arrival or a changed row set can pass the cursor:
             // keep the live trigger count until a fresh stable walk finishes.
+            // An insert can also repair an existing file without changing its
+            // directory stamp or epoch. The trigger witness catches that race.
             sql(self.catalog.db.execute(
                 "UPDATE receipt_sources SET stamp=?1,complete=?2,
                    indexed=CASE WHEN ?2 THEN ?3 ELSE indexed END WHERE source=?4",
