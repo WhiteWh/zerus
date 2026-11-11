@@ -14,6 +14,8 @@ type Session = (typeof catalog.rows)[string];
 
 export function CleanupBlockersPanel(props: {
   blockers: Blockers;
+  /** The fresh read of this folder's blockers; the recorded groups show meanwhile. */
+  live?: "loading" | "ready" | "failed";
   /** The live session uniquely matched on this folder's computer, if any. */
   session: (name: string) => Session | undefined;
   open: (name: string) => void;
@@ -41,13 +43,17 @@ export function CleanupBlockersPanel(props: {
       case "none": return "";
     }
   };
-  const any = () => unknown() || b().sessions.length || b().programCount || b().hidden || b().untracked || b().changes || b().other.length || props.notes.length;
+  const checking = () => !unknown() && (props.live === "loading" || props.live === "failed");
+  const any = () => unknown() || checking() || b().sessions.length || b().programCount || b().hidden || b().untracked || b().changes || b().other.length || props.notes.length;
   return <Show when={any()}>
     <section class="bc-blockers" aria-label={tr("Why this folder was kept")}>
       <Show when={next()}>
         <div class="notice" classList={{ warn: unknown() }} role="status"><Icon name={unknown() ? "triangle-alert" : "info"} size={14} /><span class="bc-next">{next()}</span>
           <Show when={b().next.kind === "archive" && b().sessions.length > 1}><button class="btn small" disabled={props.disabled} onClick={() => props.archive(b().sessions)}>{tr("Archive these %1 sessions…", b().sessions.length)}</button></Show>
         </div>
+      </Show>
+      <Show when={checking()}>
+        <p class="hint bc-live" role="status"><Show when={props.live === "loading"} fallback={tr("Could not check what uses this folder now. The recorded result is shown.")}><Icon name="loader-circle" size={12} class="su-spin" />{tr("Checking what uses this folder…")}</Show></p>
       </Show>
       <Show when={props.archived}><p class="hint" role="status">{tr("Archive requested for %1 sessions. Choose Check again when they are archived.", props.archived ?? 0)}</p></Show>
       <Show when={!unknown()}>

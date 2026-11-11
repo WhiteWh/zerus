@@ -201,6 +201,7 @@
   .bc-files { flex-wrap: wrap; }
   .bc-archive .bc-list { margin-top: 10px; }
   .bc-blockers .hint, .bc-other { margin: 0; overflow-wrap: anywhere; }
+  .bc-live { display: flex; align-items: center; gap: 6px; }
   .bc-result b { flex: none; }
   .bc-result[data-outcome="removed"] b, .bc-result[data-outcome="forgotten"] b { color: var(--z-color-accent); }
   .bc-result[data-outcome="unknown"] b { color: var(--z-color-warn); }
