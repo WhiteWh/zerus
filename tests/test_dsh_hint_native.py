@@ -68,7 +68,7 @@ VERSION = '0.2.0-rc.2'
 HINT = ('This agent runs in a Zerus session: the hgs CLI reads, messages, launches and stops other agent '
         'sessions on this and other computers. Run hgs guide before using it.')
 SYSTEM_PATH = '/usr/bin:/bin'
-HOST_ENV = ('PATH', 'LANG', 'HOME', 'DSH_HOME', 'DSH_TELEMETRY_DISABLED', 'HGS_DSH_TEST_PACKAGE')
+HOST_ENV = ('PATH', 'LANG', 'HOME', 'DSH_HOME', 'DSH_TELEMETRY_DISABLED', 'HGS_DSH_TEST_PACKAGE', 'NARB_NATIVE_CACHE_DIR')
 
 
 def file_digest(path):
@@ -117,7 +117,8 @@ def copy_tree(source, target):
 def host_env(root, package):
     """The whole environment of a host, built rather than inherited."""
     return {'PATH': SYSTEM_PATH, 'LANG': 'C.UTF-8', 'HOME': str(root / 'user'), 'DSH_HOME': str(root / 'native'),
-            'DSH_TELEMETRY_DISABLED': '1', 'HGS_DSH_TEST_PACKAGE': str(package)}
+            'DSH_TELEMETRY_DISABLED': '1', 'HGS_DSH_TEST_PACKAGE': str(package),
+            'NARB_NATIVE_CACHE_DIR': str(root / 'native-cache')}
 
 
 def process_image(pid):
@@ -141,7 +142,7 @@ def system_file(path):
         info = os.stat(path)
     except OSError:
         return False
-    return path.startswith(('/usr/', '/lib')) and info.st_uid == 0 and not info.st_mode & 0o022
+    return (path == '/etc/ld.so.cache' or path.startswith(('/usr/', '/lib'))) and info.st_uid == 0 and not info.st_mode & 0o022
 
 
 def descendants(pid):
@@ -328,22 +329,24 @@ class DeepSeekHint(unittest.TestCase):
             raise unittest.SkipTest('needs dsh, node and the reviewed HGS_DSH_HINT_*_SHA256 digests')
         entry = Path(shared).resolve()
         cls.shared, cls.shared_node = entry.parents[1], Path(node).resolve()
+        cls.shared_node_modules = cls.shared.parent.parent
         manifest = json.loads((cls.shared / 'package.json').read_text())
         if (manifest.get('name'), manifest.get('version'), manifest.get('bin'), entry.relative_to(cls.shared).as_posix()) != (
                 '@deepseek-ai/dsh', os.environ.get('HGS_DSH_TEST_VERSION', VERSION), {'dsh': 'lib/bin.js'}, 'lib/bin.js'):
             raise RuntimeError('the shared dsh is not the reviewed release; nothing was started')
         if not entry.read_bytes().startswith(b'#!/usr/bin/env node\n'):
             raise RuntimeError('the shared dsh entry is no longer a node script; nothing was started')
-        cls.digests = (tree_digest(cls.shared), file_digest(cls.shared_node))
+        cls.digests = (tree_digest(cls.shared_node_modules), file_digest(cls.shared_node))
         if cls.digests != pinned:
             raise RuntimeError('the shared install differs from the reviewed one; nothing was started')
         # One verified private copy per reviewed digest, never the shared files.
         cls.copy = REPO / 'target/hint-evidence/dsh' / pinned[0][:16]
-        cls.node, cls.package = cls.copy / 'node', cls.copy / 'package'
+        cls.node, cls.package = cls.copy / 'node', cls.copy / 'node_modules'
+        cls.entry = cls.package / '@deepseek-ai/dsh/lib/bin.js'
         if not cls.copy.exists():
             cls.copy.mkdir(parents=True, mode=0o700)
             shutil.copy2(cls.shared_node, cls.node)
-            copy_tree(cls.shared, cls.package)
+            copy_tree(cls.shared_node_modules, cls.package)
         if (tree_digest(cls.package), file_digest(cls.node)) != pinned:
             raise RuntimeError('the private copy changed; it was left for inspection')
         cls.temp = tempfile.TemporaryDirectory(prefix='hgs-dsh-hint-', dir='/tmp')
@@ -362,7 +365,7 @@ class DeepSeekHint(unittest.TestCase):
             stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
             (cls.copy.parent / f'evidence-{stamp}.json').write_text(json.dumps(cls.evidence, indent=1))
             changed = [path for path, digest in cls.libraries.items() if file_digest(path) != digest]
-            if changed or (tree_digest(cls.shared), file_digest(cls.shared_node)) != cls.digests:
+            if changed or (tree_digest(cls.shared_node_modules), file_digest(cls.shared_node)) != cls.digests:
                 raise RuntimeError(f'shared files changed during the run: {changed or "the dsh package or node"}')
             if (tree_digest(cls.package), file_digest(cls.node)) != cls.digests:
                 raise RuntimeError('the private copy changed during the run; it was left for inspection')
@@ -391,7 +394,7 @@ class DeepSeekHint(unittest.TestCase):
         for folder in (self.workspace, Path(self.env['DSH_HOME'])):
             self.assertFalse((folder / '.env').exists(), folder)
         with (self.root / 'host.log').open('a') as log:
-            host = subprocess.Popen([str(self.node), str(self.package / 'lib/bin.js'), '--profile', 'web',
+            host = subprocess.Popen([str(self.node), str(self.entry), '--profile', 'web',
                                      '--patch', str(self.overlay(hint, in_history)), '--no-open',
                                      '--host', '127.0.0.1', '--port', '0'], env=self.env, cwd=self.workspace,
                                     stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
@@ -406,7 +409,7 @@ class DeepSeekHint(unittest.TestCase):
     def prove(self, host):
         image = process_image(host.pid)
         self.assertEqual(image['exe'], str(self.node))
-        self.assertEqual(image['cmdline'][:2], [str(self.node), str(self.package / 'lib/bin.js')])
+        self.assertEqual(image['cmdline'][:2], [str(self.node), str(self.entry)])
         self.assertEqual((image['environ'], image['cwd']), (self.env, str(self.workspace)))
         for path in image['maps']:
             if not (Path(path).is_relative_to(self.copy) or Path(path).is_relative_to(self.root)):

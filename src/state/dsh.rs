@@ -231,7 +231,7 @@ fn ensure_host(record: &Value) -> Result<()> {
     let overlay = dir.join("hgs.patch.json");
     atomic(
         &overlay,
-        &json!([{"insert":[{"id":"hgs-native-dsh","name":script,"config":{"socket":socket,"recoveryPolicy":recovery::policy_path()}}]}])
+        &json!([{"insert":[{"id":"hgs-native-dsh","name":script,"config":bridge_config(&socket, agent_hint::for_account("native-dsh"))}]}])
             .to_string(),
     )?;
     let log = crate::platform::private_open(OpenOptions::new().create(true).truncate(true).write(true))
@@ -361,6 +361,15 @@ pub(crate) fn native_ui_url(name: &str) -> Result<String> {
         }
     }
     Ok(url)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn bridge_config(socket: &Path, hint: Option<&str>) -> Value {
+    let mut config = json!({"socket": socket, "recoveryPolicy": recovery::policy_path()});
+    if let Some(hint) = hint {
+        config["agentHint"] = json!(hint);
+    }
+    config
 }
 
 struct PermissionPlan {
@@ -2355,5 +2364,24 @@ mod pending_identity_tests {
         let one = source("11111111-1111-4111-8111-111111111111", "session-one");
         let two = source("22222222-2222-4222-8222-222222222222", "session-two");
         assert_ne!(fork_pending_path(&one,Some("child")), fork_pending_path(&two,Some("child")));
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_host_gets_the_agent_hint_only_when_it_is_on() {
+        let socket = Path::new("/state/dsh/hosts/key/host.sock");
+        let on = bridge_config(socket, Some(agent_hint::HINT));
+        assert_eq!(
+            (on["socket"].as_str(), on["agentHint"].as_str()),
+            (Some("/state/dsh/hosts/key/host.sock"), Some(agent_hint::HINT))
+        );
+        assert!(on["recoveryPolicy"].is_string());
+        let off = bridge_config(socket, None);
+        assert!(off.get("agentHint").is_none());
+        assert_eq!(off["socket"], on["socket"]);
     }
 }

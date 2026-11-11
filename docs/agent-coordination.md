@@ -7,11 +7,16 @@ Codex main conversations to that guide through SessionStart context. Tracked
 Kimi Code main conversations receive one UserPromptSubmit JSON `message` per
 conversation; its native replay retains the hint on resume and compaction,
 while clear starts a new conversation and emits once. SessionStart output is
-not used for Kimi. Global and exact-account opt-outs affect new injection
-attempts, while `guide` and `self` remain available. Hint policy is resolved for
-each new process, including resume, and inherited environment overrides are a
-process snapshot, not live configuration reload. Native children and arbitrary
-commands are outside this hint channel.
+not used for Kimi. DeepSeek hosts started by hgs carry the same sentence for
+hgs-owned main agents; native subagents and sessions opened in the host's own
+UI do not receive it. An already-running host is never hot-reloaded. One
+effective copy means the latest prompt, not every hint retained in history:
+opting out does not remove old hint-bearing system messages, and re-enabling
+can retain them beside a new one. Global and exact-account opt-outs affect new
+injection attempts, while `guide` and `self` remain available. Hint policy is
+resolved for each new process, including resume, and inherited environment
+overrides are a process snapshot, not live configuration reload. Native
+children and arbitrary commands are outside this hint channel.
 
 An independent session is not a native subagent. Declare dependencies through
 `hgs wait`. Prose, a submitted message, Beads status, a native Stop and an idle

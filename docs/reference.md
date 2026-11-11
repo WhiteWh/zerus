@@ -174,24 +174,30 @@ establish a unique session identity.
 
 ### Static agent guidance
 
-The static hint source covers tracked Claude Code, Codex and Kimi Code main
-conversations. Its native delivery is verified on reviewed versions. OpenCode
-and DeepSeek channels remain separate work; older hgs peers inject nothing.
+The static hint source covers tracked Claude Code, Codex, Kimi Code and DeepSeek
+main conversations. Its native delivery is verified on reviewed versions.
+OpenCode remains separate work; older hgs peers inject nothing.
 
 The hint points to `hgs guide` with fixed English text, independent of session
 name, computer and hgs version. Claude Code and Codex use the existing
 SessionStart hook context. Kimi uses one UserPromptSubmit JSON `message` per
 conversation, verified on interactive Kimi 2.5.3 launches, not the separate
-`--prompt` mode. No channel changes user instruction flags, project launchers or
-saved native arguments, and none is sent as a person's Activity message. New
-conversations and previously unmarked conversations receive an attempt;
-repeated resumes suppress another attempt when the provider retains the
-context. Clear and compaction replace context for Claude Code and Codex and
-request a new copy. Kimi retains the existing hook part on resume and
-compaction, so those paths do not add another copy; clear creates a new
-conversation and emits once. A fork inherits suppression only from the exact
-marked context it forks. Renaming does not change the text or hint revision.
-Arbitrary commands and native subagents receive no hint.
+`--prompt` mode. DeepSeek hosts started by hgs register the same sentence for
+hgs-owned main agents; native subagents and sessions opened in the host's own
+UI receive no hint. An already-running host keeps its bridge until its next
+start and is never hot-reloaded. One effective copy means the latest prompt,
+not every hint retained in history: opting out does not remove old hint-bearing
+system messages, and re-enabling can retain them beside a new one. No channel
+changes user instruction flags, project launchers or saved native arguments,
+and none is sent as a person's Activity message. New conversations and
+previously unmarked conversations receive an attempt; repeated resumes suppress
+another attempt when the provider retains the context. Clear and compaction
+replace context for Claude Code and Codex and request a new copy. Kimi retains
+the existing hook part on resume and compaction, so those paths do not add
+another copy; clear creates a new conversation and emits once. A fork inherits
+suppression only from the exact marked context it forks. Renaming does not
+change the text or hint revision. Arbitrary commands and native subagents
+receive no hint.
 
 Configure optional injection in the hgs config file or caller environment:
 
@@ -201,9 +207,9 @@ HGS_AGENT_HINT_OFF="native-codex work"   # exclude exact account IDs
 ```
 
 Injection defaults to enabled. The global value accepts `0` or `1`; the exclusion
-list is whitespace-separated and uses `native-claude`, `native-codex` or
-`native-kimi` for the provider's own login. Environment values take precedence, including an explicitly
-empty exclusion list. Invalid or unreadable hint policy disables only optional
+list is whitespace-separated and uses `native-claude`, `native-codex`,
+`native-kimi` or `native-dsh` for the provider's own login. Environment values
+take precedence, including an explicitly empty exclusion list. Invalid or unreadable hint policy disables only optional
 injection with a bounded diagnostic; unrelated configuration validation is
 unchanged. `hgs guide` and `hgs self` remain available when injection is disabled.
 Opt-out does not remove context already retained by the provider.

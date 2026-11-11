@@ -11,6 +11,14 @@ import { isDeepStrictEqual } from 'node:util';
 export const name = 'hgs-native-dsh';
 export const inject = ['sessionController', 'agents', 'goals', 'llm', 'agentDefaultModel', 'sessionQuery', 'userQuestions', 'workspaceRegistry', 'subagents', 'permissionPresets', 'approval', 'commands'];
 
+export const AGENT_HINT_SECTION = 'hgs:agent-hint';
+export function registerAgentHint(ctx, hint) {
+  const prompts = ctx.get('systemPrompt');
+  if (typeof hint !== 'string' || !hint || typeof prompts?.section !== 'function') return false;
+  ctx.effect(() => prompts.section({ name: AGENT_HINT_SECTION, order: 10300, text: hint, interpolate: false }));
+  return true;
+}
+
 // 0.2.2 moved selection from the controller's WeakMap to the Agent's native
 // model object. Both reads are side-effect-free; never use selectionFor or
 // public selectModel (which also saves the profile default) as a fallback.
@@ -147,6 +155,7 @@ export async function manageSchedule(schedule, p) {
 
 export function apply(ctx, config) {
   const api = ctx.sessionController;
+  registerAgentHint(ctx, config?.agentHint);
   const control = api.agents;
   const models = modelSelectionAdapter(control);
   const owned = new Map(), opening = new Map(), questions = new Map();
