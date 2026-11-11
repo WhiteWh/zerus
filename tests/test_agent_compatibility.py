@@ -765,7 +765,7 @@ class AgentCompatibility(unittest.TestCase):
                 row, runs, directory, profiles = self.qualify_fixture('opencode', target)
                 self.assertEqual(row['status'], 'passed', row.get('error'))
                 [(suites, env, timeout)] = runs
-                self.assertEqual((suites, timeout), (['test_opencode_native'], compat.AGENTS['opencode']['timeout']))
+                self.assertEqual((suites, timeout), (['test_opencode_native', 'test_opencode_hint_native'], compat.AGENTS['opencode']['timeout']))
                 self.assertEqual(env['ZERUS_TEST_OPENCODE_NATIVE'], '1')
                 self.assertEqual(Path(env['ZERUS_TEST_OPENCODE_BIN']).name, 'native')
                 # The suite builds its own private folders; the runner's version and help
