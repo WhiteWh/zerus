@@ -15,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gui_sandbox  # noqa: E402  (shared GUI isolation, zerus-5a99f)
 REPO = Path(__file__).resolve().parents[2]
 MACHINE = '11111111-1111-4111-8111-111111111111'
+# Matches native UNDO_WINDOW in client/core/src/end_action.rs; stage polling can observe its start up to 300 ms late.
+UNDO_WINDOW_SECONDS = 3
 if '--worker' not in sys.argv:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app', type=Path, required=True)
@@ -224,7 +226,7 @@ with (root/'app.log').open('wb') as log:
             assert [c[-2] for c in effects]==['codex/example/kept',*[f'codex/example/extra-{n}' for n in (6,7,8)]],effects
             assert not removals
             issued=next(c for c in map(json.loads,(root/'calls-time.jsonl').read_text().splitlines()) if 'session-action' in c['args'])
-            assert issued['at']-float((root/'pending-observed').read_text())>=4.7,'effect before grace'
+            assert issued['at']-float((root/'pending-observed').read_text())>=UNDO_WINDOW_SECONDS-.3,'effect before grace'
             assert {'UNDO','FIVE','CLOSE','RESTORED','BATCH'}<=stages,stages
             assert 'undo-ui: EXECUTED_CLOSED' in output and 'undo-ui: QUIT_PENDING' in output,output
             assert 'dropped pending Archive for "codex/example/extra-9" on quit' in output,output
@@ -236,11 +238,11 @@ with (root/'app.log').open('wb') as log:
             assert sum('codex/example/changed' in c and 'inspect' in c for c in calls)==1,calls
             assert sum('codex/example/restore-refused' in c and 'inspect' in c for c in calls)==1,calls
             issued=next(c for c in map(json.loads,(root/'calls-time.jsonl').read_text().splitlines()) if 'session-action' in c['args'])
-            assert issued['at']-float((root/'pending-observed').read_text())>=4.7,'effect issued before the native window'
+            assert issued['at']-float((root/'pending-observed').read_text())>=UNDO_WINDOW_SECONDS-.3,'effect issued before the native window'
             assert all('undo-native: '+s in output for s in ('EXECUTED_HIDDEN','SOURCE_CHANGED','LIMIT_REFUSED','QUIT_PENDING')),output
             assert {'NATIVE','RESTORED'}<=stages,stages
             assert all((root/'repo'/tag/'changes.txt').exists() for tag in json.loads((root/'recovery').read_text()))
-            print('PASS native five-second/cancel/hidden/exact source/quit seam; one scoped fake archive only')
+            print(f'PASS native {UNDO_WINDOW_SECONDS}-second/cancel/hidden/exact source/quit seam; one scoped fake archive only')
             raise SystemExit(0)
         if recovery:
             archives=[c for c in calls if 'archive' in c or 'session-action' in c];restores=[c for c in calls if 'resume' in c]
