@@ -20,6 +20,7 @@ APP_SMOKES = {
     "linux-startup-smoke.py": True,
     "machines-smoke.py": True,
     "native-ui-smoke.py": True,
+    "native-cleanup-smoke.py": True,
     "project-vivid-smoke.py": True,
     "termination-cleanup-smoke.py": True,
     "video-poster-smoke.py": True,
