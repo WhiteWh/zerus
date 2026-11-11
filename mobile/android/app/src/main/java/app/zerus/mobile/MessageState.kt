@@ -133,16 +133,17 @@ object ConversationMerge {
         val used = mutableSetOf<Int>()
         val recorded = mutableSetOf<String>()
         outgoing.filter { it.belongsTo(target) && it.status != "reviewed" }.sortedBy { it.createdAt }.forEach { message ->
-            // Only a user row from durable native receipt metadata is authoritative by request ID,
-            // then an OpenCode prompt naming the exact request that sent it: OpenCode dates a
-            // queued prompt by its delivery, which can be far outside the text and time window.
+            // Exact receipt-backed read evidence reconciles its own request.
+            // OpenCode dates queued prompts by delivery, outside the time window.
+            // Text/time matching below is only presentation deduplication.
+            val confirmed=message.status in listOf("submitted","recorded")
             fun named(source: String) = result.indices.firstOrNull { index -> index !in used && result[index].role == "You" &&
                 result[index].source == source && result[index].requestId.isNotBlank() && result[index].requestId == message.requestId }
             var match = named("hgs_delivery") ?: named("opencode_native")
             val nativeId=SendReceiptRecovery.exactNativeId(message)
             if(match==null && nativeId.isNotEmpty()) match=result.indices.singleOrNull { index -> index !in used && result[index].role=="You" &&
                 result[index].inheritedFrom.isEmpty() && result[index].source==message.sendIntent?.value()?.string("provider")+"_native" && result[index].nativeMessageId==nativeId }
-            if (match == null && message.sendIntent==null && message.sendReceiptProof==null && message.status in listOf("submitted", "recorded") && message.submittedAt > 0) {
+            if (match == null && confirmed && message.submittedAt > 0) {
                 val text = message.submittedText.ifBlank { message.text }.trim()
                 // A fork's inherited row was never sent from this session: it is
                 // no candidate, so it neither takes the send nor makes it ambiguous.

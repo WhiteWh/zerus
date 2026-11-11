@@ -322,7 +322,7 @@ extension ConversationModel {
 
     private func captureSendIntent(_ target: Target, id: String, text: String, compactionId: String? = nil) -> SendIntent? {
         guard let connection = app.connections.first(where: { $0.id == target.connectionId }),
-              let machine = app.machines.first(where: { $0.connectionId == target.connectionId && $0.id == target.computerId && $0.online && !$0.lastKnown }),
+              let machine = SendReceiptRecovery.machine(app.machines, target: target),
               let encoding = SendReceiptRecovery.encoding(version: connection.protocolVersion, route: machine.route) else { return nil }
         let candidates = app.sessions.filter { $0.target.connectionId == target.connectionId && $0.target.computerId == target.computerId &&
             $0.target.run == target.run && $0.target.agentId.isEmpty && $0.target.archiveId.isEmpty }

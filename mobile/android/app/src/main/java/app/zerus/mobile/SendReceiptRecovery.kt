@@ -91,6 +91,9 @@ object SendReceiptRecovery {
         version==2 && route==MachineRoute.Direct -> "python_default"
         else -> null
     }
+    fun machine(machines:List<Machine>,target:Target):Machine? = machines.singleOrNull {
+        it.connectionId==target.connectionId && it.id==target.computerId && it.online && !it.lastKnown
+    }
     fun freeze(target:Target,id:String,text:String,provider:String,machineId:String,sessionId:String,encoding:String,compactionId:String?=null):SendIntent? = runCatching {
         val p=target.json().put("request_id",id).put("text",text).put("attachments",JSONArray())
         compactionId?.let { p.put("expected_compaction_id",it) }
@@ -121,6 +124,7 @@ object SendReceiptRecovery {
     }.getOrNull()
     /** The ordinary acknowledgement prints the persisted original, with its producer digest. */
     fun acknowledgement(intent:SendIntent,result:JSONObject):SendReceiptProof? = runCatching {
+        if(result.has("queued") && result.opt("queued") !is Boolean) return null
         val binding=result.getJSONObject("delivery_binding")
         require(binding.opt("schema") is Int && binding.getInt("schema")==1)
         val normalized=JSONObject().put("schema",1).put("request_id",result.get("request_id"))

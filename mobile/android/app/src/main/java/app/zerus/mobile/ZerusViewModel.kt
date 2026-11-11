@@ -3301,7 +3301,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
     }
     private fun captureSendIntent(target:Target,id:String,text:String,compactionId:String?=null):SendIntent? {
         val connection=connections.singleOrNull { it.id==target.connectionId } ?: return null
-        val machine=machines.singleOrNull { it.connectionId==target.connectionId && it.id==target.computerId && it.online && !it.lastKnown } ?: return null
+        val machine=SendReceiptRecovery.machine(machines,target) ?: return null
         val source=sessions.singleOrNull { it.target.connectionId==target.connectionId && it.target.computerId==target.computerId && it.target.run==target.run && it.target.agentId.isEmpty() && it.target.archiveId.isEmpty() } ?: return null
         val encoding=SendReceiptRecovery.encoding(connection.protocolVersion,machine.route) ?: return null
         return SendReceiptRecovery.freeze(target,id,text,source.agent,machine.machineId,source.raw.string("session_id"),encoding,compactionId)

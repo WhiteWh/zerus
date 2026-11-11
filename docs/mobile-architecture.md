@@ -959,10 +959,14 @@ Legacy rows may reconstruct only the ordinary payload whose exact native digest
 matches the original; lost continuation/options remain unknown, with no text or
 time search. The original mutation journal and UUID stay unchanged.
 
-Recovered sends and new retained intents never merge into a similar-looking
-provider row by text or time. Only a trusted original request ID or the original's
-exact provider message ID can identify the echo; without one, both rows remain
-visible. Confirmed admission does not mean the agent finished processing it.
+An uncertain send remains visible and unknown beside an ordinary provider echo.
+Delivery evidence comes from a receipt read or the existing exact receipt-backed
+native request/message IDs; text and time never settle uncertainty. Already submitted or recorded rows keep the existing presentation
+deduplication: exact receipt/native IDs come first, followed by the unique text
+and time match. This presentation match never proves delivery. A recovery proof
+whose durable update starts after its campaign deadline remains unknown, even
+if it arrived in time; the ordinary-send save rule above is unchanged.
+Confirmed admission does not mean the agent finished processing it.
 
 The multiline composer keeps one editor state for text, selection and IME
 composition across polling, expansion and sending. Sending brings the new local

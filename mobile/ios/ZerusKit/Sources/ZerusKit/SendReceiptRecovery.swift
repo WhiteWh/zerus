@@ -113,6 +113,10 @@ public enum SendReceiptRecovery {
         if version == 2 { return route == .direct ? "python_default" : "compact" }
         return nil
     }
+    public static func machine(_ machines: [Machine], target: Target) -> Machine? {
+        let matches = machines.filter { $0.connectionId == target.connectionId && $0.id == target.computerId && $0.online && !$0.lastKnown }
+        return matches.count == 1 ? matches[0] : nil
+    }
     public static func freeze(target: Target, id: String, text: String, provider: String, machineId: String, sessionId: String,
                               encoding: String, compactionId: String? = nil) -> SendIntent? {
         guard var p = try? target.json() else { return nil }

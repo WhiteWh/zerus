@@ -85,15 +85,30 @@ final class SendReceiptRecoveryTests: XCTestCase {
         var foreign = captured; foreign.text = "changed"
         XCTAssertEqual(before, SendReceiptRecovery.settle(before, captured: foreign, intent: i, proof: proof, deadline: 100, now: 99))
     }
-    func testIdenticalLookingNativeRowsNeedExactProviderMessageIdentity() throws {
-        let i = intent(), captured = message(), p = try XCTUnwrap(SendReceiptRecovery.proof(read, i, answer()))
-        let sent = SendReceiptRecovery.settle(MessageState(outgoing: [captured]), captured: captured, intent: i, proof: p, deadline: 100, now: 99).outgoing[0]
+    func testConfirmedEchoDeduplicatesButUncertaintyNeedsReceiptSettlement() throws {
+        let i = intent(), p = try XCTUnwrap(SendReceiptRecovery.proof(read, i, answer()))
+        var captured = message(); captured.submittedAt = 2
         let row = Event(id: "native", role: "You", text: captured.text, time: "", at: 2, source: "codex_native")
-        let separate = ConversationMerge.merge(target: target, native: [row], outgoing: [sent])
-        XCTAssertEqual(separate.events.count, 2); XCTAssertTrue(separate.recordedRequestIds.isEmpty)
+        var ordinary = captured; ordinary.status = "submitted"
+        let normal = ConversationMerge.merge(target: target, native: [row], outgoing: [ordinary])
+        XCTAssertEqual(normal.events.count, 1); XCTAssertEqual(normal.recordedRequestIds, [original])
+        var untrustedRequest = row; untrustedRequest.requestId = original
+        var nativeId = row; nativeId.source = "opencode_native"; nativeId.nativeMessageId = "msg_unproven"
+        for echo in [row, untrustedRequest, nativeId] {
+            let unknown = ConversationMerge.merge(target: target, native: [echo], outgoing: [captured])
+            XCTAssertEqual(unknown.events.count, 2); XCTAssertTrue(unknown.recordedRequestIds.isEmpty)
+            XCTAssertEqual(captured.status, "uncertain")
+        }
+        var otherConfirmed = ordinary; otherConfirmed.requestId = read; otherConfirmed.createdAt = 5; otherConfirmed.sendIntent = nil
+        let concurrent = ConversationMerge.merge(target: target, native: [row], outgoing: [captured, otherConfirmed])
+        XCTAssertEqual(concurrent.recordedRequestIds, [read])
+        XCTAssertTrue(concurrent.events.contains { $0.outgoingId == original && $0.source == "mobile_outbox" && $0.delivery == "uncertain" })
+        let sent = SendReceiptRecovery.settle(MessageState(outgoing: [captured]), captured: captured, intent: i, proof: p, deadline: 100, now: 99).outgoing[0]
+        let recovered = ConversationMerge.merge(target: target, native: [row], outgoing: [sent])
+        XCTAssertEqual(recovered.events.count, 1); XCTAssertEqual(recovered.recordedRequestIds, [original])
         let oc = intent(provider: "opencode"), msg = message(oc), proof = try XCTUnwrap(SendReceiptRecovery.proof(read, oc, answer(intent: oc)))
         let admitted = SendReceiptRecovery.settle(MessageState(outgoing: [msg]), captured: msg, intent: oc, proof: proof, deadline: 100, now: 99).outgoing[0]
-        var exact = row; exact.source = "opencode_native"; exact.nativeMessageId = "msg_exact"
+        var exact = row; exact.text = "provider transformed text"; exact.at = 1000; exact.source = "opencode_native"; exact.nativeMessageId = "msg_exact"
         XCTAssertEqual(ConversationMerge.merge(target: target, native: [exact], outgoing: [admitted]).recordedRequestIds, [original])
         var inherited = exact; inherited.inheritedFrom = "foreign"
         var wrongProvider = exact; wrongProvider.source = "codex_native"
@@ -173,6 +188,21 @@ final class SendReceiptRecoveryTests: XCTestCase {
         XCTAssertNil(NativeEvents.events(["provider_messages": .array([.object(raw.putting("message_id", nil).putting("id", "msg_invented"))])]).first?.nativeMessageId)
         let restored = try JSONDecoder().decode(Event.self, from: JSONEncoder().encode(row))
         XCTAssertEqual(restored.nativeMessageId, "msg_exact")
+    }
+
+    func testSharedParityRejectsAmbiguousMachinesAndNonBooleanQueued() throws {
+        let vectors = try JSON.parse(Data(contentsOf: SharedFixture.url("send-receipt-phone-parity.json")))
+        for row in vectors.objects("machines") {
+            let catalog = (0..<row.int("count")).map { _ in Machine(connectionId: "gateway", id: machine, name: "Fixture", online: true, machineId: machine) }
+            XCTAssertEqual(SendReceiptRecovery.machine(catalog, target: target) != nil, row.bool("selected"))
+        }
+        let i = intent()
+        let positive = answer(original).putting("name", .string(target.session)).putting("digest", .string(SendReceiptRecovery.nativeDigest(i.value()!)!))
+            .putting("delivery_binding", ["schema": 1, "machine_id": .string(machine), "session_id": .string(session), "provider": "codex"])
+        for row in vectors.objects("queued") {
+            let value = positive.putting("queued", row.bool("present") ? row["value"] : nil)
+            XCTAssertEqual(SendReceiptRecovery.acknowledgement(i, value) != nil, row.bool("accepted"))
+        }
     }
 
 }

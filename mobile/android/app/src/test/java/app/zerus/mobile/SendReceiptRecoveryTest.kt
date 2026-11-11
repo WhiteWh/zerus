@@ -81,15 +81,27 @@ class SendReceiptRecoveryTest {
         assertEquals(before,SendReceiptRecovery.settle(before,captured,i,proof.copy(nativeDigest="0".repeat(64)),100,99))
         assertEquals(before,SendReceiptRecovery.settle(before,captured.copy(text="changed"),i,proof,100,99))
     }
-    @Test fun identicalNativeTextNeverMergesWithoutExactProviderId() {
-        val i=intent();val captured=message(i);val proof=SendReceiptRecovery.proof(read,i,answer())!!
-        val settled=SendReceiptRecovery.settle(MessageState(outgoing=listOf(captured)),captured,i,proof,100,99).outgoing.single()
+    @Test fun confirmedEchoDeduplicatesButUncertaintyNeedsReceiptSettlement() {
+        val i=intent();val captured=message(i).copy(submittedAt=2.0);val proof=SendReceiptRecovery.proof(read,i,answer())!!
         val native=Event("native","You",captured.text,"",2.0,source="codex_native")
-        val kept=ConversationMerge.merge(target,listOf(native),listOf(settled))
-        assertEquals(2,kept.events.size);assertTrue(kept.recordedRequestIds.isEmpty())
+        val ordinary=captured.copy(status="submitted")
+        val normal=ConversationMerge.merge(target,listOf(native),listOf(ordinary))
+        assertEquals(1,normal.events.size);assertEquals(setOf(original),normal.recordedRequestIds)
+        for(row in listOf(native,native.copy(requestId=original),native.copy(source="opencode_native",nativeMessageId="msg_unproven"))) {
+            val unknown=ConversationMerge.merge(target,listOf(row),listOf(captured))
+            assertEquals(2,unknown.events.size);assertTrue(unknown.recordedRequestIds.isEmpty())
+            assertEquals("uncertain",captured.status)
+        }
+        val otherConfirmed=ordinary.copy(requestId=read,createdAt=5.0,sendIntent=null)
+        val concurrent=ConversationMerge.merge(target,listOf(native),listOf(captured,otherConfirmed))
+        assertEquals(setOf(read),concurrent.recordedRequestIds)
+        assertTrue(concurrent.events.any { it.outgoingId==original && it.source=="mobile_outbox" && it.delivery=="uncertain" })
+        val settled=SendReceiptRecovery.settle(MessageState(outgoing=listOf(captured)),captured,i,proof,100,99).outgoing.single()
+        val recovered=ConversationMerge.merge(target,listOf(native),listOf(settled))
+        assertEquals(1,recovered.events.size);assertEquals(setOf(original),recovered.recordedRequestIds)
         val oc=intent(provider="opencode");val msg=message(oc);val p=SendReceiptRecovery.proof(read,oc,answer(i=oc))!!
         val sent=SendReceiptRecovery.settle(MessageState(outgoing=listOf(msg)),msg,oc,p,100,99).outgoing.single()
-        val exact=native.copy(source="opencode_native",nativeMessageId="msg_exact")
+        val exact=native.copy(text="provider transformed text",at=1000.0,source="opencode_native",nativeMessageId="msg_exact")
         assertEquals(setOf(original),ConversationMerge.merge(target,listOf(exact),listOf(sent)).recordedRequestIds)
         for(row in listOf(exact.copy(nativeMessageId="msg_other"),exact.copy(source="codex_native"),exact.copy(inheritedFrom="foreign")))
             assertTrue(ConversationMerge.merge(target,listOf(row),listOf(sent)).recordedRequestIds.isEmpty())
@@ -174,6 +186,24 @@ class SendReceiptRecoveryTest {
         val restored=EventHistoryCodec.decode(EventHistoryCodec.encode(listOf(row))).single()
         assertEquals("msg_exact",restored.nativeMessageId)
         assertFalse(EventHistoryCodec.encode(listOf(row.copy(nativeMessageId=""))).toString().contains("native_message_id"))
+    }
+
+    @Test fun sharedParityRejectsAmbiguousMachinesAndNonBooleanQueued() {
+        val vectors=JSONObject(javaClass.getResource("/send-receipt-phone-parity.json")!!.readText())
+        val machines=vectors.getJSONArray("machines")
+        for(n in 0 until machines.length()) {
+            val row=machines.getJSONObject(n)
+            val catalog=List(row.getInt("count")) { Machine("gateway",machine,"Fixture",true,machineId=machine) }
+            assertEquals(row.getBoolean("selected"),SendReceiptRecovery.machine(catalog,target)!=null)
+        }
+        val i=intent();val positive=answer(original).put("name",target.session).put("digest",SendReceiptRecovery.nativeDigest(i.value()!!))
+            .put("delivery_binding",JSONObject().put("schema",1).put("machine_id",machine).put("session_id",session).put("provider","codex"))
+        val queued=vectors.getJSONArray("queued")
+        for(n in 0 until queued.length()) {
+            val row=queued.getJSONObject(n);val value=JSONObject(positive.toString());value.remove("queued")
+            if(row.getBoolean("present")) value.put("queued",row.get("value"))
+            assertEquals(row.toString(),row.getBoolean("accepted"),SendReceiptRecovery.acknowledgement(i,value)!=null)
+        }
     }
 
 }
