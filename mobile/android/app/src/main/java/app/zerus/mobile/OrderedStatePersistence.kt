@@ -19,7 +19,8 @@ class OrderedStatePersistence<S>(initial: S, scope: CoroutineScope,
     private val debounceMillis: Long = 200,
     private val maxDelayMillis: Long = 800,
     private val onResult: (Throwable?) -> Unit = {},
-    private val normalize: (S) -> S = { it }) {
+    private val normalize: (S) -> S = { it },
+    private val normalizePublished: (S) -> S = normalize) {
     private sealed interface Command<S> {
         data class Edit<S>(val sequence: Long, val reduce: (S) -> S) : Command<S>
         data class Durable<S>(val sequence: Long, val reduce: (S) -> S, val acknowledge: (S, S) -> S, val reply: CompletableDeferred<S>) : Command<S>
@@ -33,7 +34,7 @@ class OrderedStatePersistence<S>(initial: S, scope: CoroutineScope,
     private val commands = Channel<Command<S>>(Channel.UNLIMITED)
     init { scope.launch(Dispatchers.IO) { runWriter(initial) } }
     fun edit(reduce: (S) -> S): S = synchronized(lock) {
-        val next = normalize(reduce(mutable.value))
+        val next = normalizePublished(reduce(mutable.value))
         check(commands.trySend(Command.Edit(++acceptedSequence, reduce)).isSuccess) { "Private state writer is unavailable." }
         mutable.value = next
         next
@@ -88,7 +89,7 @@ class OrderedStatePersistence<S>(initial: S, scope: CoroutineScope,
                         val next = normalize(command.reduce(current))
                         persisted(next)
                         current = next; processedSequence = command.sequence; dirty = false
-                        withContext(uiDispatcher) { synchronized(lock) { mutable.value = normalize(command.acknowledge(mutable.value, next)) } }
+                        withContext(uiDispatcher) { synchronized(lock) { mutable.value = normalizePublished(command.acknowledge(mutable.value, next)) } }
                         command.reply.complete(next)
                     } catch (error: Exception) { failure(error); command.reply.completeExceptionally(error) }
                 }

@@ -19,9 +19,10 @@ public final class OrderedStatePersistence<S: Sendable> {
 
     public init(initial: S, debounce: Duration = .milliseconds(200), maxDelay: Duration = .milliseconds(800),
                 normalize: @escaping @Sendable (S) -> S = { $0 },
+                normalizePublished: (@Sendable (S) -> S)? = nil,
                 write: @escaping @Sendable (S) throws -> Void) {
         state = initial
-        self.normalize = normalize
+        self.normalize = normalizePublished ?? normalize
         let queue = self.queue
         let owner = WeakOwner<S>()
         loop = Task.detached(priority: .utility) {

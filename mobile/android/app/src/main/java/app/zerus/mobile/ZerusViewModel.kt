@@ -988,8 +988,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         if (changed) syncOutgoing()
     }
     private fun retainOutbox() {
-        messageRepository.retainOutbox(deliveryFlights + receiptFlights.map { it.substringAfterLast(':') } +
-            conversationEvents.mapNotNull { it.outgoingId.takeIf(String::isNotEmpty) })
+        messageRepository.retainOutbox(deliveryFlights, receiptFlights, conversationEvents)
     }
     private fun syncOutgoing() {
         retainOutbox()

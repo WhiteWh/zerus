@@ -102,20 +102,98 @@ public enum OutboxRetention {
         if let metadata = row.sendCorrelation, metadata.intent(row) == nil { return false }
         return !row.hasOriginalSendIdentity || row.originalSendIntent() != nil
     }
+    /// Stateless migration/contract entry point. Each live writer lane owns a Normalizer.
     public static func normalize(_ state: MessageState, pinned: Set<String> = []) -> MessageState {
-        let rows = state.outgoing.map(compact)
-        var count = 0, bytes = 2, retained = Array(repeating: true, count: rows.count)
-        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        for i in rows.indices.reversed() {
-            let row = rows[i]
-            guard evictable(row, pinned: pinned), let encodedSize = try? encoder.encode(row).count else { continue }
-            let size = encodedSize + 1 // Include JSON array separators.
-            if count >= maxRows || size > maxBytes - bytes { retained[i] = false }
-            else { count += 1; bytes += size }
+        Normalizer().normalize(state, pinned: pinned)
+    }
+
+    /// COW storage identity is stable while the cached immutable array is retained.
+    static func sameStorage<T>(_ a: [T], _ b: [T]) -> Bool {
+        a.count == b.count && a.withUnsafeBufferPointer { left in b.withUnsafeBufferPointer { right in left.baseAddress == right.baseAddress } }
+    }
+
+    // Swift String equality admits canonical equivalence. Memo hits must preserve exact bytes.
+    static func sameRow(_ a: OutgoingMessage, _ b: OutgoingMessage) -> Bool {
+        guard a == b, a.createdAt.bitPattern == b.createdAt.bitPattern, a.submittedAt.bitPattern == b.submittedAt.bitPattern else { return false }
+        let x = a.target, y = b.target
+        let left = [a.requestId, a.text, a.status, a.submittedText, a.error, x.connectionId, x.computerId, x.session, x.run, x.conversation, x.archiveId, x.agentId, x.parentConversation]
+        let right = [b.requestId, b.text, b.status, b.submittedText, b.error, y.connectionId, y.computerId, y.session, y.run, y.conversation, y.archiveId, y.agentId, y.parentConversation]
+        guard zip(left, right).allSatisfy({ SendReceiptRecovery.exact($0, $1) }) else { return false }
+        for (l, r) in zip(a.attachments, b.attachments) {
+            guard zip([l.id, l.name, l.mime, l.sha256], [r.id, r.name, r.mime, r.sha256]).allSatisfy({ SendReceiptRecovery.exact($0, $1) }) else { return false }
         }
-        var copy = state
-        copy.outgoing = rows.enumerated().compactMap { retained[$0.offset] ? $0.element : nil }
-        return copy
+        if let l = a.sendIntent, let r = b.sendIntent, !SendReceiptRecovery.exact(l.intentSha256, r.intentSha256) { return false }
+        if let l = a.sendCorrelation, let r = b.sendCorrelation,
+           !SendReceiptRecovery.exact(JSON.object(l.json()).compact, JSON.object(r.json()).compact) { return false }
+        if let l = a.sendReceiptProof, let r = b.sendReceiptProof {
+            guard l.submittedAt.bitPattern == r.submittedAt.bitPattern else { return false }
+            guard zip([l.messageRequestId, l.intentSha256, l.nativeDigest, l.nativeMessageId], [r.messageRequestId, r.intentSha256, r.nativeDigest, r.nativeMessageId])
+                .allSatisfy({ SendReceiptRecovery.exact($0, $1) }) else { return false }
+        }
+        if let l = a.coverage, let r = b.coverage {
+            guard zip([l.kind, l.binding, l.identity], [r.kind, r.binding, r.identity]).allSatisfy({ SendReceiptRecovery.exact($0, $1) }) else { return false }
+        }
+        return true
+    }
+
+    /// Bounded row metadata, with independent publication and background-writer instances.
+    public final class Normalizer: @unchecked Sendable {
+        private final class Memo {
+            let row: OutgoingMessage
+            let eligible: Bool
+            let bytes: Int
+            var seen: Int
+            init(_ row: OutgoingMessage, eligible: Bool, bytes: Int, seen: Int) { self.row = row; self.eligible = eligible; self.bytes = bytes; self.seen = seen }
+        }
+        private let lock = NSLock()
+        private var memo: [String: Memo] = [:]
+        private var order: [String] = []
+        private var outgoing: [OutgoingMessage]?
+        private var pins: Set<String> = []
+        private var walkCount = 0
+        private var evaluationCount = 0
+        var memoizedRows: Int { lock.withLock { memo.count } }
+        var walks: Int { lock.withLock { walkCount } }
+        var rowEvaluations: Int { lock.withLock { evaluationCount } }
+        public init() {}
+        public func normalize(_ state: MessageState, pinned: Set<String> = []) -> MessageState {
+            lock.withLock {
+                if let outgoing, sameStorage(outgoing, state.outgoing), pins == pinned { return state }
+                walkCount += 1
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+                let rows: [Memo] = state.outgoing.map { row in
+                    let entry: Memo
+                    if let saved = memo[row.requestId], sameRow(saved.row, row) { entry = saved }
+                    else {
+                        evaluationCount += 1
+                        let normalized = compact(row), eligible = evictable(normalized)
+                        let bytes = eligible ? (try? encoder.encode(normalized).count) : nil
+                        entry = Memo(normalized, eligible: eligible && bytes != nil, bytes: (bytes ?? 0) + 1, seen: walkCount)
+                        if memo[row.requestId] == nil { order.append(row.requestId) }
+                        memo[row.requestId] = entry
+                        if memo.count > 512 { memo.removeValue(forKey: order.removeFirst()) }
+                    }
+                    entry.seen = walkCount
+                    return entry
+                }
+                var count = 0, bytes = 2, retained = Array(repeating: true, count: rows.count)
+                for i in rows.indices.reversed() {
+                    let entry = rows[i]
+                    guard entry.eligible, !pinned.contains(entry.row.requestId) else { continue }
+                    if count >= maxRows || entry.bytes > maxBytes - bytes {
+                        retained[i] = false
+                        if memo[entry.row.requestId] === entry { memo.removeValue(forKey: entry.row.requestId) }
+                    } else { count += 1; bytes += entry.bytes }
+                }
+                memo = memo.filter { $0.value.seen == walkCount }
+                order.removeAll { memo[$0] == nil }
+                var result = state
+                let next = rows.enumerated().compactMap { retained[$0.offset] ? $0.element.row : nil }
+                if next != state.outgoing { result.outgoing = next }
+                outgoing = result.outgoing; pins = pinned
+                return result
+            }
+        }
     }
     /// The caller must have verified this fresh frame's exact scope.
     public static func recorded(_ state: MessageState, _ ids: Set<String>, exact: [String: OutgoingCoverage]) -> MessageState {
@@ -134,7 +212,18 @@ public enum OutboxRetention {
 public final class OutboxPins: @unchecked Sendable {
     private let lock = NSLock()
     private var ids: Set<String> = []
+    private var delivery: Set<String>?
+    private var receipts: Set<String>?
+    private var events: [Event]?
     public init() {}
-    public func replace(_ value: Set<String>) { lock.withLock { ids = value } }
+    public func replace(_ value: Set<String>) { lock.withLock { ids = value; delivery = nil; receipts = nil; events = nil } }
+    public func retain(delivery: Set<String>, receipts: Set<String>, events: [Event]) {
+        lock.withLock {
+            if let old = self.events, delivery == self.delivery, receipts == self.receipts, OutboxRetention.sameStorage(old, events) { return }
+            self.delivery = delivery; self.receipts = receipts; self.events = events
+            let next = delivery.union(receipts.map { String($0.split(separator: ":").last ?? "") }).union(events.map(\.outgoingId).filter { !$0.isEmpty })
+            if next != ids { ids = next }
+        }
+    }
     public func snapshot() -> Set<String> { lock.withLock { ids } }
 }

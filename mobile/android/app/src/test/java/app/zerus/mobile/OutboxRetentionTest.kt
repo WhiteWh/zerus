@@ -176,4 +176,60 @@ class OutboxRetentionTest {
         assertEquals(original.sendIntent,normalized.originalSendIntent())
     }
 
+    @Test fun memoizationRechecksChangedRowsAndPinsAndDropsStaleReferences() {
+        val engine=OutboxRetention.Normalizer()
+        val initial=engine.normalize(MessageState(outgoing=List(100){represented()}))
+        val evaluations=engine.rowEvaluations;val walks=engine.walks
+        val typed=initial.copy(drafts=listOf(Draft(target,"typing")))
+        assertEquals(typed,engine.normalize(typed));assertEquals(walks,engine.walks)
+        // A new immutable list with unchanged rows and a new pin set do not redo row validation/encoding.
+        val pinned=engine.normalize(initial.copy(outgoing=initial.outgoing.toList()),setOf(initial.outgoing.first().requestId))
+        assertEquals(evaluations,engine.rowEvaluations);assertEquals(walks+1,engine.walks)
+        val changed=pinned.outgoing.first().copy(text="changed")
+        val checked=engine.normalize(pinned.copy(outgoing=listOf(changed)+pinned.outgoing.drop(1)))
+        assertEquals(evaluations+1,engine.rowEvaluations);assertFalse(OutboxRetention.evictable(checked.outgoing.first()))
+        val large=engine.normalize(MessageState(outgoing=List(700){row(status="submitted")}))
+        assertEquals(700,large.outgoing.size);assertTrue(engine.memoizedRows<=512)
+        engine.normalize(MessageState());assertEquals(0,engine.memoizedRows)
+    }
+    @Test fun typingSkipsOutboxWalksAndStaysBelowTheJvmFrameBudget() = runBlocking {
+        fun measure(action:()->Unit):Pair<Double,Double> {
+            repeat(8){action()}
+            val samples=List(40){val start=System.nanoTime();action();(System.nanoTime()-start)/1_000_000.0}.sorted()
+            return samples[20] to samples[36]
+        }
+        for((label,rows) in listOf(
+            "100-recorded-200B" to List(100){represented("x".repeat(200))},
+            "58-recorded-8KiB-Cyrillic" to List(58){represented("Я".repeat(4096))},
+            "58-recorded-8KiB-plus-200-protected" to (List(58){represented("Я".repeat(4096))}+List(200){row(status="submitted")})
+        )) {
+            val scope=CoroutineScope(SupervisorJob()+Dispatchers.Default)
+            try {
+                val pins=OutboxPins();val delivery=emptySet<String>();val receipts=emptySet<String>()
+                val events=rows.take(100).map(::native)
+                pins.retain(delivery,receipts,events)
+                val writer=OutboxRetention.Normalizer();val publication=OutboxRetention.Normalizer()
+                val draft=Draft(target,"typing")
+                val initial=publication.normalize(writer.normalize(MessageState(drafts=listOf(draft),outgoing=rows),pins.snapshot()),pins.snapshot())
+                val baseline=measure { OutboxRetention.normalize(initial,pins.snapshot()) }
+                val cached=measure { publication.normalize(initial,pins.snapshot()) }
+                val actor=OrderedStatePersistence(initial,scope,{},Dispatchers.Unconfined,debounceMillis=100_000,maxDelayMillis=100_000,
+                    normalize={writer.normalize(it,pins.snapshot())},normalizePublished={publication.normalize(it,pins.snapshot())})
+                val walks=publication.walks;val evaluations=publication.rowEvaluations
+                var edit=0
+                val typing=measure {
+                    pins.retain(delivery,receipts,events)
+                    val editor=draft.copy(text="typed-"+(edit++),revision="revision-"+edit)
+                    actor.edit { MessageChanges.text(it,editor) }
+                }
+                println("OUTBOX_TIMING case=$label rows="+initial.outgoing.size+" uncached_median_ms="+baseline.first+" uncached_p90_ms="+baseline.second+
+                    " cached_median_ms="+cached.first+" cached_p90_ms="+cached.second+" edit_median_ms="+typing.first+" edit_p90_ms="+typing.second)
+                assertEquals(label,walks,publication.walks);assertEquals(label,evaluations,publication.rowEvaluations)
+                assertTrue("$label draft edit median "+typing.first+" ms exceeded 3 ms",typing.first<3.0)
+                assertTrue("$label did not avoid the validation cost",typing.first*5<baseline.first)
+                assertEquals(initial.outgoing,actor.state.value.outgoing)
+            } finally { scope.cancel() }
+        }
+    }
+
 }

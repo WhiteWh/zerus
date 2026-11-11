@@ -173,13 +173,15 @@ final class AppModel {
 
     private func openPrivateState() async throws {
         guard let sealed = sealedStore else { throw ZerusError.invalid("Private storage is unavailable.") }
+        let writerRetention = OutboxRetention.Normalizer(), publishedRetention = OutboxRetention.Normalizer(), pins = outboxPins
         let loaded = try await Task.detached { () -> (MessageState, [AccountCatalog]) in
             let state = try sealed.read("message_state", as: MessageState.self) ?? MessageState()
             let accounts = (try? sealed.read("account_catalog", as: [AccountCatalog].self)) ?? []
-            return (OutboxRetention.normalize(state.recovered()), AccountSnapshots.restored(accounts))
+            let retained = writerRetention.normalize(state.recovered(), pinned: pins.snapshot())
+            return (publishedRetention.normalize(retained, pinned: pins.snapshot()), AccountSnapshots.restored(accounts))
         }.value
-        let pins = outboxPins
-        let messageStore = OrderedStatePersistence(initial: loaded.0, normalize: { OutboxRetention.normalize($0, pinned: pins.snapshot()) }) { try sealed.write("message_state", $0) }
+        let messageStore = OrderedStatePersistence(initial: loaded.0, normalize: { writerRetention.normalize($0, pinned: pins.snapshot()) },
+            normalizePublished: { publishedRetention.normalize($0, pinned: pins.snapshot()) }) { try sealed.write("message_state", $0) }
         messageStore.onChange = { [weak self] in self?.messageStateChanged($0) }
         messageStore.onResult = { [weak self] failure in
             if failure != nil {
@@ -239,8 +241,7 @@ final class AppModel {
     /// Retain identities still referenced by live delivery or the current presentation.
     func retainOutbox() {
         guard let conversation else { return }
-        outboxPins.replace(conversation.deliveryFlights.union(conversation.receiptFlights.map { String($0.split(separator: ":").last ?? "") })
-            .union(conversation.events.map(\.outgoingId).filter { !$0.isEmpty }))
+        outboxPins.retain(delivery: conversation.deliveryFlights, receipts: conversation.receiptFlights, events: conversation.events)
     }
 
     /// Applies a private-state reducer now and schedules its debounced write.

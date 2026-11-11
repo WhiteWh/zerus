@@ -104,19 +104,51 @@ object OutboxRetention {
         if (row.hasOriginalSendIdentity && row.originalSendIntent() == null) return false
         return true
     }
-    fun normalize(state: MessageState, pinned: Set<String> = emptySet()): MessageState {
-        val rows = state.outgoing.map(::compact)
-        var count = 0; var bytes = 2 // JSON array delimiters and one separator per retained row.
-        val retained = BooleanArray(rows.size) { true }
-        for (i in rows.indices.reversed()) {
-            val row = rows[i]
-            if (!evictable(row, pinned)) continue
-            val size = MessageCodec.outgoingJson(row).toString().toByteArray(Charsets.UTF_8).size + 1
-            if (count >= MAX_ROWS || size > MAX_BYTES - bytes) retained[i] = false
-            else { count++; bytes += size }
+    /** Stateless entry point for migrations and contract tests. Live writers own a Normalizer. */
+    fun normalize(state: MessageState, pinned: Set<String> = emptySet()) = Normalizer().normalize(state, pinned)
+
+    /** One publication/writer lane. Memo entries never retain reconstructed canonical payloads. */
+    class Normalizer {
+        private data class Memo(val row: OutgoingMessage, val eligible: Boolean, val bytes: Int, var seen: Long)
+        private val memo = java.util.LinkedHashMap<String, Memo>(512, .75f, true)
+        private var outgoing: List<OutgoingMessage>? = null
+        private var pins: Set<String>? = null
+        internal val memoizedRows get() = synchronized(this) { memo.size }
+        internal var walks = 0L; private set
+        internal var rowEvaluations = 0L; private set
+        @Synchronized fun normalize(state: MessageState, pinned: Set<String> = emptySet()): MessageState {
+            // Draft reducers preserve this immutable list and the pin snapshot by reference.
+            if (state.outgoing === outgoing && (pinned === pins || pinned == pins)) return state
+            walks++
+            val rows = state.outgoing.map { row ->
+                val saved = memo[row.requestId]?.takeIf { it.row == row }
+                val entry = saved ?: run {
+                    rowEvaluations++
+                    val normalized = compact(row)
+                    val eligible = evictable(normalized)
+                    Memo(normalized, eligible, if (eligible) MessageCodec.outgoingJson(normalized).toString().toByteArray(Charsets.UTF_8).size + 1 else 0, walks)
+                        .also { memo[row.requestId] = it; if (memo.size > 512) memo.remove(memo.keys.first()) }
+                }
+                entry.seen = walks
+                entry
+            }
+            var count = 0; var bytes = 2 // Array delimiters and separators.
+            val retained = BooleanArray(rows.size) { true }
+            for (i in rows.indices.reversed()) {
+                val entry = rows[i]
+                if (!entry.eligible || entry.row.requestId in pinned) continue
+                if (count >= MAX_ROWS || entry.bytes > MAX_BYTES - bytes) {
+                    retained[i] = false
+                    if (memo[entry.row.requestId] === entry) memo.remove(entry.row.requestId)
+                } else { count++; bytes += entry.bytes }
+            }
+            // Drop stale generations, including payloads removed from this lane's state.
+            memo.entries.removeAll { it.value.seen != walks }
+            val next = rows.mapIndexedNotNull { i, entry -> entry.row.takeIf { retained[i] } }
+            val result = if (next == state.outgoing) state else state.copy(outgoing = next)
+            outgoing = result.outgoing; pins = pinned
+            return result
         }
-        val outgoing = rows.filterIndexed { i, _ -> retained[i] }
-        return if (outgoing == state.outgoing) state else state.copy(outgoing = outgoing)
     }
     /** Called only after the caller has verified this fresh frame's scope. */
     fun recorded(state: MessageState, ids: Set<String>, exact: Map<String, OutgoingCoverage>): MessageState =
@@ -124,4 +156,19 @@ object OutboxRetention {
             if (row.requestId !in ids || row.status == "reviewed") row
             else row.copy(status = "recorded", error = "", coverage = exact[row.requestId]?.takeIf { it.valid(row) } ?: row.coverage)
         })
+}
+
+/** Cache input identities before deriving the bounded presentation's pins. */
+class OutboxPins {
+    private val current = java.util.concurrent.atomic.AtomicReference<Set<String>>(emptySet())
+    private var delivery: Set<String>? = null
+    private var receipts: Set<String>? = null
+    private var events: List<Event>? = null
+    @Synchronized fun retain(delivery: Set<String>, receipts: Set<String>, events: List<Event>) {
+        if (delivery === this.delivery && receipts === this.receipts && events === this.events) return
+        this.delivery = delivery; this.receipts = receipts; this.events = events
+        val next = delivery + receipts.map { it.substringAfterLast(':') } + events.mapNotNull { it.outgoingId.takeIf(String::isNotEmpty) }
+        if (next != current.get()) current.set(next)
+    }
+    fun snapshot(): Set<String> = current.get()
 }

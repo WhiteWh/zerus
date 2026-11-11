@@ -216,4 +216,48 @@ final class OutboxRetentionTests: XCTestCase {
         XCTAssertEqual(normalized.originalSendIntent(), original.sendIntent)
     }
 
+    func testMemoizationRechecksChangedRowsAndPinsAndDropsStaleReferences() {
+        let engine = OutboxRetention.Normalizer()
+        let initial = engine.normalize(MessageState(outgoing: (0..<100).map { _ in represented() }))
+        let evaluations = engine.rowEvaluations, walks = engine.walks
+        var typed = initial; typed.drafts = [Draft(target: target, text: "typing")]
+        XCTAssertEqual(engine.normalize(typed), typed); XCTAssertEqual(engine.walks, walks)
+        // Force a fresh COW buffer with the same values, and change only the pin input.
+        var pinned = initial; pinned.outgoing = initial.outgoing.map { $0 }
+        _ = engine.normalize(pinned, pinned: [initial.outgoing[0].requestId])
+        XCTAssertEqual(engine.rowEvaluations, evaluations); XCTAssertEqual(engine.walks, walks + 1)
+        pinned.outgoing[0].text = "changed"
+        let checked = engine.normalize(pinned)
+        XCTAssertEqual(engine.rowEvaluations, evaluations + 1); XCTAssertFalse(OutboxRetention.evictable(checked.outgoing[0]))
+        let large = engine.normalize(MessageState(outgoing: (0..<700).map { _ in row(status: "submitted") }))
+        XCTAssertEqual(large.outgoing.count, 700); XCTAssertLessThanOrEqual(engine.memoizedRows, 512)
+        _ = engine.normalize(MessageState()); XCTAssertEqual(engine.memoizedRows, 0)
+        // A Unicode-equivalent edit must miss the memo and lose eviction eligibility.
+        var unicode = row("\u{e9}"); unicode.status = "recorded"; unicode.coverage = OutgoingCoverage.native(unicode, native(unicode))
+        var state = engine.normalize(MessageState(outgoing: [unicode]))
+        let before = engine.rowEvaluations
+        state.outgoing[0].text = "e\u{301}"
+        let changed = engine.normalize(state)
+        XCTAssertEqual(engine.rowEvaluations, before + 1); XCTAssertFalse(OutboxRetention.evictable(changed.outgoing[0]))
+    }
+    @MainActor func testDraftEditingSkipsRetentionWalksOnThePublishingActor() throws {
+        let pins = OutboxPins(), writer = OutboxRetention.Normalizer(), publication = OutboxRetention.Normalizer()
+        let rows = (0..<58).map { _ in represented(String(repeating: "Я", count: 4096)) }
+        let draft = Draft(target: target, text: "typing"), events = rows.map(native)
+        pins.retain(delivery: [], receipts: [], events: events)
+        let initial = publication.normalize(writer.normalize(MessageState(drafts: [draft], outgoing: rows), pinned: pins.snapshot()), pinned: pins.snapshot())
+        let store = OrderedStatePersistence(initial: initial, debounce: .seconds(100), normalize: { writer.normalize($0, pinned: pins.snapshot()) },
+            normalizePublished: { publication.normalize($0, pinned: pins.snapshot()) }, write: { _ in })
+        let walks = publication.walks, evaluations = publication.rowEvaluations
+        for i in 0..<100 {
+            pins.retain(delivery: [], receipts: [], events: events)
+            var editor = draft; editor.text = "typed-\(i)"; editor.revision = "revision-\(i)"
+            let captured = editor
+            store.edit { MessageChanges.text($0, captured) }
+        }
+        XCTAssertEqual(publication.walks, walks); XCTAssertEqual(publication.rowEvaluations, evaluations)
+        XCTAssertEqual(store.state.outgoing, initial.outgoing)
+        store.close()
+    }
+
 }

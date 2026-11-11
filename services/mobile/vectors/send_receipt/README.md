@@ -27,7 +27,12 @@ flights and referenced presentation identities stay pinned until handoff.
 
 Legacy state decodes without a destructive migration. Normalization runs during
 background load and through the existing ordered reducers, publications and
-writes. Failed durable writes retain the previous authoritative stored value;
+writes. The publication and background writer each own a normalizer warmed
+while loading private state. Draft-only edits reuse the outgoing array and pin
+snapshot in constant time. Row-content memo entries cache eligibility and encoded
+size (at most 512 entries per lane), retain no reconstructed canonical payload,
+and drop stale generations. Pin derivation also reuses unchanged input collections.
+Changed rows or pins still run the same global retention policy. Failed durable writes retain the previous authoritative stored value;
 no attachment files are deleted by this policy. Request UUIDs, API v1, private
 storage keys and encryption are unchanged.
 
