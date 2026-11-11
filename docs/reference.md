@@ -210,9 +210,10 @@ because another PUT could duplicate the retained entry. OpenCode retains the
 entry as effective prompt context across resume and compaction, without a
 durable `Instructions updated` history row on the pinned version. A clear/new
 session gets its own entry. Inspection and background polling never attach it.
-A resume with a marked entry does not write again. An existing conversation
-with any native message receives no attachment; an unreadable or malformed
-history answer is not proof of emptiness and has no hint effect.
+A resume with a marked entry does not write again. A reconciled pending
+creation follows the same emptiness check. An existing conversation with any
+native message receives no attachment; an unreadable or malformed history
+answer is not proof of emptiness and has no hint effect.
 
 OpenCode persists a noninitial instruction delta as an `Instructions updated`
 system message. That makes the channel a durable transcript update rather than

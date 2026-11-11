@@ -1273,6 +1273,35 @@ class OpenCodeNative(unittest.TestCase):
         resume(empty)
         turn(empty, 'Hint still-empty resumed', 1)
 
+        def pending_record(tag):
+            conversation = 'ses_' + native_suffix()
+            status, answer = self.api('POST', '/api/session', {
+                'id': conversation, 'location': {'directory': os.path.realpath(self.workspace)}, 'title': tag})
+            self.assertEqual(status, 200, answer)
+            record = self.save_binding(tag, service='opencode2', conversation_id=conversation,
+                                      creation_pending=True)
+            record['creation_body'] = {
+                'id': conversation, 'location': {'directory': record['cwd']}, 'title': tag,
+                'metadata': {'zerus': {'run_id': record['run_id'], 'launch_id': None}}}
+            self.binding_path(record['name']).write_text(json.dumps(record))
+            return record
+
+        pending_empty = pending_record('pending-empty-' + uuid.uuid4().hex[:8])
+        resume(pending_empty)
+        self.assertEqual(mark(pending_empty), {'conversation_id': pending_empty['conversation_id'], 'revision': 1})
+        turn(pending_empty, 'Hint pending empty reconcile', 1)
+
+        pending_used = pending_record('pending-used-' + uuid.uuid4().hex[:8])
+        status, answer = self.api('POST', f"/api/session/{pending_used['conversation_id']}/prompt", {
+            'id': 'msg_' + native_suffix(), 'text': 'Used before pending reconcile', 'delivery': 'queue'})
+        self.assertEqual(status, 200, answer)
+        self.wait(pending_used['name'], lambda v: v['phase'] == 'idle' and any(
+            e['type'] == 'UserPromptSubmit' and e['detail'] == 'Used before pending reconcile'
+            for e in v.get('events', [])))
+        resume(pending_used)
+        self.assertIsNone(mark(pending_used))
+        turn(pending_used, 'Unqualified hint pending used reconcile', 0)
+
         tag = 'adopted-' + uuid.uuid4().hex[:8]
         conversation = 'ses_' + native_suffix()
         status, answer = self.api('POST', '/api/session', {
@@ -1291,7 +1320,7 @@ class OpenCodeNative(unittest.TestCase):
         resume(adopted)
         turn(adopted, 'Unqualified hint adopted resumed', 0)
 
-        for binding in (first, opted_out, enabled, cleared, empty, adopted):
+        for binding in (first, opted_out, enabled, cleared, empty, pending_empty, pending_used, adopted):
             status, page = self.api('GET', f"/api/session/{binding['conversation_id']}/message?limit=100")
             self.assertEqual(status, 200, page)
             durable = [row for row in page['data']

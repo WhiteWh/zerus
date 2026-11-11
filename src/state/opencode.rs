@@ -557,7 +557,9 @@ fn finish_creation(service: &service::Service, mut record: Value, first: bool) -
             map.remove("creation_pending");
             map.remove("creation_body");
             save(&mut record)?;
-            attach_hint(service, &mut record);
+            if first || empty_history(service, &record).unwrap_or(false) {
+                attach_hint(service, &mut record);
+            }
             Ok(())
         }
         Err(Refusal::Definite(reason)) => {
