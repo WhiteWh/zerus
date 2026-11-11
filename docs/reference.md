@@ -1757,6 +1757,11 @@ when its modification time is unchanged; inspection never does that walk.
 Before clearing a cache discrepancy, the worker verifies every projection field
 against its validated original and repairs compatible metadata. A conflicting
 original fingerprint or pinned conversation remains an explicit gap.
+A first-message receipt may acquire its original's resolved conversation while
+keeping its page chain. The writer re-reads and validates the original before
+this exact update. Other cached conversation changes immediately invalidate
+coverage and report `binding_changed`. Legacy guards must upgrade before a
+cache can serve verified coverage.
 The worker also checks indexed bindings not encountered in that walk, counting
 retained bindings within the same bounded pass. Finishing a source does not
 rescan its rows. It publishes that count only if the source stamp, epoch and

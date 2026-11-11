@@ -15,6 +15,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 mod migration;
+mod pin;
 mod question;
 // The independently developed recovery consumer stacks on this interface.
 #[allow(unused_imports)]
@@ -26,7 +27,7 @@ pub(super) const PAGE_LIMIT: usize = 100;
 const EXAMINE: usize = 256;
 const ORIGINAL_BYTES: u64 = 256 * 1024;
 const DATABASE: &str = "delivery-receipts-v1.sqlite3";
-const ROWSET_PROTOCOL: &str = "2";
+const ROWSET_PROTOCOL: &str = "3";
 const VERIFY_SECONDS: f64 = 600.0;
 
 // Coverage is sealed only after discovery. These guards invalidate that seal
@@ -228,9 +229,11 @@ struct CachedRow {
 }
 impl CachedRow {
     fn matches(&self, binding: &Binding) -> bool {
+        self.conversation == binding.conversation && self.matches_except_conversation(binding)
+    }
+    fn matches_except_conversation(&self, binding: &Binding) -> bool {
         self.name == binding.name
             && self.run == binding.run
-            && self.conversation == binding.conversation
             && self.agent == binding.agent
             && self.first == i64::from(binding.first)
             && self.at == binding.at
@@ -393,17 +396,9 @@ impl Catalog {
                   OR OLD.name IS NOT NEW.name OR OLD.run IS NOT NEW.run OR OLD.conversation IS NOT NEW.conversation
                   OR OLD.agent IS NOT NEW.agent OR OLD.first_message IS NOT NEW.first_message
                   OR OLD.at IS NOT NEW.at OR OLD.files IS NOT NEW.files OR OLD.binding IS NOT NEW.binding)
-                  -- The one-way first-prompt pin is not a rebind: an empty
-                  -- conversation resolving to its run's conversation keeps
-                  -- every other identity column and the row's coverage.
-                  AND NOT (OLD.conversation='' AND NEW.conversation<>''
-                    AND OLD.seq IS NEW.seq AND OLD.source IS NEW.source AND OLD.request IS NEW.request
-                    AND OLD.name IS NEW.name AND OLD.run IS NEW.run AND OLD.agent IS NEW.agent
-                    AND OLD.first_message IS NEW.first_message AND OLD.at IS NEW.at
-                    AND OLD.files IS NEW.files AND OLD.binding IS NEW.binding)
                 BEGIN
                   UPDATE receipt_sources SET complete=0 WHERE source IN(OLD.source,NEW.source);
-                  INSERT INTO receipt_errors VALUES(OLD.source,OLD.request||'.json','index_row_changed')
+                  INSERT INTO receipt_errors VALUES(OLD.source,OLD.request||'.json',CASE WHEN OLD.conversation IS NOT NEW.conversation THEN 'binding_changed' ELSE 'index_row_changed' END)
                     ON CONFLICT(source,name) DO UPDATE SET reason=excluded.reason;
                   UPDATE receipt_meta SET value=lower(hex(randomblob(16))) WHERE key='epoch';
                 END;"))?;
@@ -492,8 +487,8 @@ impl Catalog {
                 sql(transaction.commit())?;
             }
             if !verified {
-                // Reissue the invalidation guards so a cache created with the
-                // earlier trigger definition also exempts the first-prompt pin.
+                // Legacy caches exempted every empty-to-nonempty conversation
+                // change. Replace that SQL-only exemption atomically.
                 sql(db.execute_batch(
                     "DROP TRIGGER IF EXISTS receipt_row_removed;
                      DROP TRIGGER IF EXISTS receipt_row_rebound;
@@ -508,14 +503,9 @@ impl Catalog {
                        OR OLD.name IS NOT NEW.name OR OLD.run IS NOT NEW.run OR OLD.conversation IS NOT NEW.conversation
                        OR OLD.agent IS NOT NEW.agent OR OLD.first_message IS NOT NEW.first_message
                        OR OLD.at IS NOT NEW.at OR OLD.files IS NOT NEW.files OR OLD.binding IS NOT NEW.binding)
-                       AND NOT (OLD.conversation='' AND NEW.conversation<>''
-                         AND OLD.seq IS NEW.seq AND OLD.source IS NEW.source AND OLD.request IS NEW.request
-                         AND OLD.name IS NEW.name AND OLD.run IS NEW.run AND OLD.agent IS NEW.agent
-                         AND OLD.first_message IS NEW.first_message AND OLD.at IS NEW.at
-                         AND OLD.files IS NEW.files AND OLD.binding IS NEW.binding)
                      BEGIN
                        UPDATE receipt_sources SET complete=0 WHERE source IN(OLD.source,NEW.source);
-                       INSERT INTO receipt_errors VALUES(OLD.source,OLD.request||'.json','index_row_changed')
+                       INSERT INTO receipt_errors VALUES(OLD.source,OLD.request||'.json',CASE WHEN OLD.conversation IS NOT NEW.conversation THEN 'binding_changed' ELSE 'index_row_changed' END)
                          ON CONFLICT(source,name) DO UPDATE SET reason=excluded.reason;
                        UPDATE receipt_meta SET value=lower(hex(randomblob(16))) WHERE key='epoch';
                      END;",
@@ -606,6 +596,7 @@ impl Catalog {
             .ok_or("Invalid receipt name")?;
         let binding = Binding::parse(source, value, filename)?;
         let stamp = file_stamp(path)?;
+        let mut proven_pin = false;
         if let Some(prior) = self.cached_row(source, &binding.id)? {
             if prior.fingerprint != binding.fingerprint
                 || (!prior.conversation.is_empty() && prior.conversation != binding.conversation)
@@ -617,11 +608,31 @@ impl Catalog {
             // existing one-way first-prompt conversation pin.
             let resolved = prior.conversation.is_empty();
             if resolved || prior.stamp != stamp || !prior.matches(&binding) {
+                let proof = if resolved && !binding.conversation.is_empty() {
+                    let original = self.state.join(source.directory()).join(filename);
+                    let Some(proof) = pin::ProvenPin::read(source, &original, &binding, &stamp)
+                    else {
+                        return self.pin_conflict(source, filename);
+                    };
+                    Some(proof)
+                } else {
+                    None
+                };
                 let change = self.bump()?;
-                sql(self.db.execute(
+                let write = || {
+                    self.db.execute(
                     "UPDATE receipt_rows SET name=?,run=?,conversation=?,agent=?,first_message=?,at=?,files=?,stamp=?,change=? WHERE source=? AND request=?",
                     params![binding.name, binding.run, binding.conversation, binding.agent, binding.first, binding.at, binding.files, stamp, change, source.key(), binding.id],
-                ))?;
+                )
+                };
+                if let Some(proof) = proof.filter(|_| prior.matches_except_conversation(&binding)) {
+                    proven_pin = true;
+                    if proof.update(&self.db, write).is_err() {
+                        return self.pin_conflict(source, filename);
+                    }
+                } else {
+                    sql(write())?;
+                }
             }
         } else {
             let change = self.bump()?;
@@ -633,13 +644,28 @@ impl Catalog {
         if verified.is_none_or(|row| {
             row.fingerprint != binding.fingerprint || row.stamp != stamp || !row.matches(&binding)
         }) {
-            return self.error(source, filename, "index_row_changed");
+            return if proven_pin {
+                self.pin_conflict(source, filename)
+            } else {
+                self.error(source, filename, "index_row_changed")
+            };
         }
         sql(self.db.execute(
             "DELETE FROM receipt_errors WHERE source=? AND name=?",
             params![source.key(), filename],
         ))?;
         Ok(())
+    }
+    fn pin_conflict(&self, source: Source, filename: &str) -> Result<()> {
+        sql(self.db.execute(
+            "UPDATE receipt_sources SET complete=0 WHERE source=?",
+            [source.key()],
+        ))?;
+        sql(self.db.execute(
+            "UPDATE receipt_meta SET value=? WHERE key='epoch'",
+            [uuid::Uuid::new_v4().to_string()],
+        ))?;
+        self.error(source, filename, "binding_changed")
     }
     fn bump(&self) -> Result<i64> {
         sql(self.db.query_row(

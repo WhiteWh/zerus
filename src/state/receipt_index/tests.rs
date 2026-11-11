@@ -765,8 +765,9 @@ fn a_guarded_cache_with_a_cut_change_upgrade_recovers_its_frontier() {
 fn a_first_prompt_pin_keeps_coverage_while_a_real_rebind_invalidates() {
     let temp = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(temp.path(), true).unwrap();
-    let record = value(1, "", "run", "", 1.0);
-    put(&catalog, Source::Terminal, &record);
+    let mut record = value(1, "", "run", "", 1.0);
+    record["first_message"] = json!(true);
+    let path = put(&catalog, Source::Terminal, &record);
     let stamp = migration::stamp(&temp.path().join(Source::Terminal.directory())).unwrap();
     catalog
         .db
@@ -798,15 +799,10 @@ fn a_first_prompt_pin_keeps_coverage_while_a_real_rebind_invalidates() {
     assert_eq!(before.0, 1);
     assert_eq!(before.1, 1);
     assert_eq!(before.2, 0);
-    // The reviewer's verbatim-SQL probe: the legitimate one-way first-prompt
-    // pin changes only the empty conversation. It must keep coverage and epoch.
-    catalog
-        .db
-        .execute(
-            "UPDATE receipt_rows SET conversation='resolved' WHERE source='terminal' AND request=? AND conversation=''",
-            [uuid::Uuid::from_u128(1).to_string()],
-        )
-        .unwrap();
+    // Only a pin proved by the rewritten original keeps coverage and epoch.
+    record["resolved_conversation_id"] = json!("resolved");
+    fs::write(&path, record.to_string()).unwrap();
+    catalog.remember(Source::Terminal, &path, &record).unwrap();
     assert_eq!(coverage(), before);
     // Any other identity rebind still invalidates coverage and rotates the
     // epoch, so old cursors cannot pass the missing row.
@@ -1165,3 +1161,6 @@ fn restarting_reconciliation_preserves_present_originals_and_heals_lost_rows() {
 
 #[path = "scope_tests.rs"]
 mod scope_restore;
+
+#[path = "pin_tests.rs"]
+mod proven_pin;
