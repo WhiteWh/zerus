@@ -4,7 +4,7 @@ import type { FitAddon } from "@xterm/addon-fit";
 import { Icon } from "../lib/icons";
 import { contentScale, selected, setMenu, toast } from "../../store/ui";
 import { composer } from "../../store/composer";
-import { clearInput } from "../../store/clearInput";
+import { clearInput, clearableText } from "../../store/clearInput";
 import { copyVerbatim, pasteText } from "../../bridge";
 import { platform } from "../../store/shortcuts";
 import { clipboardKeyHandler, normalizeTerminalImage, terminalMenu } from "./terminal-clipboard";
@@ -159,19 +159,15 @@ export function TerminalTab() {
   });
   const reading = setInterval(() => { if (!document.hidden) void clearInput.refresh(); }, 2500);
   onCleanup(() => { clearInterval(reading); clearInput.follow(undefined); });
-  const delivering = () => {
-    const v = composer.view(), s = selected();
-    return !!v && !!s && v.key === s.key && (v.sending || !!v.delivery_pending || !!v.waiting || v.local.some((m) => m.status === "sending"));
-  };
-  const clearable = () => {
-    const read = clearInput.state(), s = selected();
-    return read && s && read.key === s.key && read.composer.clearable && !delivering() && !clearInput.clearing() ? read.composer.text : undefined;
-  };
+  const clearable = () => clearableText(clearInput.state(), selected(), composer.view(), clearInput.clearing());
   const [confirming, setConfirming] = createSignal<{ key: string; text: string; origin: HTMLElement }>();
   const confirmClear = async (key: string, text: string) => {
     setConfirming(undefined);
-    const outcome = await clearInput.clear(key, text);
-    if (!outcome) return;
+    const outcome = await clearInput.clear(key, text, clearable);
+    if (!outcome) {
+      toast(tr("Terminal"), tr("Input not cleared: %1", tr("The input changed or a message is being sent.")), "error");
+      return;
+    }
     if (outcome.status === "cleared") toast(tr("Terminal"), tr("Input cleared."));
     else if (outcome.status === "failed") toast(tr("Terminal"), tr("Input not cleared: %1", outcome.error), "error");
     else toast(tr("Terminal"), tr("Clearing the input is not confirmed: %1 Check Terminal.", outcome.error), "error", true);

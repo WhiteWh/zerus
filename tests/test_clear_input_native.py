@@ -69,23 +69,17 @@ class NativeClearInputCodex(ClearInput, busy.NativeBusyCodex):
     test_busy_tool_queue_preserves_drafts_and_accepts_exactly_once = None
     test_busy_attachment_send_is_queued_and_delivered_once = None
 
-    def launch(self, project, *arguments):
+    def tmux(self, *args, **kwargs):
         # Codex shows its home folder itself as a bare `~`, which hgs never takes
         # for its status footer; a real session runs in a project folder, shown
-        # as a path. Its configuration stays in CODEX_HOME.
-        home = self.root / 'codex-user-home'
-        home.mkdir(exist_ok=True)
-        tmux = self.tmux
-        def launching(*args, **kwargs):
-            if args and args[0] == 'new-session':
-                args = list(args)
-                args.insert(args.index('env') + 1, 'HOME=' + str(home))
-            return tmux(*args, **kwargs)
-        self.tmux = launching
-        try:
-            return busy.clear.NativeCodexClear.launch(self, project, *arguments)
-        finally:
-            del self.tmux
+        # as a path. The fixture's launch starts Codex in its HOME, so Codex gets
+        # another HOME here; its configuration stays in CODEX_HOME.
+        if args and args[0] == 'new-session' and 'env' in args:
+            home = self.root / 'codex-user-home'
+            home.mkdir(exist_ok=True)
+            args = list(args)
+            args.insert(args.index('env') + 1, 'HOME=' + str(home))
+        return super().tmux(*args, **kwargs)
 
     def test_clear_input_discards_a_residue_and_codex_keeps_running(self):
         shown = self.residue_then_clear()

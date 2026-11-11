@@ -3072,6 +3072,7 @@
   "The historical local read-mark report is deferred. Retry keeps the original report identity.": "Исторический отчёт о локальных отметках прочтения отложен. Повторная попытка сохраняет исходный идентификатор отчёта.",
   "The historical local read-mark report needs review. An unconfirmed publication will only be looked up, never resent.": "Исторический отчёт о локальных отметках прочтения требует проверки. Для неподтверждённой публикации проверяется только результат, повторной отправки не будет.",
   "The historical local read-mark report was not sent because local preparation failed.": "Исторический отчёт о локальных отметках прочтения не отправлен из-за ошибки локальной подготовки.",
+  "The input changed or a message is being sent.": "Ввод изменился или сообщение ещё отправляется.",
   "The keep-warm state of this session is unreadable. Nothing is sent until your next message.": "Состояние прогрева этой сессии не читается. Ничего не отправляется до вашего следующего сообщения.",
   "The last conversation ended, but the agent process is still running. Its current activity is unconfirmed; open the terminal to check.": "Последний разговор завершился, но процесс агента все еще работает. Его текущая деятельность не подтверждена; откройте терминал и проверьте.",
   "The last keep-warm ping failed. Keeping it warm resumes after your next message.": "Последний пинг прогрева завершился ошибкой. Прогрев возобновится после вашего следующего сообщения.",
