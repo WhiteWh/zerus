@@ -206,4 +206,14 @@ final class OutboxRetentionTests: XCTestCase {
         store.close()
     }
 
+    func testCheckingCompactUncertaintyDoesNotReintroduceCanonicalPayloadCopies() {
+        let original = row()
+        var captured = OutboxRetention.compact(original); captured.status = "uncertain"
+        let settled = SendReceiptRecovery.settle(MessageState(outgoing: [captured]), captured: captured,
+            intent: original.sendIntent!, proof: original.sendReceiptProof!, deadline: 100, now: 99)
+        let normalized = OutboxRetention.normalize(settled).outgoing[0]
+        XCTAssertEqual(normalized.status, "submitted"); XCTAssertNil(normalized.sendIntent)
+        XCTAssertEqual(normalized.originalSendIntent(), original.sendIntent)
+    }
+
 }

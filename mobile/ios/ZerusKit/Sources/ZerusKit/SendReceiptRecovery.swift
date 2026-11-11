@@ -184,7 +184,7 @@ public enum SendReceiptRecovery {
               proof.nativeMessageId.isEmpty || validNativeId(proof.nativeMessageId, provider: v.string("provider")) else { return state }
         var copy = state
         copy.outgoing[i].status = "submitted"; copy.outgoing[i].submittedAt = proof.submittedAt; copy.outgoing[i].submittedText = current.text
-        copy.outgoing[i].error = ""; copy.outgoing[i].sendIntent = intent; copy.outgoing[i].sendReceiptProof = proof
+        copy.outgoing[i].error = ""; copy.outgoing[i].sendIntent = intent; copy.outgoing[i].sendCorrelation = nil; copy.outgoing[i].sendReceiptProof = proof
         return copy
     }
     public static func exactNativeId(_ message: OutgoingMessage) -> String? {

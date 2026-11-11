@@ -168,4 +168,12 @@ class OutboxRetentionTest {
         } finally { scope.cancel() }
     }
 
+    @Test fun checkingACompactUncertainRowDoesNotReintroduceCanonicalPayloadCopies() {
+        val original=row();val captured=OutboxRetention.compact(original).copy(status="uncertain")
+        val settled=SendReceiptRecovery.settle(MessageState(outgoing=listOf(captured)),captured,original.sendIntent!!,original.sendReceiptProof!!,100,99)
+        val normalized=OutboxRetention.normalize(settled).outgoing.single()
+        assertEquals("submitted",normalized.status);assertNull(normalized.sendIntent)
+        assertEquals(original.sendIntent,normalized.originalSendIntent())
+    }
+
 }
