@@ -1213,7 +1213,7 @@ class OpenCodeNative(unittest.TestCase):
         view = self.wait(name, lambda v: v['phase'] == 'idle' and any(e.get('detail') == 'Typed in OpenCode' for e in v['events']))
         self.assertEqual([e.get('request_id') for e in view['events'] if e.get('detail') == 'Typed in OpenCode'], [None])
 
-    def test_14_instruction_hint_fresh_lifecycle_and_late_adoption_limit(self):
+    def test_14_instruction_hint_empty_lifecycle_and_after_turn_limit(self):
         def turn(binding, text, expected):
             self.hgs(['send', binding['name'], '--json'], self.payload(binding, text=text))
             self.wait(binding['name'], lambda v: v['phase'] == 'idle' and any(
@@ -1257,6 +1257,22 @@ class OpenCodeNative(unittest.TestCase):
         cleared = self.create()
         turn(cleared, 'Hint clear new session', 1)
 
+        empty_conversation = 'ses_' + native_suffix()
+        status, answer = self.api('POST', '/api/session', {
+            'id': empty_conversation, 'location': {'directory': os.path.realpath(self.workspace)}, 'title': 'empty'})
+        self.assertEqual(status, 200, answer)
+        empty = self.save_binding('empty-' + uuid.uuid4().hex[:8], service='opencode2',
+                                  conversation_id=empty_conversation)
+        self.assertIsNone(mark(empty))
+        resume(empty)
+        self.assertEqual(mark(empty), {'conversation_id': empty_conversation, 'revision': 1})
+        turn(empty, 'Hint still-empty adopted', 1)
+        status, answer = self.api('POST', f'/api/session/{empty_conversation}/compact', {})
+        self.assertEqual(status, 200, answer)
+        turn(empty, 'Hint still-empty after compaction', 1)
+        resume(empty)
+        turn(empty, 'Hint still-empty resumed', 1)
+
         tag = 'adopted-' + uuid.uuid4().hex[:8]
         conversation = 'ses_' + native_suffix()
         status, answer = self.api('POST', '/api/session', {
@@ -1275,7 +1291,7 @@ class OpenCodeNative(unittest.TestCase):
         resume(adopted)
         turn(adopted, 'Unqualified hint adopted resumed', 0)
 
-        for binding in (first, opted_out, enabled, cleared, adopted):
+        for binding in (first, opted_out, enabled, cleared, empty, adopted):
             status, page = self.api('GET', f"/api/session/{binding['conversation_id']}/message?limit=100")
             self.assertEqual(status, 200, page)
             durable = [row for row in page['data']

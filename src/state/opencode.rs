@@ -144,6 +144,17 @@ fn attach_hint_with(
     let _ = native.raw("PUT", &path, Some(&json!({"value":agent_hint::HINT})));
 }
 
+/// One newest message answers whether the native conversation has turns. The
+/// caller treats an unavailable or malformed answer as nonempty, never as
+/// permission to attach or as a reason to block the launch.
+fn empty_history(native: &dyn Native, record: &Value) -> Result<bool> {
+    let answer = get(native, &session_path(record, "/message?limit=1"))?;
+    answer["data"]
+        .as_array()
+        .map(|messages| messages.is_empty())
+        .ok_or_else(|| "Invalid OpenCode message history".into())
+}
+
 pub(crate) fn account_context(name: &str) -> Result<Value> {
     let record = binding(name)?;
     Ok(
@@ -463,6 +474,9 @@ pub(crate) fn launch(
         if adopted {
             modernize(&mut record);
             save(&mut record)?;
+        }
+        if empty_history(&service, &record).unwrap_or(false) {
+            attach_hint(&service, &mut record);
         }
         return Ok(());
     }
@@ -2900,6 +2914,24 @@ mod tests {
             let (expected, status, body) = script.remove(0);
             assert_eq!(expected, format!("{method} {path}"));
             Ok(Response { status, body })
+        }
+    }
+    #[test]
+    fn hint_emptiness_uses_one_bounded_history_read_and_rejects_bad_answers() {
+        let record = json!({"conversation_id":"ses_A"});
+        for (status, body, expected) in [
+            (200, json!({"data":[]}), Some(true)),
+            (200, json!({"data":[{"type":"user"}]}), Some(false)),
+            (200, json!({"data":null}), None),
+            (503, json!({}), None),
+        ] {
+            let native = Scripted(std::cell::RefCell::new(vec![(
+                "GET /api/session/ses_A/message?limit=1".into(),
+                status,
+                body,
+            )]));
+            assert_eq!(empty_history(&native, &record).ok(), expected);
+            assert!(native.0.borrow().is_empty());
         }
     }
     #[test]

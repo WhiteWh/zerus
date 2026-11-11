@@ -200,7 +200,8 @@ suppression only from the exact marked context it forks. Renaming does not
 change the text or hint revision. Arbitrary commands and native subagents
 receive no hint.
 
-For OpenCode, new-session creation writes
+For OpenCode, new-session creation and a verified existing-session launch whose
+single-message native history read is empty write
 `PUT /api/experimental/session/{id}/instructions/entries/zerus.agent-hint` with
 `{"value": HINT}`. The exact conversation and hint revision are marked before
 the request; the mark is suppression metadata, not a delivery receipt. A failed
@@ -208,8 +209,10 @@ or uncertain request does not block creation or resume and is not replayed,
 because another PUT could duplicate the retained entry. OpenCode retains the
 entry as effective prompt context across resume and compaction, without a
 durable `Instructions updated` history row on the pinned version. A clear/new
-session gets its own entry. Inspection, background polling and resume never
-attach it.
+session gets its own entry. Inspection and background polling never attach it.
+A resume with a marked entry does not write again. An existing conversation
+with any native message receives no attachment; an unreadable or malformed
+history answer is not proof of emptiness and has no hint effect.
 
 OpenCode persists a noninitial instruction delta as an `Instructions updated`
 system message. That makes the channel a durable transcript update rather than
