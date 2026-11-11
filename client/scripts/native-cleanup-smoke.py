@@ -16,6 +16,7 @@ import itertools
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import shutil
 import signal
@@ -29,6 +30,80 @@ import time
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'client/scripts'))
 import gui_sandbox
+
+# The walk's own asserts check the product; its safety checks use check()
+# below. Neither may be skipped, so an optimized interpreter is refused in the
+# outer process, the reaper and the worker alike (zerus-2ldeb.4).
+if sys.flags.optimize:
+    raise SystemExit('native-cleanup-smoke.py refuses python -O and PYTHONOPTIMIZE: its checks would be skipped')
+
+# What the walk clicks, waits for and reads in the product.
+# test_native_cleanup_smoke.py pins each against its source in CI
+# (zerus-2ldeb.3), so a product change fails there instead of silently
+# breaking this manual walk.
+TERMINATE = 'Terminate session'
+REMOVE_FOLDER = 'Remove the working folder'
+ONE_PROGRAM = '1 other program'
+PROGRAM_PID = 'PID '
+STOP_AND_REMOVE = 'Stop and remove folder'
+REVIEW_TITLE = 'Remove working folders'
+ANCHORS = (
+    # (what the walk relies on, repository file, literal text that must appear there)
+    ('menu Terminate', 'client/src/ui/sessions/actions-ui.ts', 'trNoop("Terminate session…")'),
+    ('Remove working folder choice', 'client/src/ui/sessions/ActionDialogs.tsx', 'tr("Remove the working folder after stopping")'),
+    ('Stop and remove folder button', 'client/src/ui/sessions/ActionDialogs.tsx', 'tr("Stop and remove folder")'),
+    ('one other program summary', 'client/src/ui/sessions/TerminationPrograms.tsx', 'tr("1 other program will be asked to stop. Save its work before continuing.")'),
+    ('program PID line', 'client/src/ui/sessions/TerminationPrograms.tsx', 'tr("%1 (PID %2)"'),
+    ('cleanup review title', 'client/src/ui/screens/WorktreeCleanup.tsx', 'tr("Remove working folders")'),
+    ('GUI --sessions', 'client/src-tauri/src/cli.rs', '"--sessions" =>'),
+    ('GUI --build-info', 'client/src-tauri/src/cli.rs', '"--build-info" =>'),
+    ('GUI selected CLI', 'client/src-tauri/src/actions.rs', 'env("ZERUS_CLIENT_HGS")'),
+    ('hgs worktrees create', 'src/state/worktrees.rs', '"create" if super::worktree_requests::has_receipt_id'),
+    ('hgs worktrees program-cleanup-status', 'src/state/worktrees.rs', 'action == Some("program-cleanup-status")'),
+    ('hgs desktop ownership-status', 'src/desktop/mod.rs', '["ownership-status", "--json"]'),
+    ('hgs desktop serve --background', 'src/desktop/mod.rs', 'args[6] == "--background"'),
+    ('hgs inspect --after', 'src/state/mod.rs', '"--after" =>'),
+    ('program-stop journal folder', 'src/state/worktree_programs/journal.rs', 'const DIRECTORY: &str = "worktree-program-stops";'),
+    ('original journal file', 'src/state/worktree_programs/journal.rs', '"{}.original.json", input.request_id'),
+    ('result journal file', 'src/state/worktree_programs/journal.rs', '"{}.result.json", self.input.request_id'),
+    ('cleanup journal files', 'src/state/worktree_programs/removal_journal.rs', 'format!("cleanup-{id}.{part}.json")'),
+    ('stop source mode', 'client/core/src/worktree_programs/stop.rs', '#[serde(tag = "mode"'),
+    ('stop kind', 'client/core/src/worktree_programs/stop.rs', '#[serde(tag = "kind"'),
+    ('stop input source', 'client/core/src/worktree_programs/stop.rs', 'pub source: Source,'),
+    ('stop input manifest', 'client/core/src/worktree_programs/stop.rs', 'pub manifest: Manifest,'),
+    ('stop input archive', 'client/core/src/worktree_programs/stop.rs', 'pub archive_id: String,'),
+    ('stop input kind', 'client/core/src/worktree_programs/stop.rs', 'pub stop: Kind,'),
+    ('report members', 'client/core/src/worktree_programs/stop.rs', 'pub members: Vec<Member>,'),
+    ('member observation', 'client/core/src/worktree_programs/stop.rs', 'pub observation: Observation,'),
+    ('manifest capture', 'client/core/src/worktree_programs.rs', 'pub capture: Capture,'),
+    ('manifest configuration', 'client/core/src/worktree_programs.rs', 'pub configuration: String,'),
+    ('manifest programs', 'client/core/src/worktree_programs.rs', 'pub programs: Vec<Program>,'),
+    ('program birth', 'client/core/src/worktree_programs.rs', 'pub birth: String,'),
+    ('capture root', 'client/core/src/termination_cleanup/capture.rs', 'pub root: String,'),
+    ('capture owner', 'client/core/src/termination_cleanup/capture.rs', 'pub owner_id: String,'),
+    ('maintained updater', 'tray/update-installed.py', 'argparse.ArgumentParser('),
+)
+
+
+def check(condition, message):
+    """A safety check that holds under any interpreter flag (zerus-2ldeb.4)."""
+    if not condition:
+        raise SystemExit('native-cleanup-smoke: ' + message)
+
+
+def owner_homes():
+    """The person's real home by HOME and by the passwd entry: read-only in the walk."""
+    homes = {Path.home().resolve(), Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()}
+    return sorted(home for home in homes if home.is_dir())
+
+
+def sandbox_command(root, env):
+    """The walk below gui_sandbox, the person's homes read-only, and a private
+    user/PID namespace with its own PID-1 reaper and an env -i environment."""
+    return gui_sandbox.sandboxed(['/usr/bin/unshare','--user','--map-current-user','--pid','--fork','--mount-proc',
+             '/usr/bin/env','-i',*[key+'='+value for key,value in env.items()],
+             '/usr/bin/python3',str(Path(__file__).resolve()),'--init',str(root),'full'],
+             keep=[root], read_only=owner_homes())
 
 
 def dump(path, value):
@@ -45,7 +120,7 @@ def owner_install():
     home = Path.home()
     folder = home / '.local/bin'
     paths = list(itertools.islice(folder.rglob('*'),4097)) if folder.exists() else []
-    assert len(paths) <= 4096, 'owner bin inventory exceeds snapshot bound'
+    check(len(paths) <= 4096, 'owner bin inventory exceeds snapshot bound')
     paths.sort()
     records = []
     for path in [folder, *paths, home / '.local/share/hgs/build-provenance.json']:
@@ -117,18 +192,30 @@ def census():
 def admission(root):
     outer = json.loads((root / 'outer.json').read_text())
     current = namespace()
-    assert all(current[key] != outer['namespaces'][key] for key in current)
+    check(all(current[key] != outer['namespaces'][key] for key in current), 'not in a private user and PID namespace')
     init = (Path('/proc/1/cmdline').read_bytes()).split(b'\0')
-    assert b'--init' in init and str(root).encode() in init, 'PID 1 is not this fixture reaper'
-    assert proc(1)['group'] == proc(1)['session'] == 1
-    assert os.environ['HOME'] == str(root / 'home')
-    assert os.environ['HGS_STATE_DIR'] == str(root / 'state')
-    assert os.environ['GDK_BACKEND'] == 'x11'
-    assert os.environ['WAYLAND_DISPLAY'] == 'zerus-private-no-wayland'
-    assert os.environ['XDG_RUNTIME_DIR'] == str(root / 'runtime')
-    assert not list((root / 'runtime').glob('wayland*'))
-    dump(root / 'admission.json', dict(namespaces=current, init=proc(1), processes=census(),
-         display=os.environ.get('DISPLAY'), runtime=os.environ['XDG_RUNTIME_DIR']))
+    check(b'--init' in init and str(root).encode() in init, 'PID 1 is not this fixture reaper')
+    check(proc(1)['group'] == proc(1)['session'] == 1, 'PID 1 does not lead its own session and group')
+    for key, value in (('HOME', root / 'home'), ('HGS_STATE_DIR', root / 'state'), ('GDK_BACKEND', 'x11'),
+                       ('WAYLAND_DISPLAY', 'zerus-private-no-wayland'), ('XDG_RUNTIME_DIR', root / 'runtime')):
+        check(os.environ.get(key) == str(value), f'{key} is not the private {value}')
+    check(not list((root / 'runtime').glob('wayland*')), 'a Wayland socket is visible')
+    processes = census()
+    # zerus-2ldeb.4: the display is this namespace's own Xvfb, behind the
+    # private /tmp (its socket) and the unshared network (its abstract name).
+    display = os.environ.get('DISPLAY', '')
+    number = re.fullmatch(r':(\d+)', display)
+    check(number is not None, f'DISPLAY {display!r} is not a local display number')
+    tmp = os.stat('/tmp')
+    check([tmp.st_dev, tmp.st_ino] != outer['tmp'], '/tmp is the outer /tmp, not the private one')
+    check((Path('/tmp/.X11-unix') / ('X' + number.group(1))).is_socket(), f'no private socket for {display}')
+    servers = [row for row in processes if (row['exe'] or '').endswith('/Xvfb') and display in row['argv']]
+    check(len(servers) == 1, f'no single private Xvfb serves {display}: {servers}')
+    for home in outer['read_only']:
+        check(not os.access(home, os.W_OK), f"the person's home {home} is writable in the walk")
+    dump(root / 'admission.json', dict(namespaces=current, init=proc(1), processes=processes,
+         display=display, display_server=servers[0], read_only=outer['read_only'],
+         runtime=os.environ['XDG_RUNTIME_DIR']))
 
 
 class NamespaceMonitor:
@@ -515,18 +602,18 @@ time.sleep(400)
         for tag in ('clean','kept','unknown','changed'):
             screen.wait(tag+'-row', lambda lines: any(re.fullmatch(tag+r'( Ready)?', line['text']) for line in lines))
             screen.row(tag);time.sleep(.25);screen.capture(tag+'-menu')
-            screen.click('Terminate session')
+            screen.click(TERMINATE)
             # Let native discovery finish before starting short-lived OCR
             # children, which deliberately add process-census churn.
             time.sleep(3)
-            screen.wait(tag+'-offer',lambda lines:any('Remove the working folder' in line['text'] for line in lines))
+            screen.wait(tag+'-offer',lambda lines:any(REMOVE_FOLDER in line['text'] for line in lines))
             # The preference is initially false; later confirmations remember it.
-            if not any('1 other program' in line['text'] for line in screen.lines):
-                screen.click('Remove the working folder')
-                screen.wait(tag+'-checked',lambda lines:any('1 other program' in line['text'] for line in lines))
+            if not any(ONE_PROGRAM in line['text'] for line in screen.lines):
+                screen.click(REMOVE_FOLDER)
+                screen.wait(tag+'-checked',lambda lines:any(ONE_PROGRAM in line['text'] for line in lines))
             occupant=next(value['identity'] for value in occupants if value['tag']==tag)
-            screen.click('1 other program')
-            screen.wait(tag+'-expanded',lambda lines:any('PID '+str(occupant['pid']) in line['text'] for line in lines))
+            screen.click(ONE_PROGRAM)
+            screen.wait(tag+'-expanded',lambda lines:any(PROGRAM_PID+str(occupant['pid']) in line['text'] for line in lines))
             checkout=root/'worktrees'/tag
             if tag=='kept':
                 (checkout/'notes.local').write_text('Keep this newly introduced local data.\n')
@@ -541,7 +628,7 @@ time.sleep(400)
                 dump(root/'changed-new-source.json',fresh)
             before=census();dump(root/(tag+'-before-stop.json'),before)
             monitor.check()
-            screen.click('Stop and remove folder')
+            screen.click(STOP_AND_REMOVE)
             if tag=='changed':
                 time.sleep(6)
                 screen.capture('changed-refusal')
@@ -591,7 +678,7 @@ time.sleep(400)
             # Read-only result chip at the fixed 1440x900 viewport. Wait for
             # the dialog rather than treating delivery of XTest as rendering.
             screen.at(210,887)
-            screen.wait('review-unknown',lambda lines:any('Remove working folders' in row['text'] for row in lines))
+            screen.wait('review-unknown',lambda lines:any(REVIEW_TITLE in row['text'] for row in lines))
             screen.key('Escape');time.sleep(.3)
         time.sleep(2)
         assert files=={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in (root/'state/worktree-program-stops').glob('*.json')}
@@ -634,7 +721,9 @@ def outer(args):
         shutil.copy2(args.tessdata/'eng.traineddata',root/'tessdata/eng.traineddata')
         dump(output/'inputs.json',{name:dict(path=str(source.resolve()),sha256=file_hash(source))
              for name,source in (('hgs',args.hgs),('hgs-tray',args.app),('eng.traineddata',args.tessdata/'eng.traineddata'))})
-        dump(root/'outer.json',dict(namespaces=namespace(),root=str(root)))
+        tmp=os.stat('/tmp')
+        dump(root/'outer.json',dict(namespaces=namespace(),root=str(root),tmp=[tmp.st_dev,tmp.st_ino],
+             read_only=[str(home) for home in owner_homes()]))
         env={'PATH':str(root/'home/.local/bin')+':'+str(root/'bin')+':/usr/bin:/bin','LANG':'C.UTF-8',
              'HOME':str(root/'home'),'HGS_CONFIG_DIR':str(root/'config'),'HGS_STATE_DIR':str(root/'state'),
              'HGS_SELF':'fixture','HGS_PEERS':'','HGS_TRACKING':'1','HGS_TAB':'0','SHELL':str(root/'home/.local/bin/shell'),
@@ -644,9 +733,7 @@ def outer(args):
              'NO_AT_BRIDGE':'1','WEBKIT_DISABLE_DMABUF_RENDERER':'1','GSETTINGS_BACKEND':'memory'}
         dump(root/'environment.json',env)
         (root/'bus.conf').write_text('<busconfig><type>session</type><listen>unix:tmpdir='+str(root/'runtime')+'</listen><auth>EXTERNAL</auth><policy context="default"><allow send_destination="*"/><allow receive_sender="*"/><allow own="*"/></policy></busconfig>')
-        command=gui_sandbox.sandboxed(['/usr/bin/unshare','--user','--map-current-user','--pid','--fork','--mount-proc',
-                 '/usr/bin/env','-i',*[key+'='+value for key,value in env.items()],
-                 '/usr/bin/python3',str(Path(__file__).resolve()),'--init',str(root),'full'],keep=[root])
+        command=sandbox_command(root,env)
         dump(output/'launch.json',dict(command=command,environment=env))
         result=None
         try:
@@ -666,7 +753,6 @@ def outer(args):
             dump(output/'owner-install-after.json',owner_after)
             dump(output/'result.json',dict(returncode=result.returncode if result else None,root=str(root),mode='full',
                  owner_install_unchanged=owner_before==owner_after))
-    assert owner_before==owner_after, 'owner installation or GUI changed during this walk; inspect witnesses'
     hashes=[]
     for path in sorted(output.rglob('*')):
         if path.is_file():
@@ -674,6 +760,7 @@ def outer(args):
     (output/'SHA256SUMS').write_text('\n'.join(hashes)+'\n')
     print('Evidence:',output,flush=True)
     print((output/'run.log').read_text()[-2500:],flush=True)
+    check(owner_before==owner_after, 'owner installation or GUI changed during this walk; inspect witnesses')
     raise SystemExit(result.returncode)
 
 
@@ -691,5 +778,5 @@ if __name__ == '__main__':
         args=parser.parse_args()
         args.app=args.app.resolve(strict=True);args.hgs=args.hgs.resolve(strict=True);args.tessdata=args.tessdata.resolve(strict=True)
         for binary in ('bwrap','unshare','dbus-run-session','xvfb-run','Xvfb','tmux','git','magick','import','tesseract'):
-            assert shutil.which(binary), 'Missing required smoke dependency: '+binary
+            check(shutil.which(binary), 'missing required smoke dependency: '+binary)
         outer(args)

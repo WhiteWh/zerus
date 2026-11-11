@@ -1854,6 +1854,42 @@ Signing with an owner-controlled identity and appointing a backup maintainer are
 optional follow-ups. Checksums and exact run/commit provenance are provided;
 package/tag signing is not configured.
 
+### Manual native cleanup qualification
+
+`client/scripts/native-cleanup-smoke.py` is the only end-to-end check of the
+real Terminate + **Remove working folder** path with real program stops. It
+drives the built GUI through native ownership, the confirmation, the program
+stop and the folder outcome (see `client/scripts/native-cleanup-smoke.md`). A
+maintainer runs it on a Linux workstation, not in CI:
+
+- **When:** before requesting publication of each Stable candidate, and before
+  merging any change to Terminate/Remove working folder, the native program stop
+  and cleanup journals, desktop ownership/takeover or GUI startup. Run it once
+  on the candidate's exact source; run it twice in separate output folders for a
+  change to the program-stop path.
+- **Inputs:** CLI and canonical `com.hgdev.hgs-tray` GUI binaries built from that
+  clean commit in the maintainer's own Cargo target, as the smoke's guide shows.
+- **Evidence to keep:** the new output folder with its `SHA256SUMS`.
+  - `result.json` must have return code 0 and `owner_install_unchanged: true`.
+  - The run log must show the four stage results: clean `removed`, kept local
+    data, `unknown`, and the refused changed conversation.
+  - Each stage must have its `*-signal-proof.json`.
+  - Record the folder and the hash of its `SHA256SUMS` with the candidate's
+    review.
+
+CI keeps the walk from rotting without running it. `test_native_cleanup_smoke.py`
+in the ordinary `client/scripts` discovery pins every UI string the walk reads,
+the CLI subcommands it calls and the journal layout it checks to their product
+sources. It also pins the walk's safety margins: the person's homes are
+read-only, the walk stays in its own user and PID namespace, and an optimized
+interpreter is refused.
+
+The walk has no `workflow_dispatch` job. Hosted Ubuntu runners would need their
+unprivileged user-namespace restriction lifted, ImageMagick 7 (`magick`, which
+Ubuntu's archive does not ship) and a full feature GUI build for each run. Its
+OCR timing is also tuned to a workstation, and no self-hosted runner is attached
+to a development machine.
+
 ## Validation record
 
 The earlier runs below record platform/package validation before the temporary
