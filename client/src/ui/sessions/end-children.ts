@@ -98,7 +98,7 @@ export function childKillText(n: number): string {
 /** Terminate keeps a stopped or paused child as it is; the command line's Terminate archives it. */
 export const stoppedChild = (s: Pick<SelectionRow, "state">) => s.state === "stopped" || s.state === "paused";
 export const childStoppedText = () =>
-  tr("Stopped or paused child sessions keep their state here. On the command line, hgs terminate --with-children moves them to Archive.");
+  tr("Terminate leaves stopped or paused child sessions as they are. On the command line, hgs terminate --with-children moves them to Archive.");
 
 /**
  * The children the action does not apply to now (Terminate takes running

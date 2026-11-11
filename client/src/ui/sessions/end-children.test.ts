@@ -113,7 +113,7 @@ describe("a parent's live descendants (zerus-sa9qn.17)", () => {
 
   it("say that Terminate keeps a stopped or paused child while the command line archives it (#2086 review)", () => {
     expect(["stopped", "paused", "running", "archived"].map((state) => stoppedChild({ state }))).toEqual([true, true, false, false]);
-    expect(childStoppedText()).toBe("Stopped or paused child sessions keep their state here. On the command line, hgs terminate --with-children moves them to Archive.");
+    expect(childStoppedText()).toBe("Terminate leaves stopped or paused child sessions as they are. On the command line, hgs terminate --with-children moves them to Archive.");
   });
 });
 
