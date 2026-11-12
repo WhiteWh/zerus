@@ -679,7 +679,13 @@ provider's already-loaded settings are not retrofitted.
 
 Activity recognizes duplicate Kimi callbacks by their native turn ID within the
 same run and conversation. Equal captions in separate native turns or cleared
-conversations remain separate messages.
+conversations remain separate messages. For Kimi releases that omit the Stop
+hook, inspection and listing can settle the exact current main turn from a
+bounded, stable main-wire `turn.ended` or `prompt.completed` event. A matching
+TurnStarted identity is required; a newer prompt, incomplete wire, outstanding
+tool or changed run/conversation prevents settlement. Reply text never proves
+completion. Stop and wire evidence share one durable completion and reply ID;
+background jobs and subagents remain active until their own work finishes.
 For older attachment callbacks that lack that ID, a complete bounded native
 history and a unique exact staged-file input can associate their rich file card
 with the one native turn. The confirmed local delivery can supply the receipt
@@ -2642,7 +2648,10 @@ separate confirmation because they change permissions beyond this request.
 **Do not start** cancels the tool without creating a goal or changing the mode.
 Zerus answers only the exact native goal panel after the same complete wire and
 process checks as other Kimi approvals; Kimi's recorded decision and mode label
-confirm delivery. A different, clipped or unverifiable panel stays read-only.
+confirm delivery. In the fullscreen Goal panel, animated foreground RGB colours
+on the exact `Using tools` status row above it may change between observations;
+all other screen bytes and the complete validated panel must match. A different,
+clipped or unverifiable panel stays read-only.
 
 Other Kimi tool approvals also appear in Activity, with the complete request from
 Kimi's wire. Kimi's hooks cannot approve, so Zerus answers only in Kimi's own

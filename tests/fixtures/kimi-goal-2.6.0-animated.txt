@@ -1,0 +1,24 @@
+ [1m[38;2;255;203;107m❯ Start the fixture goal.[0m
+   This agent runs in a Zerus session: the hgs CLI reads, messages, launches
+   and stops other agent sessions on this and other computers. Run hgs guide
+   before using it.
+
+   [38;2;136;136;136mUsing tool[38;2;144;144;144ms[39m
+
+ [38;2;232;168;56m──────────────────────────────────────────────────────────────────────────────[39m
+   [1m[38;2;232;168;56m▶[0m [1m[38;2;232;168;56mApprove CreateGoal?[0m
+
+   [38;2;245;245;245mStart goal: Завершить проверку отдельного intrinsic слоя и новой публика[39m...
+   [38;2;245;245;245mDone when: Все 13 trophy/156 состояний проверены, включая g2★0, без двой[39m...
+
+   [1m[38;2;91;192;190m▶[0m [1m[38;2;91;192;190m1. Switch to Never Ask and start[0m
+     [38;2;245;245;245m2. Switch to Ask When Needed and start[39m
+     [38;2;245;245;245m3. Start in Always Ask[39m
+     [38;2;245;245;245m4. Do not start
+
+[39m   [38;2;224;224;224mBest if you want Kimi Code to keep working while you are away. Tools are[39m
+   [38;2;224;224;224mapproved automatically and questions are skipped; only plans in Plan mode[39m
+   [38;2;224;224;224mwait for your review.[39m
+
+   [38;2;136;136;136m↑/↓ select · 1/2/3/4 choose · ↵ confirm[39m
+ [38;2;232;168;56m──────────────────────────────────────────────────────────────────────────────[39m
