@@ -3,7 +3,7 @@ import json, subprocess, time, unittest, uuid
 import test_input
 
 AGENT = test_input.SIGNAL_SAFE_READ + r'''
-import os, pathlib, sys, termios, tty, json, uuid, signal
+import os, pathlib, sys, termios, tty, json, uuid, signal, re
 root=pathlib.Path(os.environ['INPUT_FIXTURE']); fd=sys.stdin.fileno(); old=termios.tcgetattr(fd);tty.setraw(fd)
 text='';agent='codex'
 def show(*args):
@@ -11,10 +11,15 @@ def show(*args):
  agent=(root/'provider').read_text() if (root/'provider').exists() else 'codex'
  if (root/'screen').exists():os.write(1,(root/'screen').read_bytes());return
  row=(' │ > '+text+' '*(29-len(text))+'│') if agent=='kimi' else ('❯ ' if agent=='claude' else '› ')+text
+ # Kimi 2.5.3's argument hint corrupts the border and hardware cursor.
+ # Two trailing spaces disable its exact optional-one-space hint pattern.
+ hint=agent=='kimi' and (root/'kimi-argument-hint').exists() and re.fullmatch(r'/compact ?',text)
+ if hint:row=' │ > '+text+' <instruction>'
  screen='\x1b[2J\x1b[25;1H'+(' ╭─────────────────────────────────╮' if agent=='kimi' else '──────────────────────────────────')+'\x1b[26;1H'+row+'\x1b[27;1H'+(' ╰─────────────────────────────────╯' if agent=='kimi' else '──────────────────────────────────')+'\x1b[28;1H'+(' Ask When Needed  K3 /fixture' if agent=='kimi' else '')+'\x1b[26;'+str((6 if agent=='kimi' else 3)+len(text))+'H'
  if agent=='codex':
   screen='\x1b[2J\x1b[27;1H\x1b[48;5;234m› '+text+' '*80+'\x1b[28;1H   \x1b[49m\x1b[29;1H  GPT-6-Astra high · /fixture\x1b[30;1H  ? for shortcuts\x1b[27;'+str(3+len(text))+'H'
   if (root/'native-cleared').exists():screen=screen.replace('\x1b[2J','\x1b[2J\x1b[2;1H >_ OpenAI Codex (v0.162.0)\x1b[3;1H /fixture\x1b[4;1H permissions: default')
+ if hint:screen+='\x1b[30;100H'
  os.write(1,screen.encode())
 signal.signal(signal.SIGUSR1,show);os.write(1,b'\x1b[?2004h');show();(root/'agent-pid').write_text(str(os.getpid()))
 try:
