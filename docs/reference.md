@@ -1048,7 +1048,17 @@ own receipt), `refused` (before any child ran, an invalid text, or more than
 20 routed questions for that parent in the last hour) or `unknown`
 (everything else, including an `hgs send` refusal, which leaves no receipt).
 Nothing is retried; an unknown result is never replayed, and a routed or
-refused identity never routes again. The text is a fixed English template of
+refused identity never routes again. The ledger keeps at most 65,536 rows with
+rolling retention (zerus-sa9qn.36): when it is full, one bounded pass reads at
+most 1,024 settled (`submitted` or `refused`) rows older than a day, oldest
+first from a rolling cursor, and deletes at most 256 whose question can never
+be read again, because this computer's complete catalog no longer lists the
+child at that row's run (a run ID is never reused, and a question routes only
+from its listed run). Reserved and unknown rows, a row of a run still listed,
+a row from an older ledger without a run while its session is listed, and
+every row while the catalog is incomplete are kept, so nothing is replayed or
+routed twice. A question that finds the ledger still full after that pass is
+not routed then; Activity shows retained routes only. The text is a fixed English template of
 at most 2 KiB: the header `[Zerus child question]`, the child's name and
 reference (the name single-quoted; a child whose name holds anything but
 ASCII letters, digits, `.`, `_` and `-` in three segments is never routed and
@@ -1173,8 +1183,10 @@ reads both switches and the latch again in its own transaction, so a switch turn
 before it stops the send and writes nothing; off never cancels or replays a
 question already reserved, sent or unknown. Turning routing on again reads the
 catalog from a new baseline: a question still pending and supervised then is
-routed once, while one asked and answered while routing was off is never sent,
-and a question already in the route ledger never routes again.
+routed once, also when it was first read, or its reservation found a switch or
+the latch off, while routing was off (zerus-sa9qn.45). One asked and answered
+while routing was off is never sent, and a question already in the route
+ledger never routes again.
 
 Android (zerus-sa9qn.4) and iOS (zerus-sa9qn.5) apply the same contract, iOS
 in ZerusKit `ChildSessions` and the session card: child cards nest under a

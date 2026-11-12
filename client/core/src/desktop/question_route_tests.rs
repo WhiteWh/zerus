@@ -154,6 +154,10 @@ fn every_row_that_is_not_supervised_and_quiet_never_routes() {
             Box::new(|r| r["question_routing"]["send_to_parent"] = json!(false)),
         ),
         (
+            "the person's latch, mirrored, while the host file says on",
+            Box::new(|r| r["question_routing"]["person_off"] = json!(true)),
+        ),
+        (
             "routing storage unknown",
             Box::new(|r| r["question_routing"] = Value::Null),
         ),

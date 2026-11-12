@@ -64,9 +64,21 @@ pub(super) const LATCH_SCHEMA: i64 = 39;
 pub(super) fn migrate_latch(tx: &rusqlite::Transaction<'_>) -> anyhow::Result<()> {
     latch::migrate(tx)
 }
-/// Test rewind of the schema-39 latch leaf.
+/// The ledger's rolling retention leaf (zerus-sa9qn.36); merge-order
+/// allocation as above.
+pub(super) const RETENTION_SCHEMA: i64 = 40;
+pub(super) fn migrate_retention(tx: &rusqlite::Transaction<'_>) -> anyhow::Result<()> {
+    ledger::migrate_retention(tx)
+}
+/// Test rewind of the schema-40 retention leaf.
+#[cfg(test)]
+pub(super) fn remove_retention_fixture(db: &rusqlite::Connection) {
+    ledger::remove_retention_fixture(db);
+}
+/// Test rewind of the schema-39 latch leaf, the later retention leaf first.
 #[cfg(test)]
 pub(super) fn remove_latch_fixture(db: &rusqlite::Connection) {
+    remove_retention_fixture(db);
     latch::remove_fixture(db);
 }
 /// Test rewind of the schema-38 Activity leaf, the later latch leaf first.

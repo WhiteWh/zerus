@@ -764,7 +764,9 @@ fn the_per_parent_bound_refuses_the_twenty_first_question_in_an_hour() {
         f.store
             .db
             .execute(
-                "INSERT INTO desktop_question_routes VALUES(?1,?2,?3,?4,'q',?5,?6,'')",
+                "INSERT INTO desktop_question_routes(key,request_id,child_session_id,
+                 parent_session_id,question_id,created,state,code)
+                 VALUES(?1,?2,?3,?4,'q',?5,?6,'')",
                 rusqlite::params![
                     format!("{n:064x}"),
                     format!("00000000-0000-4000-8000-{n:012x}"),
@@ -897,16 +899,17 @@ fn edges_wait_while_the_actor_cannot_admit() {
 }
 
 #[test]
-fn the_route_ledger_is_retained_and_settles_once() {
+fn the_route_ledger_settles_once_and_keeps_its_identity() {
     let mut f = Fixture::new();
     f.snapshot(vec![child_row(), parent_row()]);
     f.until("submitted", |f| f.states() == ["submitted"]);
+    // Only retention deletes a settled row (zerus-sa9qn.36).
     for statement in [
         "UPDATE desktop_question_routes SET state='reserved'",
         "UPDATE desktop_question_routes SET state='unknown'",
         "UPDATE desktop_question_routes SET code='x'",
         "UPDATE desktop_question_routes SET parent_session_id='00000000-0000-4000-8000-000000000009'",
-        "DELETE FROM desktop_question_routes",
+        "UPDATE desktop_question_routes SET run_id='run-2'",
     ] {
         assert!(f.store.db.execute(statement, []).is_err(), "{statement}");
     }
@@ -970,9 +973,9 @@ fn exact_previous_store_upgrade_adds_only_the_route_leaf() {
             .unwrap(),
         crate::desktop::store::SCHEMA
     );
-    // This leaf's table, then the later switch leaf's two (schema 37) and
-    // the latch leaf's two (schema 39).
-    assert_eq!(tables(&store.db), before + 1 + 2 + 2);
+    // This leaf's table, then the later switch leaf's two (schema 37), the
+    // latch leaf's two (schema 39) and the retention counter (schema 40).
+    assert_eq!(tables(&store.db), before + 1 + 2 + 2 + 1);
     assert!(ledger::reserved(&store.db, 8).unwrap().is_empty());
 }
 
@@ -1442,8 +1445,9 @@ fn exact_previous_store_upgrade_adds_only_the_switch_leaf_switched_on() {
             .unwrap(),
         crate::desktop::store::SCHEMA
     );
-    // This leaf's two tables, then the later latch leaf's two (schema 39).
-    assert_eq!(tables(&store.db), before + 2 + 2);
+    // This leaf's two tables, then the later latch leaf's two (schema 39)
+    // and the retention counter (schema 40).
+    assert_eq!(tables(&store.db), before + 2 + 2 + 1);
     assert!(
         super::super::policy::enabled(&store.db).unwrap(),
         "on by default"
@@ -1749,8 +1753,9 @@ fn exact_previous_store_upgrade_adds_only_the_activity_indexes() {
         crate::desktop::store::SCHEMA
     );
     // The two partial indexes, then the later latch leaf's two tables, its
-    // receipt index and their two primary key indexes (schema 39).
-    assert_eq!(objects(&store.db), (tables + 2, indexes + 2 + 3));
+    // receipt index and their two primary key indexes (schema 39), then the
+    // retention counter and the settled index (schema 40).
+    assert_eq!(objects(&store.db), (tables + 2 + 1, indexes + 2 + 3 + 1));
     // The route settled before the upgrade is indexed and shown.
     let reply = super::super::activity_request(
         &store.db,
@@ -1993,7 +1998,8 @@ fn exact_previous_store_upgrade_adds_only_the_latch_leaf() {
             .unwrap(),
         crate::desktop::store::SCHEMA
     );
-    assert_eq!(tables(&store.db), before + 2);
+    // This leaf's two tables, then the retention counter (schema 40).
+    assert_eq!(tables(&store.db), before + 2 + 1);
     assert!(!super::super::latch::latched(&store.db, CHILD_ID).unwrap());
 }
 
@@ -2249,4 +2255,493 @@ fn a_phone_statement_issued_before_a_desktop_decision_is_refused() {
     );
     assert_eq!(newer["accepted"], true, "{newer}");
     assert!(!super::super::latch::latched(&f.store.db, CHILD_ID).unwrap());
+}
+
+/// zerus-sa9qn.45: a question read while its child's own switch was off at
+/// the reservation (the row still said on) routes once when the switch is
+/// on again; another turn never routes it twice.
+#[test]
+fn a_question_refused_off_at_its_reservation_routes_once_when_on_again() {
+    let mut f = Fixture::new();
+    child_switch(&f, false);
+    f.snapshot(vec![child_row(), parent_row()]);
+    f.settle();
+    assert_eq!((f.reads(), f.sent(), f.routes().len()), (2, 0, 0));
+    assert!(f.route.fixture_off() >= 1);
+    assert_eq!(
+        f.route.fixture_remembered(),
+        (0, 0),
+        "the edge is forgotten"
+    );
+    // The person turns it on again; its row shows the new revision, with
+    // the same pending question.
+    child_switch(&f, true);
+    let mut on = child_row();
+    on["question_routing"] = json!({"send_to_parent": true, "revision": 1});
+    f.delta(on.clone());
+    f.until("submitted", |f| f.states() == ["submitted"]);
+    assert_eq!(f.sent(), 1);
+    // A later change of the same row reads it again but never routes twice.
+    on["question_routing"]["revision"] = json!(2);
+    f.delta(on);
+    f.settle();
+    assert_eq!((f.sent(), f.states()), (1, vec!["submitted".to_owned()]));
+}
+
+/// zerus-sa9qn.45: a question whose first read finished after the global
+/// switch went off routes once when it is on again.
+#[test]
+fn a_question_read_before_routing_went_off_routes_once_when_on_again() {
+    let mut f = Fixture::new();
+    let gate = Arc::new(Mutex::new(()));
+    let held = gate.lock().unwrap();
+    let (reads, waiting) = (f.reads.clone(), gate.clone());
+    f.route = Runtime::fixture(
+        &f.epoch,
+        Arc::new(move |edge: &route::Edge| {
+            reads.fetch_add(1, Ordering::SeqCst);
+            let _wait = waiting.lock().unwrap();
+            Some(Fetched {
+                inspect: inspect(vec![card("tool:toolu_1")]),
+                reference: reference_of(edge),
+            })
+        }),
+        f.config.state.clone(),
+    );
+    f.route.fixture_clock(f.now);
+    f.snapshot(vec![child_row(), parent_row()]);
+    f.tick();
+    f.advance(SETTLE + Duration::from_millis(1));
+    f.tick();
+    assert_eq!(f.route.fixture_pending(), (0, 1), "the first read started");
+    switch(&mut f, false);
+    f.tick();
+    drop(held);
+    f.settle();
+    assert_eq!((f.sent(), f.routes().len()), (0, 0));
+    // On again: the still-pending, supervised question routes once.
+    switch(&mut f, true);
+    f.until("submitted", |f| f.states() == ["submitted"]);
+    assert_eq!(f.sent(), 1);
+    // Off and on again never routes it twice: the ledger is the guard.
+    switch(&mut f, false);
+    f.tick();
+    switch(&mut f, true);
+    f.settle();
+    assert_eq!((f.sent(), f.states()), (1, vec!["submitted".to_owned()]));
+}
+
+/// zerus-sa9qn.45: turning routing on again considers every edge afresh, so
+/// an edge first read before its question showed is read again.
+#[test]
+fn an_edge_read_before_its_question_showed_is_read_again_when_on_again() {
+    let mut f = Fixture::new();
+    f.reply(vec![inspect(vec![])]);
+    f.snapshot(vec![child_row(), parent_row()]);
+    f.settle();
+    assert_eq!((f.reads(), f.routes().len()), (1, 0));
+    // The question shows on the same row: a remembered edge is not read
+    // again.
+    f.reply(vec![inspect(vec![card("tool:toolu_1")])]);
+    f.settle();
+    assert_eq!((f.reads(), f.routes().len()), (1, 0));
+    switch(&mut f, false);
+    f.tick();
+    switch(&mut f, true);
+    f.until("submitted", |f| f.states() == ["submitted"]);
+    assert_eq!(f.sent(), 1);
+}
+
+/// Fills the route ledger with `rows` rows of `state` for `child` at `run`
+/// (none for an older ledger's row), created at `created` plus their index
+/// (ms), keys after `prefix`, through plain SQL (zerus-sa9qn.36).
+fn fill_ledger(
+    f: &Fixture,
+    prefix: &str,
+    rows: i64,
+    state: &str,
+    created: i64,
+    child: (&str, Option<&str>),
+) {
+    f.store
+        .db
+        .execute(
+            "INSERT INTO desktop_question_routes(key,request_id,child_session_id,parent_session_id,
+             question_id,created,state,code,run_id)
+             WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?1)
+             SELECT printf('%s%063x',?6,i),printf('%s%07x-0000-4000-8000-%012x',?6,i,i),?2,?3,'q',?4+i,?5,'',?7
+             FROM n",
+            rusqlite::params![rows, child.0, PARENT_ID, created, state, prefix, child.1],
+        )
+        .unwrap();
+}
+fn ledger_rows(f: &Fixture) -> i64 {
+    f.store
+        .db
+        .query_row("SELECT count(*) FROM desktop_question_routes", [], |r| {
+            r.get(0)
+        })
+        .unwrap()
+}
+fn reserve_at(f: &mut Fixture, record: &route::Record, at: i64) -> deferred_send::Routed {
+    let state = f.config.state.clone();
+    let scope = f.send.scope().clone();
+    f.send.route(
+        &mut f.store,
+        intent(&scope, record),
+        Some(f.exclusion.clone()),
+        |tx| ledger::reserve(tx, record, at, &state),
+    )
+}
+fn cursor(f: &Fixture) -> Option<i64> {
+    f.store
+        .db
+        .query_row(
+            "SELECT cursor_created FROM desktop_question_route_retention",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+const DAY_MS: i64 = ledger::RETAIN_MS;
+/// A session of no visible catalog row: its runs have all ended.
+const GONE: &str = "00000000-0000-4000-8000-0000000000e1";
+
+#[test]
+fn a_full_ledger_prunes_its_oldest_settled_rows_and_keeps_routing() {
+    let mut f = Fixture::new();
+    f.snapshot(vec![child_row(), parent_row()]);
+    let now = chrono::Utc::now().timestamp_millis();
+    // Old settled rows of ended runs fill the ledger: half submitted, half
+    // refused, and one of the child's own earlier run.
+    fill_ledger(
+        &f,
+        "0",
+        ledger::ROWS / 2,
+        "submitted",
+        0,
+        (GONE, Some("old")),
+    );
+    fill_ledger(
+        &f,
+        "f",
+        ledger::ROWS / 2 - 1,
+        "refused",
+        1_000_000,
+        (GONE, None),
+    );
+    fill_ledger(&f, "e", 1, "refused", 2_000_000, (CHILD_ID, Some("run-0")));
+    assert_eq!(
+        (ledger_rows(&f), ledger::count(&f.store.db).unwrap()),
+        (ledger::ROWS, ledger::ROWS)
+    );
+    // A new question still routes: the oldest settled batch is pruned.
+    admitted(&mut f, &record(), now, "reserved");
+    assert_eq!(ledger_rows(&f), ledger::ROWS - ledger::PRUNE + 1);
+    assert!(ledger::known(&f.store.db, &record().identity.key()).unwrap());
+    let oldest: i64 = f
+        .store
+        .db
+        .query_row(
+            "SELECT min(created) FROM desktop_question_routes WHERE state='submitted'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(oldest, ledger::PRUNE + 1, "the oldest went first");
+    assert_eq!(ledger::count(&f.store.db).unwrap(), ledger_rows(&f));
+    // The new row keeps its run.
+    let run: String = f
+        .store
+        .db
+        .query_row(
+            "SELECT run_id FROM desktop_question_routes WHERE key=?1",
+            [record().identity.key()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(run, record().identity.run_id);
+    // Passes continue from their cursor: the earlier run's row goes too.
+    while ledger::prune(&f.store.db, now).unwrap() > 0 {}
+    assert_eq!(ledger_rows(&f), 1, "only the reserved route stays");
+    assert_eq!(cursor(&f), None, "the cursor wrapped at the end");
+}
+
+#[test]
+fn reserved_unknown_recent_and_readable_rows_are_never_pruned() {
+    let now = chrono::Utc::now().timestamp_millis();
+    for (state, created, child, catalog) in [
+        ("reserved", 0, (GONE, Some("old")), "complete"),
+        ("unknown", 0, (GONE, Some("old")), "complete"),
+        (
+            "submitted",
+            now - DAY_MS / 2,
+            (GONE, Some("old")),
+            "complete",
+        ),
+        // The child's current run can still show the question.
+        ("submitted", 0, (CHILD_ID, Some("run-1")), "complete"),
+        // An older ledger's row has no run while its session is listed.
+        ("refused", 0, (CHILD_ID, None), "complete"),
+        // The child's listed row names no run.
+        ("submitted", 0, (CHILD_ID, Some("run-1")), "norun"),
+        // No complete, active catalog proves any run ended.
+        ("submitted", 0, (GONE, Some("old")), "none"),
+        ("submitted", 0, (GONE, Some("old")), "incomplete"),
+        ("submitted", 0, (GONE, Some("old")), "inactive"),
+    ] {
+        let mut f = Fixture::new();
+        if catalog == "norun" {
+            let mut child = child_row();
+            child.as_object_mut().unwrap().remove("run_id");
+            f.snapshot(vec![child, parent_row()]);
+        } else if catalog != "none" {
+            f.snapshot(vec![child_row(), parent_row()]);
+        }
+        let column = match catalog {
+            "incomplete" => "complete",
+            "inactive" => "active",
+            _ => "",
+        };
+        if !column.is_empty() {
+            f.store
+                .db
+                .execute(
+                    &format!("UPDATE desktop_catalog_sources SET {column}=0"),
+                    [],
+                )
+                .unwrap();
+        }
+        fill_ledger(&f, "0", ledger::ROWS, state, created, child);
+        let record = record();
+        let case = format!("{state} {created} {child:?} {catalog}");
+        assert_eq!(
+            reserve_at(&mut f, &record, now),
+            deferred_send::Routed::Unavailable,
+            "{case}"
+        );
+        assert_eq!(ledger_rows(&f), ledger::ROWS, "{case}");
+        assert!(!ledger::known(&f.store.db, &record.identity.key()).unwrap());
+        // The invalid route's final refusal finds no room either.
+        assert!(
+            ledger::refuse(&mut f.store.db, &record, now, ledger::INVALID).is_err(),
+            "{case}"
+        );
+        assert_eq!(ledger_rows(&f), ledger::ROWS, "{case}");
+    }
+}
+
+#[test]
+fn rows_kept_by_one_pass_never_stall_the_next() {
+    let mut f = Fixture::new();
+    f.snapshot(vec![child_row(), parent_row()]);
+    let now = chrono::Utc::now().timestamp_millis();
+    // The oldest rows are all of the child's current run.
+    fill_ledger(
+        &f,
+        "0",
+        ledger::SCAN,
+        "submitted",
+        0,
+        (CHILD_ID, Some("run-1")),
+    );
+    fill_ledger(
+        &f,
+        "1",
+        ledger::ROWS - ledger::SCAN,
+        "submitted",
+        ledger::SCAN,
+        (GONE, Some("old")),
+    );
+    let record = record();
+    // The first pass reads only kept rows: nothing routes, yet the pass
+    // and its cursor are kept.
+    assert_eq!(
+        reserve_at(&mut f, &record, now),
+        deferred_send::Routed::Unavailable
+    );
+    assert_eq!(ledger_rows(&f), ledger::ROWS);
+    assert_eq!(cursor(&f), Some(ledger::SCAN));
+    // The next continues after them.
+    assert_eq!(
+        reserve_at(&mut f, &record, now),
+        deferred_send::Routed::Admitted
+    );
+    assert_eq!(ledger_rows(&f), ledger::ROWS - ledger::PRUNE + 1);
+    let kept: i64 = f
+        .store
+        .db
+        .query_row(
+            "SELECT count(*) FROM desktop_question_routes WHERE child_session_id=?1",
+            [CHILD_ID],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, ledger::SCAN + 1);
+}
+
+#[test]
+fn a_run_that_ends_later_is_pruned_on_a_later_pass() {
+    let mut f = Fixture::new();
+    f.snapshot(vec![child_row(), parent_row()]);
+    let now = chrono::Utc::now().timestamp_millis();
+    fill_ledger(&f, "0", 10, "submitted", 0, (CHILD_ID, Some("run-1")));
+    assert_eq!(ledger::prune(&f.store.db, now).unwrap(), 0);
+    assert_eq!(cursor(&f), None, "the end was reached");
+    // The child starts a new run: the old one's questions are never read.
+    let mut next = child_row();
+    next["run_id"] = json!("run-2");
+    f.cursor += 1;
+    let cursor = f.cursor;
+    f.apply(
+        Body::Delta(Delta {
+            topic: "catalog".into(),
+            cursor,
+            upsert: vec![Fixture::item(next)],
+            remove: vec![zerus_watch_protocol::Removal {
+                key: zerus_watch_protocol::catalog_key(&child_row()).unwrap(),
+                reason: None,
+            }],
+        }),
+        false,
+    );
+    assert_eq!(ledger::prune(&f.store.db, now).unwrap(), 10);
+    assert_eq!(ledger::count(&f.store.db).unwrap(), 0);
+}
+
+#[test]
+fn the_retention_probe_uses_the_session_index() {
+    let f = Fixture::new();
+    let plan: Vec<String> = f
+        .store
+        .db
+        .prepare(
+            "EXPLAIN QUERY PLAN SELECT 1 FROM desktop_catalog_rows WHERE generation=?1
+             AND (CASE WHEN json_valid(json) THEN json_extract(json,'$.session_id') END)=?2
+             AND (?3 IS NULL OR json_extract(json,'$.run_id') IS NULL
+                  OR json_extract(json,'$.run_id')=?3) LIMIT 1",
+        )
+        .unwrap()
+        .query_map(rusqlite::params![1, CHILD_ID, "run-1"], |r| {
+            r.get::<_, String>(3)
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(
+        plan.iter()
+            .any(|step| step.contains("desktop_question_route_sessions")),
+        "{plan:?}"
+    );
+}
+
+#[test]
+fn an_invalid_route_refusal_prunes_like_a_reservation() {
+    let mut f = Fixture::new();
+    f.snapshot(vec![child_row(), parent_row()]);
+    let now = chrono::Utc::now().timestamp_millis();
+    fill_ledger(&f, "0", ledger::ROWS, "submitted", 0, (GONE, Some("old")));
+    ledger::refuse(&mut f.store.db, &record(), now, ledger::INVALID).unwrap();
+    assert_eq!(ledger_rows(&f), ledger::ROWS - ledger::PRUNE + 1);
+    assert!(ledger::known(&f.store.db, &record().identity.key()).unwrap());
+}
+
+#[test]
+fn only_settled_rows_can_be_deleted_and_the_count_is_tracked() {
+    let f = Fixture::new();
+    fill_ledger(&f, "0", 3, "reserved", 0, (GONE, None));
+    fill_ledger(&f, "e", 1, "unknown", 5, (GONE, None));
+    for statement in [
+        "DELETE FROM desktop_question_routes WHERE state='reserved'",
+        "DELETE FROM desktop_question_routes WHERE state='unknown'",
+        "UPDATE desktop_question_routes SET run_id='other' WHERE state='unknown'",
+    ] {
+        assert!(f.store.db.execute(statement, []).is_err(), "{statement}");
+    }
+    f.store
+        .db
+        .execute(
+            "UPDATE desktop_question_routes SET state='submitted' WHERE created=1",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        f.store
+            .db
+            .execute(
+                "DELETE FROM desktop_question_routes WHERE state='submitted'",
+                []
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(ledger::count(&f.store.db).unwrap(), 3);
+    assert_eq!(ledger_rows(&f), 3);
+}
+
+#[test]
+fn exact_previous_store_upgrade_adds_only_the_retention_leaf() {
+    assert_eq!(
+        super::super::RETENTION_SCHEMA - 1,
+        super::super::LATCH_SCHEMA,
+        "rebase this test onto the actual merge-order predecessor"
+    );
+    let f = Fixture::new();
+    let objects = |db: &rusqlite::Connection| -> (i64, i64) {
+        db.query_row(
+            "SELECT sum(type='table'),sum(type='index') FROM sqlite_schema",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    super::super::remove_retention_fixture(&f.store.db);
+    f.store
+        .db
+        .pragma_update(None, "user_version", super::super::LATCH_SCHEMA)
+        .unwrap();
+    // A schema-39 ledger's rows have no run.
+    f.store
+        .db
+        .execute_batch(
+            "INSERT INTO desktop_question_routes(key,request_id,child_session_id,parent_session_id,
+             question_id,created,state,code) VALUES
+             (printf('%064x',1),'00000001-0000-4000-8000-000000000001','00000000-0000-4000-8000-0000000000e1',
+              '00000000-0000-4000-8000-000000000002','q',1,'reserved',''),
+             (printf('%064x',2),'00000002-0000-4000-8000-000000000002','00000000-0000-4000-8000-0000000000e1',
+              '00000000-0000-4000-8000-000000000002','q',2,'submitted','');",
+        )
+        .unwrap();
+    let (tables, indexes) = objects(&f.store.db);
+    let Fixture {
+        store, location, ..
+    } = f;
+    drop(store);
+    let store = Store::open(&location, &uuid::Uuid::new_v4().to_string()).unwrap();
+    assert_eq!(
+        store
+            .db
+            .query_row::<i64, _, _>("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap(),
+        crate::desktop::store::SCHEMA
+    );
+    // The counter table and the settled index.
+    assert_eq!(objects(&store.db), (tables + 1, indexes + 1));
+    assert_eq!(ledger::count(&store.db).unwrap(), 2);
+    let runs: i64 = store
+        .db
+        .query_row(
+            "SELECT count(*) FROM desktop_question_routes WHERE run_id IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(runs, 2);
+    assert!(store
+        .db
+        .execute(
+            "DELETE FROM desktop_question_routes WHERE state='reserved'",
+            []
+        )
+        .is_err());
 }

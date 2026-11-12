@@ -471,6 +471,10 @@ impl Runtime {
                     tx.commit()?;
                     return Ok(Routed::Refused);
                 }
+                Reservation::Full => {
+                    tx.commit()?;
+                    return Ok(Routed::Unavailable);
+                }
                 Reservation::Reserved => {}
             }
             ledger::admit(
