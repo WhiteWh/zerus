@@ -18,6 +18,18 @@ export interface ClearInputPort {
 
 type Shown = Pick<Session, "key" | "catalogKey" | "computer" | "name" | "sessionId" | "status">;
 
+/** The agents whose composer hgs can read and clear (`input::composer::supported`). */
+const READABLE = new Set(["claude", "codex", "kimi"]);
+
+/**
+ * The composer read target of a shown session: a live run of an agent whose
+ * composer can be read. Any other session is never polled (zerus-wkj9l.2).
+ */
+export function composerTarget(s: Pick<Session, "computer" | "name" | "runId" | "conversationId" | "state" | "cmd"> | undefined): Target | undefined {
+  if (!s || !s.runId || s.state === "archived" || !READABLE.has(s.cmd)) return undefined;
+  return { computer: s.computer, name: s.name, run_id: s.runId, conversation_id: s.conversationId ?? "" };
+}
+
 /**
  * Whether the composer is delivering to session `s`: sending, waiting, a
  * desktop-service delivery pending or a local row still sending. The composer
@@ -43,12 +55,27 @@ export function createClearInput(port: ClearInputPort) {
   const [clearing, setClearing] = createSignal(false);
   let current: { key: string; target: Target } | undefined;
   let serial = 0;
+  // At most one read in flight for the followed session (zerus-wkj9l.2): a
+  // slow peer read (up to its 20 s timeout) is never stacked by the polling.
+  let reading: typeof current;
+  // A read asked for after a clear while one is in flight: that read's answer
+  // may predate the clear, so it is dropped and read again once it settles.
+  let again = false;
 
-  async function refresh() {
+  /** Reads the followed session's composer; `fresh` also discards a read already in flight. */
+  async function refresh(fresh = false) {
     const at = current;
+    if (!at) { serial++; setState(undefined); return; }
+    if (reading === at) { if (fresh) again = true; return; }
     const id = ++serial;
-    if (!at) { setState(undefined); return; }
-    const read = await port.read(at.target).catch(() => null);
+    reading = at;
+    let read: ComposerState | null;
+    try {
+      read = await port.read(at.target).catch(() => null);
+    } finally {
+      if (reading === at) reading = undefined;
+    }
+    if (again && current === at) { again = false; void refresh(); return; }
     // A newer read or another session replaced this one meanwhile.
     if (id !== serial || current !== at) return;
     setState(read ? { key: at.key, composer: read } : undefined);
@@ -60,6 +87,7 @@ export function createClearInput(port: ClearInputPort) {
     follow(key?: string, target?: Target) {
       if (key && target && current && current.key === key && same(current.target, target)) return;
       current = key && target ? { key, target } : undefined;
+      again = false;
       setState(undefined);
       void refresh();
     },
@@ -78,7 +106,9 @@ export function createClearInput(port: ClearInputPort) {
         return { status: "uncertain", error: String(error), composer: null };
       } finally {
         setClearing(false);
-        void refresh();
+        // The composer changed or may have: offer nothing until it is read again.
+        setState(undefined);
+        void refresh(true);
       }
     },
   };

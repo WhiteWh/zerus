@@ -5996,7 +5996,17 @@ multi-line draft can. A request ID is never replayed. The clear is recorded with
 the session (`input_cleared`) and settles an unconfirmed earlier input whose
 residue it was. It is only ever the person's action: no delivery or retry uses
 it. The read is `action: "composer"`, which returns the text, `clearable` and
-the reason when it is not. A Codex session started in the home folder itself
+the reason when it is not.
+
+While a send to that run from any client (another desktop, a phone, an agent
+or a task) is still in its proof window, both the read and the clear refuse, and
+nothing is typed (zerus-wkj9l.1). The proof window lasts while the send's
+receipt is `in_progress` with no delivery outcome and its input is at most 40
+seconds old. During it, the message being delivered may sit in the composer.
+Once that send ends uncertain, its stuck text is clearable again. Claude Code
+text is read only when the cursor lies between the composer's two rules, never
+from a past prompt shown above it. The Terminal tab keeps at most one read in
+flight and reads only Claude Code, Codex and Kimi Code sessions. A Codex session started in the home folder itself
 is not recognized and is cleared in Terminal.
 
 In Zerus Next on Linux and macOS, an image-bearing browser paste event stays in

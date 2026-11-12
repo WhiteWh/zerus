@@ -327,6 +327,51 @@ pub(crate) fn input_unconfirmed(record: &Value) -> bool {
     })
 }
 
+/// How long after `input_pending_at` a send may still hold its proof window:
+/// the paste, `settle::WINDOW` and the wait for the lock to record its outcome.
+/// An `in_progress` receipt older than this belongs to a sender that ended
+/// without recording one; its input is stuck, and the person may clear it.
+pub(crate) const PROOF_LIMIT: Duration = Duration::from_secs(40);
+
+/// Whether a send to this run, from any client, is still in its proof window
+/// (zerus-wkj9l.1): its input is unconfirmed, recent, and its receipt is
+/// `in_progress` with no delivery outcome yet. Clear input refuses then: the
+/// message being delivered may sit in the composer, and clearing it would
+/// discard it and settle the send's pending gate. A send that ended uncertain
+/// (its receipt names a `delivery`), was submitted or is older than
+/// [`PROOF_LIMIT`] never blocks: an uncertain or stuck input stays clearable.
+pub(crate) fn send_in_flight(record: &Value) -> bool {
+    let root = absolute_root().ok();
+    in_flight(record, now(), |request| {
+        let path = root.as_ref()?.join("input_receipts").join(format!("{request}.json"));
+        serde_json::from_slice(&fs::read(path).ok()?).ok()
+    })
+}
+
+fn in_flight(record: &Value, at: f64, receipt: impl FnOnce(&str) -> Option<Value>) -> bool {
+    if !input_unconfirmed(record) {
+        return false;
+    }
+    let pending = record["input_pending_at"].as_f64().unwrap_or(0.0);
+    if at - pending > PROOF_LIMIT.as_secs_f64() {
+        return false;
+    }
+    let request = string(record, "input_pending_request");
+    // A send recorded before this field names no receipt: its recent pending
+    // input decides, as does a receipt that cannot be read yet.
+    let Some(request) = uuid::Uuid::parse_str(request).ok().map(|id| id.to_string()).filter(|id| id == request) else {
+        return true;
+    };
+    match receipt(&request) {
+        Some(receipt) => {
+            receipt["status"] == "in_progress"
+                && receipt.get("delivery").is_none_or(Value::is_null)
+                && string(&receipt, "run_id") == string(record, "run_id")
+        }
+        None => true,
+    }
+}
+
 fn checked_input(
     name: &str,
     run_id: &str,
@@ -1485,6 +1530,9 @@ fn submit_core(
     // Preserve attachments after any possible input: the agent may read them later.
     let _ = attachments.keep();
     record["input_pending_at"] = json!(submitted_at);
+    // Clear input reads this send's receipt to tell an input still in its proof
+    // window from one left uncertain or stuck (zerus-wkj9l.1).
+    record["input_pending_request"] = json!(request_id);
     // From this send on the record follows the acceptance rule.
     if record.get("input_seen_at").is_none() {
         record["input_seen_at"] = json!(0.0);
@@ -2313,5 +2361,71 @@ mod tests {
         let refusal = terminal_check_on(&record, true, false, &frames).unwrap_err().to_string();
         assert!(refusal.contains("redrew"), "{refusal}");
         assert_eq!(frames.counts(), (6, 5));
+    }
+}
+
+#[cfg(test)]
+mod clear_input_tests {
+    use super::*;
+
+    /// zerus-wkj9l.4 (M1): the person's Clear input settles exactly the
+    /// unconfirmed input typed before it, never a newer one.
+    #[test]
+    fn a_clear_settles_only_the_input_pending_before_it() {
+        let pending = |cleared: Option<f64>| {
+            let mut record = json!({"input_pending_at": 10.0, "input_seen_at": 0.0});
+            if let Some(at) = cleared {
+                record["input_cleared_at"] = json!(at);
+            }
+            input_unconfirmed(&record)
+        };
+        assert!(pending(None));
+        assert!(!pending(Some(11.0)), "a clear after the input settles it");
+        assert!(pending(Some(10.0)), "a clear at the same time does not");
+        assert!(pending(Some(9.0)), "an earlier clear never settles a newer input");
+    }
+
+    /// zerus-wkj9l.1: only a send whose receipt is still `in_progress` without a
+    /// delivery outcome, recent and for this run, holds Clear input back.
+    #[test]
+    fn only_a_send_still_in_its_proof_window_holds_clear_input_back() {
+        let request = "6f9a1b2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c";
+        let record = json!({"run_id": "run", "input_pending_at": 100.0, "input_seen_at": 0.0,
+            "input_pending_request": request});
+        let receipt = |status: &str, delivery: Option<&str>| {
+            let mut receipt = json!({"request_id": request, "run_id": "run", "status": status});
+            if let Some(delivery) = delivery {
+                receipt["delivery"] = json!(delivery);
+            }
+            receipt
+        };
+        let at = 105.0;
+        let mut asked = Vec::new();
+        assert!(in_flight(&record, at, |id| { asked.push(id.to_owned()); Some(receipt("in_progress", None)) }));
+        assert_eq!(asked, [request]);
+        // Ended uncertain or submitted: the input stays clearable.
+        assert!(!in_flight(&record, at, |_| Some(receipt("in_progress", Some("uncertain")))));
+        assert!(!in_flight(&record, at, |_| Some(receipt("submitted", None))));
+        // Another run's receipt under this ID is not this send.
+        assert!(!in_flight(&record, at, |_| Some(json!({"run_id": "other", "status": "in_progress"}))));
+        // An unreadable receipt within the window holds back, as does a send
+        // recorded before the request field; after the limit nothing does.
+        assert!(in_flight(&record, at, |_| None));
+        let mut older = record.clone();
+        older.as_object_mut().unwrap().remove("input_pending_request");
+        assert!(in_flight(&older, at, |_| panic!("no receipt is named")));
+        let late = 100.0 + PROOF_LIMIT.as_secs_f64() + 1.0;
+        assert!(!in_flight(&record, late, |_| Some(receipt("in_progress", None))));
+        // A confirmed or cleared input is no longer in flight.
+        let mut seen = record.clone();
+        seen["input_seen_at"] = json!(101.0);
+        assert!(!in_flight(&seen, at, |_| Some(receipt("in_progress", None))));
+        let mut cleared = record.clone();
+        cleared["input_cleared_at"] = json!(101.0);
+        assert!(!in_flight(&cleared, at, |_| Some(receipt("in_progress", None))));
+        // A malformed request field never names a path.
+        let mut odd = record.clone();
+        odd["input_pending_request"] = json!("../../etc/passwd");
+        assert!(in_flight(&odd, at, |_| panic!("no path is read for a malformed ID")));
     }
 }

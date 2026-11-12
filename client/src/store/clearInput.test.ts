@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createRoot } from "solid-js";
-import { clearableText, createClearInput } from "./clearInput";
+import { clearableText, composerTarget, createClearInput } from "./clearInput";
 import { draftKey } from "./draftKeys";
 import type { ComposerView } from "../types";
 import type { ClearOutcome, ComposerState } from "../bridge";
@@ -106,5 +106,62 @@ describe("Clear input is offered only while nothing is sent to the session (G1 o
     expect(clearableText(read, s, view({ key: "\nid:00000000-0000-4000-8000-000000000001", sending: true }), false)).toBe("[Image #1] residue");
     expect(clearableText(read, s, undefined, false)).toBe("[Image #1] residue");
     expect(clearableText({ ...read, key: "\nrun:other" }, s, view(), false)).toBeUndefined();
+  });
+});
+
+describe("Composer reads stay bounded (zerus-wkj9l.2)", () => {
+  it("keeps at most one read in flight for the shown session", async () => {
+    const pending: Array<(value: ComposerState) => void> = [];
+    const { store, port } = setup(() => new Promise((resolve) => { pending.push(resolve); }));
+    store.follow("a", A);
+    for (let n = 0; n < 5; n++) void store.refresh();
+    expect(port.read).toHaveBeenCalledTimes(1);
+    pending[0](residue("a text"));
+    await flush();
+    expect(store.state()).toEqual({ key: "a", composer: residue("a text") });
+    void store.refresh();
+    expect(port.read).toHaveBeenCalledTimes(2);
+    // Another session is read at once; the first session's slow read is dropped.
+    store.follow("b", B);
+    expect(port.read).toHaveBeenCalledTimes(3);
+    expect(port.read.mock.calls[2][0]).toBe(B);
+    pending[1](residue("late a text"));
+    pending[2](residue("b text"));
+    await flush();
+    expect(store.state()).toEqual({ key: "b", composer: residue("b text") });
+  });
+
+  it("drops a read that started before a clear and reads again once it settles", async () => {
+    const pending: Array<(value: ComposerState) => void> = [];
+    let first = true;
+    const { store, port } = setup(() => {
+      if (first) { first = false; return Promise.resolve(residue("residue")); }
+      return new Promise((resolve) => { pending.push(resolve); });
+    });
+    store.follow("a", A);
+    await flush();
+    void store.refresh(); // a poll still in flight when the clear finishes
+    expect(port.read).toHaveBeenCalledTimes(2);
+    expect((await store.clear("a", "residue", () => "residue"))?.status).toBe("cleared");
+    await flush();
+    expect(port.read).toHaveBeenCalledTimes(2);
+    expect(store.state()).toBeUndefined(); // nothing is offered right after a clear
+    pending[0](residue("stale poll")); // read before the clear: never shown
+    await flush();
+    expect(port.read).toHaveBeenCalledTimes(3);
+    expect(store.state()).toBeUndefined();
+    pending[1]({ binding: BINDING, state: "empty", text: "", clearable: false, reason: "The input is empty" });
+    await flush();
+    expect(store.state()?.composer.state).toBe("empty");
+  });
+
+  it("reads only a live run of an agent whose composer can be read", () => {
+    const row = { computer: "peer", name: "claude/p/a", runId: "r", conversationId: "c", state: "running" as const, cmd: "claude" };
+    expect(composerTarget(row)).toEqual({ computer: "peer", name: "claude/p/a", run_id: "r", conversation_id: "c" });
+    for (const cmd of ["codex", "kimi"]) expect(composerTarget({ ...row, cmd })).toBeDefined();
+    for (const cmd of ["opencode", "dsh", "sh", ""]) expect(composerTarget({ ...row, cmd })).toBeUndefined();
+    expect(composerTarget({ ...row, state: "archived" as const })).toBeUndefined();
+    expect(composerTarget({ ...row, runId: "" })).toBeUndefined();
+    expect(composerTarget(undefined)).toBeUndefined();
   });
 });

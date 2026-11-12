@@ -4,7 +4,7 @@ import type { FitAddon } from "@xterm/addon-fit";
 import { Icon } from "../lib/icons";
 import { contentScale, selected, setMenu, toast } from "../../store/ui";
 import { composer } from "../../store/composer";
-import { clearInput, clearableText } from "../../store/clearInput";
+import { clearInput, clearableText, composerTarget } from "../../store/clearInput";
 import { copyVerbatim, pasteText } from "../../bridge";
 import { platform } from "../../store/shortcuts";
 import { clipboardKeyHandler, normalizeTerminalImage, terminalMenu } from "./terminal-clipboard";
@@ -153,9 +153,7 @@ export function TerminalTab() {
   // and clears only after the person confirms the exact text.
   createEffect(() => {
     const s = selected();
-    const target = s && s.runId && s.state !== "archived"
-      ? { computer: s.computer, name: s.name, run_id: s.runId, conversation_id: s.conversationId ?? "" } : undefined;
-    clearInput.follow(s?.key, target);
+    clearInput.follow(s?.key, composerTarget(s));
   });
   const reading = setInterval(() => { if (!document.hidden) void clearInput.refresh(); }, 2500);
   onCleanup(() => { clearInterval(reading); clearInput.follow(undefined); });

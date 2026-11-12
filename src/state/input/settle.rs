@@ -36,12 +36,12 @@ pub(super) fn applies(agent: &str) -> bool {
     agent == "claude"
 }
 
-fn plain(row: &str) -> String {
+pub(super) fn plain(row: &str) -> String {
     styled_row(row).iter().map(|(ch, _)| ch).collect()
 }
 
 /// Claude's unindented full-width rule above and below its composer.
-fn separator(plain: &str) -> bool {
+pub(super) fn separator(plain: &str) -> bool {
     !plain.starts_with(char::is_whitespace)
         && plain.chars().count() >= 12
         && plain.chars().all(|ch| "─━╌".contains(ch))
