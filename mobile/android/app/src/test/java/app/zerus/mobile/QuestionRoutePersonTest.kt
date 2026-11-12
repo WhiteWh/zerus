@@ -59,7 +59,7 @@ class QuestionRoutePersonTest {
     private fun receipt(result: JSONObject) = JSONObject().put("request_id","00000000-0000-4000-8000-0000000000aa").put("state","completed").put("result",result)
     private fun confirmed() = JSONObject().put("request_id","00000000-0000-4000-8000-0000000000aa").put("op","question_route_child")
         .put("accepted",true).put("durable",true).put("session_id",sessionId).put("person_off",true).put("revision",3)
-        .put("applied",true).put("code","").put("host",true)
+        .put("applied",true).put("code","")
 
     @Test fun onlyTheServicesExactReceiptSettlesIt() {
         assertTrue(SessionQuestionRouting.personOperation in SessionActionPolicies.operations)
@@ -69,7 +69,7 @@ class QuestionRoutePersonTest {
             assertThrows(IllegalArgumentException::class.java) { SessionActionPolicies.arguments(SessionQuestionRouting.personOperation,bad) }
         assertEquals("completed",SessionActionPolicies.result(action(),receipt(confirmed())).status)
         for((key,value) in listOf("person_off" to false,"session_id" to "00000000-0000-4000-8000-0000000000c2","request_id" to "x",
-                "op" to "question_routes","durable" to false,"host" to JSONObject.NULL,"code" to "x","extra" to 1)) {
+                "op" to "question_routes","durable" to false,"applied" to JSONObject.NULL,"code" to "x","extra" to 1)) {
             assertEquals(key,"uncertain",SessionActionPolicies.result(action(),receipt(confirmed().put(key,value))).status)
         }
         for(code in SessionQuestionRouting.personRefusals.keys) {

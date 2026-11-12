@@ -19,7 +19,7 @@ class SessionQuestionRoutingTest {
     @Test fun onlyTheExactShapeIsKnownAndAnythingElseIsUnknown() {
         for(case in cases("parse")) {
             val raw = JSONObject().put("question_routing",case.opt("question_routing") ?: JSONObject.NULL)
-            val expected = case.optJSONObject("routing")?.let { QuestionRouting(it.getBoolean("send_to_parent"),it.getLong("revision")) }
+            val expected = case.optJSONObject("routing")?.let { QuestionRouting(it.getBoolean("send_to_parent"),it.getLong("revision"),it.optBoolean("person_off",false)) }
             assertEquals(case.getString("name"),expected,SessionQuestionRouting.parse(raw))
         }
         assertNull("absent",SessionQuestionRouting.parse(JSONObject()))

@@ -1221,7 +1221,11 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                                     Ok(request)
                                         if request.operation() == "question_route_child" =>
                                     {
-                                        question_route::latch_frontend(&mut store.db, request)
+                                        question_route::latch_frontend(
+                                            &mut store.db,
+                                            &config.state,
+                                            request,
+                                        )
                                     }
                                     Ok(request) => {
                                         delivery::passive_frontend_request(&mut store, request)

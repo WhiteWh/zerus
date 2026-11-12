@@ -106,7 +106,6 @@ pub fn result_valid(result: &Value, payload: &Value) -> bool {
             "revision",
             "applied",
             "code",
-            "host",
         ],
     ) && result["accepted"] == true
         && result["durable"] == true
@@ -114,6 +113,5 @@ pub fn result_valid(result: &Value, payload: &Value) -> bool {
         && result["person_off"] == statement["person_off"]
         && result["revision"].as_u64().is_some()
         && result["applied"].is_boolean()
-        && result["host"].is_boolean()
         && result["code"] == ""
 }

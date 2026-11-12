@@ -31,7 +31,7 @@ fn receipt() -> Value {
     let statement = &payload()["statement"];
     json!({"request_id": statement["request_id"], "op": "question_route_child", "accepted": true,
         "durable": true, "session_id": statement["session_id"], "person_off": statement["person_off"],
-        "revision": 2, "applied": true, "code": "", "host": true})
+        "revision": 2, "applied": true, "code": ""})
 }
 struct Fake {
     calls: RefCell<Vec<Call>>,
@@ -135,7 +135,7 @@ fn only_one_exact_statement_and_its_exact_receipt_or_closed_refusal() {
         ("session_id", json!("00000000-0000-4000-8000-0000000000ff")),
         ("person_off", json!(true)),
         ("durable", json!(false)),
-        ("host", json!(null)),
+        ("applied", json!(null)),
         ("code", json!("x")),
         ("extra", json!(1)),
     ] {

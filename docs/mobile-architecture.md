@@ -1318,6 +1318,9 @@ service verifies it through its own connector and applies it once, so an
 agent on the computer cannot clear a phone's "off" with commands. The
 statement's shared vector is
 `services/mobile/crypto/tests/vectors/question-route-person-v1.json`.
+Under marker `session-question-routing-v2` the row's `question_routing` also
+carries `person_off`, a display-only mirror of that latch; the phone then
+shows the child off and, without the person's statement, offers no "on".
 
 Muted conversations retain their native state, unread replies, pending requests
 and Needs attention/Active membership. Attention and unread styling becomes

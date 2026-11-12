@@ -12,7 +12,7 @@ final class SessionQuestionRoutingTests: XCTestCase {
     }
     private func routing(_ value: JSONObject?) -> QuestionRouting? {
         guard let value else { return nil }
-        return QuestionRouting(sendToParent: value.bool("send_to_parent"), revision: value.int64("revision"))
+        return QuestionRouting(sendToParent: value.bool("send_to_parent"), revision: value.int64("revision"), personOff: value.bool("person_off"))
     }
 
     func testTheOperationIsTheContracts() throws {

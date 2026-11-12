@@ -22,6 +22,7 @@ export const GLOBAL_LABEL = trNoop("Send child questions to the parent session")
 export const GLOBAL_HINT = trNoop("On by default. A blocking question of a supervised child session is sent once to its parent session, which can answer it or ask you. Approvals, folder trust and sign-in always come to you. Turning this off stops new sends; questions already sent stay sent.");
 export const GLOBAL_UNCONFIRMED = trNoop("The background service has not confirmed this setting.");
 export const SEND_LATCHED = trNoop("You turned this child's questions off. Only you can send them to its parent again.");
+export const SEND_LATCHED_REMOTE = trNoop("A person turned this child's questions off. Turn them on again from its own computer or a phone.");
 export const LATCH_UNCONFIRMED = trNoop("The background service did not confirm where this child's questions go. Refresh the session and try again.");
 // The core's refusals of a change (client/core/src/question_routing.rs).
 trNoop("Update Zerus on this computer to choose where a child's questions go.");
@@ -30,7 +31,7 @@ trNoop("Where this child's questions go changed on another device. Refresh the s
 trNoop("This session has no durable identity, so its questions cannot be routed.");
 trNoop("Only you can change where a child's questions go.");
 
-export interface Routing { sendToParent: boolean; revision: number }
+export interface Routing { sendToParent: boolean; revision: number; personOff: boolean }
 /** The person's latch on a child of this computer (zerus-sa9qn.50), as its service reports it. */
 export interface Latch { personOff: boolean; revision: number }
 
@@ -83,18 +84,19 @@ export function routingOf(s: Session): Routing | undefined {
 /** Only a Claude child routes in this version (Codex has nothing to route). */
 export const routable = (s: Session) => !!s.parent && s.state !== "archived" && s.cmd === "claude";
 
+/** Whether the person latched it off: the mirror in the child's host record, or this computer's own service. */
+export const latchedOff = (s: Session) => routingOf(s)?.personOff === true || latchOf(s)?.personOff === true;
+
 /** Whether the child's questions go to its parent as far as this desktop knows: its host says so and the person did not latch it off. */
-export const sendsToParent = (s: Session) => routingOf(s)?.sendToParent === true && latchOf(s)?.personOff !== true;
+export const sendsToParent = (s: Session) => routingOf(s)?.sendToParent === true && !latchedOff(s);
 
 /**
- * The person's latch first (zerus-sa9qn.50), on a child of this computer:
- * set before turning the host off, cleared before turning it on. An agent can
- * turn the host file on, never clear the latch. Turning on stops unless the
- * service confirmed the latch is clear; turning off goes on to the host even
- * then, since off sends less.
+ * The person's latch on a child of this computer (zerus-sa9qn.50): the
+ * service sets or clears it, then writes the child's host file to follow it
+ * with its display mirror. An agent can turn the host file on, never clear
+ * the latch. False when the service did not confirm it.
  */
-async function latchFirst(s: Session, on: boolean): Promise<boolean> {
-  if (!latchable(s)) return true;
+async function setLatch(s: Session, on: boolean): Promise<boolean> {
   try {
     const latch = await readLatch(s);
     if (!latch) throw new Error(LATCH_UNCONFIRMED);
@@ -107,7 +109,7 @@ async function latchFirst(s: Session, on: boolean): Promise<boolean> {
     return true;
   } catch {
     bus.notify("error", tr(LATCH_UNCONFIRMED), true);
-    return !on;
+    return false;
   }
 }
 
@@ -116,14 +118,18 @@ export async function toggleRouting(s: Session): Promise<void> {
   const current = routingOf(s);
   if (!current || changing().has(s.key) || computerOffline(s.computer)) return;
   const on = !sendsToParent(s);
+  // Only its own computer or a phone clears a person's latch on a remote child.
+  if (on && latchedOff(s) && !latchable(s)) return;
   const target = { computer: s.computer, name: s.name, run_id: s.runId ?? "", conversation_id: s.conversationId ?? "" };
   setChanging((all) => new Set(all).add(s.key));
   try {
-    if (!(await latchFirst(s, on))) return;
+    // The service writes the host file itself; when it cannot confirm turning
+    // off, the host is turned off anyway, since off sends less.
+    if (latchable(s) && ((await setLatch(s, on)) || on)) return;
     const confirmed = await bridge.setQuestionRouting(target, on, current.revision);
     const value = confirmed as { send_to_parent?: unknown; revision?: unknown };
     if (typeof value.send_to_parent === "boolean" && typeof value.revision === "number") {
-      const next = { sendToParent: value.send_to_parent, revision: value.revision };
+      const next = { sendToParent: value.send_to_parent, revision: value.revision, personOff: current.personOff };
       setOverrides((all) => new Map(all).set(s.key, next));
     }
   } catch (error) {
@@ -138,13 +144,15 @@ export function routingEntry(s: Session) {
   if (!routable(s) || !s.parent) return undefined;
   const routing = routingOf(s);
   const offline = computerOffline(s.computer);
-  const latched = latchOf(s)?.personOff === true;
-  const hint = offline ? tr(SEND_OFFLINE) : !routing ? tr(SEND_UNKNOWN) : latched ? tr(SEND_LATCHED) : routing.sendToParent ? tr(SEND_ON) : tr(SEND_OFF);
+  const latched = latchedOff(s);
+  const remoteLatch = latched && !latchable(s);
+  const hint = offline ? tr(SEND_OFFLINE) : !routing ? tr(SEND_UNKNOWN) : remoteLatch ? tr(SEND_LATCHED_REMOTE)
+    : latched ? tr(SEND_LATCHED) : routing.sendToParent ? tr(SEND_ON) : tr(SEND_OFF);
   return {
     label: tr("Send questions to %1", s.parent.name.split("/").pop() || s.parent.name),
     icon: "send",
     checked: sendsToParent(s),
-    disabled: !routing || offline || changing().has(s.key),
+    disabled: !routing || offline || remoteLatch || changing().has(s.key),
     hint,
     action: () => { void toggleRouting(s); },
   };

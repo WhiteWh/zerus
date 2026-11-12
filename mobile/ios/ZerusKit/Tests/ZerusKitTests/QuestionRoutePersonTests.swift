@@ -57,7 +57,7 @@ final class QuestionRoutePersonTests: XCTestCase {
     }
     private func confirmed() -> JSONObject {
         ["request_id": .string(id), "op": .string("question_route_child"), "accepted": .bool(true), "durable": .bool(true),
-         "session_id": .string(sessionId), "person_off": .bool(true), "revision": .int(3), "applied": .bool(true), "code": .string(""), "host": .bool(true)]
+         "session_id": .string(sessionId), "person_off": .bool(true), "revision": .int(3), "applied": .bool(true), "code": .string("")]
     }
     private func settle(_ result: JSONObject) -> SessionAction {
         let action = SessionAction(requestId: id, target: target(), operation: SessionQuestionRouting.personOperation, arguments: args())
@@ -73,7 +73,7 @@ final class QuestionRoutePersonTests: XCTestCase {
         XCTAssertEqual(settle(confirmed()).status, "completed")
         for (key, value) in [("person_off", JSON.bool(false)), ("session_id", .string("00000000-0000-4000-8000-0000000000c2")),
                              ("request_id", .string("x")), ("op", .string("question_routes")), ("durable", .bool(false)),
-                             ("host", .null), ("code", .string("x")), ("extra", .int(1))] {
+                             ("applied", .null), ("code", .string("x")), ("extra", .int(1))] {
             XCTAssertEqual(settle(confirmed().putting(key, value)).status, "uncertain", key)
         }
         for (code, message) in SessionQuestionRouting.personRefusals {

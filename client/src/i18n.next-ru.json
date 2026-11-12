@@ -116,6 +116,7 @@
   "A different draft was already here, so these copies stayed where they were.": "Здесь уже был другой черновик, поэтому эти копии остались на месте.",
   "A keep-warm change is already in progress.": "Изменение прогрева кэша уже выполняется.",
   "A keep-warm ping may have been typed when its worker stopped. Keeping it warm resumes after your next message.": "Пинг прогрева мог быть введён, когда его обработчик остановился. Прогрев возобновится после вашего следующего сообщения.",
+  "A person turned this child's questions off. Turn them on again from its own computer or a phone.": "Передачу вопросов этой дочерней сессии выключил человек. Снова включить её можно на её компьютере или с телефона.",
   "A question is waiting. Loading it…": "Ожидает вопрос. Загрузка…",
   "A restart is needed before reviewing again.": "Перед повторной проверкой нужно перезагрузить компьютер.",
   "A saved report is historical evidence; it does not grant background access.": "Сохранённый отчёт содержит исторические данные и не разрешает работу в фоне.",

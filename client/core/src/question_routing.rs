@@ -19,6 +19,19 @@ const IDENTITY: &str = source!("The session has no confirmed conversation yet.")
 const HELP_CAP: usize = 256 * 1024;
 const REPLY_CAP: usize = 64 * 1024;
 
+/// The switch's exact shape: `send_to_parent` and its `revision`, with the
+/// person's latch mirror `person_off` under marker
+/// `session-question-routing-v2` (zerus-sa9qn.50). Anything else is unknown.
+pub fn shaped(routing: &Value) -> bool {
+    routing.as_object().is_some_and(|o| {
+        (o.len() == 2 || (o.len() == 3 && o.get("person_off").is_some_and(Value::is_boolean)))
+            && o.get("send_to_parent").is_some_and(Value::is_boolean)
+            && o.get("revision")
+                .and_then(Value::as_i64)
+                .is_some_and(|revision| revision >= 0)
+    })
+}
+
 /// Whether `stdout` lists the marker as a whole line.
 pub fn has_marker(stdout: &[u8]) -> bool {
     stdout
@@ -121,6 +134,7 @@ pub fn classify(
     let routing = &reply["question_routing"];
     let revision = routing["revision"].as_i64();
     let confirmed = exact
+        && shaped(routing)
         && reply["ok"] == true
         && reply["run_id"].as_str() == Some(target.run_id.as_str())
         && reply["conversation_id"].as_str() == Some(target.conversation_id.as_str())

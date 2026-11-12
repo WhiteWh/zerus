@@ -136,6 +136,7 @@ impl Fixture {
             .unwrap(),
             #[cfg(target_os = "linux")]
             route: crate::desktop::question_route::Runtime::new(&config, &epoch),
+            state: config.state.clone(),
         };
         Self {
             _temp: temp,

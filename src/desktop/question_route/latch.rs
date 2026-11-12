@@ -195,12 +195,28 @@ pub(super) fn set(
     Ok(reply(id, session_id, person_off, revision, applied))
 }
 
+/// After an accepted latch change, the child's host file follows it and
+/// mirrors it for display (marker `session-question-routing-v2`). Off holds
+/// through the latch alone, so a failed write here never routes a question;
+/// on needs the host as well, and until it is written nothing routes. The
+/// reply is the latch receipt alone, so a replay answers the same.
+fn follow(state: &std::path::Path, session_id: &str, reply: &Value) {
+    if reply["accepted"] == true {
+        let _ = crate::state::question_routing::set_for_person(
+            state,
+            session_id,
+            reply["person_off"] == true,
+        );
+    }
+}
+
 /// The person's native request (`question_route_child`), from either the
 /// passive or the background frontend lane. The child must be the one
 /// visible local row with this session ID, at the request's run and
 /// conversation.
 pub(in crate::desktop) fn frontend(
     db: &mut Connection,
+    state: &std::path::Path,
     authority: crate::desktop::ui_authority::Validated,
 ) -> Value {
     let id = authority.id().to_owned();
@@ -227,15 +243,19 @@ pub(in crate::desktop) fn frontend(
     let Ok(expected) = i64::try_from(expected_revision) else {
         return refusal(&id, "invalid_request");
     };
-    set(
+    let reply = match set(
         db,
         &id,
         &session_id,
         person_off,
         Some(expected),
         chrono::Utc::now().timestamp_millis(),
-    )
-    .unwrap_or_else(|_| refusal(&id, "question_route_store_refused"))
+    ) {
+        Ok(reply) => reply,
+        Err(_) => return refusal(&id, "question_route_store_refused"),
+    };
+    follow(state, &session_id, &reply);
+    reply
 }
 
 /// The read-only lookup of one request's receipt
@@ -359,7 +379,7 @@ pub(in crate::desktop) fn person_request(
         Ok(None) => return refusal(&id, "not_found"),
         Err(_) => return refusal(&id, "question_route_store_refused"),
     }
-    let mut reply = match set(
+    let reply = match set(
         db,
         &id,
         &statement.session_id,
@@ -370,14 +390,6 @@ pub(in crate::desktop) fn person_request(
         Ok(reply) => reply,
         Err(_) => return refusal(&id, "question_route_store_refused"),
     };
-    if reply["accepted"] == true {
-        // Off already holds through the latch; on needs the host as well.
-        reply["host"] = json!(crate::state::question_routing::set_for_person(
-            state,
-            &statement.session_id,
-            !statement.person_off,
-        )
-        .is_ok());
-    }
+    follow(state, &statement.session_id, &reply);
     reply
 }

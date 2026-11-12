@@ -70,23 +70,23 @@ class QuestionRouting(unittest.TestCase):
         code, off = self.change(False, 0)
         self.assertEqual(code, 0, off)
         self.assertEqual((off['ok'], off['applied'], off['question_routing']),
-                         (True, True, {'send_to_parent': False, 'revision': 1}))
+                         (True, True, {'send_to_parent': False, 'revision': 1, 'person_off': False}))
         self.assertEqual(self.stored()['sessions'][CHILD_ID], {'send_to_parent': False, 'revision': 1})
         self.assertEqual(self.listed()[self.child['name']]['question_routing'],
-                         {'send_to_parent': False, 'revision': 1})
+                         {'send_to_parent': False, 'revision': 1, 'person_off': False})
         # The inspection shows the same switch (the phones check against it).
         inspected = subprocess.run([str(HGS), 'inspect', self.child['name']], env=self.env, capture_output=True,
                                    text=True, timeout=20)
         self.assertEqual(inspected.returncode, 0, inspected.stderr)
-        self.assertEqual(json.loads(inspected.stdout)['question_routing'], {'send_to_parent': False, 'revision': 1})
+        self.assertEqual(json.loads(inspected.stdout)['question_routing'], {'send_to_parent': False, 'revision': 1, 'person_off': False})
         # Another session keeps the default.
         self.assertEqual(self.listed()[self.parent['name']]['question_routing'],
-                         {'send_to_parent': True, 'revision': 0})
+                         {'send_to_parent': True, 'revision': 0, 'person_off': False})
         # A second desktop with the old revision is refused, not merged.
         code, conflict = self.change(True, 0)
         self.assertEqual((code, conflict['error']), (1, 'conflict'))
         code, on = self.change(True, 1)
-        self.assertEqual((code, on['question_routing']), (0, {'send_to_parent': True, 'revision': 2}))
+        self.assertEqual((code, on['question_routing']), (0, {'send_to_parent': True, 'revision': 2, 'person_off': False}))
         # The same value again changes nothing.
         code, same = self.change(True, 2)
         self.assertEqual((code, same['applied'], same['question_routing']['revision']), (0, False, 2))

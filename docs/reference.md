@@ -963,22 +963,31 @@ The person has two switches, both on by default (zerus-sa9qn.32):
   the shared contract of the desktop, the connector, the relay, Android and
   iOS.
 
-- **The person's latch** (zerus-sa9qn.50): on a child of this computer, the
-  desktop's **Send questions to PARENT** also sets or clears a latch the
-  background service keeps per durable session ID (Store schema 39). Off
-  sets the latch first, then turns the host file off. On clears it first,
-  and touches the host file only once the service confirms. While the latch is set,
-  the child's questions never route, whatever its host file says, and the
-  entry shows "You turned this child's questions off". The latch changes
-  only through the person's native frontend request (`question_route_child`,
-  compare-and-swap at the child's exact run, conversation and latch
-  revision; closed refusals `conflict`, `stale_identity`, `not_found`,
-  `capacity`). The request lane an agent can reach only reads it
-  (`question_route_child_status`, `question_route_child_result`). So with
-  commands alone an agent can turn a latched child's host file on, but
-  never clear the latch. Like the global switch, the latch is kept in the
-  service Store, which the same user can edit directly; that is outside
-  this protection. A remote child's latch is set on its own computer.
+- **The person's latch** (zerus-sa9qn.50): the background service on the
+  child's computer keeps a latch per durable session ID (Store schema 39).
+  While it is set, the child's questions never route, whatever its host
+  file says. The latch is the authority. After each change the service
+  writes the child's host file to follow it (`send_to_parent` the latch's
+  opposite), with a display-only mirror `person_off`. Listing rows,
+  `hgs inspect` and switch replies then carry
+  `question_routing` {`send_to_parent`, `revision`, `person_off`} (help
+  marker `session-question-routing-v2`). Older clients that know only the
+  two-key shape show the switch as unknown and fail closed. `hgs
+  question-routing` changes only `send_to_parent` and keeps the mirror.
+  On a child of this computer the desktop's **Send questions to PARENT**
+  goes through the latch: the person's native frontend request
+  (`question_route_child`, compare-and-swap at the child's exact run,
+  conversation and latch revision; closed refusals `conflict`,
+  `stale_identity`, `not_found`, `capacity`). The entry shows "You turned
+  this child's questions off" while latched. A remote child keeps its host
+  switch; while its mirror says a person latched it, the desktop shows it
+  off and offers no "on", which only its own computer or a phone can
+  give. The request lane an agent can reach only reads the latch
+  (`question_route_child_status`, `question_route_child_result`).
+  Boundary: the latch is person-only against an agent using commands (the
+  CLI, `hgs desktop request`, the connector), not against the same user
+  editing the service Store or the connector's files directly, the same
+  as the global switch.
   A phone on an encrypted workspace sets the latch too, where its relay
   and the computer both offer `session_question_route_person` (help marker
   `question-route-person-v1`). The phone signs a statement with its
@@ -986,13 +995,21 @@ The person has two switches, both on by default (zerus-sa9qn.32):
   the workspace, phone, gateway, child session, run, conversation, value
   and request ID, valid at most 5 minutes. The connector forwards it as one
   `hgs desktop request` (`question_route_person`). The service runs this
-  computer's connector itself
-  (`zerus-mobile-connector --workspace verify-question-route-person`)
-  to check that a current phone of this workspace signed exactly that
-  statement for this gateway. It then sets the latch once per request ID,
-  and the child's host file follows. Peers and Windows gateways do not
-  offer it, and a legacy connection keeps the host switch. The shared
-  vector is `services/mobile/crypto/tests/vectors/question-route-person-v1.json`.
+  computer's connector itself, pinned: the desktop's absolute selection or
+  the installed sibling of `hgs` (never a PATH lookup). The binary must be
+  this user's own regular file, not writable by others, answer
+  `--version` as `zerus-mobile-connector X.Y.Z`, and be unchanged after the
+  run. The run is bounded to 0.4 s and 1.2 s and 64 KiB of output, with a
+  cleared environment:
+  `zerus-mobile-connector --workspace verify-question-route-person`. The
+  verifier checks that a current phone of this workspace signed exactly
+  that statement for this gateway, and must reply exactly `{ok, verifier:
+  "question-route-person-v1", verified}`. Any failure, timeout or other
+  output is the closed refusal `not_verified`. The service then sets the
+  latch once per request ID, and the host file follows. Peers and Windows
+  gateways do not offer it, and a legacy connection keeps the host switch.
+  The shared vector is
+  `services/mobile/crypto/tests/vectors/question-route-person-v1.json`.
 
 The router reads nothing while the global switch is off. Every reservation
 reads both switches and the latch again in its own transaction, so a switch turned off

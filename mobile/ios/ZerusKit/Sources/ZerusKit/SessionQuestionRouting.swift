@@ -1,13 +1,18 @@
 import Foundation
 
-/// The child's switch as its computer reports it: whether its blocking questions go to its parent session.
+/// The child's switch as its computer reports it: whether its blocking questions go to its parent session, and (marker v2)
+/// the display-only mirror of the person's latch in that computer's service, which is the authority (zerus-sa9qn.50).
 public struct QuestionRouting: Equatable, Sendable {
     public let sendToParent: Bool
     public let revision: Int64
-    public init(sendToParent: Bool, revision: Int64) {
+    public let personOff: Bool
+    public init(sendToParent: Bool, revision: Int64, personOff: Bool = false) {
         self.sendToParent = sendToParent
         self.revision = revision
+        self.personOff = personOff
     }
+    /// Whether its questions go to the parent: the host says so and the person did not latch it off.
+    public var sends: Bool { sendToParent && !personOff }
 }
 
 /// The person's per-child switch of the owner-approved question route (zerus-sa9qn.33), kept on the child's
@@ -67,9 +72,9 @@ public enum SessionQuestionRouting {
             copy.error = message
             return copy
         }
-        guard completed, let value, let args, value.count == 10, value["accepted"] == .bool(true), value["durable"] == .bool(true),
+        guard completed, let value, let args, value.count == 9, value["accepted"] == .bool(true), value["durable"] == .bool(true),
               value["session_id"] == args["session_id"], case .bool(let send)? = args["send_to_parent"], value["person_off"] == .bool(!send),
-              integer(value["revision"]) != nil, case .bool(_)? = value["applied"], case .bool(_)? = value["host"], value["code"] == .string("") else {
+              integer(value["revision"]) != nil, case .bool(_)? = value["applied"], value["code"] == .string("") else {
             copy.status = "uncertain"
             copy.error = uncertain
             return copy
@@ -84,12 +89,15 @@ public enum SessionQuestionRouting {
         return number
     }
 
-    /// Exactly `send_to_parent` and its `revision`; anything else is unknown, never a default.
+    /// Exactly `send_to_parent` and its `revision`, with `person_off` under v2; anything else is unknown, never a default.
     public static func parse(_ raw: JSONObject?) -> QuestionRouting? {
-        guard let value = raw?.object("question_routing"), value.count == 2,
-              case .bool(let send)? = value["send_to_parent"], let revision = integer(value["revision"]) else { return nil }
-        return QuestionRouting(sendToParent: send, revision: revision)
+        guard let value = raw?.object("question_routing"), case .bool(let send)? = value["send_to_parent"],
+              let revision = integer(value["revision"]) else { return nil }
+        if value.count == 2 { return QuestionRouting(sendToParent: send, revision: revision) }
+        guard value.count == 3, case .bool(let off)? = value["person_off"] else { return nil }
+        return QuestionRouting(sendToParent: send, revision: revision, personOff: off)
     }
+    public static let personLatched = "A person turned this child's questions off. Turn them on again from its own computer or a phone on an encrypted workspace."
 
     private static func agent(_ target: Target, _ raw: JSONObject) -> String {
         let cmd = raw.string("cmd")
@@ -115,7 +123,7 @@ public enum SessionQuestionRouting {
     /// What choosing it does: turn sending off, turn it on, or (unknown) nothing yet.
     public static func label(_ raw: JSONObject?) -> String {
         let parent = parentName(raw)
-        switch parse(raw)?.sendToParent {
+        switch parse(raw)?.sends {
         case true?: return "Stop sending questions to \(parent)"
         case false?: return "Send questions to \(parent)"
         case nil: return "Questions to \(parent)"
@@ -130,7 +138,7 @@ public enum SessionQuestionRouting {
 
     /// The confirmed change turns the current value the other way at its revision.
     public static func toggle(_ routing: QuestionRouting?) -> JSONObject {
-        ["send_to_parent": .bool(routing?.sendToParent != true), "expected_revision": .int(routing?.revision ?? -1)]
+        ["send_to_parent": .bool(routing?.sends != true), "expected_revision": .int(routing?.revision ?? -1)]
     }
 
     public static func arguments(_ raw: JSONObject) throws -> JSONObject {

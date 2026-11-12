@@ -1774,10 +1774,16 @@ fn latch_request(id: &str, person_off: bool, expected_revision: u64) -> Value {
     )
 }
 fn latch(f: &mut Fixture, request: &Value) -> Value {
+    let state = f.config.state.clone();
     super::super::latch_frontend(
         &mut f.store.db,
+        &state,
         crate::desktop::ui_authority::Validated::fixture(request),
     )
+}
+/// The child's host entry as rows show it, with the latch mirror.
+fn mirror(f: &Fixture) -> Option<Value> {
+    crate::state::question_routing::view_at(&f.config.state, CHILD_ID)
 }
 
 #[test]
@@ -1796,7 +1802,12 @@ fn the_persons_latch_stops_a_child_whatever_its_host_file_says() {
         (json!(true), json!(true), json!(1), json!(true)),
         "{off}"
     );
-    // The host file and the row say on; the latch alone keeps it from
+    // The host file follows and mirrors the latch for display.
+    assert_eq!(
+        mirror(&f),
+        Some(json!({"send_to_parent": false, "revision": 1, "person_off": true}))
+    );
+    // An agent turns the host file on; the latch alone keeps it from
     // routing, and nothing is written.
     child_switch(&f, true);
     f.settle();
@@ -1825,6 +1836,8 @@ fn the_persons_latch_stops_a_child_whatever_its_host_file_says() {
         (on["person_off"].clone(), on["revision"].clone()),
         (json!(false), json!(2))
     );
+    assert_eq!(mirror(&f).unwrap()["person_off"], false);
+    assert_eq!(mirror(&f).unwrap()["send_to_parent"], true);
     // A new edge of the still-pending question now routes once.
     let mut later = child_row();
     later["attention_signature"] = json!("e".repeat(64));
@@ -2020,14 +2033,14 @@ fn a_phones_verified_statement_sets_the_latch_once_and_the_host_follows() {
         (
             off["accepted"].clone(),
             off["person_off"].clone(),
-            off["revision"].clone(),
-            off["host"].clone()
+            off["revision"].clone()
         ),
-        (json!(true), json!(true), json!(1), json!(true)),
+        (json!(true), json!(true), json!(1)),
         "{off}"
     );
     assert!(super::super::latch::latched(&f.store.db, CHILD_ID).unwrap());
     assert_eq!(host(&f), Some(false));
+    assert_eq!(mirror(&f).unwrap()["person_off"], true);
     // The same statement again returns its receipt, never verified or applied twice.
     let again = super::super::latch_person(&mut f.store.db, &state, &person(&id, true), |_| {
         panic!("a replay is never verified again")

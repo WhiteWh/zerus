@@ -759,6 +759,10 @@ public enum SessionActionsMenu {
         if !facts.online { return "The machine is offline." }
         if !facts.supported.contains(SessionQuestionRouting.operation) { return SessionQuestionRouting.unavailable }
         if !facts.busy.isEmpty { return facts.busy }
+        // A person's latch is cleared only by the person's latch statement (zerus-sa9qn.50).
+        if SessionQuestionRouting.parse(facts.row)?.personOff == true && !facts.supported.contains(SessionQuestionRouting.personOperation) {
+            return SessionQuestionRouting.personLatched
+        }
         return SessionQuestionRouting.reason(facts.target,facts.row)
     }
     public static func notificationReason(_ facts: SessionMenuFacts) -> String {
