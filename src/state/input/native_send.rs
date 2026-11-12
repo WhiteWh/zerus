@@ -640,9 +640,14 @@ mod tests {
     use super::*;
     #[test]
     fn every_non_admitted_submission_keeps_the_original_core_body() {
-        // Combined with #2055: the only changes to the original core body
-        // are its two atomic receipt writes becoming receipt_index::persist.
-        // Routing, receipt bytes and native input order stay pinned below.
+        // Combined with #2055: the original core body's two atomic receipt
+        // writes became receipt_index::persist. Batch 7 adds, besides that,
+        // only these PRs' own lines: Claude's native proof (#2092, zerus-iitw8),
+        // its lock-free proof window and typing marker (#2119, #2124,
+        // zerus-iitw8.4-.8), Clear input's pending request id (#2110,
+        // zerus-wkj9l.5) and the original receipt's persist (#2077,
+        // zerus-a4mub.4). Routing, receipt bytes and native input order stay
+        // pinned below.
         let source = include_str!("../input.rs");
         let body = source
             .split_once("fn submit_core(")
@@ -654,7 +659,7 @@ mod tests {
         let original = format!("fn submit_core({body}");
         assert_eq!(
             format!("{:x}", Sha256::digest(original.as_bytes())),
-            "19e8db18358f810a31e43ed431a568eac503bb12569d57b89131968b169d8282"
+            "843183ff4e2dd7ec9ef392271a192b963feaaae25408c7acb9ecfb52a6818f41"
         );
     }
     fn fixture() -> (Value, Value, Guard<'static>) {
