@@ -212,15 +212,30 @@ durable `Instructions updated` history row on the pinned version. A clear/new
 session gets its own entry. Inspection and background polling never attach it.
 A resume with a marked entry does not write again. A reconciled pending
 creation follows the same emptiness check. An existing conversation with any
-native message receives no attachment; an unreadable or malformed history
-answer is not proof of emptiness and has no hint effect.
+native message receives no instruction-entry attachment; an unreadable or
+malformed history answer is not proof of emptiness.
 
 OpenCode persists a noninitial instruction delta as an `Instructions updated`
 system message. That makes the channel a durable transcript update rather than
-a history-free instruction entry, so attaching to a previously unmarked
-conversation after its first turn is not supported. Such conversations remain
-unmarked rather than receiving a durable update or having native history
-rewritten. This limitation leaves their channel unqualified.
+a history-free instruction entry. Previously unmarked conversations with turns
+instead use a context-only V2 plugin on OpenCode 2.2.7 or newer. Zerus loads its
+own plugin through a launch-only configuration overlay when starting a service;
+it never writes a plugin into the person's global configuration or project.
+Existing plugins and settings stay intact. A service already running is never
+restarted or changed to install the plugin. If the exact plugin source is not
+active, launch/resume reports that the optional hint is unavailable and
+inspection exposes `agent_hint_status.state` and its reason.
+
+Each primary model request gets a bounded, read-only lookup of one exact saved
+run/conversation/workspace/service binding. Its decided policy, rather than the
+shared service's environment, controls injection. A stale, malformed, absent or
+busy binding supplies no hint. Native subagents are excluded. The plugin appends
+one system part without editing user messages, receipts or instruction history;
+it does not run for compaction, title or transient generation. The next primary
+request receives the hint again after compaction. A Zerus-managed service restart
+loads the overlay again and resume verifies readiness for that new service.
+Opting out on resume suppresses this context channel. Existing revision-one
+entry-backed conversations keep their entry and never enable the plugin channel.
 
 Configure optional injection in the hgs config file or caller environment:
 

@@ -10,6 +10,9 @@ mod history;
 #[cfg_attr(not(unix), allow(dead_code))]
 mod providers;
 mod service;
+mod context_hint;
+pub(crate) use context_hint::lookup as hint_context;
+pub(super) fn note_hint(record: &Value) { context_hint::note(record); }
 mod terminal;
 pub(crate) use terminal::attach;
 #[cfg_attr(not(unix), allow(dead_code))]
@@ -477,6 +480,8 @@ pub(crate) fn launch(
         }
         if empty_history(&service, &record).unwrap_or(false) {
             attach_hint(&service, &mut record);
+        } else {
+            context_hint::configure(&service, &mut record);
         }
         return Ok(());
     }
@@ -559,6 +564,8 @@ fn finish_creation(service: &service::Service, mut record: Value, first: bool) -
             save(&mut record)?;
             if first || empty_history(service, &record).unwrap_or(false) {
                 attach_hint(service, &mut record);
+            } else {
+                context_hint::configure(service, &mut record);
             }
             Ok(())
         }
@@ -689,6 +696,10 @@ fn normalize(record: &Value, observed: Option<&Observed>) -> Value {
         "model":model["id"],"model_provider":model["providerID"],"settings_model":settings_model,"effort":effort});
     if !string(record, "session_id").is_empty() {
         value["session_id"] = record["session_id"].clone();
+    }
+    if record["agent_hint_context"].is_object() {
+        value["agent_hint_status"] = json!({"state":record["agent_hint_context"]["state"],
+            "reason":record["agent_hint_context"]["reason"]});
     }
     if let Some(parent) = parent_link::listed(record) { value["parent"] = parent; }
     let controls = json!({"send_available":idle,"send_supported":idle,"settings_change_supported":idle && !active,"interrupt_supported":available && active,

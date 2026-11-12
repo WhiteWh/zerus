@@ -84,9 +84,10 @@ AGENTS = {
         private_xdg=True,
         coverage='private service start and port, own session IDs, lost launch and message responses, queue, Stop, '
                  'history, question forms, permissions, model and effort, provider errors, OpenCode 1 bindings and '
-                 'incompatible or unresponsive services',
+                 'incompatible or unresponsive services; history-free existing-turn context hints, restart, compaction, '
+                 'off, subagents, bounded stale/busy lookups, preserved user config/plugins and all-table persistence scan',
         timeout=600,
-        suites=['test_opencode_native']),
+        suites=['test_opencode_native', 'test_opencode_hint_native']),
 }
 # Suite inputs taken from the caller; every other HGS_ variable is dropped.
 FORWARDED = ('HGS_TEST_CONPTY_DIR',)

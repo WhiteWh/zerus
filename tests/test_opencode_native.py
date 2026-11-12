@@ -149,7 +149,21 @@ class Model(http.server.BaseHTTPRequestHandler):
             choices = [{'index': 0, 'delta': {'tool_calls': [call]}, 'finish_reason': None},
                        {'index': 0, 'delta': {}, 'finish_reason': 'tool_calls'}]
         else:
-            choices = [{'index': 0, 'delta': {'content': 'Native OpenCode reply'}, 'finish_reason': None},
+            reply = 'Native OpenCode reply'
+            if last_user.startswith('You MUST summarize the conversation above'):
+                # V2 validates these headings before completing compaction.
+                # A generic reply leaves a failed compaction row and is not
+                # evidence for a post-compaction lifecycle contract.
+                reply = ('## Objective\nContinue the private fixture.\n\n'
+                         '## Requirements\nUse only the local model.\n\n'
+                         '## Decisions\nKeep the same conversation.\n\n'
+                         '## Work State\n### Completed\n- Earlier fixture turns.\n\n'
+                         '### Active\n- Lifecycle qualification.\n\n'
+                         '### Blocked\n- (none)\n\n'
+                         '## Next Move\nContinue with the next fixture turn.\n\n'
+                         '## Relevant Files\n(none)\n\n'
+                         '## Important Context\nThis is an isolated local fixture.\n')
+            choices = [{'index': 0, 'delta': {'content': reply}, 'finish_reason': None},
                        {'index': 0, 'delta': {}, 'finish_reason': 'stop'}]
         try:
             self.send_response(200)
@@ -1255,7 +1269,7 @@ class OpenCodeNative(unittest.TestCase):
         view = self.wait(name, lambda v: v['phase'] == 'idle' and any(e.get('detail') == 'Typed in OpenCode' for e in v['events']))
         self.assertEqual([e.get('request_id') for e in view['events'] if e.get('detail') == 'Typed in OpenCode'], [None])
 
-    def test_14_instruction_hint_empty_lifecycle_and_after_turn_limit(self):
+    def test_14_instruction_hint_empty_lifecycle_and_context_adoption(self):
         def turn(binding, text, expected):
             self.hgs(['send', binding['name'], '--json'], self.payload(binding, text=text))
             self.wait(binding['name'], lambda v: v['phase'] == 'idle' and any(
@@ -1342,7 +1356,7 @@ class OpenCodeNative(unittest.TestCase):
             for e in v.get('events', [])))
         resume(pending_used)
         self.assertIsNone(mark(pending_used))
-        turn(pending_used, 'Unqualified hint pending used reconcile', 0)
+        turn(pending_used, 'Context hint pending used reconcile', 1)
 
         tag = 'adopted-' + uuid.uuid4().hex[:8]
         conversation = 'ses_' + native_suffix()
@@ -1358,9 +1372,9 @@ class OpenCodeNative(unittest.TestCase):
         self.assertIsNone(mark(adopted))
         resume(adopted)
         self.assertIsNone(mark(adopted))
-        turn(adopted, 'Unqualified hint adopted after turns', 0)
+        turn(adopted, 'Context hint adopted after turns', 1)
         resume(adopted)
-        turn(adopted, 'Unqualified hint adopted resumed', 0)
+        turn(adopted, 'Context hint adopted resumed', 1)
 
         for binding in (first, opted_out, enabled, cleared, empty, pending_empty, pending_used, adopted):
             status, page = self.api('GET', f"/api/session/{binding['conversation_id']}/message?limit=100")

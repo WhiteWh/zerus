@@ -246,6 +246,11 @@ impl Provider {
             native_identity::account(self, &before);
         }
         session_index::note(record, self.kind(record));
+        if matches!(self, Self::OpenCode) {
+            // Keep the optional context route with every authoritative write,
+            // including generic rename; a failed note leaves no valid digest.
+            opencode::note_hint(record);
+        }
         Ok(())
     }
     pub(super) fn remove(self, record: &Value) -> Result<()> {

@@ -14,9 +14,13 @@ effective copy means the latest prompt, not every hint retained in history:
 opting out does not remove old hint-bearing system messages, and re-enabling
 can retain them beside a new one. Fresh and still-empty, unmarked OpenCode
 conversations use an experimental per-session instruction entry, not
-SessionStart or an Activity message. After-turn adoption
-remains unqualified because OpenCode would persist an `Instructions updated`
-system row in native history. Global and exact-account opt-outs affect new
+SessionStart or an Activity message. Previously unmarked conversations with turns
+can use a history-free context plugin on OpenCode 2.2.7 or newer, loaded only when
+Zerus starts the service. It checks the exact decided binding per primary model
+request and omits the hint on opt-out, stale data or a busy lookup. It never edits
+native history, affects native subagents or doubles retained instruction entries.
+An existing service without the plugin stays running; resume reports the optional
+hint as unavailable. Global and exact-account opt-outs affect new
 injection attempts, while `guide` and `self` remain available. Hint policy is
 resolved for each new process, including resume, and inherited environment
 overrides are a process snapshot, not live configuration reload. Native

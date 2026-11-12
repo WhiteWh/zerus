@@ -40,6 +40,17 @@ its host: the first `HGS_SELF` name (by default the host name), which `hgs
 machine` setup sets to the desktop's name for that computer.
 You can also start it yourself with `opencode service start`.
 
+For previously unmarked conversations that already have turns, OpenCode 2.2.7
+or newer can receive Zerus's optional coordination hint through a context plugin.
+Zerus supplies it only in the environment of a service it starts, preserving the
+person's config files and plugins. Each primary request checks its own decided
+session binding; native subagents, stale or busy bindings and opted-out sessions
+receive no new context. Restarting a managed service and resuming verifies the
+plugin again. An already-running service without it is left running and reports
+the hint as unavailable; Zerus does not restart it or install into global plugin
+folders. Fresh/still-empty conversations retain their existing instruction-entry
+channel, and an entry-backed conversation never receives a second plugin hint.
+
 Connect providers in a terminal on that computer with `opencode auth login`.
 `hgs account login native-opencode` does not run it; it prints that instruction.
 
