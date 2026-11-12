@@ -99,6 +99,9 @@ impl Protection {
         repository
             .try_lock_exclusive()
             .map_err(|_| "The original checkout is busy")?;
+        let repository = crate::platform::FileLock::held(repository);
+        #[cfg(all(test, unix))]
+        crate::platform::lock_tests::reached("protection-legacy");
         let mut lock = open(&metadata)?;
         let reason = text(&mut lock)?
             .strip_prefix("zerus:")
