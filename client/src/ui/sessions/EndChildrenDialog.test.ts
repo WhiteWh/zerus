@@ -137,7 +137,7 @@ describe("Terminate of a parent with live child sessions", () => {
     const text = document.body.textContent ?? "";
     expect(text).toContain("The count and the list include child sessions of child sessions, up to 8 levels deep.");
     expect(document.querySelector(".dlg-child-killed")?.textContent).toBe("1 of them has no HGS archive and is killed: it leaves the list, and any native conversation history is kept.");
-    expect(document.querySelector(".dlg-child-stopped")?.textContent).toBe("Stopped or paused child sessions keep their state here. On the command line, hgs terminate --with-children moves them to Archive.");
+    expect(document.querySelector(".dlg-child-stopped")?.textContent).toBe("Terminate leaves stopped or paused child sessions as they are. On the command line, hgs terminate --with-children moves them to Archive.");
   });
 
   it("names at most 50 children one by one and counts the rest", async () => {

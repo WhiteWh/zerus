@@ -19,9 +19,10 @@ start for this task. Check every exit code.
   hgs [@h] archive SESSION --with-children
       Only with the owner's approval: after the session itself, the same
       action for every live child session under it on that computer, at every
-      level. You did not start those sessions; add --dry-run first to list
-      them. Each child keeps its own rules (terminate also moves a stopped or
-      paused child to Archive); a refused child is reported, never retried.
+      level. A parent link names them, not who started them, so they may not
+      be yours; add --dry-run first to list them. Each child keeps its own
+      rules (terminate also moves a stopped or paused child to Archive); a
+      refused child is reported, never retried.
   hgs [@h] kill SESSION
       Last resort: ends the terminal session at once and forgets its binding.
       Native history stays, but Zerus no longer lists the session.
