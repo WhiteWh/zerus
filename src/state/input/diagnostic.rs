@@ -21,6 +21,13 @@ fn row_shape(row: &str) -> Value {
 }
 
 pub(super) fn save(record: &Value, screen: &str, x: usize, y: usize, stable: bool) {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if effort::picker_owned_send() {
+        // Keeper observations cannot escape into the ordinary atomic writer.
+        // Refusal text is retained; this operation deliberately loses the
+        // best-effort screen sample rather than issuing an unowned write.
+        return;
+    }
     let agent = string(record, "agent");
     if !matches!(agent, "codex" | "claude") {
         return;

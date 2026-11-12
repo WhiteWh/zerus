@@ -129,8 +129,11 @@ fn stage_receipt(
     original: Option<&Original>,
 ) -> Result<publication::Staged> {
     owner.with_scope(|scope| {
+        let directory=if owner.control.frame().operation==host::frame::Operation::Send {
+            &scope.send_directories.as_ref().ok_or("Send Settings directory missing")?.0
+        } else {&scope.receipts};
         let staged = publication::Staged::prepare(
-            &scope.receipts,
+            directory,
             &format!("{id}.json"),
             value.to_string().as_bytes(),
         )?;
@@ -138,7 +141,7 @@ fn stage_receipt(
             return Err("Settings receipt changed before staging".into());
         }
         if let Some(original) = original {
-            original.verify(&scope.receipts)?;
+            original.verify(directory)?;
         }
         Ok(staged)
     })
@@ -150,7 +153,12 @@ fn receipt_commit(
     fence: publication::CommitFence,
 ) -> Result<Original> {
     let committed = staged.commit(&fence)?;
-    owner.with_scope(|scope| committed.receipt(owner, &scope.receipts, &format!("{id}.json")))
+    owner.with_scope(|scope| {
+        let directory=if owner.control.frame().operation==host::frame::Operation::Send {
+            &scope.send_directories.as_ref().ok_or("Send Settings directory missing")?.0
+        } else {&scope.receipts};
+        committed.receipt(owner,directory,&format!("{id}.json"))
+    })
 }
 fn native_receipt(
     owner: &Arc<owner::Owner>,
@@ -348,43 +356,7 @@ pub(super) fn execute(owner: &Arc<owner::Owner>) -> Result<Vec<u8>> {
     start_attempt();
     // Use the SAME trusted native walkers. Every helper/key borrows this owner,
     // and each new key requires its own completed native observation turn.
-    let current = settings(&record, true);
-    let result = match string(&record, "agent") {
-        "claude" => claude_model(name, &confirmation.request, &confirmation.model),
-        "codex" | "kimi" => {
-            let screen = capture(&record)?;
-            let visible = target_footer(&record, &confirmation.model, &screen);
-            if visible.as_deref() == Some(confirmation.request.effort.as_str()) {
-                Ok(())
-            } else if current.model != confirmation.model.id
-                || visible.is_none()
-                || (string(&record, "agent") == "codex" && confirmation.request.effort == "ultra")
-            {
-                if string(&record, "agent") == "codex" {
-                    codex_model(name, &confirmation.request, &confirmation.model)
-                } else {
-                    kimi_model(name, &confirmation.request, &confirmation.model)
-                }
-            } else {
-                let current = Settings {
-                    model: confirmation.model.label.clone(),
-                    effort: visible.unwrap_or(current.effort),
-                    ..current
-                };
-                if string(&record, "agent") == "codex" {
-                    codex_change(
-                        name,
-                        &confirmation.request,
-                        &current,
-                        &confirmation.model.efforts,
-                    )
-                } else {
-                    kimi_change(name, &confirmation.request, &current)
-                }
-            }
-        }
-        _ => Err("unsupported model adapter".into()),
-    };
+    let result = apply_native(name, &record, &confirmation);
     if let Err(error) = result {
         return owner.refuse(format!("settings change not confirmed: {error}"));
     }
@@ -455,6 +427,101 @@ pub(super) fn execute(owner: &Arc<owner::Owner>) -> Result<Vec<u8>> {
         true,
     )?;
     Ok(receipt.to_string().into_bytes())
+}
+
+/// A nested step consumes a closed parent capability. It never executes or
+/// schedules a Settings frame and never obtains another writer or deadline.
+pub(super) fn apply_pending_step(owner: &Arc<owner::Owner>, step: send::PendingStep) -> Result<()> {
+    let request=step.request(owner)?;
+    let mut record=owner.snapshot()?.0;
+    let (model,effort)=requested_model(&record,&request)?;
+    if !applies_now(&record,liveness(&record)?==Liveness::Running) {
+        return Err("Pending Settings is no longer eligible before this message".into());
+    }
+    let id=request.expected_pending_id.as_deref().ok_or("Pending Settings identity missing")?;
+    let original=step.original(owner)?;
+    let mut value=step.value();
+    value["status"]=json!("in_progress");
+    let staged=stage_receipt(owner,id,&value,Some(original))?;
+    let witness=send::Publication::pending_receipt(owner,&staged,id)?;
+    let fence=publication::CommitFence::send(owner,&staged,witness)?;
+    let original=receipt_commit(owner,id,staged,fence)?;
+    let prior=record.get("settings_unconfirmed_at").cloned();
+    let marker=json!(now());
+    record["settings_unconfirmed_at"]=marker.clone();record["updated"]=json!(now());
+    let staged=stage_record(owner,&record)?;
+    let witness=send::Publication::pending_marker(owner,&staged)?;
+    let fence=publication::CommitFence::send(owner,&staged,witness)?;
+    owner.adopt_record(staged.commit(&fence)?)?;
+    step.activate(owner,original,value.clone(),marker,prior)?;
+    let native=Request {request_id:request.request_id.clone(),expected_run_id:request.expected_run_id.clone(),expected_conversation_id:request.expected_conversation_id.clone(),effort};
+    let transcript=if string(&record,"agent")=="claude" {
+        let path=claude_transcript(&record)?;let offset=fs::metadata(&path).map_or(0,|m|m.len());Some((path,offset))
+    } else {None};
+    let confirmation=Confirmation {request:native,model,transcript};
+    start_attempt();
+    let name=string(&owner.control.frame().binding,"name");
+    apply_native(name,&record,&confirmation).map_err(|e|format!("settings change not confirmed: {e}"))?;
+    record=owner.snapshot()?.0;
+    let latest=history(&record);
+    record["model"]=json!(confirmation.model.id);record["effort"]=json!(confirmation.request.effort);
+    record["effort_source_path"]=json!(latest.path);record["effort_source_offset"]=json!(latest.offset);
+    record["resume_settings"]=json!({"model":confirmation.model.id,"effort":confirmation.request.effort});
+    record["updated"]=json!(now());
+    send::settings_key_ready(owner)?;
+    record.as_object_mut().ok_or("Invalid pending Settings record")?.remove("pending_settings");
+    match send::child_prior(owner)? {
+        Some(prior)=>record["settings_unconfirmed_at"]=prior,
+        None=>{record.as_object_mut().ok_or("Invalid pending Settings record")?.remove("settings_unconfirmed_at");},
+    }
+    native_record(owner,&record,&confirmation,true)?;
+    send::child_record_committed(owner)?;
+    value["status"]=json!("applied");
+    let original=owner.with_scope(|scope| {
+        Original::open(&scope.send_directories.as_ref().ok_or("Send Settings directory missing")?.0,format!("{id}.json"))
+    })?;
+    let applied=native_receipt(owner,id,&value,Some(&original),&confirmation,true)?;
+    send::finish_pending(owner,applied,value)
+}
+
+fn apply_native(name: &str, record: &Value, confirmation: &Confirmation) -> Result<()> {
+    let current = settings(record, true);
+    match string(record, "agent") {
+        "claude" => claude_model(name, &confirmation.request, &confirmation.model),
+        "codex" | "kimi" => {
+            let screen = capture(record)?;
+            let visible = target_footer(record, &confirmation.model, &screen);
+            if visible.as_deref() == Some(confirmation.request.effort.as_str()) {
+                Ok(())
+            } else if current.model != confirmation.model.id
+                || visible.is_none()
+                || (string(record, "agent") == "codex" && confirmation.request.effort == "ultra")
+            {
+                if string(record, "agent") == "codex" {
+                    codex_model(name, &confirmation.request, &confirmation.model)
+                } else {
+                    kimi_model(name, &confirmation.request, &confirmation.model)
+                }
+            } else {
+                let current = Settings {
+                    model: confirmation.model.label.clone(),
+                    effort: visible.unwrap_or(current.effort),
+                    ..current
+                };
+                if string(record, "agent") == "codex" {
+                    codex_change(
+                        name,
+                        &confirmation.request,
+                        &current,
+                        &confirmation.model.efforts,
+                    )
+                } else {
+                    kimi_change(name, &confirmation.request, &current)
+                }
+            }
+        }
+        _ => Err("unsupported model adapter".into()),
+    }
 }
 
 #[cfg(test)]

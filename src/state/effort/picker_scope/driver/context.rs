@@ -15,8 +15,12 @@ struct State {
     turn: Option<Turn>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Kind { Picker, PendingSettings(uuid::Uuid), SendReady, SendAfterPaste }
+
 #[derive(Clone)]
 pub(super) struct Turn {
+    pub(super) kind: Kind,
     pub(super) record: Value,
     pub(super) version: Value,
     pub(super) epoch: u64,
@@ -82,6 +86,14 @@ pub(super) struct Observation {
 }
 impl Observation {
     pub(super) fn begin() -> Result<Option<Self>> {
+        let kind = match owner()? {
+            Some(owner) if owner.control.frame().operation == host::frame::Operation::Send =>
+                Kind::PendingSettings(send::settings_nonce(&owner)?),
+            _ => Kind::Picker,
+        };
+        Self::begin_kind(kind)
+    }
+    pub(super) fn begin_kind(kind: Kind) -> Result<Option<Self>> {
         let Some(owner) = owner()? else {
             return Ok(None);
         };
@@ -114,6 +126,7 @@ impl Observation {
         Ok(Some(Self {
             owner,
             turn: Turn {
+                kind,
                 record,
                 version,
                 epoch,
@@ -165,6 +178,13 @@ impl Drop for Observation {
 }
 
 pub(super) fn take_turn(owner: &Arc<owner::Owner>) -> Result<Turn> {
+    let kind = if owner.control.frame().operation == host::frame::Operation::Send {
+        Kind::PendingSettings(send::settings_nonce(owner)?)
+    } else { Kind::Picker };
+    take_kind(owner,kind)
+}
+
+pub(super) fn take_kind(owner: &Arc<owner::Owner>, kind: Kind) -> Result<Turn> {
     owner.actor()?;
     let turn = CURRENT
         .with(|slot| {
@@ -179,7 +199,7 @@ pub(super) fn take_turn(owner: &Arc<owner::Owner>) -> Result<Turn> {
                 .ok_or("A fresh original Effort observation is required")
         })
         .map_err(str::to_owned)?;
-    if turn.epoch != owner.epoch.load(Ordering::Acquire)
+    if turn.kind != kind || turn.epoch != owner.epoch.load(Ordering::Acquire)
         || owner.snapshot()? != (turn.record.clone(), turn.version.clone())
     {
         return owner.refuse("Original Effort observation expired before use".into());

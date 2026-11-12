@@ -27,7 +27,16 @@ pub(super) fn stamp(path: &Path) -> Result<String> {
 }
 fn try_guard(path: &Path) -> Result<Option<Guard>> {
     private_dir(path.parent().ok_or("Invalid index lock")?)?;
-    let file = lock_file(path)?;
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).write(true);
+    crate::platform::private_open(&mut options);
+    crate::platform::no_follow(&mut options);
+    let file = options
+        .open(path)
+        .map_err(|_| "Receipt index worker lock is unavailable")?;
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return Err("Receipt index worker lock is unavailable".into());
+    }
     match file.try_lock_exclusive() {
         Ok(()) => Ok(Some(Guard::held(file))),
         Err(error) if crate::platform::lock_contended(&error) => Ok(None),
@@ -55,8 +64,20 @@ fn request_worker(state: &Path) {
             return Ok(());
         };
         let attempt = state.join("receipt-index-attempt.json");
-        let last = fs::File::open(&attempt)
+        // A corrupt hint must not park the requesting send/inspection. Keep
+        // its existing 4 KiB read bound and refuse links/non-regular objects.
+        let mut options = OpenOptions::new();
+        options.read(true);
+        crate::platform::refuse_link(&mut options);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+        }
+        let last = options
+            .open(&attempt)
             .ok()
+            .filter(|file| file.metadata().is_ok_and(|m| m.is_file()))
             .and_then(|file| serde_json::from_reader::<_, Value>(file.take(4096)).ok())
             .and_then(|value| value["at"].as_f64())
             .unwrap_or(0.0);

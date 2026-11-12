@@ -2109,6 +2109,28 @@ For Claude and Kimi messages ending in a literal backslash, the paste includes a
 final newline so the single Enter submits the unchanged message instead of
 activating the agent's backslash-Enter line continuation. This is verified
 against native history; no second Enter is sent as an automatic retry.
+On Unix, a public send to an existing-ID Claude, Codex or Kimi session can apply
+one exact scheduled Settings change before its message. The same custodian keeps
+the original Root and SID exclusions and the original 15-second deadline across
+both steps. This path keeps the normal 64 KiB text limit and admits at most one attachment
+with at most 1 MiB decoded data. These exact count and byte decisions precede
+selection, receipts and terminal input; larger attachment requests use their
+existing send path, including the normal 20 MiB total attachment limit. Its outer input
+receipt precedes the first Settings key;
+`input_pending_at` still immediately precedes the message paste. After input is
+offered to that custodian, a refusal or lost acknowledgement means delivery is
+uncertain and never authorizes retry. These observations omit the best-effort
+diagnostic screen sample. Zero-pending sends, Background or busy sends and
+internal submissions retain their ordinary routing. Codex sends whose native
+conversation ID is still empty also keep their ordinary path; its startup
+dialog checks and Settings walk exceed this path's measured budget margin.
+Unprimed Kimi sends remain eligible. If another Settings
+custodian already owns the slot, the send keeps its ordinary blocking path.
+An expired or refused staged message gets one pre-reserved, UUID-specific tmux
+buffer discard after Stage physically settles, within two seconds of the
+original deadline. If Stage remains unsettled beyond that lease, cleanup is
+uncertain and its buffer may remain; original custody lasts until its helpers
+physically settle. This narrow path does not enable general native continuity.
 Codex messages ending in an `@mention` likewise include a final pasted newline
 to move the cursor outside file/mention completion before the single Enter.
 Codex trims that newline on submission; the message and receipt retain the

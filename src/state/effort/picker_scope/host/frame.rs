@@ -16,12 +16,14 @@ type RootObject = (u64, u64, u32, u32, u32);
 pub(in crate::state::effort::picker_scope) enum Operation {
     Effort,
     Settings,
+    Send,
 }
 impl Operation {
     pub(in crate::state::effort::picker_scope) fn receipt_directory(self) -> &'static str {
         match self {
             Self::Effort => "effort_receipts",
             Self::Settings => "settings_receipts",
+            Self::Send => "input_receipts",
         }
     }
 }
@@ -117,6 +119,11 @@ pub(in crate::state::effort::picker_scope) struct Frame {
     /// Original stdin, byte-for-byte. Never deserialize and reserialize it for
     /// the existing receipt digest or an immutable original request identity.
     pub(in crate::state::effort::picker_scope) raw: Vec<u8>,
+    /// Send alone transports raw as a separate binary segment. This immutable
+    /// header is checked cheaply thereafter; the raw SHA is verified once on
+    /// each side, never re-hashed by Control::check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(in crate::state::effort::picker_scope) send: Option<input::native_send::Header>,
     pub(in crate::state::effort::picker_scope) request_id: String,
     /// Only original record binding fields, preserving absent versus null.
     pub(in crate::state::effort::picker_scope) binding: Value,
@@ -253,11 +260,33 @@ pub(in crate::state::effort::picker_scope) fn configuration() -> Result<String> 
 }
 
 impl Frame {
+    pub(in crate::state::effort::picker_scope) fn resolve_send_label(&self) -> bool {
+        self.operation==Operation::Send && self.selection.is_none()
+    }
     pub(in crate::state::effort::picker_scope) fn new(
         operation: Operation,
         raw: Vec<u8>,
         record: &Value,
         deadline: Deadline,
+    ) -> Result<Self> {
+        Self::assemble(operation, raw, record, deadline, None)
+    }
+
+    pub(in crate::state::effort::picker_scope) fn new_send(
+        raw: Vec<u8>,
+        candidate: input::native_send::Candidate,
+        deadline: Deadline,
+    ) -> Result<Self> {
+        candidate.header.verify_payload(&candidate.payload)?;
+        Self::assemble(Operation::Send, raw, &candidate.record, deadline, Some(candidate.header))
+    }
+
+    fn assemble(
+        operation: Operation,
+        raw: Vec<u8>,
+        record: &Value,
+        deadline: Deadline,
+        send: Option<input::native_send::Header>,
     ) -> Result<Self> {
         // A picker receipt is looked up before ANY current native binding.
         // The wire carries only the original verified selector; the actual
@@ -267,11 +296,13 @@ impl Frame {
             .iter()
             .filter_map(|k| record.get(*k).map(|v| ((*k).into(), v.clone())))
             .collect::<serde_json::Map<_, _>>();
-        let id = serde_json::from_slice::<Value>(&raw).map_err(|e| e.to_string())?["request_id"]
+        let id = if let Some(header) = &send { header.request_id.clone() } else {
+            serde_json::from_slice::<Value>(&raw).map_err(|e| e.to_string())?["request_id"]
             .as_str()
             .and_then(|s| uuid::Uuid::parse_str(s).ok())
             .ok_or("Invalid picker request UUID")?
-            .to_string();
+            .to_string()
+        };
         let (root, root_object) = namespace()?;
         let selection = crate::state::session_id::selected()
             .filter(|selection| selection.name == string(record, "name"))
@@ -291,6 +322,7 @@ impl Frame {
             root_object,
             operation,
             raw,
+            send,
             request_id: id,
             binding: Value::Object(binding),
             selection,
@@ -312,8 +344,9 @@ impl Frame {
             || !canonical_uuid(&self.nonce)
             || !uuid::Uuid::parse_str(&self.request_id)
                 .is_ok_and(|id| id.to_string() == self.request_id)
-            || self.raw.len() > REQUEST_BYTES
+            || self.raw.len() > if self.operation == Operation::Send { input::native_send::RAW_BYTES } else { REQUEST_BYTES }
             || self.raw.is_empty()
+            || (self.operation == Operation::Send) != self.send.is_some()
             || self.configuration.len() != 64
             || !self.configuration.bytes().all(|b| b.is_ascii_hexdigit())
         {
@@ -357,6 +390,14 @@ impl Frame {
                 }
                 r.request_id
             }
+            Operation::Send => {
+                let header = self.send.as_ref().ok_or("Original Send envelope missing")?;
+                header.validate()?;
+                if self.raw.len() != header.raw_len || string(&self.binding,"name") != header.dispatch_name {
+                    return Err("Original Send selector or payload length changed".into());
+                }
+                header.request_id.clone()
+            }
         };
         if uuid::Uuid::parse_str(&id)
             .map_err(|e| e.to_string())?
@@ -372,7 +413,7 @@ impl Frame {
         &self,
         record: &Value,
     ) -> Result<()> {
-        let request = super::super::driver::request_guard(self.operation, &self.raw)?;
+        let request = self.request_guard()?;
         if !is_id_layout_record(record, string(record, "session_id"))
             || (!string(&self.binding, "session_id").is_empty()
                 && record["session_id"] != self.binding["session_id"])
@@ -403,8 +444,27 @@ impl Frame {
         }
         Ok(())
     }
+
+    pub(in crate::state::effort::picker_scope) fn request_guard(&self) -> Result<Request> {
+        match &self.send {
+            Some(header) => Ok(Request {
+                request_id: header.request_id.clone(),
+                expected_run_id: header.run.clone(),
+                expected_conversation_id: header.conversation.clone(),
+                effort: String::new(),
+            }),
+            None => super::super::driver::request_guard(self.operation, &self.raw),
+        }
+    }
     pub(in crate::state::effort::picker_scope) fn check_context(&self) -> Result<()> {
         self.validate()?;
+        self.check_reconcile_context()
+    }
+
+    /// Read-only terminal-receipt reconciliation may outlive the input clock.
+    /// This grants no native observation, effect, lock or publication.
+    pub(in crate::state::effort::picker_scope) fn check_reconcile_context(&self) -> Result<()> {
+        self.caller.validate()?;
         self.image.check()?;
         if namespace()? != (self.root.clone(), self.root_object)
             || configuration()? != self.configuration

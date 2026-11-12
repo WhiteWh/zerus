@@ -418,6 +418,26 @@ pub(super) fn cancel_for_input(record: &Value) -> Result<()> {
     }
     Ok(())
 }
+
+/// Read-only cancellation description for the original Send owner. The
+/// ordinary save_job wrapper still owns every existing caller. Cancellation
+/// emits no recovery analytics event (the adapter ignores cancelled state).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::state) fn input_cancellation(record: &Value) -> Result<Option<(guarded_recovery::Original,Value)>> {
+    let path=job_path(&owner(record));
+    let Some(source)=guarded_recovery::Original::read_existing(&path,storage::ID_RECORD_BYTES)? else {return Ok(None)};
+    let mut job=serde_json::from_slice::<Value>(source.bytes()).unwrap_or(Value::Null);
+    if !active(&job) {return Ok(None);}
+    let previous=job.clone();
+    stop(&mut job,"cancelled","New input cancelled automatic recovery");
+    let mut history=previous["history"].as_array().cloned().unwrap_or_default();
+    if previous["state"]!=job["state"] || previous["attempt"]!=job["attempt"] {
+        history.push(json!({"at":now(),"state":job["state"],"attempt":job["attempt"],"reason":job["reason"]}));
+        if history.len()>32 {history.remove(0);}
+    }
+    job["history"]=json!(history);
+    Ok(Some((source,job)))
+}
 fn active(job: &Value) -> bool {
     ["waiting", "dispatching", "retrying"].contains(&string(job, "state"))
 }

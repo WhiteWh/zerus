@@ -1,6 +1,8 @@
 """Real Claude ghost predictions, private homes and a localhost-only provider."""
 import json
+import hashlib
 import re
+import subprocess
 import unittest
 
 import test_busy_input_native as busy
@@ -17,14 +19,16 @@ class NativeClaudeSuggestions(native.NativeClaudeInput):
     test_multiline_message_ending_in_backslashes_is_preserved = None
     test_leading_absolute_path_is_literal_message_text = None
     native_permission_mode = 'bypassPermissions'
-    native_env = ('CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=true',)
+    native_env = (*native.NativeClaudeInput.native_env, 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=true')
     # Suggestion generation requires a warm prompt cache. This is provider
     # usage metadata, not an injected screen or a fabricated acceptance event.
     native_response_usage = dict(input_tokens=100, output_tokens=30, cache_read_input_tokens=20000)
     queued_messages = busy.NativeBusyClaude.queued_messages
 
     def native_settings(self, work):
-        return dict(promptSuggestionEnabled=True)
+        settings = super().native_settings(work)
+        settings['promptSuggestionEnabled'] = True
+        return settings
 
     def native_response_blocks(self, body):
         if 'SUGGESTION MODE:' in json.dumps(body):
@@ -55,6 +59,73 @@ class NativeClaudeSuggestions(native.NativeClaudeInput):
                 for arg in json.loads(row)]
         self.assertFalse({'Tab', 'Right', 'C-f'} & set(keys), keys)
         self.assertEqual(self.accepted(GHOST), 0)
+
+    def test_id_hidden_pending_settings_then_message_makes_one_model_call_and_keeps_defaults(self):
+        # Settle the enabled native predictor before measuring this operation.
+        busy.terminal_send(self, WARM)
+        self.wait_for(self.ghost)
+        self.assertGreater(self.suggestions, 0)
+        receipt, attempts = self.pending_message()
+        before, calls = attempts(), len(self.native_requests)
+        request = dict(request_id=receipt['request_id'], expected_run_id=self.run_id,
+                       expected_conversation_id=self.conversation_id,
+                       text=receipt['text'])
+        raw = '{\n ' + json.dumps(request, separators=(',', ':'))[1:-1] + '\n}\n'
+        self.assertEqual(hashlib.sha256(raw.encode()).hexdigest(), receipt['digest'])
+        replay = subprocess.run([str(native.fixtures.HGS), 'send', self.name, '--session-id',
+                                 self.record['session_id'], '--json'], input=raw,
+                                env=self.env, text=True, capture_output=True, timeout=30)
+        self.assertEqual(replay.returncode, 0, replay.stdout + replay.stderr)
+        self.assertEqual(json.loads(replay.stdout), receipt)
+        self.assertEqual(attempts(), before)
+        self.assertEqual(len(self.native_requests), calls)
+        self.assertEqual(self.accepted(receipt['text']), 1)
+        self.assertEqual(self.accepted(GHOST), 0)
+
+    def assert_pending_requests(self, before, text, model):
+        self.wait_for(self.ghost)
+        offered = self.native_requests[before:]
+        # Like Codex's explicit thread-title control, count native auxiliary
+        # inference separately; never silently filter it from the total.
+        self.assertEqual(len(offered), 2, offered)
+        primary, suggestion = offered
+        self.assertNotIn('SUGGESTION MODE:', json.dumps(primary))
+        self.assertIn('SUGGESTION MODE:', json.dumps(suggestion))
+        self.assertEqual([body['model'] for body in offered], [model, model])
+
+        def messages(body):
+            # The predictor uses string content and removes cache_control.
+            # Compare every role and content block after only that encoding
+            # normalization, retaining exact text and all other block fields.
+            result = []
+            for message in body['messages']:
+                content = message['content']
+                if isinstance(content, str):
+                    content = [dict(type='text', text=content)]
+                blocks = [{k: v for k, v in block.items() if k != 'cache_control'}
+                          for block in content]
+                result.append(dict(message, content=blocks))
+            return result
+
+        main, auxiliary = messages(primary), messages(suggestion)
+        self.assertEqual(auxiliary[:len(main)], main)
+        exact = lambda rows: sum(block.get('text') == text for message in rows
+                                 if message['role'] == 'user' for block in message['content'])
+        copies = lambda rows: sum(block.get('text', '').count(text) for message in rows
+                                  for block in message['content'])
+        self.assertEqual(exact(main), 1)
+        self.assertEqual(copies(main), 1)
+        self.assertEqual(copies(auxiliary), 1)
+        self.assertTrue(all(copies(messages(body)) == 0 for body in self.native_requests[:before]))
+        suffix = auxiliary[len(main):]
+        users = [message for message in suffix if message['role'] == 'user']
+        self.assertEqual(len(users), 1, suffix)
+        self.assertEqual(len(users[0]['content']), 1, suffix)
+        self.assertTrue(users[0]['content'][0]['text'].startswith('[SUGGESTION MODE:'))
+        self.assertEqual(copies(suffix), 0)
+        print('ZERUS_NATIVE_CLAUDE_CALLS=' + json.dumps(dict(
+            case=self.id(), before=before, message_calls=1, suggestion_calls=1,
+            total_calls=len(offered), retained_history_copies=copies(auxiliary))), flush=True)
 
     def test_idle_ghost_is_replaced_and_enter_never_accepts_it(self):
         self.prepare_suggestion()
