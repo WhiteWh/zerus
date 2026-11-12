@@ -58,6 +58,17 @@ final class SessionQuestionRoutingTests: XCTestCase {
         XCTAssertEqual(SessionQuestionRouting.label(parent), "Questions to lead")
     }
 
+    func testAChildThePersonLatchedOffTurnsOnFromItsEffectiveValue() {
+        // zerus-sa9qn.50: the host file says on, the person's latch says off; choosing it turns questions on.
+        let latched = QuestionRouting(sendToParent: true, revision: 5, personOff: true)
+        XCTAssertFalse(latched.sends)
+        XCTAssertEqual(SessionQuestionRouting.toggle(latched)["send_to_parent"], .bool(true))
+        XCTAssertEqual(SessionQuestionRouting.toggle(QuestionRouting(sendToParent: true, revision: 5))["send_to_parent"], .bool(false))
+        let raw: JSONObject = ["parent": .object(["name": .string("codex/project/lead")]),
+                               "question_routing": .object(["send_to_parent": .bool(true), "revision": .int(5), "person_off": .bool(true)])]
+        XCTAssertEqual(SessionQuestionRouting.label(raw), "Send questions to lead")
+    }
+
     func testTheChangeTurnsTheCurrentValueTheOtherWayAtItsRevision() throws {
         let change = try XCTUnwrap(contract().object("change"))
         let session = try XCTUnwrap(change.object("session"))

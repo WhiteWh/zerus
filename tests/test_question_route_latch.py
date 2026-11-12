@@ -31,6 +31,11 @@ if mode == 'mutate':
 reply = {'ok': True, 'verifier': 'question-route-person-v1', 'verified': statement}
 if mode == 'unmarked':
     del reply['verifier']
+if mode == 'extra':
+    reply['granted'] = True
+if mode == 'marker':
+    reply['verifier'] = 'question-route-person-v2'
+
 print(json.dumps(reply))
 """
 
@@ -118,7 +123,7 @@ class PhoneStatementVerifier(unittest.TestCase):
                                   'stdin': {'statement': request['statement'], 'signature': request['signature']}}])
 
     def test_any_other_verifier_outcome_is_a_refusal(self):
-        for mode in ('unmarked', 'version', 'mutate'):
+        for mode in ('unmarked', 'extra', 'marker', 'version', 'mutate'):
             with self.subTest(mode=mode):
                 self.fake.write_text(FAKE)
                 self.fake.chmod(0o700)

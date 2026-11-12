@@ -51,6 +51,17 @@ class SessionQuestionRoutingTest {
         assertEquals("Questions to lead",SessionQuestionRouting.label(raw))
     }
 
+    @Test fun aChildThePersonLatchedOffTurnsOnFromItsEffectiveValue() {
+        // zerus-sa9qn.50: the host file says on, the person's latch says off; choosing it turns questions on.
+        val latched = QuestionRouting(true,5,personOff = true)
+        assertFalse(latched.sends)
+        assertEquals(true,SessionQuestionRouting.toggle(latched).getBoolean("send_to_parent"))
+        assertEquals(false,SessionQuestionRouting.toggle(QuestionRouting(true,5)).getBoolean("send_to_parent"))
+        val raw = JSONObject().put("parent",JSONObject().put("name","codex/project/lead"))
+            .put("question_routing",JSONObject().put("send_to_parent",true).put("revision",5).put("person_off",true))
+        assertEquals("Send questions to lead",SessionQuestionRouting.label(raw))
+    }
+
     @Test fun theChangeTurnsTheCurrentValueTheOtherWayAtItsRevision() {
         val change = contract.getJSONObject("change")
         val session = change.getJSONObject("session")
