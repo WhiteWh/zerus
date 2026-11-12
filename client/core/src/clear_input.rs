@@ -37,15 +37,24 @@ pub struct ClearOutcome {
 }
 
 fn request(target: &Target, request_id: &str, action: &str) -> Option<Value> {
-    if target.name.is_empty() || target.run_id.is_empty() || uuid::Uuid::parse_str(request_id).is_err() {
+    if target.name.is_empty()
+        || target.run_id.is_empty()
+        || uuid::Uuid::parse_str(request_id).is_err()
+    {
         return None;
     }
-    Some(json!({"request_id": request_id, "action": action, "expected_run_id": target.run_id,
-        "expected_conversation_id": target.conversation_id}))
+    Some(
+        json!({"request_id": request_id, "action": action, "expected_run_id": target.run_id,
+        "expected_conversation_id": target.conversation_id}),
+    )
 }
 
 fn invocation(target: &Target, input: Value, request_id: &str) -> Invocation {
-    let mut args = vec!["terminal".to_owned(), target.name.clone(), "--json".to_owned()];
+    let mut args = vec![
+        "terminal".to_owned(),
+        target.name.clone(),
+        "--json".to_owned(),
+    ];
     let peer = prepend_alias(&mut args, &target.computer);
     Invocation {
         args,
@@ -57,15 +66,27 @@ fn invocation(target: &Target, input: Value, request_id: &str) -> Invocation {
 
 /// The composer read of `target`'s live terminal.
 pub fn composer_invocation(target: &Target, request_id: &str) -> Option<Invocation> {
-    Some(invocation(target, request(target, request_id, "composer")?, request_id))
+    Some(invocation(
+        target,
+        request(target, request_id, "composer")?,
+        request_id,
+    ))
 }
 
 /// The clear of exactly `text`, bound to the read's `binding`, valid until
 /// `now + HANDOFF_SECONDS`.
-pub fn clear_invocation(target: &Target, request_id: &str, binding: &str, text: &str, now: f64) -> Option<Invocation> {
+pub fn clear_invocation(
+    target: &Target,
+    request_id: &str,
+    binding: &str,
+    text: &str,
+    now: f64,
+) -> Option<Invocation> {
     let mut input = request(target, request_id, "clear-input")?;
     if binding.len() != 64
-        || !binding.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        || !binding
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
         || text.trim().is_empty()
         || text.chars().count() > TEXT_CHARS
     {
@@ -78,7 +99,10 @@ pub fn clear_invocation(target: &Target, request_id: &str, binding: &str, text: 
 }
 
 fn answer(exit: &Exit, target: &Target, request_id: &str, status: &[&str]) -> Option<Value> {
-    let Exit::Code { code: 0, stdout, .. } = exit else {
+    let Exit::Code {
+        code: 0, stdout, ..
+    } = exit
+    else {
         return None;
     };
     let value: Value = serde_json::from_slice(stdout).ok()?;
@@ -110,16 +134,27 @@ pub fn parse_composer(exit: &Exit, target: &Target, request_id: &str) -> Option<
 /// The clear's answer. Anything but an exact answer for this request is
 /// uncertain: keys may have been sent.
 pub fn parse_clear(exit: &Exit, target: &Target, request_id: &str) -> ClearOutcome {
-    match answer(exit, target, request_id, &["cleared", "failed", "uncertain"]) {
+    match answer(
+        exit,
+        target,
+        request_id,
+        &["cleared", "failed", "uncertain"],
+    ) {
         Some(value) => ClearOutcome {
             status: value["status"].as_str().unwrap_or("uncertain").to_owned(),
             error: value["error"].as_str().unwrap_or_default().to_owned(),
-            composer: value["composer"].as_str().map(|text| text.chars().take(TEXT_CHARS).collect()),
+            composer: value["composer"]
+                .as_str()
+                .map(|text| text.chars().take(TEXT_CHARS).collect()),
         },
         None => ClearOutcome {
             status: "uncertain".into(),
             error: match exit {
-                Exit::Code { stderr, .. } | Exit::Abnormal { stderr } if !stderr.trim().is_empty() => stderr.trim().to_owned(),
+                Exit::Code { stderr, .. } | Exit::Abnormal { stderr }
+                    if !stderr.trim().is_empty() =>
+                {
+                    stderr.trim().to_owned()
+                }
                 _ => "The clear did not report its outcome. Check Terminal.".into(),
             },
             composer: None,
@@ -133,10 +168,19 @@ mod tests {
 
     const ID: &str = "11111111-1111-4111-8111-111111111111";
     fn target(computer: &str) -> Target {
-        Target { computer: computer.into(), name: "claude/p/s".into(), run_id: "r".into(), conversation_id: "c".into() }
+        Target {
+            computer: computer.into(),
+            name: "claude/p/s".into(),
+            run_id: "r".into(),
+            conversation_id: "c".into(),
+        }
     }
     fn exit(value: Value) -> Exit {
-        Exit::Code { code: 0, stdout: value.to_string().into_bytes(), stderr: String::new() }
+        Exit::Code {
+            code: 0,
+            stdout: value.to_string().into_bytes(),
+            stderr: String::new(),
+        }
     }
     const BINDING: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -145,15 +189,35 @@ mod tests {
         let read = composer_invocation(&target(""), ID).unwrap();
         assert_eq!(read.args, ["terminal", "claude/p/s", "--json"]);
         let input: Value = serde_json::from_slice(read.stdin.as_ref().unwrap()).unwrap();
-        assert_eq!(input, json!({"request_id": ID, "action": "composer", "expected_run_id": "r", "expected_conversation_id": "c"}));
-        let clear = clear_invocation(&target("peer"), ID, BINDING, "[Image #1] residue", 100.0).unwrap();
+        assert_eq!(
+            input,
+            json!({"request_id": ID, "action": "composer", "expected_run_id": "r", "expected_conversation_id": "c"})
+        );
+        let clear =
+            clear_invocation(&target("peer"), ID, BINDING, "[Image #1] residue", 100.0).unwrap();
         assert_eq!(&clear.args[..2], ["@peer", "terminal"]);
         let input: Value = serde_json::from_slice(clear.stdin.as_ref().unwrap()).unwrap();
-        assert_eq!((input["action"].as_str(), input["text"].as_str(), input["expires_at"].as_f64()), (Some("clear-input"), Some("[Image #1] residue"), Some(105.0)));
+        assert_eq!(
+            (
+                input["action"].as_str(),
+                input["text"].as_str(),
+                input["expires_at"].as_f64()
+            ),
+            (Some("clear-input"), Some("[Image #1] residue"), Some(105.0))
+        );
         assert!(clear_invocation(&target(""), ID, "short", "x", 1.0).is_none());
         assert!(clear_invocation(&target(""), ID, BINDING, "  ", 1.0).is_none());
-        assert!(clear_invocation(&target(""), ID, BINDING, &"x".repeat(TEXT_CHARS + 1), 1.0).is_none());
-        assert!(composer_invocation(&Target { run_id: String::new(), ..target("") }, ID).is_none());
+        assert!(
+            clear_invocation(&target(""), ID, BINDING, &"x".repeat(TEXT_CHARS + 1), 1.0).is_none()
+        );
+        assert!(composer_invocation(
+            &Target {
+                run_id: String::new(),
+                ..target("")
+            },
+            ID
+        )
+        .is_none());
     }
 
     #[test]
@@ -161,19 +225,50 @@ mod tests {
         let ok = json!({"request_id": ID, "name": "claude/p/s", "run_id": "r", "status": "composer", "terminal_binding_id": BINDING,
             "composer": {"state": "text", "text": "residue", "clearable": true, "reason": ""}});
         let state = parse_composer(&exit(ok.clone()), &target(""), ID).unwrap();
-        assert_eq!((state.state.as_str(), state.text.as_str(), state.clearable, state.binding.as_str()), ("text", "residue", true, BINDING));
+        assert_eq!(
+            (
+                state.state.as_str(),
+                state.text.as_str(),
+                state.clearable,
+                state.binding.as_str()
+            ),
+            ("text", "residue", true, BINDING)
+        );
         let mut other = ok.clone();
         other["run_id"] = json!("another run");
         assert!(parse_composer(&exit(other), &target(""), ID).is_none());
         let mut empty = ok;
         empty["composer"] = json!({"state": "empty", "text": "", "clearable": true, "reason": ""});
-        assert!(!parse_composer(&exit(empty), &target(""), ID).unwrap().clearable, "an empty composer is never clearable");
-        let cleared = parse_clear(&exit(json!({"request_id": ID, "name": "claude/p/s", "run_id": "r", "status": "cleared"})), &target(""), ID);
+        assert!(
+            !parse_composer(&exit(empty), &target(""), ID)
+                .unwrap()
+                .clearable,
+            "an empty composer is never clearable"
+        );
+        let cleared = parse_clear(
+            &exit(
+                json!({"request_id": ID, "name": "claude/p/s", "run_id": "r", "status": "cleared"}),
+            ),
+            &target(""),
+            ID,
+        );
         assert_eq!(cleared.status, "cleared");
         let lost = parse_clear(&Exit::TimedOut, &target(""), ID);
         assert_eq!(lost.status, "uncertain", "keys may have been sent");
-        let refused = parse_clear(&exit(json!({"request_id": ID, "name": "claude/p/s", "run_id": "r", "status": "failed",
-            "error": "The input changed; review it again before clearing"})), &target(""), ID);
-        assert_eq!((refused.status.as_str(), refused.error.as_str()), ("failed", "The input changed; review it again before clearing"));
+        let refused = parse_clear(
+            &exit(
+                json!({"request_id": ID, "name": "claude/p/s", "run_id": "r", "status": "failed",
+            "error": "The input changed; review it again before clearing"}),
+            ),
+            &target(""),
+            ID,
+        );
+        assert_eq!(
+            (refused.status.as_str(), refused.error.as_str()),
+            (
+                "failed",
+                "The input changed; review it again before clearing"
+            )
+        );
     }
 }

@@ -2100,23 +2100,35 @@ pub async fn inspect_session(target: Target, archive_id: Option<String>) -> Opti
 /// Terminal's Clear input read (zerus-wkj9l): the composer of the session's
 /// live terminal, or None when it could not be read.
 #[tauri::command]
-pub async fn composer_state(target: Target) -> Option<zerus_client_core::clear_input::ComposerState> {
+pub async fn composer_state(
+    target: Target,
+) -> Option<zerus_client_core::clear_input::ComposerState> {
     if blocked() {
         return None;
     }
     let id = uuid::Uuid::new_v4().to_string();
     let inv = zerus_client_core::clear_input::composer_invocation(&target, &id)?;
     let hgs = default_hgs();
-    let exit = tauri::async_runtime::spawn_blocking(move || run(&hgs, &inv)).await.ok()?;
+    let exit = tauri::async_runtime::spawn_blocking(move || run(&hgs, &inv))
+        .await
+        .ok()?;
     zerus_client_core::clear_input::parse_composer(&exit, &target, &id)
 }
 
 /// Clears exactly the text the person confirmed (zerus-wkj9l): their explicit
 /// action, never automatic and never retried. A lost answer is uncertain.
 #[tauri::command]
-pub async fn clear_input(target: Target, binding: String, text: String) -> zerus_client_core::clear_input::ClearOutcome {
+pub async fn clear_input(
+    target: Target,
+    binding: String,
+    text: String,
+) -> zerus_client_core::clear_input::ClearOutcome {
     use zerus_client_core::clear_input::{clear_invocation, parse_clear, ClearOutcome};
-    let outcome = |status: &str, error: &str| ClearOutcome { status: status.into(), error: error.into(), composer: None };
+    let outcome = |status: &str, error: &str| ClearOutcome {
+        status: status.into(),
+        error: error.into(),
+        composer: None,
+    };
     if blocked() {
         return outcome("failed", "Clear input is not available here.");
     }
@@ -2131,7 +2143,10 @@ pub async fn clear_input(target: Target, binding: String, text: String) -> zerus
     let hgs = default_hgs();
     match tauri::async_runtime::spawn_blocking(move || run(&hgs, &inv)).await {
         Ok(exit) => parse_clear(&exit, &target, &id),
-        Err(_) => outcome("uncertain", "The clear did not report its outcome. Check Terminal."),
+        Err(_) => outcome(
+            "uncertain",
+            "The clear did not report its outcome. Check Terminal.",
+        ),
     }
 }
 

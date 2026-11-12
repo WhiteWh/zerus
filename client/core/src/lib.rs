@@ -16,8 +16,8 @@ pub mod attention;
 pub mod attention_store;
 pub mod batch;
 pub mod cache;
-pub mod clear_input;
 pub mod child_environment;
+pub mod clear_input;
 #[cfg(windows)]
 mod conpty;
 pub mod content_search;
