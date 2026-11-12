@@ -100,6 +100,8 @@ class Model(http.server.BaseHTTPRequestHandler):
     the reply: HOLD_NATIVE holds the turn open, QUESTION_NATIVE calls OpenCode 2's
     `question` tool, BASH_NATIVE its `shell` tool and ERROR_NATIVE answers HTTP 401."""
 
+    HINT = 'This agent runs in a Zerus session: the hgs CLI reads, messages, launches and stops other agent sessions on this and other computers. Run hgs guide before using it.'
+
     def log_message(self, *_):
         pass
 
@@ -118,6 +120,7 @@ class Model(http.server.BaseHTTPRequestHandler):
         tools = [tool.get('function', {}).get('name') for tool in body.get('tools', [])]
         last_user = next((str(m.get('content', '')) for m in reversed(messages) if m.get('role') == 'user'), '')
         self.server.requests.append({'model': body.get('model'), 'tools': tools, 'last_user': last_user[:200],
+                                     'messages': messages,
                                      'options': {k: v for k, v in body.items() if k not in ('messages', 'tools')}})
         if 'ERROR_NATIVE' in last_user:
             error = json.dumps({'error': {'message': 'Fixture provider rejected', 'code': 'invalid_api_key'}}).encode()
@@ -1251,6 +1254,120 @@ class OpenCodeNative(unittest.TestCase):
         self.assertLess(status, 300)
         view = self.wait(name, lambda v: v['phase'] == 'idle' and any(e.get('detail') == 'Typed in OpenCode' for e in v['events']))
         self.assertEqual([e.get('request_id') for e in view['events'] if e.get('detail') == 'Typed in OpenCode'], [None])
+
+    def test_14_instruction_hint_empty_lifecycle_and_after_turn_limit(self):
+        def turn(binding, text, expected):
+            self.hgs(['send', binding['name'], '--json'], self.payload(binding, text=text))
+            self.wait(binding['name'], lambda v: v['phase'] == 'idle' and any(
+                e['type'] == 'UserPromptSubmit' and e['detail'] == text and not e.get('delivery_state')
+                for e in v.get('events', [])))
+            end = time.monotonic() + 30
+            while time.monotonic() < end:
+                requests = [r for r in self.model.requests if r['last_user'] == text and r['tools']]
+                if requests:
+                    self.assertEqual(json.dumps(requests[-1]['messages']).count(Model.HINT), expected,
+                                     (text, requests[-1]['messages']))
+                    return
+                time.sleep(.1)
+            self.fail('No model request for %r: %s' % (text, self.model.requests[-2:]))
+
+        def mark(binding):
+            return json.loads(self.binding_path(binding['name']).read_text()).get('agent_hint')
+
+        def resume(binding):
+            self.hgs(['opencode', str(self.workspace), '-n', binding['name'].rsplit('/', 1)[1], '-d',
+                      '--account', 'native-opencode'])
+
+        first = self.create()
+        self.assertEqual(mark(first), {'conversation_id': first['conversation_id'], 'revision': 1})
+        turn(first, 'Hint fresh turn', 1)
+        resume(first)
+        turn(first, 'Hint resumed turn', 1)
+        status, answer = self.api('POST', f"/api/session/{first['conversation_id']}/compact", {})
+        self.assertEqual(status, 200, answer)
+        turn(first, 'Hint after compaction', 1)
+
+        self.env = {**self.env, 'HGS_AGENT_HINT_OFF': 'native-opencode'}
+        resume(first)
+        turn(first, 'Hint retained while opted out', 1)
+        opted_out = self.create()
+        self.assertIsNone(mark(opted_out))
+        turn(opted_out, 'Hint opted-out new session', 0)
+        del self.env['HGS_AGENT_HINT_OFF']
+        enabled = self.create()
+        turn(enabled, 'Hint re-enabled new session', 1)
+        cleared = self.create()
+        turn(cleared, 'Hint clear new session', 1)
+
+        empty_conversation = 'ses_' + native_suffix()
+        status, answer = self.api('POST', '/api/session', {
+            'id': empty_conversation, 'location': {'directory': os.path.realpath(self.workspace)}, 'title': 'empty'})
+        self.assertEqual(status, 200, answer)
+        empty = self.save_binding('empty-' + uuid.uuid4().hex[:8], service='opencode2',
+                                  conversation_id=empty_conversation)
+        self.assertIsNone(mark(empty))
+        resume(empty)
+        self.assertEqual(mark(empty), {'conversation_id': empty_conversation, 'revision': 1})
+        turn(empty, 'Hint still-empty adopted', 1)
+        status, answer = self.api('POST', f'/api/session/{empty_conversation}/compact', {})
+        self.assertEqual(status, 200, answer)
+        turn(empty, 'Hint still-empty after compaction', 1)
+        resume(empty)
+        turn(empty, 'Hint still-empty resumed', 1)
+
+        def pending_record(tag):
+            conversation = 'ses_' + native_suffix()
+            status, answer = self.api('POST', '/api/session', {
+                'id': conversation, 'location': {'directory': os.path.realpath(self.workspace)}, 'title': tag})
+            self.assertEqual(status, 200, answer)
+            record = self.save_binding(tag, service='opencode2', conversation_id=conversation,
+                                      creation_pending=True)
+            record['creation_body'] = {
+                'id': conversation, 'location': {'directory': record['cwd']}, 'title': tag,
+                'metadata': {'zerus': {'run_id': record['run_id'], 'launch_id': None}}}
+            self.binding_path(record['name']).write_text(json.dumps(record))
+            return record
+
+        pending_empty = pending_record('pending-empty-' + uuid.uuid4().hex[:8])
+        resume(pending_empty)
+        self.assertEqual(mark(pending_empty), {'conversation_id': pending_empty['conversation_id'], 'revision': 1})
+        turn(pending_empty, 'Hint pending empty reconcile', 1)
+
+        pending_used = pending_record('pending-used-' + uuid.uuid4().hex[:8])
+        status, answer = self.api('POST', f"/api/session/{pending_used['conversation_id']}/prompt", {
+            'id': 'msg_' + native_suffix(), 'text': 'Used before pending reconcile', 'delivery': 'queue'})
+        self.assertEqual(status, 200, answer)
+        self.wait(pending_used['name'], lambda v: v['phase'] == 'idle' and any(
+            e['type'] == 'UserPromptSubmit' and e['detail'] == 'Used before pending reconcile'
+            for e in v.get('events', [])))
+        resume(pending_used)
+        self.assertIsNone(mark(pending_used))
+        turn(pending_used, 'Unqualified hint pending used reconcile', 0)
+
+        tag = 'adopted-' + uuid.uuid4().hex[:8]
+        conversation = 'ses_' + native_suffix()
+        status, answer = self.api('POST', '/api/session', {
+            'id': conversation, 'location': {'directory': os.path.realpath(self.workspace)}, 'title': tag})
+        self.assertEqual(status, 200, answer)
+        adopted = self.save_binding(tag, service='opencode2', conversation_id=conversation)
+        status, answer = self.api('POST', f'/api/session/{conversation}/prompt', {
+            'id': 'msg_' + native_suffix(), 'text': 'Before adopted hint', 'delivery': 'queue'})
+        self.assertEqual(status, 200, answer)
+        self.wait(adopted['name'], lambda v: v['phase'] == 'idle' and any(
+            e['type'] == 'UserPromptSubmit' and e['detail'] == 'Before adopted hint' for e in v.get('events', [])))
+        self.assertIsNone(mark(adopted))
+        resume(adopted)
+        self.assertIsNone(mark(adopted))
+        turn(adopted, 'Unqualified hint adopted after turns', 0)
+        resume(adopted)
+        turn(adopted, 'Unqualified hint adopted resumed', 0)
+
+        for binding in (first, opted_out, enabled, cleared, empty, pending_empty, pending_used, adopted):
+            status, page = self.api('GET', f"/api/session/{binding['conversation_id']}/message?limit=100")
+            self.assertEqual(status, 200, page)
+            durable = [row for row in page['data']
+                       if 'Instructions updated' in json.dumps(row) or '<system-update>' in json.dumps(row)]
+            self.assertEqual(durable, [], (binding['name'], durable))
 
     def test_20_slash_model_ids_first_then_short_list_and_providers(self):
         account = self.ready_account()

@@ -116,6 +116,45 @@ fn session_path(record: &Value, suffix: &str) -> String {
 }
 use service::Response;
 
+fn attach_hint(native: &dyn Native, record: &mut Value) {
+    attach_hint_with(
+        native,
+        record,
+        agent_hint::for_account("native-opencode").is_some(),
+        save,
+    )
+}
+
+/// The instruction entry is an effective prompt update, not transcript history.
+/// OpenCode can repeat a retained entry after a lost answer, so persist the
+/// suppression mark first and never replay an uncertain attachment.
+fn attach_hint_with(
+    native: &dyn Native,
+    record: &mut Value,
+    enabled: bool,
+    persist: impl FnOnce(&mut Value) -> Result<()>,
+) {
+    if !enabled || !agent_hint::claim(record) || persist(record).is_err() {
+        return;
+    }
+    let path = format!(
+        "/api/experimental/session/{}/instructions/entries/zerus.agent-hint",
+        string(record, "conversation_id")
+    );
+    let _ = native.raw("PUT", &path, Some(&json!({"value":agent_hint::HINT})));
+}
+
+/// One newest message answers whether the native conversation has turns. The
+/// caller treats an unavailable or malformed answer as nonempty, never as
+/// permission to attach or as a reason to block the launch.
+fn empty_history(native: &dyn Native, record: &Value) -> Result<bool> {
+    let answer = get(native, &session_path(record, "/message?limit=1"))?;
+    answer["data"]
+        .as_array()
+        .map(|messages| messages.is_empty())
+        .ok_or_else(|| "Invalid OpenCode message history".into())
+}
+
 pub(crate) fn account_context(name: &str) -> Result<Value> {
     let record = binding(name)?;
     Ok(
@@ -436,6 +475,9 @@ pub(crate) fn launch(
             modernize(&mut record);
             save(&mut record)?;
         }
+        if empty_history(&service, &record).unwrap_or(false) {
+            attach_hint(&service, &mut record);
+        }
         return Ok(());
     }
     let cwd = cwd.unwrap();
@@ -514,7 +556,11 @@ fn finish_creation(service: &service::Service, mut record: Value, first: bool) -
             let map = record.as_object_mut().unwrap();
             map.remove("creation_pending");
             map.remove("creation_body");
-            save(&mut record)
+            save(&mut record)?;
+            if first || empty_history(service, &record).unwrap_or(false) {
+                attach_hint(service, &mut record);
+            }
+            Ok(())
         }
         Err(Refusal::Definite(reason)) => {
             let _ = PROVIDER.remove(&record);
@@ -2768,6 +2814,122 @@ mod tests {
             "/api/session/ses_abc/prompt"
         );
     }
+    struct HintNative<'a> {
+        calls: std::cell::RefCell<Vec<(String, String, Value)>>,
+        saves: &'a std::cell::Cell<usize>,
+        reply: Option<Result<Response>>,
+    }
+    impl Native for HintNative<'_> {
+        fn raw(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Response> {
+            assert_eq!(
+                self.saves.get(),
+                1,
+                "the suppression mark was not saved first"
+            );
+            self.calls
+                .borrow_mut()
+                .push((method.into(), path.into(), body.unwrap().clone()));
+            self.reply.clone().unwrap_or(Ok(Response {
+                status: 204,
+                body: Value::Null,
+            }))
+        }
+    }
+    #[test]
+    fn instruction_hint_is_claimed_before_one_fail_soft_attachment() {
+        let record = || json!({"conversation_id":"ses_A"});
+        let saves = std::cell::Cell::new(0);
+        let native = HintNative {
+            calls: Default::default(),
+            saves: &saves,
+            reply: None,
+        };
+        let mut run = record();
+        let persist = |record: &mut Value| {
+            saves.set(saves.get() + 1);
+            assert_eq!(
+                record["agent_hint"],
+                json!({"conversation_id":"ses_A","revision":1})
+            );
+            Ok(())
+        };
+        attach_hint_with(&native, &mut run, true, persist);
+        assert_eq!(saves.get(), 1);
+        assert_eq!(
+            native.calls.borrow().as_slice(),
+            &[(
+                "PUT".into(),
+                "/api/experimental/session/ses_A/instructions/entries/zerus.agent-hint".into(),
+                json!({"value":agent_hint::HINT})
+            )]
+        );
+        for enabled in [true, false] {
+            attach_hint_with(&native, &mut run, enabled, |_| {
+                panic!("a claimed hint saves again")
+            });
+        }
+        assert_eq!(native.calls.borrow().len(), 1);
+        assert_eq!(saves.get(), 1);
+        run["agent_hint"]["conversation_id"] = json!("ses_other");
+        run["conversation_id"] = json!("");
+        attach_hint_with(&native, &mut run, true, |_| panic!("an empty ID writes"));
+        assert_eq!(native.calls.borrow().len(), 1);
+    }
+    #[test]
+    fn instruction_hint_opt_out_and_uncertain_failures_never_replay() {
+        let saves = std::cell::Cell::new(0);
+        let native = HintNative {
+            calls: Default::default(),
+            saves: &saves,
+            reply: Some(Err("connection lost".into())),
+        };
+        let mut opted_out = json!({"conversation_id":"ses_A"});
+        attach_hint_with(&native, &mut opted_out, false, |_| {
+            panic!("an opted-out hint saves")
+        });
+        assert!(opted_out.get("agent_hint").is_none());
+        assert!(native.calls.borrow().is_empty());
+        let mut unsaved = opted_out.clone();
+        attach_hint_with(&native, &mut unsaved, true, |_| {
+            Err("private state unavailable".into())
+        });
+        assert!(native.calls.borrow().is_empty());
+        for reply in [Some(Err("connection lost".into())), None] {
+            let saves = std::cell::Cell::new(0);
+            let native = HintNative {
+                calls: Default::default(),
+                saves: &saves,
+                reply,
+            };
+            let mut run = json!({"conversation_id":"ses_A"});
+            for _ in 0..2 {
+                attach_hint_with(&native, &mut run, true, |_| {
+                    saves.set(saves.get() + 1);
+                    Ok(())
+                });
+            }
+            assert_eq!(saves.get(), 1);
+            assert_eq!(native.calls.borrow().len(), 1);
+        }
+        let saves = std::cell::Cell::new(0);
+        let refused = HintNative {
+            calls: Default::default(),
+            saves: &saves,
+            reply: Some(Ok(Response {
+                status: 503,
+                body: json!({}),
+            })),
+        };
+        let mut run = json!({"conversation_id":"ses_A"});
+        attach_hint_with(&refused, &mut run, true, |_| {
+            saves.set(saves.get() + 1);
+            Ok(())
+        });
+        attach_hint_with(&refused, &mut run, true, |_| {
+            panic!("a refused hint saves again")
+        });
+        assert_eq!(refused.calls.borrow().len(), 1);
+    }
     struct Scripted(std::cell::RefCell<Vec<(String, u16, Value)>>);
     impl Native for Scripted {
         fn raw(&self, method: &str, path: &str, _: Option<&Value>) -> Result<Response> {
@@ -2775,6 +2937,24 @@ mod tests {
             let (expected, status, body) = script.remove(0);
             assert_eq!(expected, format!("{method} {path}"));
             Ok(Response { status, body })
+        }
+    }
+    #[test]
+    fn hint_emptiness_uses_one_bounded_history_read_and_rejects_bad_answers() {
+        let record = json!({"conversation_id":"ses_A"});
+        for (status, body, expected) in [
+            (200, json!({"data":[]}), Some(true)),
+            (200, json!({"data":[{"type":"user"}]}), Some(false)),
+            (200, json!({"data":null}), None),
+            (503, json!({}), None),
+        ] {
+            let native = Scripted(std::cell::RefCell::new(vec![(
+                "GET /api/session/ses_A/message?limit=1".into(),
+                status,
+                body,
+            )]));
+            assert_eq!(empty_history(&native, &record).ok(), expected);
+            assert!(native.0.borrow().is_empty());
         }
     }
     #[test]
