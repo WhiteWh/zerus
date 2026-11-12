@@ -963,8 +963,25 @@ The person has two switches, both on by default (zerus-sa9qn.32):
   the shared contract of the desktop, the connector, the relay, Android and
   iOS.
 
+- **The person's latch** (zerus-sa9qn.50): on a child of this computer, the
+  desktop's **Send questions to PARENT** also sets or clears a latch the
+  background service keeps per durable session ID (Store schema 39). Off
+  sets the latch first, then turns the host file off. On clears it first,
+  and touches the host file only once the service confirms. While the latch is set,
+  the child's questions never route, whatever its host file says, and the
+  entry shows "You turned this child's questions off". The latch changes
+  only through the person's native frontend request (`question_route_child`,
+  compare-and-swap at the child's exact run, conversation and latch
+  revision; closed refusals `conflict`, `stale_identity`, `not_found`,
+  `capacity`). The request lane an agent can reach only reads it
+  (`question_route_child_status`, `question_route_child_result`). So with
+  commands alone an agent can turn a latched child's host file on, but
+  never clear the latch. Like the global switch, the latch is kept in the
+  service Store, which the same user can edit directly; that is outside
+  this protection. A remote child's latch is set on its own computer.
+
 The router reads nothing while the global switch is off. Every reservation
-reads both switches again in its own transaction, so a switch turned off
+reads both switches and the latch again in its own transaction, so a switch turned off
 before it stops the send and writes nothing; off never cancels or replays a
 question already reserved, sent or unknown. Turning routing on again reads the
 catalog from a new baseline: a question still pending and supervised then is

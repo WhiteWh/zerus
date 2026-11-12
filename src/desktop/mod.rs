@@ -1217,6 +1217,12 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                                     Ok(request) if request.operation() == "question_routes" => {
                                         question_route::frontend(&mut store.db, request)
                                     }
+                                    // The person's per-child latch, likewise.
+                                    Ok(request)
+                                        if request.operation() == "question_route_child" =>
+                                    {
+                                        question_route::latch_frontend(&mut store.db, request)
+                                    }
                                     Ok(request) => {
                                         delivery::passive_frontend_request(&mut store, request)
                                     }
@@ -1535,6 +1541,18 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                                 &store.db,
                                 hello.request.as_ref().unwrap(),
                             )
+                        } else if hello
+                            .request
+                            .as_ref()
+                            .is_some_and(|v| v["op"] == "question_route_child_result")
+                        {
+                            question_route::latch_result(&store.db, hello.request.as_ref().unwrap())
+                        } else if hello
+                            .request
+                            .as_ref()
+                            .is_some_and(|v| v["op"] == "question_route_child_status")
+                        {
+                            question_route::latch_status(&store.db, hello.request.as_ref().unwrap())
                         } else if let Some(runtime) = &mut background {
                             let request_value = hello.request.as_ref().unwrap_or(&Value::Null);
                             if matches!(

@@ -4,14 +4,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const calls = vi.hoisted(() => ({
   set: vi.fn(), invoke: vi.fn(), notify: vi.fn(), offline: vi.fn(() => false),
   state: vi.fn((): Record<string, unknown> | undefined => undefined),
+  enabled: vi.fn(() => false),
 }));
 vi.mock("../bridge", () => ({ setQuestionRouting: calls.set }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: calls.invoke }));
 vi.mock("./notices", () => ({ bus: { notify: calls.notify } }));
 vi.mock("./catalog", () => ({ computerOffline: calls.offline }));
-vi.mock("./desktopService", () => ({ desktopService: { state: calls.state } }));
+vi.mock("./desktopService", () => ({ desktopService: { state: calls.state, enabled: calls.enabled } }));
 vi.mock("./actions", () => ({ errorText: (error: unknown) => String(error instanceof Error ? error.message : error) }));
-import { GLOBAL_UNCONFIRMED, SEND_OFF, SEND_OFFLINE, SEND_ON, SEND_UNKNOWN, globalRouting, routingEntry, routingOf, setGlobalRouting, toggleRouting } from "./questionRouting";
+import { GLOBAL_UNCONFIRMED, LATCH_UNCONFIRMED, SEND_LATCHED, SEND_OFF, SEND_OFFLINE, SEND_ON, SEND_UNKNOWN, globalRouting, latchOf, routingEntry, routingOf, setGlobalRouting, toggleRouting } from "./questionRouting";
 import type { Session } from "../ui/sessions/types";
 import contract from "../../../mobile/android/app/src/test/resources/question-routing-contract.json";
 
@@ -117,5 +118,77 @@ describe("the shared question routing contract", () => {
       expect(!entry.disabled, c.name).toBe(c.enabled);
       expect(entry.label.endsWith(c.parent ?? ""), c.name).toBe(true);
     }
+  });
+});
+
+describe("the person's latch on a child of this computer (zerus-sa9qn.50)", () => {
+  const SESSION = "00000000-0000-4000-8000-000000000001";
+  const local = (patch: Partial<Session> = {}) => child({ sessionId: SESSION, ...patch } as Partial<Session>);
+  /** The service's status and latch replies, and the host's. */
+  function service(latch: { person_off: boolean; revision: number }, reply?: (args: Record<string, unknown>) => unknown) {
+    calls.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+      if (command === "desktop_service_question_route_child_status") return { ...latch };
+      if (command === "desktop_service_question_route_child") {
+        return reply ? reply(args) : { accepted: true, durable: true, op: "question_route_child", session_id: args.session_id,
+          person_off: args.person_off, revision: latch.revision + 1, applied: true };
+      }
+      throw new Error(`unexpected ${command}`);
+    });
+  }
+  beforeEach(() => calls.enabled.mockReturnValue(true));
+  const latchCalls = () => calls.invoke.mock.calls.filter(([command]) => command === "desktop_service_question_route_child");
+
+  it("turning off latches first, at the service's revision, then turns the host off", async () => {
+    const s = local({ key: "latch-off" });
+    service({ person_off: false, revision: 0 });
+    calls.set.mockResolvedValue({ send_to_parent: false, revision: 1 });
+    await toggleRouting(s);
+    expect(latchCalls()).toHaveLength(1);
+    expect(latchCalls()[0][1]).toMatchObject({ session_id: SESSION, run_id: "run-1", conversation_id: "conversation-1", person_off: true, expected_revision: 0 });
+    expect(calls.set).toHaveBeenCalledWith(expect.anything(), false, 0);
+    expect(latchOf(s)).toEqual({ personOff: true, revision: 1 });
+    expect(routingEntry(s)).toMatchObject({ checked: false, hint: SEND_LATCHED });
+  });
+
+  it("an agent's host file on still shows off; turning on clears the latch first", async () => {
+    const s = local({ key: "latch-on", questionRouting: { sendToParent: true, revision: 4 } });
+    service({ person_off: true, revision: 3 });
+    // The first read of the latch is shown as it arrives.
+    latchOf(s);
+    await vi.waitFor(() => expect(latchOf(s)).toEqual({ personOff: true, revision: 3 }));
+    expect(routingEntry(s)).toMatchObject({ checked: false, hint: SEND_LATCHED });
+    calls.set.mockResolvedValue({ send_to_parent: true, revision: 4 });
+    await toggleRouting(s);
+    expect(latchCalls()[0][1]).toMatchObject({ person_off: false, expected_revision: 3 });
+    expect(calls.set).toHaveBeenCalledWith(expect.anything(), true, 4);
+    expect(routingEntry(s)).toMatchObject({ checked: true, hint: SEND_ON });
+  });
+
+  it("turning on never reaches the host unless the service cleared the latch", async () => {
+    const s = local({ key: "latch-refused", questionRouting: { sendToParent: false, revision: 1 } });
+    service({ person_off: true, revision: 2 }, () => ({ accepted: false, durable: false, code: "conflict" }));
+    await toggleRouting(s);
+    expect(calls.set).not.toHaveBeenCalled();
+    expect(calls.notify).toHaveBeenCalledWith("error", LATCH_UNCONFIRMED, true);
+  });
+
+  it("turning off reaches the host even when the latch was not confirmed: off sends less", async () => {
+    const s = local({ key: "latch-off-unconfirmed" });
+    service({ person_off: false, revision: 0 }, () => { throw new Error("frontend_receipt_unconfirmed"); });
+    calls.set.mockResolvedValue({ send_to_parent: false, revision: 1 });
+    await toggleRouting(s);
+    expect(calls.set).toHaveBeenCalledWith(expect.anything(), false, 0);
+    expect(calls.notify).toHaveBeenCalledWith("error", LATCH_UNCONFIRMED, true);
+  });
+
+  it("a remote child, a child without a durable ID or a desktop outside service mode uses only its host", async () => {
+    calls.set.mockResolvedValue({ send_to_parent: false, revision: 1 });
+    for (const s of [local({ key: "remote", computer: "box" }), child({ key: "no-id" }), local({ key: "no-service" })]) {
+      if (s.key === "no-service") calls.enabled.mockReturnValue(false);
+      await toggleRouting(s);
+      expect(latchOf(s)).toBeUndefined();
+    }
+    expect(calls.invoke).not.toHaveBeenCalled();
+    expect(calls.set).toHaveBeenCalledTimes(3);
   });
 });

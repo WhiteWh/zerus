@@ -26,17 +26,18 @@ pub fn has_marker(stdout: &[u8]) -> bool {
         .any(|line| line.trim_ascii() == MARKER.as_bytes())
 }
 
+/// A run or conversation identity as the switch's requests carry it:
+/// non-empty, at most `maximum` bytes, no control characters.
+pub fn identity(value: &str, maximum: usize) -> bool {
+    !value.is_empty() && value.len() <= maximum && !value.chars().any(|c| c < ' ' || c == '\u{7f}')
+}
+
 /// `hgs [@host] question-routing NAME --json`; 15 s here and 35 s on a peer.
 pub fn invocation(
     target: &Target,
     send_to_parent: bool,
     expected_revision: i64,
 ) -> Result<Invocation, String> {
-    let identity = |value: &str, maximum: usize| {
-        !value.is_empty()
-            && value.len() <= maximum
-            && !value.chars().any(|c| c < ' ' || c == '\u{7f}')
-    };
     if target.name.is_empty()
         || !identity(&target.run_id, 128)
         || !identity(&target.conversation_id, 256)

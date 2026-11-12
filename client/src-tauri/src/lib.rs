@@ -1634,6 +1634,8 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         desktop_service::desktop_service_automatic_approvals,
         desktop_service::desktop_service_question_routes,
         desktop_service::desktop_service_question_route_activity,
+        desktop_service::desktop_service_question_route_child,
+        desktop_service::desktop_service_question_route_child_status,
         desktop_service::task_message_inputs::desktop_service_task_message_inputs,
         desktop_service::task_message_inputs::desktop_service_task_message_input_release,
         desktop_service::frontend::desktop_service_maintenance_configure,

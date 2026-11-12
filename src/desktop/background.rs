@@ -397,6 +397,9 @@ impl Runtime {
         if authority.operation() == "question_routes" {
             return super::question_route::frontend(&mut store.db, authority);
         }
+        if authority.operation() == "question_route_child" {
+            return super::question_route::latch_frontend(&mut store.db, authority);
+        }
         if authority.operation() == "cache_maintenance" {
             return self.cache.frontend_request(store, authority);
         }
