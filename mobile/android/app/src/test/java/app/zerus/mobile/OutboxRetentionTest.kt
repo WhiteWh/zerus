@@ -232,4 +232,20 @@ class OutboxRetentionTest {
         }
     }
 
+    @Test fun pinOnlyChangeRewalksSameOutgoingAndEvictsReleasedExcessRow() {
+        val rows=List(101){represented()}
+        val engine=OutboxRetention.Normalizer()
+        val pinned=engine.normalize(MessageState(outgoing=rows),setOf(rows.first().requestId))
+        assertEquals(101,pinned.outgoing.size)
+        val unchanged=pinned.copy()
+        assertSame(pinned.outgoing,unchanged.outgoing)
+        val walks=engine.walks
+        // Only the pin argument changes; the outgoing list and every row are identical.
+        val released=engine.normalize(unchanged,emptySet())
+        assertEquals(100,released.outgoing.size)
+        assertEquals(walks+1,engine.walks)
+        assertEquals(pinned.outgoing.drop(1).map { it.requestId },released.outgoing.map { it.requestId })
+        assertEquals(101,pinned.outgoing.size)
+    }
+
 }
