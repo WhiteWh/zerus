@@ -96,6 +96,7 @@ impl ProjectStore {
                 Err(error) => return Err(error.into()),
             }
         }
+        let lock_owner_pid = std::process::id();
         // Recheck the named directories and identity after waiting for a writer.
         directory(root)?;
         directory(&dir)?;
@@ -111,6 +112,7 @@ impl ProjectStore {
             dir,
             project: project.into(),
             _lock: lock,
+            lock_owner_pid,
             journal: std::sync::Mutex::new(()),
             admission: Admission::default(),
             durable: std::sync::Mutex::new(std::collections::HashMap::new()),

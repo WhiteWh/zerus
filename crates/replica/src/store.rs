@@ -21,6 +21,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 mod copy_review;
 pub use copy_review::{CopyReview, CopyReviewOutcome};
+#[cfg(all(test, unix))]
+mod fork_tests;
 
 /// A rank longer than this renumbers its stage (ranks stay valid up to 64).
 const RENUMBER_AT: usize = 32;
@@ -464,6 +466,7 @@ pub struct ProjectStore {
     dir: PathBuf,
     project: String,
     _lock: File,
+    lock_owner_pid: u32,
     /// Serializes this instance's read-modify-write of the change journal:
     /// a store is shared between threads, and `save` takes `&self`.
     journal: std::sync::Mutex<()>,
@@ -475,6 +478,17 @@ pub struct ProjectStore {
     /// files. A document whose base is older is merged into the files'
     /// current state before it is saved, never written over it.
     durable: std::sync::Mutex<std::collections::HashMap<String, VersionVector>>,
+}
+
+impl Drop for ProjectStore {
+    fn drop(&mut self) {
+        // A pre-exec child can retain this open file description after our
+        // close. Release it explicitly, but never from a fork child's copy:
+        // that would unlock the original process's still-live store.
+        if self.lock_owner_pid == std::process::id() {
+            let _ = FileExt::unlock(&self._lock);
+        }
+    }
 }
 
 fn private_options() -> OpenOptions {
@@ -889,6 +903,7 @@ impl ProjectStore {
                 }
             }
         }
+        let lock_owner_pid = std::process::id();
         // A crash during an atomic write leaves its temporary file behind. No
         // one else writes while this lock is held, so any left now is garbage;
         // removing it is best effort.
@@ -912,6 +927,7 @@ impl ProjectStore {
             dir,
             project: project.into(),
             _lock: lock,
+            lock_owner_pid,
             journal: std::sync::Mutex::new(()),
             admission: Admission::default(),
             durable: std::sync::Mutex::new(std::collections::HashMap::new()),
