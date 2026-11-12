@@ -1739,7 +1739,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (config, private, _) = active(dir.path());
         let store = Store::lock(&private, true).unwrap();
-        let mut profile = load_record_from_store(&store).unwrap();
+        // The cross-platform reader: the Store's own one is Linux-only.
+        let mut profile = load_record(&private).unwrap();
         let computer = Identity::from_record(&profile.identity).unwrap();
         let phone = Identity::generate(uuid::Uuid::new_v4().to_string(), Role::Phone).unwrap();
         let add = SignedMembership::sign(
