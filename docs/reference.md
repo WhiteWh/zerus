@@ -1095,7 +1095,9 @@ The person has two switches, both on by default (zerus-sa9qn.32):
   `expected_revision`, `send_to_parent`; marker
   `session-question-routing-v1`) and refuses a change from an agent's own
   process tree (`agent_refused`), on the switch's own computer and, for `hgs
-  @host question-routing`, in the local CLI before forwarding. That refusal
+  @host question-routing`, in the local CLI before forwarding (also in the
+  guarded `--expect-machine ID [--client C] [__state]` forms and `__state
+  question-routing`, zerus-sa9qn.51). That refusal
   stops accidental agent use only; it is not a security boundary, because a
   same-user agent can clear its session variables, leave its process tree or
   write `question-routing.json` directly. The person-only control is the
@@ -1112,8 +1114,62 @@ The person has two switches, both on by default (zerus-sa9qn.32):
   the shared contract of the desktop, the connector, the relay, Android and
   iOS.
 
+- **The person's latch** (zerus-sa9qn.50): the background service on the
+  child's computer keeps a latch per durable session ID (Store schema 39).
+  While it is set, the child's questions never route, whatever its host
+  file says. The latch is the authority. After each change the service
+  writes the child's host file to follow it (`send_to_parent` the latch's
+  opposite), with a display-only mirror `person_off`. Listing rows,
+  `hgs inspect` and switch replies then carry
+  `question_routing` {`send_to_parent`, `revision`, `person_off`} (help
+  marker `session-question-routing-v2`). Older clients that know only the
+  two-key shape show the switch as unknown and fail closed. `hgs
+  question-routing` changes only `send_to_parent` and keeps the mirror.
+  On a child of this computer the desktop's **Send questions to PARENT**
+  goes through the latch: the person's native frontend request
+  (`question_route_child`, compare-and-swap at the child's exact run,
+  conversation and latch revision; closed refusals `conflict`,
+  `stale_identity`, `not_found`, `capacity`). The entry shows "You turned
+  this child's questions off" while latched. A remote child keeps its host
+  switch; while its mirror says a person latched it, the desktop shows it
+  off and offers no "on", which only its own computer or a phone can
+  give. The request lane an agent can reach only reads the latch
+  (`question_route_child_status`, `question_route_child_result`).
+  Boundary: the latch is person-only against an agent using commands (the
+  CLI, `hgs desktop request`, the connector), not against the same user
+  editing the service Store or the connector's files directly, the same
+  as the global switch.
+  A phone on an encrypted workspace sets the latch too, where its relay
+  and the computer both offer `session_question_route_person` (help marker
+  `question-route-person-v1`). The phone signs a statement with its
+  workspace Ed25519 key: domain `zerus-question-route-person-v1`, with
+  the workspace, phone, gateway, child session, run, conversation, value
+  and request ID, valid at most 5 minutes. The connector forwards it as one
+  `hgs desktop request` (`question_route_person`). The service runs this
+  computer's connector itself, pinned: the desktop's absolute selection or
+  the installed sibling of `hgs` (never a PATH lookup). The binary must be
+  this user's own regular file, not writable by others, answer
+  `--version` as `zerus-mobile-connector X.Y.Z`, and be unchanged after the
+  run. The run is bounded to 0.4 s and 1.2 s and 64 KiB of output, with a
+  cleared environment:
+  `zerus-mobile-connector --workspace verify-question-route-person`. The
+  verifier checks that a current phone of this workspace signed exactly
+  that statement for this gateway, and must reply exactly `{ok, verifier:
+  "question-route-person-v1", verified}`. Any failure, timeout or other
+  output is the closed refusal `not_verified`. The service then sets the
+  latch once per request ID, and the host file follows. Decisions apply in
+  the order the person made them (zerus-sa9qn.53): the latch keeps the
+  time of its last decision (a desktop decision records the computer's
+  time). A statement not issued after it, such as one delivered late, is
+  the closed refusal `stale_decision` and changes nothing. A decision that
+  changes nothing still records its time. The phone then refreshes and
+  asks again. Peers and Windows
+  gateways do not offer it, and a legacy connection keeps the host switch.
+  The shared vector is
+  `services/mobile/crypto/tests/vectors/question-route-person-v1.json`.
+
 The router reads nothing while the global switch is off. Every reservation
-reads both switches again in its own transaction, so a switch turned off
+reads both switches and the latch again in its own transaction, so a switch turned off
 before it stops the send and writes nothing; off never cancels or replays a
 question already reserved, sent or unknown. Turning routing on again reads the
 catalog from a new baseline: a question still pending and supervised then is

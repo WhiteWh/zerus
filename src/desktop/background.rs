@@ -54,6 +54,9 @@ pub(super) struct Runtime {
     /// The owner-approved question route, Linux only in v1 (zerus-sa9qn.8).
     #[cfg(target_os = "linux")]
     route: super::question_route::Runtime,
+    /// The CLI state root, where the person's latch mirror is written
+    /// (zerus-sa9qn.50).
+    state: std::path::PathBuf,
 }
 
 /// The actor can replace only an already admitted background runtime after its
@@ -144,6 +147,7 @@ impl Runtime {
                 task_start,
                 #[cfg(target_os = "linux")]
                 route,
+                state: config.state.clone(),
             }),
             Err(error) => {
                 producer.close();
@@ -396,6 +400,9 @@ impl Runtime {
         }
         if authority.operation() == "question_routes" {
             return super::question_route::frontend(&mut store.db, authority);
+        }
+        if authority.operation() == "question_route_child" {
+            return super::question_route::latch_frontend(&mut store.db, &self.state, authority);
         }
         if authority.operation() == "cache_maintenance" {
             return self.cache.frontend_request(store, authority);

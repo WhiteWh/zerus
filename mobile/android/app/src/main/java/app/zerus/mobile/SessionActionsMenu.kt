@@ -132,6 +132,9 @@ object SessionActionsMenu {
         !facts.online -> "The machine is offline."
         SessionQuestionRouting.operation !in facts.supported -> SessionQuestionRouting.unavailable
         facts.busy.isNotBlank() -> facts.busy
+        // A person's latch is cleared only by the person's latch statement (zerus-sa9qn.50).
+        SessionQuestionRouting.parse(facts.row)?.personOff == true && SessionQuestionRouting.personOperation !in facts.supported ->
+            SessionQuestionRouting.personLatched
         else -> SessionQuestionRouting.reason(facts.target,facts.row)
     }
     fun notificationReason(facts: SessionMenuFacts): String = when {

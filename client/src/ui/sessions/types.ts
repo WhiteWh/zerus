@@ -188,7 +188,7 @@ export interface Session {
   /** The host's Keep cache warm state, when it reports one. */
   keepWarm?: import("../../types").KeepWarmState;
   /** Whether this child's blocking questions go to its parent (zerus-sa9qn.32). */
-  questionRouting?: { sendToParent: boolean; revision: number };
+  questionRouting?: { sendToParent: boolean; revision: number; personOff: boolean };
 }
 
 /** A file of a message, as Qt's attachment card shows it (ActivityView.cpp:759-782). */

@@ -76,7 +76,12 @@ pub fn result_valid(result: &Value, payload: &Value) -> bool {
         && result.as_object().is_some_and(|object| object.len() == 5)
         && result["run_id"] == payload["expected_run_id"]
         && result["conversation_id"] == payload["expected_conversation_id"]
-        && routing.as_object().is_some_and(|object| object.len() == 2)
+        // v1 is the switch and its revision; v2 adds the person's latch
+        // mirror, display-only (zerus-sa9qn.50).
+        && routing.as_object().is_some_and(|object| {
+            object.len() == 2
+                || (object.len() == 3 && object.get("person_off").is_some_and(Value::is_boolean))
+        })
         && routing["send_to_parent"].is_boolean()
         && routing["send_to_parent"] == payload["send_to_parent"]
         && expected.checked_add(i64::from(applied)) == Some(revision)

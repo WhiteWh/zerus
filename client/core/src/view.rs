@@ -1366,16 +1366,10 @@ pub fn row(value: &Value) -> ViewRow {
         summary: simplified(&session.summary()),
         updated_at: number(value, "last_event_at").filter(|at| *at > 0.0),
         keep_warm: object(value, "keep_warm").map(|warm| Value::Object(warm.clone())),
-        question_routing: object(value, "question_routing")
-            .filter(|routing| {
-                routing.len() == 2
-                    && routing.get("send_to_parent").is_some_and(Value::is_boolean)
-                    && routing
-                        .get("revision")
-                        .and_then(Value::as_i64)
-                        .is_some_and(|revision| revision >= 0)
-            })
-            .map(|routing| Value::Object(routing.clone())),
+        question_routing: value
+            .get("question_routing")
+            .filter(|routing| crate::question_routing::shaped(routing))
+            .cloned(),
         archived_at: number(value, "archived_at"),
         turn_started: session.turn_started(),
         launch_id: some(text(value, "launch_id")),

@@ -83,9 +83,10 @@ fn insert(tx: &Connection, record: &Record, at: i64, state: &str, code: &str) ->
 }
 
 /// The reservation, in the actor's admission transaction. The person's
-/// switches come first, read in this transaction: the global one in the
-/// Store and the child's own on its host (`state`, the CLI state root). Off
-/// writes nothing. Then `reserved` when the parent is under its hourly
+/// switches come first, read in this transaction: the global one and the
+/// person's latch on this child in the Store (zerus-sa9qn.50), and the
+/// child's own on its host (`state`, the CLI state root). Off writes
+/// nothing. Then `reserved` when the parent is under its hourly
 /// bound, else the final refusal. Any error writes nothing.
 pub(super) fn reserve(
     tx: &Transaction<'_>,
@@ -94,6 +95,7 @@ pub(super) fn reserve(
     state: &Path,
 ) -> Result<Reservation> {
     if !super::policy::enabled(tx)?
+        || super::latch::latched(tx, &record.identity.session_id)?
         || crate::state::question_routing::send_to_parent_at(state, &record.identity.session_id)
             != Some(true)
     {

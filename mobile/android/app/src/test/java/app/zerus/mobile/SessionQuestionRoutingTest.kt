@@ -19,7 +19,7 @@ class SessionQuestionRoutingTest {
     @Test fun onlyTheExactShapeIsKnownAndAnythingElseIsUnknown() {
         for(case in cases("parse")) {
             val raw = JSONObject().put("question_routing",case.opt("question_routing") ?: JSONObject.NULL)
-            val expected = case.optJSONObject("routing")?.let { QuestionRouting(it.getBoolean("send_to_parent"),it.getLong("revision")) }
+            val expected = case.optJSONObject("routing")?.let { QuestionRouting(it.getBoolean("send_to_parent"),it.getLong("revision"),it.optBoolean("person_off",false)) }
             assertEquals(case.getString("name"),expected,SessionQuestionRouting.parse(raw))
         }
         assertNull("absent",SessionQuestionRouting.parse(JSONObject()))
@@ -49,6 +49,17 @@ class SessionQuestionRoutingTest {
         assertEquals("Stop sending questions to lead",SessionQuestionRouting.label(JSONObject(raw.toString()).put("question_routing",JSONObject().put("send_to_parent",true).put("revision",0))))
         assertEquals("Send questions to lead",SessionQuestionRouting.label(JSONObject(raw.toString()).put("question_routing",JSONObject().put("send_to_parent",false).put("revision",1))))
         assertEquals("Questions to lead",SessionQuestionRouting.label(raw))
+    }
+
+    @Test fun aChildThePersonLatchedOffTurnsOnFromItsEffectiveValue() {
+        // zerus-sa9qn.50: the host file says on, the person's latch says off; choosing it turns questions on.
+        val latched = QuestionRouting(true,5,personOff = true)
+        assertFalse(latched.sends)
+        assertEquals(true,SessionQuestionRouting.toggle(latched).getBoolean("send_to_parent"))
+        assertEquals(false,SessionQuestionRouting.toggle(QuestionRouting(true,5)).getBoolean("send_to_parent"))
+        val raw = JSONObject().put("parent",JSONObject().put("name","codex/project/lead"))
+            .put("question_routing",JSONObject().put("send_to_parent",true).put("revision",5).put("person_off",true))
+        assertEquals("Send questions to lead",SessionQuestionRouting.label(raw))
     }
 
     @Test fun theChangeTurnsTheCurrentValueTheOtherWayAtItsRevision() {

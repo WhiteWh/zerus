@@ -19,11 +19,30 @@ const IDENTITY: &str = source!("The session has no confirmed conversation yet.")
 const HELP_CAP: usize = 256 * 1024;
 const REPLY_CAP: usize = 64 * 1024;
 
+/// The switch's exact shape: `send_to_parent` and its `revision`, with the
+/// person's latch mirror `person_off` under marker
+/// `session-question-routing-v2` (zerus-sa9qn.50). Anything else is unknown.
+pub fn shaped(routing: &Value) -> bool {
+    routing.as_object().is_some_and(|o| {
+        (o.len() == 2 || (o.len() == 3 && o.get("person_off").is_some_and(Value::is_boolean)))
+            && o.get("send_to_parent").is_some_and(Value::is_boolean)
+            && o.get("revision")
+                .and_then(Value::as_i64)
+                .is_some_and(|revision| revision >= 0)
+    })
+}
+
 /// Whether `stdout` lists the marker as a whole line.
 pub fn has_marker(stdout: &[u8]) -> bool {
     stdout
         .split(|&b| b == b'\n')
         .any(|line| line.trim_ascii() == MARKER.as_bytes())
+}
+
+/// A run or conversation identity as the switch's requests carry it:
+/// non-empty, at most `maximum` bytes, no control characters.
+pub fn identity(value: &str, maximum: usize) -> bool {
+    !value.is_empty() && value.len() <= maximum && !value.chars().any(|c| c < ' ' || c == '\u{7f}')
 }
 
 /// `hgs [@host] question-routing NAME --json`; 15 s here and 35 s on a peer.
@@ -32,11 +51,6 @@ pub fn invocation(
     send_to_parent: bool,
     expected_revision: i64,
 ) -> Result<Invocation, String> {
-    let identity = |value: &str, maximum: usize| {
-        !value.is_empty()
-            && value.len() <= maximum
-            && !value.chars().any(|c| c < ' ' || c == '\u{7f}')
-    };
     if target.name.is_empty()
         || !identity(&target.run_id, 128)
         || !identity(&target.conversation_id, 256)
@@ -120,6 +134,7 @@ pub fn classify(
     let routing = &reply["question_routing"];
     let revision = routing["revision"].as_i64();
     let confirmed = exact
+        && shaped(routing)
         && reply["ok"] == true
         && reply["run_id"].as_str() == Some(target.run_id.as_str())
         && reply["conversation_id"].as_str() == Some(target.conversation_id.as_str())

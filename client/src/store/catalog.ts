@@ -209,12 +209,18 @@ export function toSession(computer: ComputerId, key: string, v: ViewRow, marks: 
   return Object.assign(base, marks.overlay(base));
 }
 
-/** The host's per-child question route switch, when it reports a valid one. */
-export function questionRoutingOf(value: unknown): { sendToParent: boolean; revision: number } | undefined {
+/**
+ * The host's per-child question route switch, when it reports a valid one: under
+ * session-question-routing-v2 with `person_off`, a display-only mirror of the person's
+ * latch, whose authority is the child's computer's service (zerus-sa9qn.50).
+ */
+export function questionRoutingOf(value: unknown): { sendToParent: boolean; revision: number; personOff: boolean } | undefined {
   if (!value || typeof value !== "object") return undefined;
   const v = value as Record<string, unknown>;
-  if (Object.keys(v).length !== 2 || typeof v.send_to_parent !== "boolean" || typeof v.revision !== "number" || !Number.isInteger(v.revision) || v.revision < 0) return undefined;
-  return { sendToParent: v.send_to_parent, revision: v.revision };
+  const keys = Object.keys(v).length;
+  if (!(keys === 2 || (keys === 3 && typeof v.person_off === "boolean"))) return undefined;
+  if (typeof v.send_to_parent !== "boolean" || typeof v.revision !== "number" || !Number.isInteger(v.revision) || v.revision < 0) return undefined;
+  return { sendToParent: v.send_to_parent, revision: v.revision, personOff: v.person_off === true };
 }
 
 /** How long a `replaced` removal waits for the new run of the same name. */

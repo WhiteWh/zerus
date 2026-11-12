@@ -70,23 +70,23 @@ class QuestionRouting(unittest.TestCase):
         code, off = self.change(False, 0)
         self.assertEqual(code, 0, off)
         self.assertEqual((off['ok'], off['applied'], off['question_routing']),
-                         (True, True, {'send_to_parent': False, 'revision': 1}))
+                         (True, True, {'send_to_parent': False, 'revision': 1, 'person_off': False}))
         self.assertEqual(self.stored()['sessions'][CHILD_ID], {'send_to_parent': False, 'revision': 1})
         self.assertEqual(self.listed()[self.child['name']]['question_routing'],
-                         {'send_to_parent': False, 'revision': 1})
+                         {'send_to_parent': False, 'revision': 1, 'person_off': False})
         # The inspection shows the same switch (the phones check against it).
         inspected = subprocess.run([str(HGS), 'inspect', self.child['name']], env=self.env, capture_output=True,
                                    text=True, timeout=20)
         self.assertEqual(inspected.returncode, 0, inspected.stderr)
-        self.assertEqual(json.loads(inspected.stdout)['question_routing'], {'send_to_parent': False, 'revision': 1})
+        self.assertEqual(json.loads(inspected.stdout)['question_routing'], {'send_to_parent': False, 'revision': 1, 'person_off': False})
         # Another session keeps the default.
         self.assertEqual(self.listed()[self.parent['name']]['question_routing'],
-                         {'send_to_parent': True, 'revision': 0})
+                         {'send_to_parent': True, 'revision': 0, 'person_off': False})
         # A second desktop with the old revision is refused, not merged.
         code, conflict = self.change(True, 0)
         self.assertEqual((code, conflict['error']), (1, 'conflict'))
         code, on = self.change(True, 1)
-        self.assertEqual((code, on['question_routing']), (0, {'send_to_parent': True, 'revision': 2}))
+        self.assertEqual((code, on['question_routing']), (0, {'send_to_parent': True, 'revision': 2, 'person_off': False}))
         # The same value again changes nothing.
         code, same = self.change(True, 2)
         self.assertEqual((code, same['applied'], same['question_routing']['revision']), (0, False, 2))
@@ -114,14 +114,20 @@ class QuestionRouting(unittest.TestCase):
         agent = self.record('codex/example/parent', 'codex', 'run-parent', 'conversation-parent', PARENT_ID, owned=True)
         request = json.dumps(dict(expected_run_id='run-child', expected_conversation_id='conversation-child',
                                   expected_revision=0, send_to_parent=True))
+        machine = '55555555-5555-4555-8555-555555555555'
         forms = (['@peer', 'question-routing', self.child['name'], '--json'],
-                 ['@peer', '--expect-machine', '55555555-5555-4555-8555-555555555555', 'question-routing',
-                  self.child['name'], '--json'])
+                 ['@peer', '--expect-machine', machine, 'question-routing', self.child['name'], '--json'],
+                 # zerus-sa9qn.51: the internal state form and the client form.
+                 ['@peer', '--expect-machine', machine, '__state', 'question-routing', self.child['name'], '--json'],
+                 ['@peer', '--expect-machine', machine, '--client', 'box', 'question-routing', self.child['name'], '--json'],
+                 ['@peer', '--expect-machine', machine, '--client', 'box', '__state', 'question-routing',
+                  self.child['name'], '--json'],
+                 ['@peer', '__state', 'question-routing', self.child['name'], '--json'])
         for form in forms:
             def run(extra):
                 return subprocess.run([str(HGS), '--dry-run', *form], env=dict(self.env, HGS_PEERS='peer', **extra),
                                       input=request, capture_output=True, text=True, timeout=10)
-            with self.subTest(form=form[1]):
+            with self.subTest(form=' '.join(form[1:-2])):
                 refused = run(dict(HGS_SESSION=agent['name'], HGS_RUN_ID=agent['run_id']))
                 self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
                 self.assertEqual(json.loads(refused.stdout), {'ok': False, 'error': 'agent_refused'})
@@ -130,7 +136,8 @@ class QuestionRouting(unittest.TestCase):
                 # forwarding path: the plain form prints its ssh command; the
                 # guarded form reaches its own refusal of --dry-run.
                 forwarded = run({})
-                if form[1] == 'question-routing':
+                self.assertNotIn('agent_refused', forwarded.stdout)
+                if form[1] in ('question-routing', '__state'):
                     self.assertEqual(forwarded.returncode, 0, forwarded.stderr)
                     self.assertIn('ssh', forwarded.stdout)
                     self.assertIn('question-routing', forwarded.stdout)

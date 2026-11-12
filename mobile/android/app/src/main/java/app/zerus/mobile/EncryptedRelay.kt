@@ -233,6 +233,19 @@ internal suspend fun RelayApi.encryptedPost(connection:Connection,body:JSONObjec
     decodeEncryptedReceipt(connection,state,result,id,retained.header)
 }
 
+/** A phone's signed latch statement for the gateway that routes [computer] (zerus-sa9qn.50): built and signed once, when the
+ * person's action is sent; that gateway's own service verifies it. The payload of session_question_route_person. */
+internal suspend fun RelayApi.signRoutePerson(connection:Connection,computer:String,sessionId:String,run:String,conversation:String,
+                                              personOff:Boolean,requestId:String):JSONObject=withContext(Dispatchers.IO) {
+    val state=synchronizeWorkspace(connection);val membership=state.requireActive()
+    val route=state.routes[computer] ?: error("Refresh this computer's encrypted route before sending.")
+    require(membership.members[route.gatewayId]?.role=="computer") { "The executing gateway is no longer enrolled." }
+    val now=nowSeconds()
+    val statement=RoutePersonStatement(membership.workspaceId,state.identity.device.deviceId,route.gatewayId,sessionId,run,conversation,
+        personOff,requestId,now,now+RoutePersonStatement.LIFETIME)
+    JSONObject().put("statement",statement.json()).put("signature",WorkspaceProtocol.encode(WorkspaceCrypto.sign(state.identity.keys,statement.frame())))
+}
+
 /** Establish local retained authority before registering any readiness watch.
  * This does not replace the NEW membership check in encryptedReceipt(). */
 internal suspend fun RelayApi.prepareReceiptWatch(connection:Connection,id:String)=withContext(Dispatchers.IO) {

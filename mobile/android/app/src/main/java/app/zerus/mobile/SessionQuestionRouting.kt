@@ -2,8 +2,12 @@ package app.zerus.mobile
 
 import org.json.JSONObject
 
-/** The child's switch as its computer reports it: whether its blocking questions go to its parent session. */
-data class QuestionRouting(val sendToParent: Boolean, val revision: Long)
+/** The child's switch as its computer reports it: whether its blocking questions go to its parent session, and (marker v2)
+ * the display-only mirror of the person's latch in that computer's service, which is the authority (zerus-sa9qn.50). */
+data class QuestionRouting(val sendToParent: Boolean, val revision: Long, val personOff: Boolean = false) {
+    /** Whether its questions go to the parent: the host says so and the person did not latch it off. */
+    val sends get() = sendToParent && !personOff
+}
 
 /**
  * The person's per-child switch of the owner-approved question route (zerus-sa9qn.33), kept on the child's
@@ -18,13 +22,14 @@ object SessionQuestionRouting {
     const val hint = "Applies to this child session on all devices."
     private fun integer(value: Any?): Long? = when(value) { is Int -> value.toLong();is Long -> value;else -> null }?.takeIf { it >= 0 }
 
-    /** Exactly `send_to_parent` and its `revision`; anything else is unknown, never a default. */
+    /** Exactly `send_to_parent` and its `revision`, with `person_off` under v2; anything else is unknown, never a default. */
     fun parse(raw: JSONObject?): QuestionRouting? {
         val value = raw?.optJSONObject("question_routing") ?: return null
-        if(value.length() != 2 || value.opt("send_to_parent") !is Boolean) return null
+        if(!(value.length() == 2 || (value.length() == 3 && value.opt("person_off") is Boolean)) || value.opt("send_to_parent") !is Boolean) return null
         val revision = integer(value.opt("revision")) ?: return null
-        return QuestionRouting(value.getBoolean("send_to_parent"),revision)
+        return QuestionRouting(value.getBoolean("send_to_parent"),revision,value.opt("person_off") == true)
     }
+    const val personLatched = "A person turned this child's questions off. Turn them on again from its own computer or a phone on an encrypted workspace."
     private fun agent(target: Target, raw: JSONObject) =
         (raw.opt("cmd") as? String).orEmpty().ifBlank { (raw.opt("agent") as? String).orEmpty() }.ifBlank { target.session.substringBefore('/') }
     /** A live Claude session with a parent link: only those route their questions in this version. */
@@ -33,7 +38,7 @@ object SessionQuestionRouting {
     fun parentName(raw: JSONObject?): String =
         (raw?.optJSONObject("parent")?.opt("name") as? String)?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "parent"
     /** What choosing it does: turn sending off, turn it on, or (unknown) nothing yet. */
-    fun label(raw: JSONObject?): String = when(parse(raw)?.sendToParent) {
+    fun label(raw: JSONObject?): String = when(parse(raw)?.sends) {
         true -> "Stop sending questions to ${parentName(raw)}"
         false -> "Send questions to ${parentName(raw)}"
         null -> "Questions to ${parentName(raw)}"
@@ -45,7 +50,7 @@ object SessionQuestionRouting {
     }
     /** The confirmed change turns the current value the other way at its revision. */
     fun toggle(routing: QuestionRouting?): JSONObject =
-        JSONObject().put("send_to_parent",routing?.sendToParent != true).put("expected_revision",routing?.revision ?: -1)
+        JSONObject().put("send_to_parent",routing?.sends != true).put("expected_revision",routing?.revision ?: -1)
     fun arguments(raw: JSONObject): JSONObject {
         require(raw.length()==2 && raw.opt("send_to_parent") is Boolean && integer(raw.opt("expected_revision")) != null) { "Invalid question routing setting." }
         return JSONObject(raw.toString())
@@ -61,6 +66,39 @@ object SessionQuestionRouting {
         "capacity" to "The computer's question routing storage is full. The setting was not changed.",
         "revision_exhausted" to "The question routing revision is exhausted. The setting was not changed.")
     const val uncertain = "Where this child's questions go was not confirmed. Check its original receipt; it has not been retried."
+
+    /** The person's latch through this phone's signed statement (zerus-sa9qn.50). */
+    const val personOperation = "session_question_route_person"
+    /** Only an encrypted workspace connection can sign, and only where both the relay and the computer offer it. */
+    fun person(connection: Connection?, relay: Set<String>, machine: Set<String>) =
+        connection?.protocolVersion == 2 && personOperation in relay && personOperation in machine
+    /** The toggled switch at the row's revision, for the child's durable session ID. */
+    fun personArguments(raw: JSONObject): JSONObject {
+        require(raw.length()==3 && (raw.opt("session_id") as? String)?.let { runCatching { WorkspaceProtocol.identifier(it) }.isSuccess } == true) { "Invalid question routing setting." }
+        arguments(JSONObject(raw.toString()).apply { remove("session_id") })
+        return JSONObject(raw.toString())
+    }
+    val personRefusals = mapOf(
+        "not_verified" to "The computer did not accept this phone's signature. Refresh this workspace and try again.",
+        "stale_decision" to "A newer choice for this child was made. Refresh and choose again.",
+        "stale_identity" to "The conversation changed. Refresh its exact identity before applying.",
+        "not_found" to "This conversation is no longer available.",
+        "capacity" to "The computer's question routing storage is full. The setting was not changed.",
+        "invalid_request" to "The computer refused this request. Refresh and try again.")
+    /** Only the service's exact receipt of this statement settles it; a closed refusal fails; anything else is uncertain. */
+    fun personResult(action: SessionAction, receipt: JSONObject): SessionAction {
+        val value = receipt.optJSONObject("result")
+        val args = runCatching { personArguments(JSONObject(action.arguments)) }.getOrNull()
+        val completed = receipt.opt("request_id")==action.requestId && receipt.opt("state")=="completed" && args != null && value != null &&
+            value.opt("request_id")==action.requestId && value.opt("op")=="question_route_child"
+        if(completed && value!!.opt("accepted")==false && value.length()==5 && value.opt("durable")==false)
+            personRefusals[value.opt("code") as? String]?.let { return action.copy(status="failed",error=it) }
+        val valid = completed && value!!.length()==9 && value.opt("accepted")==true && value.opt("durable")==true &&
+            value.opt("session_id")==args!!.getString("session_id") && value.opt("person_off")==!args.getBoolean("send_to_parent") &&
+            (value.opt("revision") as? Number)?.toLong()?.let { it >= 0 } == true && value.opt("applied") is Boolean &&
+            value.opt("code")==""
+        return if(valid) action.copy(status="completed",error="") else action.copy(status="uncertain",error=uncertain)
+    }
     /** Only the computer's exact reply settles it: a closed refusal fails, the exact confirmation completes, anything else is uncertain. */
     fun result(action: SessionAction, receipt: JSONObject): SessionAction {
         val value = receipt.optJSONObject("result")

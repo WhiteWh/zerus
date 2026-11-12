@@ -237,6 +237,8 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        session-keep-warm-v1
        delivery-receipt-v1
        session-question-routing-v1
+       session-question-routing-v2
+       question-route-person-v1
        session-parent-v1
        launch-parent-v1
        claimed-parent-v1
@@ -812,12 +814,26 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
     // from an agent's own process tree here, before any `@host` forwarding,
     // because the peer's hgs cannot see this caller (zerus-sa9qn.47). This is
     // a guard against accidental agent use, not a security boundary: the
-    // person-only control is the global switch (zerus-sa9qn.49).
-    let routed = if command == "--expect-machine" {
-        args.get(1).map(String::as_str)
+    // person-only control is the global switch (zerus-sa9qn.49). The routed
+    // command is found in every form a peer runs it: `--expect-machine ID
+    // [--client C] [__state] COMMAND` and `[__state] COMMAND`
+    // (zerus-sa9qn.51).
+    let (first, then) = if command == "--expect-machine" {
+        let at = if args.get(1).is_some_and(|a| a == "--client") {
+            3
+        } else {
+            1
+        };
+        (args.get(at), args.get(at + 1))
     } else {
-        Some(command.as_str())
+        (Some(command), args.first())
     };
+    let routed = if first.is_some_and(|a| a == "__state") {
+        then
+    } else {
+        first
+    }
+    .map(String::as_str);
     if routed == Some("question-routing") && crate::state::session_graph::caller_record().is_some()
     {
         println!(

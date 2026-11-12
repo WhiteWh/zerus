@@ -1,7 +1,8 @@
 {
-  "description": "The person's per-child switch of the owner-approved question route (zerus-sa9qn.32 and .33): whether a supervised Claude child's blocking questions go to its parent session. Kept on the child's computer (`hgs question-routing`, marker session-question-routing-v1) and shared by every desktop and phone. The desktop (client/core and client/src), the connector, Android and iOS follow this contract. parse: the row's or inspection's `question_routing` value (null when unknown, never a default). availability: whether a session's actions show the switch and whether it can be changed while its computer is online and supports the operation. change: the exact payload that turns the current value the other way at its revision. results: how each platform settles the computer's reply: confirmed, refused (a closed refusal) or uncertain (never retried).",
+  "description": "The person's per-child switch of the owner-approved question route (zerus-sa9qn.32 and .33): whether a supervised Claude child's blocking questions go to its parent session. Kept on the child's computer (`hgs question-routing`, marker session-question-routing-v1) and shared by every desktop and phone. The desktop (client/core and client/src), the connector, Android and iOS follow this contract. parse: the row's or inspection's `question_routing` value (null when unknown, never a default); under marker session-question-routing-v2 it also carries person_off, a display-only mirror of the person's latch in the computer's desktop service (zerus-sa9qn.50), whose Store latch is the authority. availability: whether a session's actions show the switch and whether it can be changed while its computer is online and supports the operation. change: the exact payload that turns the current value the other way at its revision. results: how each platform settles the computer's reply: confirmed, refused (a closed refusal) or uncertain (never retried).",
   "operation": "session_question_routing",
   "marker": "session-question-routing-v1",
+  "marker_v2": "session-question-routing-v2",
   "parse": [
     {"name": "on by default", "question_routing": {"send_to_parent": true, "revision": 0}, "routing": {"send_to_parent": true, "revision": 0}},
     {"name": "turned off", "question_routing": {"send_to_parent": false, "revision": 3}, "routing": {"send_to_parent": false, "revision": 3}},
@@ -10,7 +11,12 @@
     {"name": "a negative revision", "question_routing": {"send_to_parent": true, "revision": -1}, "routing": null},
     {"name": "a fractional revision", "question_routing": {"send_to_parent": true, "revision": 1.5}, "routing": null},
     {"name": "no revision", "question_routing": {"send_to_parent": true}, "routing": null},
-    {"name": "an extra key", "question_routing": {"send_to_parent": true, "revision": 1, "muted": true}, "routing": null}
+    {"name": "an extra key", "question_routing": {"send_to_parent": true, "revision": 1, "muted": true}, "routing": null},
+    {"name": "v2: on, with the mirror", "question_routing": {"send_to_parent": true, "revision": 2, "person_off": false}, "routing": {"send_to_parent": true, "revision": 2, "person_off": false}},
+    {"name": "v2: turned off by the person", "question_routing": {"send_to_parent": false, "revision": 4, "person_off": true}, "routing": {"send_to_parent": false, "revision": 4, "person_off": true}},
+    {"name": "v2: on in the host file yet latched by the person", "question_routing": {"send_to_parent": true, "revision": 5, "person_off": true}, "routing": {"send_to_parent": true, "revision": 5, "person_off": true}},
+    {"name": "v2: a string mirror", "question_routing": {"send_to_parent": true, "revision": 1, "person_off": "yes"}, "routing": null},
+    {"name": "v2: a mirror and an extra key", "question_routing": {"send_to_parent": true, "revision": 1, "person_off": false, "muted": true}, "routing": null}
   ],
   "availability": [
     {"name": "a live Claude child", "row": {"name": "claude/project/child", "cmd": "claude", "state": "running", "parent": {"name": "codex/project/lead"}, "question_routing": {"send_to_parent": true, "revision": 0}}, "shown": true, "enabled": true, "parent": "lead"},
@@ -19,7 +25,8 @@
     {"name": "an unknown switch", "row": {"name": "claude/project/child", "cmd": "claude", "state": "running", "parent": {"name": "codex/project/lead"}, "question_routing": null}, "shown": true, "enabled": false, "parent": "lead"},
     {"name": "no parent link", "row": {"name": "claude/project/solo", "cmd": "claude", "state": "running", "question_routing": {"send_to_parent": true, "revision": 0}}, "shown": false},
     {"name": "an archived child", "row": {"name": "claude/project/child", "cmd": "claude", "state": "archived", "parent": {"name": "codex/project/lead"}, "question_routing": {"send_to_parent": true, "revision": 0}}, "shown": false},
-    {"name": "a Codex child", "row": {"name": "codex/project/child", "cmd": "codex", "state": "running", "parent": {"name": "codex/project/lead"}, "question_routing": {"send_to_parent": true, "revision": 0}}, "shown": false}
+    {"name": "a Codex child", "row": {"name": "codex/project/child", "cmd": "codex", "state": "running", "parent": {"name": "codex/project/lead"}, "question_routing": {"send_to_parent": true, "revision": 0}}, "shown": false},
+    {"name": "a child the person latched off, where only the host switch is offered", "row": {"name": "claude/project/child", "cmd": "claude", "state": "running", "parent": {"name": "codex/project/lead"}, "question_routing": {"send_to_parent": true, "revision": 5, "person_off": true}}, "shown": true, "enabled": false, "parent": "lead"}
   ],
   "change": {
     "session": {"run_id": "run-1", "conversation_id": "conversation-1"},
@@ -28,6 +35,8 @@
   },
   "results": [
     {"name": "applied", "exit": 0, "result": {"ok": true, "applied": true, "run_id": "run-1", "conversation_id": "conversation-1", "question_routing": {"send_to_parent": false, "revision": 3}}, "outcome": "confirmed"},
+    {"name": "v2: applied, with the mirror", "exit": 0, "result": {"ok": true, "applied": true, "run_id": "run-1", "conversation_id": "conversation-1", "question_routing": {"send_to_parent": false, "revision": 3, "person_off": false}}, "outcome": "confirmed"},
+    {"name": "v2: a reply with a string mirror", "exit": 0, "result": {"ok": true, "applied": true, "run_id": "run-1", "conversation_id": "conversation-1", "question_routing": {"send_to_parent": false, "revision": 3, "person_off": 1}}, "outcome": "uncertain"},
     {"name": "already so", "exit": 0, "result": {"ok": true, "applied": false, "run_id": "run-1", "conversation_id": "conversation-1", "question_routing": {"send_to_parent": false, "revision": 2}}, "outcome": "confirmed"},
     {"name": "another value", "exit": 0, "result": {"ok": true, "applied": true, "run_id": "run-1", "conversation_id": "conversation-1", "question_routing": {"send_to_parent": true, "revision": 3}}, "outcome": "uncertain"},
     {"name": "another revision", "exit": 0, "result": {"ok": true, "applied": true, "run_id": "run-1", "conversation_id": "conversation-1", "question_routing": {"send_to_parent": false, "revision": 4}}, "outcome": "uncertain"},

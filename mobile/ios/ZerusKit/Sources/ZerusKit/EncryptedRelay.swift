@@ -138,6 +138,22 @@ extension RelayClient {
         return ["computers": .array(records.keys.sorted().map { .object(records[$0]!) }), "unavailable_computers": .array(unavailable.subtracting(records.keys).sorted().map(JSON.string))]
     }
 
+    /// A phone's signed latch statement for the gateway that routes `computer` (zerus-sa9qn.50): built and signed once,
+    /// when the person's action is sent; that gateway's own service verifies it. The payload of session_question_route_person.
+    public func signRoutePerson(_ connection: Connection, computer: String, sessionId: String, run: String, conversation: String,
+                         personOff: Bool, requestId: String) async throws -> JSONObject {
+        let state = try await synchronizeWorkspace(connection), membership = try state.active()
+        guard let route = state.routes[computer], membership.members[route.gatewayId]?.role == "computer" else {
+            throw ZerusError.mismatch("Refresh this computer's encrypted route before sending.")
+        }
+        let now = Self.nowSeconds
+        let statement = try RoutePersonStatement(workspaceId: membership.workspaceId, deviceId: state.identity.device.deviceId,
+            gatewayId: route.gatewayId, sessionId: sessionId, runId: run, conversationId: conversation, personOff: personOff,
+            requestId: requestId, issuedAt: now, expiresAt: now + RoutePersonStatement.lifetime)
+        let signature = try WorkspaceCrypto.sign(state.identity.keys, message: statement.frame())
+        return ["statement": .object(statement.json), "signature": .string(WorkspaceProtocol.encode(signature))]
+    }
+
     func encryptedPost(_ connection: Connection, body: JSONObject) async throws -> JSONObject {
         let state = try await synchronizeWorkspace(connection), membership = try state.active(), journal = try journal()
         let id = try WorkspaceProtocol.string(body, "request_id"); try WorkspaceProtocol.identifier(id)

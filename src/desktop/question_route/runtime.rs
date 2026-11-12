@@ -550,22 +550,7 @@ impl Runtime {
     /// The one visible local row with this session ID, from the indexed
     /// session expression; none when absent or ambiguous.
     pub(super) fn session_row(store: &Store, session_id: &str) -> Result<Option<Value>> {
-        let mut query = store.db.prepare_cached(
-            "SELECT r.json FROM desktop_catalog_sources s JOIN desktop_catalog_rows r
-             ON r.generation=s.visible
-             AND (CASE WHEN json_valid(r.json) THEN json_extract(r.json,'$.session_id') END)=?2
-             WHERE s.computer=?1 AND length(CAST(r.json AS BLOB))<=?3 LIMIT 2",
-        )?;
-        let rows = query
-            .query_map(
-                params![LOCAL, session_id, catalog::PAGE_BYTES as i64],
-                |r| r.get::<_, String>(0),
-            )?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(match rows.as_slice() {
-            [raw] => serde_json::from_str(raw).ok(),
-            _ => None,
-        })
+        super::session_row(&store.db, session_id)
     }
     fn route(
         &mut self,
