@@ -882,6 +882,10 @@ impl Native<'_> {
                 super::claude_question::same_panel(previous, &actual, self.card)
             } else if string(self.card, "source") == "codex_async" {
                 super::codex_questions::same_panel(previous, &actual, self.card)
+            } else if string(&current, "agent") == "kimi" && super::kimi_goal::is(self.card) {
+                super::kimi_approval::bound_goal(&current, self.card).is_ok_and(|event| {
+                    super::kimi_goal::same_panel(previous, &actual, &event["request"])
+                })
             } else {
                 previous == &actual
             }

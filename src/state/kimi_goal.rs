@@ -533,6 +533,42 @@ fn read_layout(screen: &str, request: &Value) -> Result<Layout> {
     }
 }
 
+// Kimi 2.6 animates only foreground RGB on this exact status row while
+// its fullscreen Goal panel waits. Validate both complete panels first, then
+// compare every byte except those colour controls on that one row.
+pub(super) fn same_panel(before: &str, after: &str, request: &Value) -> bool {
+    if before == after { return true; }
+    let Ok(Layout::Docked(selected)) = read_layout(before, request) else { return false; };
+    if read_layout(after, request) != Ok(Layout::Docked(selected)) { return false; }
+    fn normalized(screen: &str) -> Option<String> {
+        static COLOUR: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let colour = COLOUR.get_or_init(|| regex::Regex::new(r"\x1b\[(?:38;2;([0-9]{1,3});([0-9]{1,3});([0-9]{1,3})|39)m").unwrap());
+        let rows: Vec<_> = screen.split_inclusive('\n').collect();
+        let mut found = None;
+        for (index, row) in rows.iter().enumerate() {
+            if colour.captures_iter(row).any(|capture| (1..=3).any(|i| {
+                capture.get(i).is_some_and(|value| value.as_str().parse::<u8>().is_err())
+            })) { return None; }
+            let cleaned = colour.replace_all(row, "");
+            if cleaned.trim() != "Using tools" { continue; }
+            // This is the status immediately above the validated docked Goal,
+            // not a similarly worded transcript row elsewhere on the screen.
+            let next = rows[index + 1..].iter().position(|row| !row.trim().is_empty())? + index + 1;
+            let plain = question_terminal::plain(&rows[next..].concat()).ok()?;
+            let mut panel = plain.lines();
+            rule(panel.next()?.trim_end())?;
+            if panel.next()?.trim() != "▶ Approve CreateGoal?" { return None; }
+            if found.replace((index, cleaned.into_owned())).is_some() { return None; }
+        }
+        let (index, cleaned) = found?;
+        let mut result = rows[..index].concat();
+        result.push_str(&cleaned);
+        result.push_str(&rows[index + 1..].concat());
+        Some(result)
+    }
+    normalized(before).zip(normalized(after)).is_some_and(|(a, b)| a == b)
+}
+
 fn read(screen: &str, request: &Value) -> Result<()> {
     read_layout(screen, request).map(|_| ())
 }
@@ -825,6 +861,40 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn fullscreen_animation_changes_only_the_exact_status_foreground_colours() {
+        let before = include_str!("../../tests/fixtures/kimi-goal-2.6.0-static.txt");
+        let after = include_str!("../../tests/fixtures/kimi-goal-2.6.0-animated.txt");
+        let mut event = request("manual");
+        event["request"]["display"]["objective"] = json!("Завершить проверку отдельного intrinsic слоя и новой публикации без production");
+        event["request"]["display"]["completionCriterion"] = json!("Все 13 trophy/156 состояний проверены, включая g2★0, без двойного учёта");
+        let request = &event["request"];
+        assert_ne!(before, after);
+        assert!(same_panel(before, after, request));
+        assert!(same_panel(after, before, request));
+        assert!(same_panel(before, &after.replacen("Using", "U\x1b[38;2;100;100;100msing", 1), request));
+        for wrong in [
+            after.replace("Using tool", "Using Tool"),
+            after.replace("Using tool", "Using  tool"),
+            after.replacen("Using", "\x1b[1mUsing", 1),
+            after.replacen("144;144;144", "999;144;144", 1),
+            after.replace("Do not start", "Do not begin"),
+            after.replace("↑/↓ select", "↑/↓ choose"),
+            after.replace("Start goal:", "Start Goal:"),
+            after.replace("❯ Start", "❯ Changed"),
+            after.replacen("232;168;56", "232;168;57", 1),
+            format!("Using tools\n{after}"),
+            format!("{after} "),
+        ] { assert!(!same_panel(before, &wrong, request), "{wrong:?}"); }
+        let mut wrong_request = request.clone();
+        wrong_request["display"]["mode"] = json!("yolo");
+        assert!(!same_panel(before, after, &wrong_request));
+        let changed_selection = docked_screen(&event, 1, 78);
+        assert!(!same_panel(before, &format!("Using tools\n{changed_selection}"), request));
+        let inline = screen(&event, 0);
+        assert!(!same_panel(&format!("Using tools\n{inline}"), &format!("\x1b[38;2;1;2;3mUsing tools\x1b[39m\n{inline}"), request));
     }
 
     #[test]
