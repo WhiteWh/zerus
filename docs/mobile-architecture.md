@@ -1011,6 +1011,34 @@ Saving an acquired result finishes outside that transport deadline, so a slow
 accepted write cannot turn a confirmed delivery back into an unknown outcome.
 A timed-out manual receipt check reports that the original remains recoverable.
 
+Android and iOS retain a new text-only send's exact native payload and options
+inside its encrypted outbox row before transport, bounded by the existing 64 KiB
+text limit. The frozen intent records the original computer, physical machine,
+durable session, literal name, run/conversation, provider and transport encoding.
+Its canonical ASCII JSON `intent_sha256` and the producer's `native_digest` name
+different byte encodings; neither normalizes Unicode, line endings or whitespace.
+They are never compared as interchangeable hashes.
+
+Check delivery first reads the original connector journal UUID. When both gateway
+and selected computer advertise `send_receipt`, it may then submit a fresh READ
+UUID for that frozen original. Both stages share one 45-second campaign; a
+fallback or poll never renews it. Only exact positive original-receipt admission
+settles that original outbox row, preserving its dismissal choice, newer composer
+and other lanes. Read failures, missing/corrupt records and identity/digest
+mismatches leave delivery unknown. They never become Not sent or a resend.
+Legacy rows may reconstruct only the ordinary payload whose exact native digest
+matches the original; lost continuation/options remain unknown, with no text or
+time search. The original mutation journal and UUID stay unchanged.
+
+An uncertain send remains visible and unknown beside an ordinary provider echo.
+Delivery evidence comes from a receipt read or the existing exact receipt-backed
+native request/message IDs; text and time never settle uncertainty. Already submitted or recorded rows keep the existing presentation
+deduplication: exact receipt/native IDs come first, followed by the unique text
+and time match. This presentation match never proves delivery. A recovery proof
+whose durable update starts after its campaign deadline remains unknown, even
+if it arrived in time; the ordinary-send save rule above is unchanged.
+Confirmed admission does not mean the agent finished processing it.
+
 The multiline composer keeps one editor state for text, selection and IME
 composition across polling, expansion and sending. Sending brings the new local
 message into view. Incoming updates follow the tail only while the user is

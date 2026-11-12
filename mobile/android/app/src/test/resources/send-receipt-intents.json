@@ -1,0 +1,258 @@
+{
+  "schema": 1,
+  "description": "Exact bytes; no normalization or trimming. CRLF is an encoding control; existing send admission refuses CR.",
+  "vectors": [
+    {
+      "id": "ascii",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": []
+        }
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "intent_sha256": "eb6768419a6cda6159a70e96189edb1dcaecfaec3787185f3bf508942c79d896",
+      "terminal_python_default_sha256": "ba1dffcbbcae50091162cccc6a68aea6b7f67a5ca9cc33b84f1aa24602543adb",
+      "terminal_compact_sha256": "31cbbac7f636249908176b21e6fc7522532ebede24527a24c89b881f475f4fb3",
+      "native_agent_sha256": "3bcbeaac4daabbcb3caea51fad422f894cd7bb4ce27316f02899d4e53d5bfbc6",
+      "admitted": true
+    },
+    {
+      "id": "nfc",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "caf\u00e9",
+          "attachments": []
+        }
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"caf\\u00e9\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "intent_sha256": "4926ec272d44de8f0c6de27324eead27f1ded3781336059e5f652bef9d73c4b9",
+      "terminal_python_default_sha256": "a6a0dbcb56f1de3f90baf9463942d9e4a2a791cc44bfc6729924eb950c336b01",
+      "terminal_compact_sha256": "9097d541f773358d06ed21f16b043612dbd2f3e8e96980e6def65e55e67aed91",
+      "native_agent_sha256": "d035dfeaab5e8bd26594df984b8ddf44be7503935043bf6c816a773d62301e80",
+      "admitted": true
+    },
+    {
+      "id": "nfd",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "cafe\u0301",
+          "attachments": []
+        }
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"cafe\\u0301\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "intent_sha256": "378f1336e05f8afc0e277753498b93280ac6d56296be51d47a8fb3008ffd18c4",
+      "terminal_python_default_sha256": "b6ecb63c765cd93ecbbcf3cde21a8c41502d458425abbc640de4e1f0fb6a165e",
+      "terminal_compact_sha256": "3448dda6a9fc6b362f72853acb852c636e4468395d6c043b606b5903afd3d7b3",
+      "native_agent_sha256": "4d9e8ea88c20144ed21471f51c4e6ba93ec66904d1b0e01158dc5c5d1a02f95f",
+      "admitted": true
+    },
+    {
+      "id": "unicode",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "\u754c\ud83d\ude00\u2028\u2029",
+          "attachments": []
+        }
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"\\u754c\\ud83d\\ude00\\u2028\\u2029\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "intent_sha256": "bdee5f331543b8679a7ba5d4f059e0bee6660b64e9972996c4dcd6e8dc198451",
+      "terminal_python_default_sha256": "5dbc734e8e207a45f7a4104903c772c3a871d7bf3ba1dcd5871e2cb7f6e027e4",
+      "terminal_compact_sha256": "6afa1ee00096686223b37b30c94967cacf50136fa5c15da6062e570f94c61304",
+      "native_agent_sha256": "4df702d2b3a0a6bc93d0cc4e741aa4ebe2d841da544990d0da193b0648104384",
+      "admitted": true
+    },
+    {
+      "id": "crlf",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "first\r\nlast",
+          "attachments": []
+        }
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"first\\r\\nlast\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "intent_sha256": "09e12b475da7ca470f02599fb9788fe75eff1f9bdea2ad877622686e0b109ee3",
+      "terminal_python_default_sha256": "59562b7efe39a306cb6599172bdd8a6ad5a8aa007162e7eb392aeceb79419d42",
+      "terminal_compact_sha256": "d8de2d7b5f432459c40e65b1664d67550eeac8960588b0b0343aa0b1f9c6f832",
+      "native_agent_sha256": "eb7a7898632917a419819453b1d283cb4ce20d3bafde2207b2a044645806eb0d",
+      "admitted": false
+    },
+    {
+      "id": "trailing",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "  text\t \n  ",
+          "attachments": []
+        }
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"  text\\t \\n  \"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "intent_sha256": "e9180dfda6fea842b098e791e69c43934042986b83adf7316d8d587778695383",
+      "terminal_python_default_sha256": "1824b47cd040c510b77b48b4663aeefed129357b94a1b84ac5789e987803a349",
+      "terminal_compact_sha256": "02162a979ab137164f81cf6a90686c09d974f3eceaa68bf6c4310d27cf6f3d7a",
+      "native_agent_sha256": "e03891f015ffe4a1cc20a3b6fccece34d46298d54c515ffec1d6017b12a11a87",
+      "admitted": true
+    },
+    {
+      "id": "options",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": [],
+          "expected_compaction_id": "55555555-5555-4555-8555-555555555555"
+        }
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_compaction_id\":\"55555555-5555-4555-8555-555555555555\",\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "intent_sha256": "d8adede79a8a8c5c3771c4bd9b14f791720f023d7ce565a9afbb15e8afd77c12",
+      "terminal_python_default_sha256": "dfc31f17494f8f70761f6ca8072b608e1f60914e3ea02655abc6dcd342f36a0b",
+      "terminal_compact_sha256": "9b00fdc706fd8f0c7e04a5cbffeb032cf9cfcacad7f47aee64bb9f714e4d559d",
+      "native_agent_sha256": "f90e924c78804d651b15ced0125429df5916d6d2d93c40f43c6cb0a3ad6f2d8c",
+      "admitted": true
+    },
+    {
+      "id": "empty-option",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": [],
+          "expected_compaction_id": ""
+        }
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_compaction_id\":\"\",\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "intent_sha256": "a8b2af3d63a141b17ac90589639486acf634c3a645b3eab6224d40dc9c7b712b",
+      "terminal_python_default_sha256": "f431d7ec51cf20dd4990cb6d4c3657cdaa8143d3e001e54f5098cd0faa0385aa",
+      "terminal_compact_sha256": "6cb0d0840cd315f25565f0e9178e142cbf8100434e1a53be8b764db235a6c5c1",
+      "native_agent_sha256": "30dae819d9f67e8ab0202f8633df9fcbe094b7e81fdcd911958b82b241450bcb",
+      "admitted": true
+    },
+    {
+      "id": "child",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": [],
+          "agent_id": "child"
+        }
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"agent_id\":\"child\",\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "intent_sha256": "057c6dba3716891b34c5e9331430c79bfb12e4d5a65562f5aa2d8ab9c005bdd8",
+      "terminal_python_default_sha256": "c9ca72f7fad36e080959b46076650cd01449980924b89e2fa3e92856c11fcb86",
+      "terminal_compact_sha256": "cb09cb1e0b06476e29bf392f5fcf293aea4b52b9f115a2f79465f39920f37592",
+      "native_agent_sha256": "51abc432869f2ee9a133889b5071572cf9d6f40c7b55f6757fac2d38a41213d6",
+      "admitted": true
+    },
+    {
+      "id": "no-attachments-field",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text"
+        }
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "intent_sha256": "f8aee9321c3e713e36bf20b957d0df84a9285e2bf1cc1e5f4279749134f0de98",
+      "terminal_python_default_sha256": "30b3b89abd648c2bc928dc3e379d19f642d691ffde3949c79157ff30b99cf127",
+      "terminal_compact_sha256": "fdd493abd6e5ac7b69a803a0245c0c24e96d36489b504770dda32d371bea2fe3",
+      "native_agent_sha256": "3ddd58aea2900c7317ac96bae0fb1c59ead46197155f6e1fc769c18706d91947",
+      "admitted": true
+    }
+  ]
+}

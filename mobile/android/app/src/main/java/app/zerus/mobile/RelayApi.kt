@@ -6,6 +6,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.CancellationException
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Call
@@ -111,7 +113,7 @@ class RelayApi internal constructor(private val client: OkHttpClient = OkHttpCli
      *  to "before the marker" (zerus-a4mub.21). */
     suspend fun submit(connection: Connection, target: Target, operation: String, payload: JSONObject, id: String,
         attempt: SendAttempt): JSONObject {
-        require(target.agentId.isBlank() || operation in setOf("inspect", "history", "history_projection", "send", "attachment_read", "file_read")) { "This control belongs to the parent session." }
+        require(target.agentId.isBlank() || operation in setOf("inspect", "history", "history_projection", "send", "send_receipt", "attachment_read", "file_read")) { "This control belongs to the parent session." }
         require(target.archiveId.isBlank() && payload.string("archive_id").isBlank() || operation in setOf("inspect", "history", "history_projection", "process_output", "restore", "forget", "rename", "fork", "attachment_read", "file_read") && target.archiveId.isNotBlank() && payload.string("archive_id") == target.archiveId) { "Archived conversations are read-only." }
         return post(connection,target.computerId,target.session,operation,payload,id,attempt)
     }
@@ -155,6 +157,33 @@ class RelayApi internal constructor(private val client: OkHttpClient = OkHttpCli
     }
     suspend fun receipt(connection: Connection, id: String) = (if(connection.protocolVersion==2) encryptedReceipt(connection,id) else call(connection.url, connection.token, "/v1/requests/$id")).also {
         check(it.string("request_id") == id) { "Gateway returned a mismatched receipt. Delivery remains unconfirmed." }
+    }
+    /** A fresh READ UUID observes the frozen original; it never submits that send again. */
+    suspend fun sendReceipt(connection:Connection,message:OutgoingMessage,intent:SendIntent):SendReceiptProof? {
+        require(connection.id==message.target.connectionId && SendReceiptRecovery.matches(message,intent))
+        val id=UUID.randomUUID().toString()
+        val receipt=await(connection,submit(connection,message.target,SendReceiptRecovery.operation,SendReceiptRecovery.request(id,intent),id,SendAttempt()),firstPollDelayMs=100)
+        if(receipt.string("request_id")!=id || receipt.string("state")!="completed") return null
+        return withContext(Dispatchers.Default) { receipt.optJSONObject("result")?.let { SendReceiptRecovery.proof(id,intent,it) } }
+    }
+    /** One unchanged campaign budget covers the original receipt and its exact native fallback. */
+    suspend fun checkDelivery(connection:Connection,message:OutgoingMessage,intent:SendIntent?,limitMs:Long=45_000):SendReceiptCheck {
+        require(limitMs in 1..45_000)
+        val deadline=SendReceiptRecovery.nowMs()+limitMs
+        return withTimeout(limitMs) {
+            val original=try { await(connection,receipt(connection,message.requestId)) }
+                catch(e:CancellationException) { throw e } catch(_:Exception) { null }
+            if(original?.string("state")=="failed") return@withTimeout SendReceiptCheck.Original(original,deadline)
+            if(original?.string("state")=="completed" && original.optJSONObject("result")?.string("status") in listOf("submitted","queued")) {
+                if(message.sendIntent==null || intent==null) return@withTimeout SendReceiptCheck.Original(original,deadline)
+                val proof=original.optJSONObject("result")?.let { SendReceiptRecovery.acknowledgement(message.sendIntent,it) }
+                if(proof!=null) return@withTimeout SendReceiptCheck.Native(message.sendIntent,proof,deadline)
+            }
+            if(intent==null || !SendReceiptRecovery.matches(message,intent)) return@withTimeout SendReceiptCheck.Unconfirmed
+            val proof=try { sendReceipt(connection,message,intent) }
+                catch(e:CancellationException) { throw e } catch(_:Exception) { null }
+            if(proof==null || SendReceiptRecovery.nowMs()>=deadline) SendReceiptCheck.Unconfirmed else SendReceiptCheck.Native(intent,proof,deadline)
+        }
     }
     suspend fun await(connection: Connection, initial: JSONObject, maxPolls: Int = 35, pollDelayMs:Long = 800,
         firstPollDelayMs:Long = pollDelayMs): JSONObject {
@@ -329,7 +358,9 @@ object NativeParser {
                 historyEpoch = raw.string("history_epoch"), incomingSeq = (value.opt("incoming_seq") as? Number)?.toLong()?.takeIf { it >= 0 },
                 originalIds = value.optJSONArray("original_ids")?.let { ids -> (0 until minOf(ids.length(),8)).mapNotNull { ids.opt(it) as? String } }.orEmpty(), detailTruncated = value.optBoolean("detail_truncated"), voice = voice,
                 origin = origin, sender = if (origin == "peer_message") value.string("sender") else "",
-                report = ActivityNotices.report(origin, value.string("report")), inheritedFrom = inheritedFrom)
+                report = ActivityNotices.report(origin, value.string("report")), inheritedFrom = inheritedFrom,
+                nativeMessageId = if(source in setOf("claude_native","codex_native","kimi_native","dsh_native","opencode_native")) value.string("message_id").takeIf {
+                    it.toByteArray(Charsets.UTF_8).size<=256 && it.none(Char::isISOControl) }.orEmpty() else "")
         }
         val rows = (journal.mapNotNull { item ->
             fun replaces(provider: JSONObject, hook: JSONObject) = provider.string("type") == "AgentMessage" && inScope(provider) && inScope(hook) &&

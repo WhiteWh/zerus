@@ -120,8 +120,10 @@ public enum ConversationMerge {
             .enumerated().sorted { $0.element.createdAt != $1.element.createdAt ? $0.element.createdAt < $1.element.createdAt : $0.offset < $1.offset }
             .map(\.element)
         for message in mine {
-            // Only a user row from durable native receipt metadata, or a native OpenCode prompt naming the request that
-            // sent it, is authoritative by request ID; a receipt comes first. Only a canonical request names a row.
+            // Exact receipt-backed read evidence reconciles its own request.
+            // A receipt comes first, then OpenCode's exact request-ID mapping.
+            // Text/time matching below is only presentation deduplication.
+            let confirmed = ["submitted", "recorded"].contains(message.status)
             func named(_ source: String) -> Int? {
                 guard AttachmentPolicy.validId(message.requestId) else { return nil }
                 return result.indices.first { index in
@@ -129,7 +131,15 @@ public enum ConversationMerge {
                 }
             }
             var match = named("hgs_delivery") ?? named("opencode_native")
-            if match == nil, ["submitted", "recorded"].contains(message.status), message.submittedAt > 0 {
+            if match == nil, let nativeId = SendReceiptRecovery.exactNativeId(message) {
+                let candidates = result.indices.filter { index in
+                    let event = result[index]
+                    return !used.contains(index) && event.role == "You" && (event.inheritedFrom ?? "").isEmpty &&
+                        event.source == (message.sendIntent?.value()?.string("provider") ?? "") + "_native" && event.nativeMessageId == nativeId
+                }
+                if candidates.count == 1 { match = candidates[0] }
+            }
+            if match == nil, confirmed, message.submittedAt > 0 {
                 let text = (message.submittedText.isEmpty ? message.text : message.submittedText).trimmingCharacters(in: .whitespacesAndNewlines)
                 if !text.isEmpty {
                     // A fork's inherited row was never sent from this session: it is
@@ -165,7 +175,7 @@ public enum ConversationMerge {
                                     text: message.submittedText.isEmpty ? message.text : message.submittedText, time: "",
                                     at: message.submittedAt > 0 ? message.submittedAt : message.createdAt, requestId: message.requestId,
                                     attachments: message.attachments.map { $0.displayed() }, source: "mobile_outbox", delivery: message.status,
-                                    outgoingId: message.requestId))
+                                    outgoingId: message.requestId, deliveryState: ["submitted", "recorded"].contains(message.status) && message.sendReceiptProof?.queued == true ? "queued" : nil))
             }
         }
         var ordered = Array(result.prefix(native.count))

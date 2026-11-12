@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "machines": [
+    {"count": 0, "selected": false},
+    {"count": 1, "selected": true},
+    {"count": 2, "selected": false}
+  ],
+  "queued": [
+    {"present": false, "value": null, "accepted": true},
+    {"present": true, "value": false, "accepted": true},
+    {"present": true, "value": true, "accepted": true},
+    {"present": true, "value": null, "accepted": false},
+    {"present": true, "value": "true", "accepted": false},
+    {"present": true, "value": 1, "accepted": false}
+  ]
+}
