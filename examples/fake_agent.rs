@@ -1963,7 +1963,10 @@ impl Agent {
         // Claude Code writes the user row after its UserPromptSubmit hook.
         if self.claude_rows {
             if let Some(path) = &self.transcript {
-                let row = json!({"type": "user", "message": {"role": "user", "content": prompt}});
+                // Typed, and stamped like Claude's rows: hgs counts only a typed
+                // row stamped after its paste (zerus-iitw8.4).
+                let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                let row = json!({"type": "user", "promptSource": "typed", "timestamp": at, "message": {"role": "user", "content": prompt}});
                 if let Err(error) = fs::OpenOptions::new().append(true).open(path).and_then(|mut file| {
                     std::io::Write::write_all(&mut file, format!("{row}\n").as_bytes())
                 }) {

@@ -854,6 +854,8 @@ attachments, idle and during a running tool: Claude must settle, enter once and
 prove the submission in its transcript (`NativeHookedImagesClaude` also runs
 hgs's own UserPromptSubmit hook, which takes the state lock); Codex queues and
 delivers it once; Kimi delivers it once after a turn the fixture model holds.
+`NativeBusyClaude` also sends a prompt identical to one already in Claude's
+queue: only the send's own new `enqueue` may prove it, and both arrive.
 Claude offers a one-time default permission mode change; fixtures set
 `hasSeenAutoDefaultNudge` except the suite that answers that offer. OpenCode has
 a supported minimum of 2.0.32; CI tests its latest release on Linux and macOS.
