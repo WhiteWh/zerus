@@ -106,7 +106,8 @@ pub struct Edge {
 /// The row must be a running Claude child whose host classified it
 /// supervised and quiet: a parent link whose parent is `live` there and
 /// `human_request` present and `false`. An older host that does not classify
-/// `human_request` never routes, nor does any row with a human signal.
+/// `human_request` never routes, nor does any row with a human signal, nor a
+/// child whose person turned its routing off (`question_routing`).
 pub fn edge(row: &Value) -> Option<Edge> {
     let parent = row.get("parent").filter(|p| p.is_object())?;
     let agent = row["cmd"]
@@ -114,6 +115,9 @@ pub fn edge(row: &Value) -> Option<Edge> {
         .or_else(|| row["agent"].as_str())
         .unwrap_or("");
     let quiet = row.get("human_request") == Some(&Value::Bool(false));
+    // The person's per-child switch (zerus-sa9qn.32): on only when its host
+    // reports it on; unknown or absent never routes.
+    let allowed = row["question_routing"]["send_to_parent"] == true;
     let edge = Edge {
         name: text(row, "name"),
         session_id: text(row, "session_id"),
@@ -126,6 +130,7 @@ pub fn edge(row: &Value) -> Option<Edge> {
         && agent == "claude"
         && row["phase"] == "input"
         && quiet
+        && allowed
         && parent["state"] == "live"
         && parent["source"] != "forwarded"
         && session_name(&edge.name)
@@ -176,8 +181,19 @@ pub struct Identity {
     pub question_id: String,
     pub question_hash: String,
 }
+/// An identity the routed text may print inside its example JSON line: only
+/// ASCII letters, digits, `:`, `_`, `.` and `-` (zerus-sa9qn.40). A hook's
+/// `session_id` and other host values are only bounded, and JSON escaping
+/// keeps a single quote, so any other character fails closed.
+fn printable_id(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b":_.-".contains(&b))
+}
+
 impl Identity {
-    pub fn valid(&self) -> bool {
+    /// A complete identity of a question the router may consider.
+    pub fn complete(&self) -> bool {
         uuid(&self.machine)
             && uuid(&self.session_id)
             && bounded(&self.run_id, 128)
@@ -187,6 +203,20 @@ impl Identity {
             && !PERSON_ONLY
                 .iter()
                 .any(|prefix| self.question_id.starts_with(prefix))
+    }
+    /// A complete identity whose every printed value is printable
+    /// ([`printable_id`]); a route of any other fails closed
+    /// (`question_route_invalid`).
+    pub fn valid(&self) -> bool {
+        self.complete()
+            && [
+                &self.run_id,
+                &self.conversation_id,
+                &self.question_id,
+                &self.question_hash,
+            ]
+            .into_iter()
+            .all(|value| printable_id(value))
     }
     /// The route ledger's unique key.
     pub fn key(&self) -> String {
@@ -310,7 +340,9 @@ pub fn questions(inspect: &Value, edge: &Edge, machine: &str) -> Vec<Question> {
             question_id: text(card, "question_id"),
             question_hash: text(card, "question_hash"),
         };
-        if !identity.valid() {
+        // Complete only: a route of an unprintable identity is refused when
+        // its record is built, as `question_route_invalid`.
+        if !identity.complete() {
             continue;
         }
         let items = card["questions"].as_array().cloned().unwrap_or_default();

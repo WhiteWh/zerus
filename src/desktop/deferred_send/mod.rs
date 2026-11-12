@@ -29,6 +29,19 @@ pub(super) use runtime::Runtime;
 mod ledger;
 
 use anyhow::{ensure, Context};
+
+/// What a route's own reservation decided, inside the admission transaction.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::desktop) enum Reservation {
+    /// The route ledger reserved the question: admit the original.
+    Reserved,
+    /// The route ledger recorded a final refusal: commit it, no original.
+    Refused,
+    /// The person's switch is off: roll back, nothing is written.
+    Off,
+}
+
 use zerus_client_core::desktop::deferred_send as wire;
 
 // Merge-order allocation: the next free Store version when this lands. A

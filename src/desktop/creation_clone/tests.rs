@@ -85,8 +85,8 @@ fn exact_previous_store_upgrade_adds_only_the_independent_clone_leaf() {
         // creation17, cache18, attention20, worktree23, launch24, termination
         // outcome25, task message26, task message input27, deferred send28,
         // deferred answer29 and compact-to-send30 tables, and the question
-        // route leaf's one (zerus-sa9qn.8).
-        before + 2 + 4 + 2 + 2 + 2 + 1 + 2 + 2 + 2 + 2 + 2 + 2 + 1
+        // route leaves' (zerus-sa9qn.8 and .32).
+        before + 2 + 4 + 2 + 2 + 2 + 1 + 2 + 2 + 2 + 2 + 2 + 2 + 1 + 2
     );
     assert_eq!(
         store

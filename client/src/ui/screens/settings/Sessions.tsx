@@ -8,6 +8,7 @@ import { motionReduced } from "../../motion";
 import { Group, Row, SectionHead, Select, ToggleRow } from "./ui";
 import { tr, trNoop } from "../../../i18n";
 import { createNotificationPreferences } from "./notification-preferences";
+import { GLOBAL_HINT, GLOBAL_LABEL, globalBusy, globalRouting, setGlobalRouting } from "../../../store/questionRouting";
 
 // Settings > Sessions (tray/src/SettingsPage.h:97-107,
 // QuestionNotificationSettings.h) as the approved mockup lays it out
@@ -40,6 +41,10 @@ export function SessionsSection() {
         </Row>
         <ToggleRow label={trNoop("Start new child sessions as compact rows")} checked={flag("sessions/compactNewChildren")} onChange={toggle("sessions/compactNewChildren")}
           hint={trNoop("A session that another session launches or adopts appears collapsed under its parent. Expanding a row keeps it expanded.")} />
+        <Show when={globalRouting() !== undefined}>
+          <ToggleRow label={GLOBAL_LABEL} checked={globalRouting() === true} onChange={(on) => void setGlobalRouting(on)}
+            disabled={globalBusy()} hint={GLOBAL_HINT} />
+        </Show>
         <ToggleRow label={trNoop("Show completed subagents")} checked={flag("workspace/showCompletedSubagents")} onChange={toggle("workspace/showCompletedSubagents")}
           hint={trNoop("Include agents whose latest turn has finished in the session list and its counts. Agents with unknown status remain visible. Plan & agents keeps working agents in view and folds the others behind their count.")} />
         <ToggleRow label={trNoop("Notify about optional questions")} checked={notifications.checked()} onChange={(on)=>void notifications.change(on)}

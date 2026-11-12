@@ -8,7 +8,7 @@
 use super::child;
 use super::child::Ended;
 use super::receipt::{self, Evidence, Observed, Roots};
-use super::{admitted::Admitted, ledger, target};
+use super::{admitted::Admitted, ledger, target, Reservation};
 use crate::desktop::creation_clone::lease::{Lease, Machine};
 use crate::desktop::custody::Observation;
 use crate::desktop::not_admitted;
@@ -54,6 +54,8 @@ pub(in crate::desktop) enum Routed {
     /// Nothing was written: the owner, its lease or capacity is unavailable,
     /// or the request already has an original.
     Unavailable,
+    /// The person's switch was off at the reservation: nothing was written.
+    Off,
 }
 /// The conservative refusal: the request may have been admitted.
 const UNAVAILABLE: &str = "deferred_send_unavailable";
@@ -412,15 +414,15 @@ impl Runtime {
     /// [`wire::Intent::verify_route`] re-derives. `reserve` runs in the same
     /// BEGIN IMMEDIATE transaction, after every actor check and before the
     /// original row: it writes the route's own ledger row and returns
-    /// whether the route proceeds (`true`) or was refused as final
-    /// (`false`). Any error writes nothing.
+    /// whether the route proceeds, was refused as final, or is off by the
+    /// person's switch (nothing written). Any error writes nothing.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn route(
         &mut self,
         store: &mut Store,
         intent: wire::Intent,
         exclusion: Option<Arc<HandoffLock>>,
-        reserve: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<bool>,
+        reserve: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<Reservation>,
     ) -> Routed {
         // v1 routes only through the Linux child seam; macOS refuses every
         // original until its seam is qualified.
@@ -462,9 +464,14 @@ impl Runtime {
             if !ledger::capacity(&tx, &live.original)? {
                 return Ok(Routed::Unavailable);
             }
-            if !reserve(&tx)? {
-                tx.commit()?;
-                return Ok(Routed::Refused);
+            match reserve(&tx)? {
+                // Dropping the transaction rolls back: nothing is written.
+                Reservation::Off => return Ok(Routed::Off),
+                Reservation::Refused => {
+                    tx.commit()?;
+                    return Ok(Routed::Refused);
+                }
+                Reservation::Reserved => {}
             }
             ledger::admit(
                 &tx,

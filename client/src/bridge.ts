@@ -259,6 +259,16 @@ export async function setNotifications(target: Target, muted: boolean, expectedR
   return invoke<Record<string, unknown>>("set_notifications", { target, muted, expectedRevision });
 }
 
+/**
+ * Sets whether a child's blocking questions go to its parent session (the
+ * person's per-child switch, zerus-sa9qn.32); resolves with the host's
+ * confirmed `question_routing`. A rejection carries the reason.
+ */
+export async function setQuestionRouting(target: Target, sendToParent: boolean, expectedRevision: number): Promise<Record<string, unknown>> {
+  if (!inTauri()) throw new Error("Actions need the desktop app.");
+  return invoke<Record<string, unknown>>("set_question_routing", { target, sendToParent, expectedRevision });
+}
+
 /** What the person chose for Keep cache warm (core `keep_warm::Choice`). */
 export type KeepWarmChoice = { kind: "off" } | { kind: "hours"; hours: number } | { kind: "always" };
 

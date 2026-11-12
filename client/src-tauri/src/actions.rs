@@ -89,6 +89,8 @@ pub enum Lane {
     Notifications,
     /// A Keep cache warm change.
     KeepWarm,
+    /// A change of where a child's questions go (zerus-sa9qn.32).
+    QuestionRouting,
     Send,
     Process,
     Queue,
@@ -2009,6 +2011,37 @@ pub async fn set_keep_warm(
     let hgs = default_hgs();
     tauri::async_runtime::spawn_blocking(move || {
         zerus_client_core::keep_warm::change(&hgs, &target, choice, expected_revision)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Sets where a child's blocking questions go (zerus-sa9qn.32): to its parent
+/// session or not. The person's switch, kept on the child's host; one change
+/// per session at a time, in its own lane (`Err("busy")` otherwise). The core
+/// probes `hgs --help` first and returns the host's confirmed value.
+#[tauri::command]
+pub async fn set_question_routing(
+    state: State<'_, Actions>,
+    target: Target,
+    send_to_parent: bool,
+    expected_revision: i64,
+) -> Result<serde_json::Value, String> {
+    if blocked() {
+        return Err(REPLAY_NEEDS_HGS.into());
+    }
+    let Some(_claim) = state.claim_lane(&target.computer, &target.name, Lane::QuestionRouting)
+    else {
+        return Err("busy".into());
+    };
+    let hgs = default_hgs();
+    tauri::async_runtime::spawn_blocking(move || {
+        zerus_client_core::question_routing::change(
+            &hgs,
+            &target,
+            send_to_parent,
+            expected_revision,
+        )
     })
     .await
     .map_err(|error| error.to_string())?

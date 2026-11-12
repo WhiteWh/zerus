@@ -3,8 +3,10 @@
 //! deferred-send actor's original. Rows are retained; a settled row never
 //! changes, so a question is never routed twice and an unknown result is
 //! never replayed.
+use crate::desktop::deferred_send::Reservation;
 use anyhow::{ensure, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use std::path::Path;
 use zerus_client_core::desktop::{
     deferred_send::{Phase, Receipt},
     question_route::{Record, PER_PARENT_HOUR},
@@ -80,10 +82,23 @@ fn insert(tx: &Connection, record: &Record, at: i64, state: &str, code: &str) ->
     Ok(())
 }
 
-/// The reservation, in the actor's admission transaction: `reserved` when
-/// the parent is under its hourly bound (`true`), else the final refusal
-/// (`false`). Any error writes nothing.
-pub(super) fn reserve(tx: &Transaction<'_>, record: &Record, at: i64) -> Result<bool> {
+/// The reservation, in the actor's admission transaction. The person's
+/// switches come first, read in this transaction: the global one in the
+/// Store and the child's own on its host (`state`, the CLI state root). Off
+/// writes nothing. Then `reserved` when the parent is under its hourly
+/// bound, else the final refusal. Any error writes nothing.
+pub(super) fn reserve(
+    tx: &Transaction<'_>,
+    record: &Record,
+    at: i64,
+    state: &Path,
+) -> Result<Reservation> {
+    if !super::policy::enabled(tx)?
+        || crate::state::question_routing::send_to_parent_at(state, &record.identity.session_id)
+            != Some(true)
+    {
+        return Ok(Reservation::Off);
+    }
     let routed: i64 = tx.query_row(
         "SELECT count(*) FROM desktop_question_routes INDEXED BY desktop_question_routes_parent
          WHERE parent_session_id=?1 AND created>?2 AND state<>'refused'",
@@ -92,10 +107,10 @@ pub(super) fn reserve(tx: &Transaction<'_>, record: &Record, at: i64) -> Result<
     )?;
     if routed >= PER_PARENT_HOUR {
         insert(tx, record, at, "refused", PARENT_BOUND)?;
-        return Ok(false);
+        return Ok(Reservation::Refused);
     }
     insert(tx, record, at, "reserved", "")?;
-    Ok(true)
+    Ok(Reservation::Reserved)
 }
 
 /// A final refusal before any admission: the route's fixed text or send is

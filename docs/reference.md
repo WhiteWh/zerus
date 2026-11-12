@@ -1040,16 +1040,48 @@ refused identity never routes again. The text is a fixed English template of
 at most 2 KiB: the header `[Zerus child question]`, the child's name and
 reference (the name single-quoted; a child whose name holds anything but
 ASCII letters, digits, `.`, `_` and `-` in three segments is never routed and
-is recorded `refused` as `question_route_invalid`), the question kind and option count, at most 300 characters of the
+is recorded `refused` as `question_route_invalid`, as is a question whose run,
+conversation, question ID or hash holds anything but ASCII letters, digits,
+`:`, `_`, `.` and `-`), the question kind and option count, at most 300 characters of the
 first question as one quoted line labelled as the child's data, `hgs inspect
 '<reference>'` for the full question, the exact `hgs answer CHILD --json`
 fields (run, conversation, question ID and hash) and "If only the person can
 decide, say so in your reply." It carries no ticket, wait or other authority.
 v1 routes on Linux only; macOS follows the deferred-send actor's macOS child
-seam and Windows keeps today's behaviour. There is no opt-out in this slice
-(zerus-sa9qn.32) and no Activity outcome line yet (zerus-sa9qn.33). The
-service advertises `Desktop question route: route-questions-v1` in `hgs
---help`; an older service does not route.
+seam and Windows keeps today's behaviour. There is no Activity outcome line
+yet (zerus-sa9qn.33). The service advertises `Desktop question route:
+route-questions-v1` in `hgs --help`; an older service does not route.
+
+The person has two switches, both on by default (zerus-sa9qn.32):
+
+- **Settings > Sessions > Send child questions to the parent session** is kept
+  by the background service (Store schema 37) and changed only through the
+  person's native frontend request (`question_routes`), never by a command
+  an agent can run. It is shown only where the service routes (Linux).
+- **Send questions to PARENT** in a Claude child's Session actions is kept on
+  the child's computer beside its notification preference
+  (`question-routing.json`, keyed by the child's durable session ID, so a
+  rename or a new conversation keeps it) and shared with every desktop and
+  phone. `hgs [@host] question-routing <session> --json` changes it by
+  compare-and-swap (stdin `expected_run_id`, `expected_conversation_id`,
+  `expected_revision`, `send_to_parent`; marker
+  `session-question-routing-v1`) and refuses a change from an agent's own
+  process tree (`agent_refused`), on the switch's own computer and, for `hgs
+  @host question-routing`, in the local CLI before forwarding. That refusal
+  stops accidental agent use only; it is not a security boundary, because a
+  same-user agent can clear its session variables, leave its process tree or
+  write `question-routing.json` directly. The person-only control is the
+  global switch above (zerus-sa9qn.49). Listing rows carry `question_routing`
+  (`send_to_parent`, `revision`), null when the setting is unreadable or the
+  session has no durable ID.
+
+The router reads nothing while the global switch is off. Every reservation
+reads both switches again in its own transaction, so a switch turned off
+before it stops the send and writes nothing; off never cancels or replays a
+question already reserved, sent or unknown. Turning routing on again reads the
+catalog from a new baseline: a question still pending and supervised then is
+routed once, while one asked and answered while routing was off is never sent,
+and a question already in the route ledger never routes again.
 
 Android (zerus-sa9qn.4) and iOS (zerus-sa9qn.5) apply the same contract, iOS
 in ZerusKit `ChildSessions` and the session card: child cards nest under a

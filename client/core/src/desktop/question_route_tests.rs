@@ -16,6 +16,7 @@ pub(super) fn row() -> Value {
     json!({"name": CHILD, "cmd": "claude", "state": "running", "phase": "input",
         "session_id": CHILD_ID, "run_id": "run-1", "conversation_id": "conversation-1",
         "attention_signature": "a".repeat(64), "human_request": false,
+        "question_routing": {"send_to_parent": true, "revision": 0},
         "parent": {"schema": 1, "machine": MACHINE, "session_id": PARENT_ID,
             "conversation_id": "parent-conversation", "source": "launch", "at": 1, "state": "live"}})
 }
@@ -147,6 +148,20 @@ fn every_row_that_is_not_supervised_and_quiet_never_routes() {
         (
             "its own parent",
             Box::new(|r| r["parent"]["session_id"] = json!(CHILD_ID)),
+        ),
+        (
+            "the person turned routing off",
+            Box::new(|r| r["question_routing"]["send_to_parent"] = json!(false)),
+        ),
+        (
+            "routing storage unknown",
+            Box::new(|r| r["question_routing"] = Value::Null),
+        ),
+        (
+            "an older host without the switch",
+            Box::new(|r| {
+                r.as_object_mut().unwrap().remove("question_routing");
+            }),
         ),
     ];
     for (what, change) in cases {
@@ -413,6 +428,62 @@ fn named(name: &str) -> Record {
     let mut record = record();
     record.child.name = name.into();
     record
+}
+
+#[test]
+fn an_identity_outside_the_printable_set_never_routes() {
+    // zerus-sa9qn.40: these values are printed in the text's example JSON
+    // line, where JSON escaping keeps a single quote.
+    let set = |record: &mut Record, field: &str, value: &str| match field {
+        "run_id" => record.identity.run_id = value.into(),
+        "conversation_id" => record.identity.conversation_id = value.into(),
+        "question_id" => record.identity.question_id = value.into(),
+        _ => record.identity.question_hash = value.into(),
+    };
+    for (field, value) in [
+        ("conversation_id", "x';touch${IFS}pwned;'"),
+        ("conversation_id", "x'y"),
+        ("conversation_id", "x\"y"),
+        ("conversation_id", "x y"),
+        ("conversation_id", "$(id)"),
+        ("conversation_id", "`id`"),
+        ("conversation_id", "x\\y"),
+        ("conversation_id", "x\u{ff07}y"),
+        ("run_id", "run;1"),
+        ("run_id", "run$1"),
+        ("run_id", "r\u{430}n"),
+        ("question_id", "tool:a'b"),
+        ("question_id", "tool:a b"),
+        ("question_hash", "b b"),
+        ("question_hash", "b'b"),
+    ] {
+        let mut record = record();
+        set(&mut record, field, value);
+        assert!(!record.identity.valid(), "{field} {value:?}");
+        assert!(record.stdin().is_none(), "{field} {value:?}");
+    }
+    // Each printable ASCII character outside the set, on its own.
+    for c in (b' '..=b'~').map(char::from) {
+        if c.is_ascii_alphanumeric() || ":_.-".contains(c) {
+            continue;
+        }
+        for field in ["run_id", "conversation_id", "question_id", "question_hash"] {
+            let mut record = record();
+            set(&mut record, field, &format!("tool:x{c}y"));
+            assert!(record.stdin().is_none(), "{field} {c:?}");
+        }
+    }
+    // UUIDs and the hosts' own run and conversation forms still route.
+    for value in [
+        "8d5b2c1e-3f4a-4b5c-8d6e-7f8091a2b3c4",
+        "launch_id:abc-1",
+        "run_id:1.2_3",
+    ] {
+        let mut record = record();
+        set(&mut record, "conversation_id", value);
+        set(&mut record, "run_id", value);
+        assert!(record.valid(), "{value}");
+    }
 }
 
 #[test]
