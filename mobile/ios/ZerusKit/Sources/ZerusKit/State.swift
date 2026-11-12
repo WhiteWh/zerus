@@ -184,9 +184,11 @@ public struct OutgoingMessage: Codable, Hashable, Sendable {
     public var deliveryDismissed: Bool
     public var sendIntent: SendIntent?
     public var sendReceiptProof: SendReceiptProof?
+    public var sendCorrelation: SendCorrelation?
+    public var coverage: OutgoingCoverage?
 
     public init(requestId: String, target: Target, text: String, attachments: [Attachment], createdAt: Double, status: String = "sending",
-                submittedAt: Double = 0, submittedText: String = "", error: String = "", deliveryDismissed: Bool = false, sendIntent: SendIntent? = nil, sendReceiptProof: SendReceiptProof? = nil) {
+                submittedAt: Double = 0, submittedText: String = "", error: String = "", deliveryDismissed: Bool = false, sendIntent: SendIntent? = nil, sendReceiptProof: SendReceiptProof? = nil, sendCorrelation: SendCorrelation? = nil, coverage: OutgoingCoverage? = nil) {
         self.requestId = requestId
         self.target = target
         self.text = text
@@ -199,10 +201,12 @@ public struct OutgoingMessage: Codable, Hashable, Sendable {
         self.deliveryDismissed = deliveryDismissed
         self.sendIntent = sendIntent
         self.sendReceiptProof = sendReceiptProof
+        self.sendCorrelation = sendCorrelation
+        self.coverage = coverage
     }
 
     private enum CodingKeys: String, CodingKey {
-        case requestId, target, text, attachments, createdAt, status, submittedAt, submittedText, error, deliveryDismissed, sendIntent, sendReceiptProof
+        case requestId, target, text, attachments, createdAt, status, submittedAt, submittedText, error, deliveryDismissed, sendIntent, sendReceiptProof, sendCorrelation, coverage
     }
 
     public init(from decoder: Decoder) throws {
@@ -219,6 +223,8 @@ public struct OutgoingMessage: Codable, Hashable, Sendable {
         deliveryDismissed = try values.decodeIfPresent(Bool.self, forKey: .deliveryDismissed) ?? false
         sendIntent = try values.decodeIfPresent(SendIntent.self, forKey: .sendIntent)
         sendReceiptProof = try values.decodeIfPresent(SendReceiptProof.self, forKey: .sendReceiptProof)
+        sendCorrelation = try values.decodeIfPresent(SendCorrelation.self, forKey: .sendCorrelation)
+        coverage = try values.decodeIfPresent(OutgoingCoverage.self, forKey: .coverage)
     }
 
     public func recover() -> OutgoingMessage {

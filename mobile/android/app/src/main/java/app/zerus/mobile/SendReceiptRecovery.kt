@@ -141,13 +141,13 @@ object SendReceiptRecovery {
         if(nowMs>=deadlineMs || !proof.submittedAt.isFinite() || proof.submittedAt<0 || proof.nativeMessageId.isNotEmpty() && !validNativeId(proof.nativeMessageId,intent.value()?.string("provider").orEmpty())) return state
         val index=state.outgoing.indices.singleOrNull { state.outgoing[it].requestId==captured.requestId } ?: return state
         val current=state.outgoing[index]
-        if(current.status!="uncertain" || current.target!=captured.target || current.text!=captured.text || current.attachments!=captured.attachments || current.createdAt!=captured.createdAt || current.sendIntent!=captured.sendIntent ||
+        if(current.status!="uncertain" || current.target!=captured.target || current.text!=captured.text || current.attachments!=captured.attachments || current.createdAt!=captured.createdAt || current.originalSendIntent()!=captured.originalSendIntent() || current.hasOriginalSendIdentity && current.originalSendIntent()!=intent ||
             !matches(current,intent) || proof.messageRequestId!=current.requestId || proof.intentSha256!=intent.intentSha256 || proof.nativeDigest!=nativeDigest(intent.value() ?: return state)) return state
-        return state.copy(outgoing=state.outgoing.mapIndexed { at,row -> if(at!=index) row else row.copy(status="submitted",submittedAt=proof.submittedAt,submittedText=row.text,error="",sendIntent=intent,sendReceiptProof=proof) })
+        return state.copy(outgoing=state.outgoing.mapIndexed { at,row -> if(at!=index) row else row.copy(status="submitted",submittedAt=proof.submittedAt,submittedText=row.text,error="",sendIntent=intent,sendCorrelation=null,sendReceiptProof=proof) })
     }
     private fun validNativeId(id:String,provider:String) = provider=="opencode" && id.startsWith("msg_") && id.length in 5..128 && id.all { it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' || it=='_' || it=='-' }
     fun exactNativeId(message:OutgoingMessage):String {
-        val intent=message.sendIntent ?: return "";val proof=message.sendReceiptProof ?: return ""
+        val intent=message.originalSendIntent() ?: return "";val proof=message.sendReceiptProof ?: return ""
         val value=intent.value() ?: return ""
         return proof.nativeMessageId.takeIf { matches(message,intent) && proof.messageRequestId==message.requestId && proof.intentSha256==intent.intentSha256 &&
             proof.nativeDigest==nativeDigest(value) && proof.submittedAt.isFinite() && proof.submittedAt>=0 && validNativeId(it,value.string("provider")) }.orEmpty()

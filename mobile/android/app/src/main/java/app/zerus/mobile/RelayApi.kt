@@ -175,11 +175,11 @@ class RelayApi internal constructor(private val client: OkHttpClient = OkHttpCli
                 catch(e:CancellationException) { throw e } catch(_:Exception) { null }
             if(original?.string("state")=="failed") return@withTimeout SendReceiptCheck.Original(original,deadline)
             if(original?.string("state")=="completed" && original.optJSONObject("result")?.string("status") in listOf("submitted","queued")) {
-                if(message.sendIntent==null || intent==null) return@withTimeout SendReceiptCheck.Original(original,deadline)
-                val proof=original.optJSONObject("result")?.let { SendReceiptRecovery.acknowledgement(message.sendIntent,it) }
-                if(proof!=null) return@withTimeout SendReceiptCheck.Native(message.sendIntent,proof,deadline)
+                if(!message.hasOriginalSendIdentity) return@withTimeout SendReceiptCheck.Original(original,deadline)
+                val proof=original.optJSONObject("result")?.let { message.originalSendIntent()?.let { saved -> SendReceiptRecovery.acknowledgement(saved,it) } }
+                if(proof!=null) return@withTimeout SendReceiptCheck.Native(message.originalSendIntent() ?: return@withTimeout SendReceiptCheck.Unconfirmed,proof,deadline)
             }
-            if(intent==null || !SendReceiptRecovery.matches(message,intent)) return@withTimeout SendReceiptCheck.Unconfirmed
+            if(intent==null || message.hasOriginalSendIdentity && message.originalSendIntent()!=intent || !SendReceiptRecovery.matches(message,intent)) return@withTimeout SendReceiptCheck.Unconfirmed
             val proof=try { sendReceipt(connection,message,intent) }
                 catch(e:CancellationException) { throw e } catch(_:Exception) { null }
             if(proof==null || SendReceiptRecovery.nowMs()>=deadline) SendReceiptCheck.Unconfirmed else SendReceiptCheck.Native(intent,proof,deadline)

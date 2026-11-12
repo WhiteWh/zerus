@@ -205,4 +205,32 @@ final class SendReceiptRecoveryTests: XCTestCase {
         }
     }
 
+    func testCompactIdentityNeverDowngradesToLegacyReceiptHandling() async throws {
+        let i = intent(compaction: read), original = original
+        let positive = answer(original, intent: i).putting("name", .string(target.session)).putting("digest", .string(SendReceiptRecovery.nativeDigest(i.value()!)!))
+            .putting("delivery_binding", ["schema": 1, "machine_id": .string(machine), "session_id": .string(session), "provider": "codex"])
+        StubProtocol.reset { request in
+            StubProtocol.json(200, JSON.object(["request_id": .string(original), "state": "completed", "result": .object(positive)]).compact)
+        }
+        let c = Connection(id: "gateway", label: "Fixture", url: "https://gateway.example.test", token: "synthetic")
+        var submitted = message(i); submitted.status = "submitted"
+        let compact = OutboxRetention.compact(submitted)
+        guard case .native(let saved, _, _) = try await StubProtocol.client().checkDelivery(c, message: compact, intent: compact.originalSendIntent(), limit: .seconds(1)) else {
+            return XCTFail("Compact original was not verified")
+        }
+        XCTAssertEqual(saved, i)
+        var bad = compact; bad.sendCorrelation = try SendCorrelation(compact.sendCorrelation!.json().putting("schema", 2))
+        for supplied in [nil, i] as [SendIntent?] {
+            guard case .unconfirmed = try await StubProtocol.client().checkDelivery(c, message: bad, intent: supplied, limit: .seconds(1)) else {
+                return XCTFail("Invalid compact identity became legacy or reconstructed authority")
+            }
+        }
+        var legacy = compact; legacy.sendCorrelation = nil
+        guard case .original = try await StubProtocol.client().checkDelivery(c, message: legacy, intent: nil, limit: .seconds(1)) else { return XCTFail("Legacy compatibility lost") }
+        XCTAssertEqual(StubProtocol.requests.map(\.method), ["GET", "GET", "GET", "GET"])
+        bad.status = "uncertain"
+        let state = MessageState(outgoing: [bad]), proof = try XCTUnwrap(SendReceiptRecovery.proof(read, i, answer(read, intent: i)))
+        XCTAssertEqual(state, SendReceiptRecovery.settle(state, captured: bad, intent: i, proof: proof, deadline: 100, now: 99))
+    }
+
 }

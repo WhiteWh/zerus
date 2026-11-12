@@ -8,7 +8,7 @@ import kotlin.math.abs
 data class OutgoingMessage(val requestId: String, val target: Target, val text: String,
     val attachments: List<Attachment>, val createdAt: Double, val status: String = "sending",
     val submittedAt: Double = 0.0, val submittedText: String = "", val error: String = "",
-    val deliveryDismissed: Boolean = false, val sendIntent: SendIntent? = null, val sendReceiptProof: SendReceiptProof? = null) {
+    val deliveryDismissed: Boolean = false, val sendIntent: SendIntent? = null, val sendReceiptProof: SendReceiptProof? = null, val sendCorrelation: SendCorrelation? = null, val coverage: OutgoingCoverage? = null) {
     fun recover() = if (status == "sending") copy(status = "uncertain", error = "Delivery was interrupted. Check its receipt before sending again.", deliveryDismissed = false) else this
     fun belongsTo(current: Target): Boolean = target == current || target.resolvesTo(current)
     val blocksSending get() = status == "sending" || status == "uncertain" && !deliveryDismissed
@@ -87,13 +87,17 @@ object MessageCodec {
         value.optJSONArray("attachments")?.objects().orEmpty().map(Attachment::fromJson), value.getDouble("created"), value.getString("status"),
         value.optDouble("submitted", 0.0), value.string("submitted_text"), value.string("error"), value.opt("delivery_dismissed") == true,
         if(value.has("send_intent")) SendIntent.decode(value.getJSONObject("send_intent")) else null,
-        if(value.has("send_receipt_proof")) SendReceiptProof.decode(value.getJSONObject("send_receipt_proof")) else null).recover()
+        if(value.has("send_receipt_proof")) SendReceiptProof.decode(value.getJSONObject("send_receipt_proof")) else null,
+        if(value.has("send_correlation")) SendCorrelation(value.getJSONObject("send_correlation").toString()) else null,
+        if(value.has("coverage")) OutgoingCoverage.decode(value.getJSONObject("coverage")) else null).recover()
     fun outgoingJson(message: OutgoingMessage) = targetJson(message.target).put("request", message.requestId).put("text", message.text)
         .put("attachments", JSONArray(message.attachments.map(Attachment::toJson))).put("created", message.createdAt).put("status", message.status)
         .put("submitted", message.submittedAt).put("submitted_text", message.submittedText).put("error", message.error)
         .put("delivery_dismissed", message.deliveryDismissed).also { value ->
             message.sendIntent?.let { value.put("send_intent",it.json()) }
             message.sendReceiptProof?.let { value.put("send_receipt_proof",it.json()) }
+            message.sendCorrelation?.let { value.put("send_correlation",it.json()) }
+            message.coverage?.let { value.put("coverage",it.json()) }
         }
     private fun contextOperation(value: JSONObject): ContextOperation {
         val operation = value.getString("operation")
@@ -127,11 +131,12 @@ object MessageCodec {
 }
 
 object ConversationMerge {
-    data class Result(val events: List<Event>, val recordedRequestIds: Set<String>)
+    data class Result(val events: List<Event>, val recordedRequestIds: Set<String>, val exactRepresentations: Map<String,OutgoingCoverage> = emptyMap())
     fun merge(target: Target, native: List<Event>, outgoing: List<OutgoingMessage>): Result {
         val result = native.toMutableList()
         val used = mutableSetOf<Int>()
         val recorded = mutableSetOf<String>()
+        val exact = mutableMapOf<String,OutgoingCoverage>()
         outgoing.filter { it.belongsTo(target) && it.status != "reviewed" }.sortedBy { it.createdAt }.forEach { message ->
             // Exact receipt-backed read evidence reconciles its own request.
             // OpenCode dates queued prompts by delivery, outside the time window.
@@ -142,7 +147,7 @@ object ConversationMerge {
             var match = named("hgs_delivery") ?: named("opencode_native")
             val nativeId=SendReceiptRecovery.exactNativeId(message)
             if(match==null && nativeId.isNotEmpty()) match=result.indices.singleOrNull { index -> index !in used && result[index].role=="You" &&
-                result[index].inheritedFrom.isEmpty() && result[index].source==message.sendIntent?.value()?.string("provider")+"_native" && result[index].nativeMessageId==nativeId }
+                result[index].inheritedFrom.isEmpty() && result[index].source==message.originalSendIntent()?.value()?.string("provider")+"_native" && result[index].nativeMessageId==nativeId }
             if (match == null && confirmed && message.submittedAt > 0) {
                 val text = message.submittedText.ifBlank { message.text }.trim()
                 // A fork's inherited row was never sent from this session: it is
@@ -158,6 +163,7 @@ object ConversationMerge {
                 }
             }
             if (match != null) {
+                OutgoingCoverage.native(message, result[match])?.let { exact[message.requestId] = it }
                 used += match
                 recorded += message.requestId
                 result[match] = result[match].copy(id = "outgoing:${message.requestId}", outgoingId = message.requestId,
@@ -173,6 +179,6 @@ object ConversationMerge {
             val position = ordered.indexOfFirst { it.at > fallback.at }
             if (position < 0) ordered += fallback else ordered.add(position, fallback)
         }
-        return Result(ordered.toList(), recorded)
+        return Result(ordered.toList(), recorded, exact)
     }
 }

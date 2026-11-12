@@ -106,9 +106,11 @@ public enum ConversationMerge {
     public struct Result: Sendable {
         public let events: [Event]
         public let recordedRequestIds: Set<String>
-        public init(events: [Event], recordedRequestIds: Set<String>) {
+        public let exactRepresentations: [String: OutgoingCoverage]
+        public init(events: [Event], recordedRequestIds: Set<String>, exactRepresentations: [String: OutgoingCoverage] = [:]) {
             self.events = events
             self.recordedRequestIds = recordedRequestIds
+            self.exactRepresentations = exactRepresentations
         }
     }
 
@@ -116,6 +118,7 @@ public enum ConversationMerge {
         var result = native
         var used = Set<Int>()
         var recorded = Set<String>()
+        var exact: [String: OutgoingCoverage] = [:]
         let mine = outgoing.filter { $0.belongs(to: target) && $0.status != "reviewed" }
             .enumerated().sorted { $0.element.createdAt != $1.element.createdAt ? $0.element.createdAt < $1.element.createdAt : $0.offset < $1.offset }
             .map(\.element)
@@ -135,7 +138,7 @@ public enum ConversationMerge {
                 let candidates = result.indices.filter { index in
                     let event = result[index]
                     return !used.contains(index) && event.role == "You" && (event.inheritedFrom ?? "").isEmpty &&
-                        event.source == (message.sendIntent?.value()?.string("provider") ?? "") + "_native" && event.nativeMessageId == nativeId
+                        event.source == (message.originalSendIntent()?.value()?.string("provider") ?? "") + "_native" && event.nativeMessageId == nativeId
                 }
                 if candidates.count == 1 { match = candidates[0] }
             }
@@ -161,6 +164,7 @@ public enum ConversationMerge {
                 }
             }
             if let match {
+                if let coverage = OutgoingCoverage.native(message, result[match]) { exact[message.requestId] = coverage }
                 used.insert(match)
                 recorded.insert(message.requestId)
                 var event = result[match]
@@ -183,7 +187,7 @@ public enum ConversationMerge {
             if let position = ordered.firstIndex(where: { $0.at > fallback.at }) { ordered.insert(fallback, at: position) }
             else { ordered.append(fallback) }
         }
-        return Result(events: ordered, recordedRequestIds: recorded)
+        return Result(events: ordered, recordedRequestIds: recorded, exactRepresentations: exact)
     }
 }
 
