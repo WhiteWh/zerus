@@ -236,34 +236,38 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    /// Writes the helper script from a child process. Another test thread can
-    /// fork a child that never execs (`ForkedDescriptors`); such a child
-    /// inherits every descriptor open in this process, and one holding the
-    /// staging write descriptor keeps the renamed helper's inode busy: exec
-    /// then fails with ETXTBSY until that child exits (zerus-7xbco). A child
-    /// `sh` owns the write descriptor instead, so this process never holds one.
-    /// Production never stages a helper this way: it probes the selected
-    /// executable, which hgs does not install.
-    fn stage_script(path: &std::path::Path, text: &str) {
+    /// Parent writes inert data; a reaped copy child alone owns the executable
+    /// writer. A sibling fork can retain the inert writer without delaying a
+    /// shared stdin EOF or making the executable busy (zerus-0w3zj.6).
+    /// Production only probes the selected helper; it never stages it.
+    pub(super) fn stage_script(path: &std::path::Path, text: &str) {
         use std::io::Write as _;
         use std::process::Stdio;
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg("cat > \"$1\"")
-            .arg("sh")
+        let source = path.with_file_name(format!(
+            ".{}.source",
+            path.file_name().unwrap().to_string_lossy()
+        ));
+        let mut file = std::fs::File::create(&source).expect("stage helper data");
+        file.write_all(text.as_bytes()).expect("write helper data");
+        #[cfg(target_os = "linux")]
+        super::staging_tests::capture(&file);
+        drop(file);
+        match std::fs::remove_file(path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                panic!("cannot replace {}: {error}", path.display())
+            }
+            _ => {}
+        }
+        let status = Command::new("/bin/cp")
+            .arg(&source)
             .arg(path)
-            .stdin(Stdio::piped())
+            .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .spawn()
+            .status()
             .expect("stage helper script");
-        child
-            .stdin
-            .as_mut()
-            .expect("staging stdin")
-            .write_all(text.as_bytes())
-            .expect("write helper script");
-        assert!(child.wait().expect("wait for staging").success());
+        std::fs::remove_file(source).expect("remove helper data");
+        assert!(status.success(), "copy helper script");
     }
 
     #[test]
@@ -343,3 +347,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "helper/staging_tests.rs"]
+mod staging_tests;
