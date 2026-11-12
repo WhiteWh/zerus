@@ -170,14 +170,48 @@ class WindowsFrontend(unittest.TestCase):
             observed = dict(available=False, error=type(error).__name__)
         print('STARTUP_REFUSAL_IMAGE_USERS_' + phase + ' ' + json.dumps(observed), file=sys.stderr)
 
+    def settle_image(self):
+        """Wait out a copied hgs.exe image still mapped by a child service.
+
+        Registered right after Desktop.setUp so, with LIFO cleanups, it runs
+        after every fixture stop and just before the TemporaryDirectory
+        cleanup. Observation only: a real leak fails the test and an
+        unavailable observation is diagnostic; nothing is killed or retried.
+        """
+        selected = getattr(self, 'image', None)
+        if selected is None:
+            return
+        deadline = time.monotonic() + 10
+        first = None
+        while True:
+            try:
+                observed = windows_file_users(selected)
+            except Exception as error:
+                observed = dict(available=False, error=type(error).__name__)
+            if not observed.get('available'):
+                print('IMAGE_USERS_AT_CLEANUP ' + json.dumps(observed), file=sys.stderr)
+                return
+            if not observed.get('users'):
+                return
+            if first is None:
+                first = observed
+                print('IMAGE_USERS_AT_CLEANUP ' + json.dumps(first), file=sys.stderr)
+            if time.monotonic() >= deadline:
+                self.fail('the copied hgs.exe image is still in use at cleanup: ' + json.dumps(first))
+            time.sleep(0.1)
+
     def setUp(self):
         self.assertEqual(os.name, 'nt', 'run this native suite on Windows')
         fixture = Path(os.environ['HGS_WINDOWS_FRONTEND_FIXTURE']).resolve(strict=True)
         original_cli = kernel.HGS
         kernel.Desktop.setUp(self)
+        # Runs after every later stop cleanup and immediately before the temp
+        # root's own cleanup (addCleanup is LIFO); the image is set below.
+        self.addCleanup(self.settle_image)
         stage = self.root / 'native'
         stage.mkdir()
         selected = stage / 'hgs.exe'
+        self.image = selected
         self.frontend = stage / 'hgs-tray.exe'
         shutil.copy2(original_cli, selected)
         shutil.copy2(fixture, self.frontend)
