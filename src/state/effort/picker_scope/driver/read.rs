@@ -115,7 +115,9 @@ pub(super) fn close_claude_model(
     owner.actor()?;
     let frame = owner.control.frame();
     if frame.operation == host::frame::Operation::Send {
-        send::settings_key_ready(owner)?;
+        if let Err(error) = send::settings_key_ready(owner) {
+            return owner.refuse(error);
+        }
     }
     if name != string(&frame.binding, "name")
         || !uuid::Uuid::parse_str(&request.request_id)

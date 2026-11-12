@@ -22,6 +22,7 @@ fn absent(error: &str, buffer: &str) -> bool {
         return false;
     }
     error == format!("no buffer {buffer}")
+        || error == format!("unknown buffer: {buffer}")
         || error == "no buffer"
         || error
             .strip_prefix("no server running on ")
@@ -192,11 +193,14 @@ fn invoke(owner: &Arc<owner::Owner>, form: Form, progress: Arc<send::Progress>) 
         send::parent_ready(owner, phase)?;
         owner.control.commit_boundary()?;
         match form {
-            Form::Stage => progress.stage_started.store(true, Ordering::Release),
             Form::Paste => progress.paste_possible.store(true, Ordering::Release),
-            Form::Enter => {}
+            Form::Stage | Form::Enter => {}
         }
-        command.spawn().map_err(|e| e.to_string())?
+        let child = command.spawn().map_err(|e| e.to_string())?;
+        if matches!(form, Form::Stage) {
+            progress.stage_started.store(true, Ordering::Release);
+        }
+        child
     };
     let mut exchange = admission.attach(child);
     let check = |_: &mut std::process::Child, until| {
@@ -260,6 +264,7 @@ mod tests {
         let buffer = "hgs-input-00000000-0000-0000-0000-000000000000";
         for error in [
             format!("no buffer {buffer}\n"),
+            format!("unknown buffer: {buffer}\n"),
             "no buffer\n".into(),
             "no server running on /tmp/example/socket\n".into(),
             "error connecting to /tmp/example/socket (No such file or directory)\n".into(),
@@ -269,6 +274,10 @@ mod tests {
         }
         for error in [
             "no buffer other",
+            "unknown buffer: other",
+            "unknown buffer",
+            "warning: unknown buffer: hgs-input-00000000-0000-0000-0000-000000000000",
+            "unknown buffer: hgs-input-00000000-0000-0000-0000-000000000000\npermission denied",
             "permission denied",
             "failed to connect to server: Permission denied",
             "error connecting to /tmp/example/socket (Permission denied)",
