@@ -919,7 +919,8 @@ check "launch token requires new session" 1 "requires --new" --dry-run sh "$P" -
 check "launch token validates UUID" 1 "needs a UUID" --dry-run sh "$P" --new --launch-id invalid
 check "launch token forwards over interactive SSH" 0 "ssh -t.*--launch-id $launch_id" --dry-run @nowhere sh "$P" --new -n group-test --launch-id "$launch_id"
 # New sessions accept the same tags as rename and fork, so the GUI can create them.
-check "new session accepts inner spaces" 0 "-s sh/sample-project/my plan -c " --dry-run sh "$P" --new -n 'my plan'
+# The dry-run line quotes the name as one shell word (zerus-sa9qn.38).
+check "new session accepts inner spaces" 0 "-s 'sh/sample-project/my plan' -c " --dry-run sh "$P" --new -n 'my plan'
 check "@peer new session quotes a spaced name" 0 "--new -n 'my plan' -d --dry-run\$" --dry-run @nowhere sh "$P" --new -n 'my plan' -d
 for bad in ' plan' 'plan ' 'a/b' 'a.b' 'a:b' "$(printf 'a\tb')"; do
   check "new session rejects tag '$bad'" 1 "new session name" --dry-run sh "$P" --new -n "$bad"

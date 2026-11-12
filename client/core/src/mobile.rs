@@ -829,51 +829,72 @@ fn posix_word(text: &str) -> String {
 }
 
 /// One PowerShell word. `@` starts a splat and `,` an array there, so both
-/// are quoted; a quote doubles inside single quotes.
-fn powershell_word(text: &str) -> String {
-    let plain = !text.is_empty()
-        && text
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_.:/=+%".contains(c));
-    if plain {
-        text.to_owned()
-    } else {
-        format!("'{}'", text.replace('\'', "''"))
+/// are quoted; inside single quotes every quote PowerShell closes on doubles:
+/// `'` and U+2018 to U+201B, as `shell::power_shell_quote` (zerus-sa9qn.38).
+/// None for a word Windows PowerShell 5.1 would not hand `hgs.exe` whole
+/// (`shell::power_shell_passes_unchanged`: a `"`, or a spaced word ending in a
+/// backslash, splits it into other arguments) or with U+201C to U+201E, which
+/// PowerShell also reads as `"` (zerus-sa9qn.43).
+fn powershell_word(text: &str) -> Option<String> {
+    if !crate::shell::power_shell_passes_unchanged(text)
+        || text.contains(['\u{201c}', '\u{201d}', '\u{201e}'])
+    {
+        return None;
     }
+    let plain = text
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-_.:/=+%".contains(c));
+    if plain {
+        return Some(text.to_owned());
+    }
+    let mut word = String::from("'");
+    for c in text.chars() {
+        word.push(c);
+        if matches!(c, '\'' | '\u{2018}'..='\u{201b}') {
+            word.push(c);
+        }
+    }
+    word.push('\'');
+    Some(word)
 }
 
 /// One word of the terminal the person types the command into: PowerShell
-/// on Windows, a POSIX shell elsewhere.
-fn shell_word(text: &str) -> String {
+/// on Windows, a POSIX shell elsewhere. None when that shell cannot be
+/// given it whole.
+fn shell_word(text: &str) -> Option<String> {
     if cfg!(windows) {
         powershell_word(text)
     } else {
-        posix_word(text)
+        Some(posix_word(text))
     }
 }
 
 /// The `hgs` command Qt's panel runs for `action` (PhonePairing.cpp
 /// `pinned`): the workspace and relay the person saw are pinned, so a
-/// computer whose connection changed meanwhile refuses it.
+/// computer whose connection changed meanwhile refuses it. Empty, like the
+/// desktop's own rows, when a word cannot be written for the person's shell.
 pub fn pinned(host: &str, action: &str, id: &str, workspace: &str, server: &str) -> String {
-    let mut words = vec!["hgs".to_owned()];
-    if !host.is_empty() {
-        words.push(shell_word(&format!("@{host}")));
-    }
-    words.extend(["mobile".to_owned(), action.to_owned()]);
-    if !id.is_empty() {
-        words.push(shell_word(id));
-    }
-    if !workspace.is_empty() && !server.is_empty() {
-        words.extend([
-            "--workspace".to_owned(),
-            shell_word(workspace),
-            "--server".to_owned(),
-            shell_word(server),
-        ]);
-    }
-    words.push("--json".to_owned());
-    words.join(" ")
+    let words = || -> Option<Vec<String>> {
+        let mut words = vec!["hgs".to_owned()];
+        if !host.is_empty() {
+            words.push(shell_word(&format!("@{host}"))?);
+        }
+        words.extend(["mobile".to_owned(), action.to_owned()]);
+        if !id.is_empty() {
+            words.push(shell_word(id)?);
+        }
+        if !workspace.is_empty() && !server.is_empty() {
+            words.extend([
+                "--workspace".to_owned(),
+                shell_word(workspace)?,
+                "--server".to_owned(),
+                shell_word(server)?,
+            ]);
+        }
+        words.push("--json".to_owned());
+        Some(words)
+    };
+    words().map(|words| words.join(" ")).unwrap_or_default()
 }
 
 fn seconds(value: &Value) -> Option<f64> {

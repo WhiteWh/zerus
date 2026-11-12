@@ -277,7 +277,7 @@ fn pair_and_revoke_name_the_pinned_commands_qt_runs() {
         pinned("mac", "revoke-phone", "p1", "ws-1", "https://relay.example.com"),
         format!(
             "hgs {} mobile revoke-phone p1 --workspace ws-1 --server https://relay.example.com --json",
-            shell_word("@mac")
+            shell_word("@mac").unwrap()
         )
     );
     // Without both pins Qt sends neither.
@@ -289,16 +289,62 @@ fn pair_and_revoke_name_the_pinned_commands_qt_runs() {
     // shell, or PowerShell on Windows, where @ splats and , makes an array.
     assert_eq!(posix_word("it's mine"), "'it'\\''s mine'");
     assert_eq!(posix_word("@mac"), "@mac");
-    assert_eq!(powershell_word("it's mine"), "'it''s mine'");
-    assert_eq!(powershell_word("@mac"), "'@mac'");
-    assert_eq!(powershell_word("a,b"), "'a,b'");
     assert_eq!(
-        powershell_word("https://relay.example.com"),
-        "https://relay.example.com"
+        powershell_word("it's mine").as_deref(),
+        Some("'it''s mine'")
+    );
+    assert_eq!(powershell_word("@mac").as_deref(), Some("'@mac'"));
+    assert_eq!(powershell_word("a,b").as_deref(), Some("'a,b'"));
+    // zerus-sa9qn.38: PowerShell also closes a single-quoted string on the
+    // quotes U+2018 to U+201B, so each doubles like `'`; an alias such as
+    // `mac\u{2019};calc;\u{2019}` stays one word (fleet::valid_alias accepts it).
+    for quote in ['\u{2018}', '\u{2019}', '\u{201a}', '\u{201b}'] {
+        assert_eq!(
+            powershell_word(&format!("@mac{quote};calc;{quote}")),
+            Some(format!("'@mac{quote}{quote};calc;{quote}{quote}'"))
+        );
+    }
+    assert_eq!(
+        powershell_word("it's \u{2019}$(calc)`").as_deref(),
+        Some("'it''s \u{2019}\u{2019}$(calc)`'")
+    );
+    // zerus-sa9qn.43: Windows PowerShell 5.1 hands hgs.exe a spaced argument
+    // in "…" without escaping the " inside, so `ws" --server "evil" "x` would
+    // pin another relay; such a word, and a spaced one ending in a
+    // backslash, gets no command.
+    for unsafe_word in [
+        "ws\" --server \"https://evil.example\" \"x",
+        "a\"b",
+        "@mac\u{201c}x",
+        "a\u{201d}b",
+        "a\u{201e}b",
+        "a b\\",
+    ] {
+        assert_eq!(powershell_word(unsafe_word), None, "{unsafe_word:?}");
+    }
+    assert_eq!(powershell_word("a\\b").as_deref(), Some("'a\\b'"));
+    if cfg!(windows) {
+        assert_eq!(
+            pinned(
+                "",
+                "invite",
+                "",
+                "ws\" --server \"x",
+                "https://relay.example.com"
+            ),
+            ""
+        );
+    }
+    assert_eq!(
+        powershell_word("https://relay.example.com").as_deref(),
+        Some("https://relay.example.com")
     );
     assert_eq!(
         pinned("", "revoke-phone", "it's mine", "", ""),
-        format!("hgs mobile revoke-phone {} --json", shell_word("it's mine"))
+        format!(
+            "hgs mobile revoke-phone {} --json",
+            shell_word("it's mine").unwrap()
+        )
     );
 }
 
