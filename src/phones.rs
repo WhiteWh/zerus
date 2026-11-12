@@ -262,14 +262,40 @@ pub(crate) const ROUTE_PERSON_VERIFIER: &str = "question-route-person-v1";
 /// A file's device, inode, size and modification time.
 #[cfg(unix)]
 type FileIdentity = (u64, u64, u64, i64, i64);
-
-/// The connector binary this service runs, pinned (zerus-sa9qn.50): the
-/// desktop's absolute selection or the installed sibling of this `hgs`,
-/// never a PATH lookup; canonical, a regular file owned by this user and
-/// not writable by others. Its identity is checked again after each run.
 #[cfg(unix)]
-fn pinned_connector() -> anyhow::Result<(std::path::PathBuf, FileIdentity)> {
+fn file_identity(m: &std::fs::Metadata) -> FileIdentity {
     use std::os::unix::fs::MetadataExt;
+    (m.dev(), m.ino(), m.len(), m.mtime(), m.mtime_nsec())
+}
+
+/// The connector binary this service runs, pinned (zerus-sa9qn.50, .54):
+/// its canonical path, its identity when checked, and the descriptor that
+/// was checked. On Linux the service executes that descriptor itself, so a
+/// file put at the path after the check never runs. macOS has no descriptor
+/// exec: it runs the path, so only this same user (outside the latch's
+/// threat model) or root could swap the file between the check and the run
+/// and back before the identity recheck.
+#[cfg(unix)]
+struct Pinned {
+    path: std::path::PathBuf,
+    identity: FileIdentity,
+    /// Executed on Linux; elsewhere it keeps the checked file open.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    file: std::fs::File,
+}
+
+#[cfg(unix)]
+impl Pinned {
+    /// Whether the path still names the file that was checked.
+    fn unchanged(&self) -> anyhow::Result<bool> {
+        Ok(file_identity(&std::fs::metadata(&self.path)?) == self.identity)
+    }
+}
+
+/// The desktop's absolute selection or the installed sibling of this `hgs`,
+/// never a PATH lookup, canonical and pinned.
+#[cfg(unix)]
+fn pinned_connector() -> anyhow::Result<Pinned> {
     let name = "zerus-mobile-connector";
     let selected = match std::env::var_os("ZERUS_CLIENT_MOBILE_CONNECTOR_PATH") {
         Some(selected) => std::path::PathBuf::from(selected),
@@ -283,45 +309,175 @@ fn pinned_connector() -> anyhow::Result<(std::path::PathBuf, FileIdentity)> {
         selected.is_absolute(),
         "the mobile connector path must be absolute"
     );
-    let path = selected.canonicalize()?;
-    let identity = connector_identity(&path)?;
-    // SAFETY: geteuid has no preconditions.
-    let euid = unsafe { libc::geteuid() };
-    let metadata = std::fs::metadata(&path)?;
-    anyhow::ensure!(
-        metadata.is_file() && metadata.uid() == euid && metadata.mode() & 0o022 == 0,
-        "the mobile connector binary is not this user's own"
-    );
-    Ok((path, identity))
-}
-#[cfg(unix)]
-fn connector_identity(path: &std::path::Path) -> anyhow::Result<FileIdentity> {
-    use std::os::unix::fs::MetadataExt;
-    let m = std::fs::metadata(path)?;
-    Ok((m.dev(), m.ino(), m.len(), m.mtime(), m.mtime_nsec()))
+    pin(&selected.canonicalize()?)
 }
 
-/// Runs `program args` with `input` on stdin, at most `limit` seconds and
-/// `bytes` of stdout; anything else is an error.
+/// Whether the pinned connector or its directory may be trusted: owned by
+/// this user or root, and not writable by group or others (zerus-sa9qn.54).
+/// A packaged install is root's, such as the AUR's
+/// /usr/bin/zerus-mobile-connector beside /usr/bin/hgs (zerus-sa9qn.56).
+#[cfg(unix)]
+fn trusted(uid: u32, mode: u32, euid: u32) -> bool {
+    (uid == euid || uid == 0) && mode & 0o022 == 0
+}
+
+/// Opens and checks `path`: its parent directory first, then the file
+/// relative to that directory without following a final symlink. Both must
+/// be [`trusted`], and the file must be a regular file.
+/// The descriptor is close-on-exec, so no other child inherits it.
+#[cfg(unix)]
+fn pin(path: &std::path::Path) -> anyhow::Result<Pinned> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        anyhow::bail!("the mobile connector path has no directory");
+    };
+    // Linux opens both for their identity only; the file is executed
+    // through its descriptor.
+    #[cfg(target_os = "linux")]
+    let (directory_flags, file_flags) = (libc::O_PATH | libc::O_DIRECTORY, libc::O_PATH);
+    #[cfg(not(target_os = "linux"))]
+    let (directory_flags, file_flags) = (libc::O_DIRECTORY, libc::O_RDONLY);
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(directory_flags)
+        .open(parent)?;
+    // SAFETY: geteuid has no preconditions.
+    let euid = unsafe { libc::geteuid() };
+    let metadata = directory.metadata()?;
+    anyhow::ensure!(
+        metadata.is_dir() && trusted(metadata.uid(), metadata.mode(), euid),
+        "the mobile connector's directory is not this user's or root's own"
+    );
+    let name = std::ffi::CString::new(name.as_bytes())?;
+    // SAFETY: an open directory descriptor and a NUL-terminated name.
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            file_flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    anyhow::ensure!(
+        fd >= 0,
+        "the mobile connector cannot be opened: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: openat returned a new descriptor that only this file owns.
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let metadata = file.metadata()?;
+    anyhow::ensure!(
+        metadata.is_file() && trusted(metadata.uid(), metadata.mode(), euid),
+        "the mobile connector binary is not this user's or root's own"
+    );
+    Ok(Pinned {
+        path: path.to_owned(),
+        identity: file_identity(&metadata),
+        file,
+    })
+}
+
+/// Makes `command` execute the pinned descriptor itself (zerus-sa9qn.54):
+/// in the child, once its standard streams are set, `execveat(fd, "",
+/// AT_EMPTY_PATH)` with the same arguments and environment. Nothing runs
+/// the path. The child alone clears close-on-exec on its copy, so an
+/// interpreter of a script can still read it.
+#[cfg(target_os = "linux")]
+fn descriptor_exec(
+    command: &mut Command,
+    pinned: &Pinned,
+    args: &[&str],
+    home: Option<&std::ffi::OsStr>,
+) -> anyhow::Result<()> {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::process::CommandExt;
+    struct Exec {
+        fd: std::os::fd::RawFd,
+        _strings: Vec<CString>,
+        argv: Vec<*const libc::c_char>,
+        envp: Vec<*const libc::c_char>,
+    }
+    // SAFETY: the pointers point into `_strings`, which moves with them and
+    // never changes; the child only reads them.
+    unsafe impl Send for Exec {}
+    unsafe impl Sync for Exec {}
+    impl Exec {
+        /// In the child after fork: only fcntl and execveat, both
+        /// async-signal-safe, and no allocation. It returns only on failure,
+        /// which refuses the spawn.
+        fn run(&self) -> std::io::Result<()> {
+            // SAFETY: an open descriptor and NUL-terminated arrays of
+            // NUL-terminated strings that outlive the call.
+            unsafe {
+                if libc::fcntl(self.fd, libc::F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                libc::syscall(
+                    libc::SYS_execveat,
+                    self.fd,
+                    c"".as_ptr(),
+                    self.argv.as_ptr(),
+                    self.envp.as_ptr(),
+                    libc::AT_EMPTY_PATH,
+                );
+            }
+            Err(std::io::Error::last_os_error())
+        }
+    }
+    let mut strings = vec![CString::new(pinned.path.as_os_str().as_bytes())?];
+    for arg in args {
+        strings.push(CString::new(*arg)?);
+    }
+    let argc = strings.len();
+    if let Some(home) = home {
+        strings.push(CString::new([b"HOME=", home.as_bytes()].concat())?);
+    }
+    let pointers = |strings: &[CString]| {
+        let mut pointers: Vec<_> = strings.iter().map(|s| s.as_ptr()).collect();
+        pointers.push(std::ptr::null());
+        pointers
+    };
+    let exec = Exec {
+        fd: pinned.file.as_raw_fd(),
+        argv: pointers(&strings[..argc]),
+        envp: pointers(&strings[argc..]),
+        _strings: strings,
+    };
+    // SAFETY: the closure is async-signal-safe (see `Exec::run`).
+    unsafe {
+        command.pre_exec(move || exec.run());
+    }
+    Ok(())
+}
+
+/// Runs the pinned connector with `args` and `input` on stdin, at most
+/// `limit` and `bytes` of stdout, with a cleared environment (HOME kept);
+/// anything else is an error.
 #[cfg(unix)]
 fn bounded_run(
-    program: &std::path::Path,
+    pinned: &Pinned,
     args: &[&str],
     input: &[u8],
     limit: std::time::Duration,
     bytes: usize,
 ) -> anyhow::Result<Vec<u8>> {
     use std::time::Instant;
-    let mut command = Command::new(program);
+    let mut command = Command::new(&pinned.path);
     command
         .args(args)
         .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    if let Some(home) = std::env::var_os("HOME") {
+    let home = std::env::var_os("HOME");
+    if let Some(home) = &home {
         command.env("HOME", home);
     }
+    #[cfg(target_os = "linux")]
+    descriptor_exec(&mut command, pinned, args, home.as_deref())?;
     let mut child = crate::platform::spawn_service_child(&mut command)?;
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(input);
@@ -370,11 +526,11 @@ pub(crate) fn verify_route_person(config: &Config, input: &Value) -> anyhow::Res
         anyhow::bail!("no mobile connection");
     };
     anyhow::ensure!(connection.protected, "not an encrypted workspace");
-    let (program, identity) = pinned_connector()?;
+    let pinned = pinned_connector()?;
     // The service answers its request lane within the client's 2 s, so both
     // runs together stay well inside it; a slow verifier is a refusal.
     let version = bounded_run(
-        &program,
+        &pinned,
         &["--version"],
         b"",
         Duration::from_millis(400),
@@ -399,7 +555,7 @@ pub(crate) fn verify_route_person(config: &Config, input: &Value) -> anyhow::Res
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("invalid connector configuration path"))?;
     let out = bounded_run(
-        &program,
+        &pinned,
         &[
             "--workspace",
             "verify-question-route-person",
@@ -410,10 +566,7 @@ pub(crate) fn verify_route_person(config: &Config, input: &Value) -> anyhow::Res
         Duration::from_millis(1200),
         65_536,
     )?;
-    anyhow::ensure!(
-        connector_identity(&program)? == identity,
-        "the mobile connector binary changed"
-    );
+    anyhow::ensure!(pinned.unchanged()?, "the mobile connector binary changed");
     let reply: Value = serde_json::from_slice(&out)?;
     anyhow::ensure!(
         reply.as_object().is_some_and(|o| o.len() == 3)
@@ -679,5 +832,147 @@ mod tests {
         assert!(!device_id("00000000-0000-4000-8000-0000000000d"));
         assert!(!device_id("00000000-0000-4000-8000/000000000d1"));
         assert!(!device_id("../devices/00000000-0000-4000-8000-0"));
+    }
+
+    /// A private directory holding a copy of `program` as the connector.
+    #[cfg(unix)]
+    fn connector_copy(program: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("zerus-mobile-connector");
+        std::fs::copy(program, &path).unwrap();
+        (dir, path)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_a_private_connector_in_a_private_directory_is_pinned() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, path) = connector_copy("/bin/echo");
+        let parent = path.parent().unwrap().to_owned();
+        let mode = |path: &std::path::Path, mode: u32| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        mode(&path, 0o755);
+        mode(&parent, 0o755);
+        assert!(pin(&path).is_ok());
+        // Its directory, writable by group or others (zerus-sa9qn.54).
+        for bits in [0o775, 0o757, 0o1777] {
+            mode(&parent, bits);
+            assert!(pin(&path).is_err(), "directory {bits:o}");
+        }
+        mode(&parent, 0o700);
+        // The file itself.
+        for bits in [0o775, 0o757] {
+            mode(&path, bits);
+            assert!(pin(&path).is_err(), "file {bits:o}");
+        }
+        mode(&path, 0o700);
+        // A final symlink is not followed, even to the same file.
+        let link = parent.join("link");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(pin(&link).is_err());
+        // The held descriptor is close-on-exec here: no other child gets it.
+        let pinned = pin(&path).unwrap();
+        // SAFETY: an open descriptor.
+        let flags =
+            unsafe { libc::fcntl(std::os::fd::AsRawFd::as_raw_fd(&pinned.file), libc::F_GETFD) };
+        assert!(flags >= 0 && flags & libc::FD_CLOEXEC != 0);
+        // Owners this test cannot create: this user or root, for a
+        // directory and a file alike (zerus-sa9qn.56).
+        let me = 1000;
+        for kind in [0o40000, 0o100000] {
+            assert!(trusted(me, kind | 0o700, me));
+            assert!(trusted(0, kind | 0o755, me));
+            assert!(!trusted(1001, kind | 0o700, me), "another user's");
+            assert!(!trusted(me, kind | 0o720, me));
+            assert!(!trusted(0, kind | 0o775, me), "group-writable root's");
+            assert!(!trusted(0, kind | 0o702, me), "other-writable root's");
+        }
+    }
+
+    /// A packaged connector is root's in root's directory, like the AUR's
+    /// /usr/bin/zerus-mobile-connector: the system's own echo stands in for
+    /// it, pinned and run where it is (zerus-sa9qn.56).
+    #[cfg(unix)]
+    #[test]
+    fn a_root_owned_packaged_connector_is_pinned_and_runs() {
+        use std::os::unix::fs::MetadataExt;
+        let path = std::fs::canonicalize("/bin/echo").unwrap();
+        let (file, directory) = (
+            std::fs::metadata(&path).unwrap(),
+            std::fs::metadata(path.parent().unwrap()).unwrap(),
+        );
+        assert_eq!((file.uid(), directory.uid()), (0, 0), "a root-owned echo");
+        let pinned = pin(&path).unwrap();
+        let out = bounded_run(
+            &pinned,
+            &["packaged"],
+            b"",
+            std::time::Duration::from_secs(10),
+            256,
+        )
+        .unwrap();
+        assert_eq!(out, b"packaged\n");
+        assert!(pinned.unchanged().unwrap());
+    }
+
+    /// The checked descriptor runs even when another program takes its path
+    /// after the check (zerus-sa9qn.54).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_checked_connector_runs_even_when_its_path_is_replaced() {
+        let (dir, path) = connector_copy("/bin/echo");
+        let pinned = pin(&path).unwrap();
+        let other = dir.path().join("other");
+        std::fs::copy("/bin/true", &other).unwrap();
+        std::fs::rename(&other, &path).unwrap();
+        let out = bounded_run(
+            &pinned,
+            &["checked"],
+            b"",
+            std::time::Duration::from_secs(10),
+            256,
+        )
+        .unwrap();
+        assert_eq!(out, b"checked\n");
+        assert!(!pinned.unchanged().unwrap(), "the path names another file");
+    }
+
+    /// A script runs through its descriptor too: its interpreter reads the
+    /// copy the child keeps. The environment is cleared but for HOME.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_pinned_script_runs_through_its_descriptor_with_a_cleared_environment() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("zerus-mobile-connector");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\nread line\nprintf '%s|%s|%s|%s\\n' \"$1\" \"$line\" \"${HOME-unset}\" \"${CARGO_MANIFEST_DIR-unset}\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let pinned = pin(&path).unwrap();
+        let out = bounded_run(
+            &pinned,
+            &["arg"],
+            b"input\n",
+            std::time::Duration::from_secs(10),
+            256,
+        )
+        .unwrap();
+        let home = std::env::var("HOME").unwrap_or_else(|_| "unset".into());
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            format!("arg|input|{home}|unset\n")
+        );
     }
 }
