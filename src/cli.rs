@@ -1702,6 +1702,19 @@ fn account_sign_in(command: &str, args: &[String]) -> bool {
     rest.first().is_some_and(|operation| operation == "login")
 }
 
+/// The SSH line a peer command's dry run prints, for a person to read or
+/// paste: the alias is one word that reads back exactly (zerus-sa9qn.39). An
+/// alias may hold `;`, `$(…)`, backticks and quotes, and `platform::quote`
+/// leaves a leading `~` or `=` bare, which shells expand (tilde, zsh equals),
+/// so such an alias is quoted too. The remote command is already quoted.
+fn dry_run_line(flags: &[String], alias: &str, remote: &str) -> String {
+    let mut word = platform::quote(alias);
+    if word == alias && alias.starts_with(['~', '=']) {
+        word = format!("'{alias}'");
+    }
+    format!("ssh {} {word} {remote}", platform::join(flags))
+}
+
 /// `remote`, optionally as the one verified hop of a session reference: the
 /// peer runs the command guarded by `--expect-machine MACHINE`, with the same
 /// SSH options the command has without it (zerus-ucck P1c).
@@ -1950,7 +1963,7 @@ fn remote_via(
                 println!("tab {title} color={}", platform::tab_color(config, target));
             }
         }
-        println!("ssh {} {target} {remote}", platform::join(&flags));
+        println!("{}", dry_run_line(&flags, target, &remote));
         return Ok(0);
     }
     if command == "ls" && has(&args, "--json") {
@@ -3356,6 +3369,57 @@ fn launch(
 
 #[cfg(test)]
 mod tests {
+    /// zerus-sa9qn.39: a pasted peer dry-run line reads the alias back as one
+    /// word and runs nothing, in sh (run) and fish (`fish_words`, modelled).
+    #[cfg(unix)]
+    #[test]
+    fn a_peer_dry_run_prints_the_alias_as_one_inert_word() {
+        let flags = ["-o", "BatchMode=yes"].map(String::from);
+        let remote = "~/.local/bin/hgs ls --local --dry-run";
+        assert_eq!(super::dry_run_line(&flags, "nowhere", remote), format!("ssh -o BatchMode=yes nowhere {remote}"));
+        assert_eq!(super::dry_run_line(&flags, "~root", remote), format!("ssh -o BatchMode=yes '~root' {remote}"));
+        assert_eq!(super::dry_run_line(&flags, "=ls", remote), format!("ssh -o BatchMode=yes '=ls' {remote}"));
+        for alias in [
+            "nowhere",
+            "x;>pwned",
+            "$(>pwned)",
+            "`>pwned`",
+            "it's",
+            "a\"b;>pwned",
+            "x\\';>pwned;#",
+            "x'$(>pwned)'`>pwned`\"",
+            "~root",
+            "~",
+            "=ls",
+        ] {
+            let line = super::dry_run_line(&flags, alias, remote);
+            let head = line.strip_suffix(&format!(" {remote}")).unwrap();
+            assert_eq!(
+                crate::platform::fish_words(head),
+                Ok(["ssh", "-o", "BatchMode=yes", alias].map(String::from).to_vec()),
+                "{line}"
+            );
+            let folder = tempfile::tempdir().unwrap();
+            let out = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!("ssh() {{ printf '%s\\0' \"$@\"; }}\n{line}"))
+                .current_dir(folder.path())
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", folder.path())
+                .output()
+                .unwrap();
+            assert!(!folder.path().join("pwned").exists(), "{line} ran a payload");
+            let words: Vec<String> = String::from_utf8(out.stdout)
+                .unwrap()
+                .split_terminator('\0')
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(words.get(2).map(String::as_str), Some(alias), "{line}: {words:?}");
+            assert_eq!(words.len(), 7, "{line}: {words:?}");
+        }
+    }
+
     #[test]
     fn claude_history_uses_the_released_folder_cap_and_hash() {
         // Golden folder names from VL/Pe/sre in Claude Code 2.1.322. Each
