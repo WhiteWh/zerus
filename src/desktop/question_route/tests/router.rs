@@ -1898,8 +1898,11 @@ fn the_latch_request_is_exact_kept_and_bounded() {
         json!({"op": "question_route_child_status", "request_id": id, "session_id": CHILD_ID, "x": 1}),
         json!({"op": "question_route_child_status", "request_id": id, "session_id": "x"}),
         json!({"op": "question_route_child_result", "request_id": id}),
+        // Each read answers only its own operation.
+        json!({"op": "question_route_child_result", "request_id": id, "session_id": CHILD_ID}),
+        json!({"op": "question_route_child_status", "request_id": id, "original_request_id": id}),
     ] {
-        let refused = if bad["op"] == "question_route_child_status" {
+        let refused = if bad.get("session_id").is_some() {
             super::super::latch_status(&f.store.db, &bad)
         } else {
             super::super::latch_result(&f.store.db, &bad)
