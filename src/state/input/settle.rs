@@ -252,6 +252,12 @@ impl Proof {
             Proof::Composer => "composer",
         }
     }
+
+    /// Whether Claude itself recorded the message, in its transcript or its
+    /// queue. An emptied composer alone does not show that it accepted it.
+    pub(super) fn recorded(self) -> bool {
+        matches!(self, Proof::Transcript | Proof::Queued)
+    }
 }
 
 /// Waits for Claude's own record of the submission until `deadline`. Err

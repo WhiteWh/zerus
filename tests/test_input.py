@@ -1091,6 +1091,54 @@ while True: signal.pause()
         self.assertEqual((second["status"], second["native"]), ("submitted", "transcript"))
         self.assertEqual([row["message"]["content"] for row in self.claude_rows()], ["First message", "Second message"])
 
+    def test_an_emptied_claude_composer_alone_never_confirms_the_input(self):
+        # zerus-iitw8.8: with no transcript known yet (a new conversation's
+        # first message) the emptied composer proves the Enter, but only
+        # Claude's own record or its UserPromptSubmit hook confirms the input.
+        self.claude_ready()
+        self.record.pop("transcript")
+        self.write_record()
+        first = self.send(self.payload(text="First message"))
+        self.assertEqual((first["status"], first["native"]), ("submitted", "composer"))
+        record = json.loads(self.record_path.read_text())
+        self.assertLess(record["input_seen_at"], record["input_pending_at"])
+        self.assertNotIn("input_typing", record)
+        self.assertIn("previous input has not been confirmed by the agent",
+                      self.send(self.payload(text="Second message"), success=False))
+        self.claude_hook("UserPromptSubmit")
+        second = self.send(self.payload(text="Second message"))
+        self.assertEqual((second["status"], second["native"]), ("submitted", "composer"))
+        self.assertEqual(self.received().count(b"\r"), 2)
+
+    def test_a_slow_claude_paste_keeps_other_input_out_for_its_whole_window(self):
+        # zerus-iitw8.8: the window starts after the paste, and so does the
+        # marker's term. Here the paste takes 7 s, as under host load: a term
+        # counted from before it ended at most 5 s after it, and Terminal
+        # input could type into the composer for the rest of the window.
+        self.claude_ready()
+        slow = self.root / "slow-paste"
+        self.script("tmux", f'#!/bin/sh\nif [ "$1" = paste-buffer ] && rm "{slow}" 2>/dev/null; then sleep 7; fi\n'
+                            f'exec {TMUX} -S "{self.socket}" -f /dev/null "$@"\n')
+        slow.write_text("")
+        (self.root / "claude-pasting").write_text("")
+        payload = self.payload(text="Slow message")
+        proc = self.background_send(payload)
+        self.wait_until(lambda: b"\x1b[201~" in self.received(), 20)
+        pasted = time.monotonic()
+        binding = self.terminal_request(action="snapshot")["terminal_binding_id"]
+        time.sleep(max(0, pasted + 5.8 - time.monotonic()))
+        self.assertIsNone(proc.poll(), "the send still waits in its window")
+        typed = self.terminal_request(action="input", terminal_binding_id=binding, expires_at=time.time() + 5, text="typed", enter=False)
+        self.assertEqual(typed["status"], "failed", typed)
+        self.assertIn("A message is being entered", typed["error"])
+        out, err = proc.communicate(timeout=30)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("delivery uncertain: Claude's composer never showed the pasted message settled; no Enter was pressed", err)
+        self.assertNotIn(b"typed", self.received())
+        self.assertNotIn(b"\r", self.received())
+        self.assertEqual(self.receipt_file(payload)["delivery"], "uncertain")
+        self.assertNotIn("input_typing", json.loads(self.record_path.read_text()))
+
     def test_a_lost_claude_enter_is_never_proven_by_another_or_an_earlier_message(self):
         # zerus-iitw8.4: this send's Enter is lost; meanwhile Claude records an
         # earlier queued "continue" it takes now, a longer typed message that
