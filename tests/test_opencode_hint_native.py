@@ -23,6 +23,13 @@ class OpenCodeHintNative(native.OpenCodeNative):
     def cleanup(cls):
         if hasattr(cls, 'env'):
             cls.stop_service()
+        physical_root = None
+        if hasattr(cls, 'root'):
+            try:
+                physical_root = cls.root.resolve(strict=True)
+            except OSError:
+                cls.temp._finalizer.detach()
+                raise RuntimeError('Private fixture root cannot be verified')
         # Keep an unexpectedly occupied folder for review, rather than remove
         # it. Only this fixture's own private service is stopped above.
         users = []
@@ -32,7 +39,7 @@ class OpenCodeHintNative(native.OpenCodeNative):
                     continue
                 try:
                     cwd = (entry / 'cwd').resolve(strict=True)
-                    if cwd == cls.root or cls.root in cwd.parents:
+                    if cwd == physical_root or physical_root in cwd.parents:
                         users.append(int(entry.name))
                 except OSError:
                     pass
@@ -49,7 +56,7 @@ class OpenCodeHintNative(native.OpenCodeNative):
             for line in result.stdout.splitlines():
                 if line.startswith('p'):
                     pid = line[1:]
-                elif line.startswith('n') and (line[1:] == str(cls.root) or line[1:].startswith(str(cls.root)+'/')):
+                elif line.startswith('n') and (line[1:] == str(physical_root) or line[1:].startswith(str(physical_root)+'/')):
                     users.append(pid)
         if users:
             cls.temp._finalizer.detach()
@@ -118,7 +125,7 @@ class OpenCodeHintNative(native.OpenCodeNative):
         def create_used(tag, parent=None):
             conversation = 'ses_' + native.native_suffix()
             body = {'id': conversation, 'title': tag}
-            body.update({'parentID': parent} if parent else {'location': {'directory': str(self.workspace)}})
+            body.update({'parentID': parent} if parent else {'location': {'directory': os.path.realpath(self.workspace)}})
             status, answer = self.api('POST', '/api/session', body)
             self.assertEqual(status, 200, answer)
             binding = self.save_binding(tag, service='opencode2', conversation_id=conversation)
