@@ -112,7 +112,12 @@ impl fmt::Display for Failure {
 }
 impl std::error::Error for Failure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.cause.as_ref())
+        // Display already prints the cause; returning the cause itself made
+        // anyhow's alternate format repeat it ("deadline reached: deadline
+        // reached"). Expose the cause's own source instead, so an outer
+        // context keeps the exact chain without a duplicate link.
+        let cause: &(dyn std::error::Error + 'static) = self.cause.as_ref();
+        cause.source()
     }
 }
 
@@ -158,6 +163,50 @@ mod tests {
             error_detail(&anyhow::anyhow!("unchanged preflight")),
             json!({"error":"unchanged preflight"})
         );
+    }
+
+    // The wrapper's Display prints the cause; the error chain must not print
+    // it a second time (G1 review of PR #2140).
+    #[test]
+    fn failure_alternate_format_matches_a_cause_without_a_source() {
+        let timing = Timing::new();
+        let text = "Mode transition deadline reached; retain its original UUID.";
+        let plain = anyhow::anyhow!(text);
+        let wrapped = timing.failure(anyhow::anyhow!(text));
+        assert_eq!(format!("{:#}", wrapped), format!("{:#}", plain));
+    }
+
+    #[test]
+    fn failure_alternate_format_keeps_one_inner_source_exactly_once() {
+        #[derive(Debug)]
+        struct Inner;
+        impl fmt::Display for Inner {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("native stop failed")
+            }
+        }
+        impl std::error::Error for Inner {}
+
+        #[derive(Debug)]
+        struct Outer(Inner);
+        impl fmt::Display for Outer {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("mode transition refused")
+            }
+        }
+        impl std::error::Error for Outer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let timing = Timing::new();
+        let plain = anyhow::Error::from(Outer(Inner));
+        let wrapped = timing.failure(anyhow::Error::from(Outer(Inner)));
+        let formatted = format!("{:#}", wrapped);
+        assert_eq!(formatted, format!("{:#}", plain));
+        assert_eq!(formatted.matches("native stop failed").count(), 1);
+        assert_eq!(formatted.matches("mode transition refused").count(), 1);
     }
 
     #[test]
