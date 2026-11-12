@@ -111,13 +111,14 @@ fn review_in_place_repair_and_a_second_walker_cannot_lose_the_trigger_count() {
         !verified || reported.0 == actual,
         "wrong count became verified coverage"
     );
-    assert_eq!(page.metadata["migration_complete"], false);
-    assert_eq!(page.metadata["catalog_complete_at_snapshot"], false);
     assert_eq!(
         reported.0, actual,
         "finishing overwrote the trigger-maintained count"
     );
-    assert_eq!(reported, (257, false));
+    // The first walk's own count is stale, so it cannot publish it; its
+    // catch-up listing re-verifies all 257 originals and seals that set.
+    assert_eq!(page.metadata["migration_complete"], true);
+    assert_eq!(reported, (257, true));
     let restarted = finish(temp.path());
     assert_eq!(state(&restarted), (257, true));
     assert!(restarted.catalog.coverage_verified());

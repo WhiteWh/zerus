@@ -1055,52 +1055,51 @@ impl Catalog {
     /// rows, a missing or foreign token, or any read failure is unknown: the
     /// caller requests the worker, which re-witnesses the exact rows.
     fn witness_current(&self) -> bool {
+        let sources: rusqlite::Result<Vec<String>> = self
+            .db
+            .prepare("SELECT source FROM receipt_sources")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect()
+            });
+        let Ok(sources) = sources else {
+            return false;
+        };
+        !sources.is_empty()
+            && sources
+                .iter()
+                .all(|source| self.source_witness_current(source))
+    }
+    /// One source's row-set witness in bounded work (see witness_current).
+    pub(super) fn source_witness_current(&self, source: &str) -> bool {
         let read = || -> rusqlite::Result<bool> {
             let schema: i64 = self
                 .db
                 .query_row("PRAGMA schema_version", [], |row| row.get(0))?;
-            let mut statement = self.db.prepare(
-                "SELECT s.source,s.indexed,m.value FROM receipt_sources s
-                   LEFT JOIN receipt_meta m ON m.key=?1||s.source",
+            let (indexed, value): (i64, Option<String>) = self.db.query_row(
+                "SELECT s.indexed,m.value FROM receipt_sources s
+                   LEFT JOIN receipt_meta m ON m.key=?1||s.source WHERE s.source=?2",
+                params![WITNESS_PREFIX, source],
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
-            let rows = statement
-                .query_map([WITNESS_PREFIX], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                    ))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            let mut entries = Vec::with_capacity(rows.len());
-            for (source, indexed, value) in rows {
-                let Some(entry) =
-                    value.and_then(|value| serde_json::from_str::<WitnessEntry>(&value).ok())
-                else {
-                    return Ok(false);
-                };
-                if entry.schema != schema {
-                    return Ok(false);
-                }
-                entries.push((source, indexed, entry));
-            }
-            if entries.is_empty() {
+            let Some(entry) =
+                value.and_then(|value| serde_json::from_str::<WitnessEntry>(&value).ok())
+            else {
+                return Ok(false);
+            };
+            if entry.schema != schema {
                 return Ok(false);
             }
-            // Each source's rows after its own token, on the (source,seq)
+            // The source's rows after its own token, on the (source,seq)
             // index and capped: a missing index is a read failure (unknown).
-            for (source, indexed, entry) in entries {
-                let added: i64 = self.db.query_row(
-                    "SELECT COUNT(*) FROM (SELECT 1 FROM receipt_rows INDEXED BY receipt_seq
-                       WHERE source=?1 AND seq>?2 LIMIT ?3)",
-                    params![source, entry.seq, WITNESS_DELTA + 1],
-                    |row| row.get(0),
-                )?;
-                if added > WITNESS_DELTA || indexed != entry.count + added {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
+            let added: i64 = self.db.query_row(
+                "SELECT COUNT(*) FROM (SELECT 1 FROM receipt_rows INDEXED BY receipt_seq
+                   WHERE source=?1 AND seq>?2 LIMIT ?3)",
+                params![source, entry.seq, WITNESS_DELTA + 1],
+                |row| row.get(0),
+            )?;
+            Ok(added <= WITNESS_DELTA && indexed == entry.count + added)
         };
         read().unwrap_or(false)
     }
@@ -1586,6 +1585,19 @@ fn file_stamp(path: &Path) -> Result<String> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok("missing".into()),
         Err(_) => Err("Receipt original is unavailable".into()),
     }
+}
+
+/// The content stamp of `file_stamp` and the modification time, from one
+/// metadata read. None for anything but a regular file.
+fn file_state(path: &Path) -> Option<(String, f64)> {
+    let metadata = fs::symlink_metadata(path)
+        .ok()
+        .filter(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())?;
+    let (seconds, nanos) = crate::platform::modified(&metadata);
+    Some((
+        format!("{}:{seconds}:{nanos}", metadata.len()),
+        seconds as f64 + nanos as f64 / 1e9,
+    ))
 }
 
 /// Projection is advisory. Missing index/original data is never proof of absence

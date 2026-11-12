@@ -33,6 +33,10 @@ fn finishing(migration: &mut Migration, count: u128) {
             .query_row("PRAGMA schema_version", [], |row| row.get(0))
             .unwrap(),
         witness_error: false,
+        at: now(),
+        gaps: 0,
+        attempts: 0,
+        catchup: None,
         epoch: migration
             .catalog
             .db
@@ -118,10 +122,13 @@ fn a_backdated_arrival_preserves_the_live_count_until_a_stable_restart() {
     original(&migration.catalog, 2);
     let bytes = fs::read(&kept).unwrap();
     finishing(&mut migration, 2);
-    // Its request sorts behind the already consumed cursor.
+    // Its request sorts behind the already consumed cursor. The live count
+    // stays 3; the walk's catch-up listing then verifies all three originals
+    // against their rows and seals the exact count (zerus-kj3mb).
     original(&migration.catalog, 0);
     assert!(migration.step().unwrap());
-    assert_eq!(state(&migration), (3, false));
+    assert_eq!(state(&migration), (3, true));
+    assert!(migration.catalog.coverage_verified());
     let restarted = finish(temp.path());
     assert_eq!(state(&restarted), (3, true));
     assert!(restarted.catalog.coverage_verified());
@@ -143,8 +150,12 @@ fn a_changed_rowset_cannot_publish_the_old_partial_count() {
             [uuid::Uuid::from_u128(1).to_string()],
         )
         .unwrap();
+    // The old partial count (2) is never published over the live count (1):
+    // the catch-up listing re-reads the original whose row was lost and
+    // seals only the re-verified set.
     assert!(migration.step().unwrap());
-    assert_eq!(state(&migration), (1, false));
+    assert_eq!(state(&migration), (2, true));
+    assert!(migration.catalog.coverage_verified());
     let restarted = finish(temp.path());
     assert_eq!(state(&restarted), (2, true));
     assert!(restarted.catalog.coverage_verified());
@@ -224,3 +235,6 @@ fn discovery_repair_can_rotate_the_epoch_before_the_count_starts() {
 
 #[path = "race_tests.rs"]
 mod insert_race;
+
+#[path = "catchup_tests.rs"]
+mod catchup;

@@ -10,6 +10,14 @@ use std::time::Instant;
 
 const BATCH: usize = 64;
 const SLICE: Duration = Duration::from_millis(25);
+// A catch-up entry whose row already carries its stamp costs one metadata
+// read and one indexed lookup: this many share one unit of the step budget.
+const LIGHT: usize = 16;
+// Catch-up listings per walk before the source stays unknown for this run.
+const CATCHUP_ATTEMPTS: u32 = 8;
+// Coarse filesystem clocks (1-2 s) can keep a rewritten original's stamp:
+// catch-up re-reads anything modified this close to the walk's start.
+const COARSE_CLOCK: f64 = 2.0;
 
 pub(super) fn stamp(path: &Path) -> Result<String> {
     match fs::symlink_metadata(path) {
@@ -121,6 +129,75 @@ struct Walk {
     // A row-set witness mismatch recorded before this walk began. Only a
     // complete walk that started after it may clear that error.
     witness_error: bool,
+    // When the walk began, for the coarse-clock re-read in catch-up.
+    at: f64,
+    // Rows whose originals the row pass found missing (explicit gaps).
+    gaps: i64,
+    attempts: u32,
+    catchup: Option<CatchUp>,
+}
+/// zerus-kj3mb: a listing after a walk that the directory or row set changed
+/// under. It re-reads only unknown, changed or recently modified originals,
+/// and seals at its own starting stamp only if nothing changed while it
+/// listed, the source's token shows an exact counter, and every row maps to
+/// a listed original or a known gap. Appends therefore cost a short, cheap
+/// listing instead of another full walk; a listing that sees a change is
+/// retried a bounded number of times, then the source stays unknown.
+struct CatchUp {
+    entries: ReadDir,
+    started: String,
+    epoch: String,
+    schema: i64,
+    matched: i64,
+}
+/// One source's outcome: stamp and completeness, the walk's bookkeeping
+/// errors, a witness error this complete walk may clear, and the time.
+fn publish(catalog: &Catalog, walk: &Walk, stamp: &str, complete: bool) -> Result<()> {
+    sql(catalog.db.execute(
+        "UPDATE receipt_sources SET stamp=?1,complete=?2 WHERE source=?3",
+        params![stamp, complete, walk.source.key()],
+    ))?;
+    sql(catalog.db.execute(
+        "DELETE FROM receipt_errors WHERE source=? AND name IN('@source','@enumeration')",
+        [walk.source.key()],
+    ))?;
+    if complete && walk.witness_error {
+        sql(catalog.db.execute(
+            "DELETE FROM receipt_errors WHERE source=? AND name='@witness'",
+            [walk.source.key()],
+        ))?;
+    }
+    sql(catalog.db.execute(
+        "INSERT INTO receipt_meta VALUES('verified_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [now().to_string()],
+    ))?;
+    Ok(())
+}
+/// Start or restart a catch-up listing. False once the attempts are spent or
+/// the directory cannot be listed; the source then stays unknown.
+fn begin_catchup(catalog: &Catalog, walk: &mut Walk) -> Result<bool> {
+    walk.catchup = None;
+    if walk.attempts >= CATCHUP_ATTEMPTS {
+        return Ok(false);
+    }
+    let directory = catalog.state.join(walk.source.directory());
+    let Some(started) = stamp(&directory).ok().filter(|stamp| stamp != "absent") else {
+        return Ok(false);
+    };
+    let Ok(entries) = fs::read_dir(&directory) else {
+        return Ok(false);
+    };
+    let (epoch, _, schema) = source_witness(catalog, walk.source)?;
+    sql(catalog.db.execute("DELETE FROM receipt_walk_seen", []))?;
+    walk.attempts += 1;
+    walk.catchup = Some(CatchUp {
+        entries,
+        started,
+        epoch,
+        schema,
+        matched: 0,
+    });
+    Ok(true)
 }
 fn source_witness(catalog: &Catalog, source: Source) -> Result<(String, i64, i64)> {
     sql(catalog.db.query_row(
@@ -137,6 +214,8 @@ pub(super) struct Migration {
     force: bool,
     next_source: usize,
     walk: Option<Walk>,
+    // Catch-up entries per unit of the step budget (LIGHT; tests lower it).
+    light: usize,
 }
 impl Migration {
     pub(super) fn new(state: &Path) -> Result<Self> {
@@ -160,6 +239,7 @@ impl Migration {
             force,
             next_source: 0,
             walk: None,
+            light: LIGHT,
         })
     }
     /// A bounded slice. Holding ReadDir across slices avoids rescanning a
@@ -168,6 +248,7 @@ impl Migration {
         let deadline = Instant::now() + SLICE;
         let transaction = sql(self.catalog.db.unchecked_transaction())?;
         let mut examined = 0;
+        let mut light = 0;
         while examined < BATCH && Instant::now() < deadline {
             if self.walk.is_none() {
                 let Some(source) = self.sources.get(self.next_source).copied() else {
@@ -233,9 +314,106 @@ impl Migration {
                     count_at_start,
                     schema,
                     witness_error,
+                    at: now(),
+                    gaps: 0,
+                    attempts: 0,
+                    catchup: None,
                 });
             }
             let walk = self.walk.as_mut().unwrap();
+            if let Some(catchup) = walk.catchup.as_mut() {
+                match catchup.entries.next() {
+                    Some(Ok(entry)) => {
+                        light += 1;
+                        if light % self.light == 0 {
+                            examined += 1;
+                        }
+                        let filename = entry.file_name();
+                        let Some(filename) =
+                            filename.to_str().filter(|name| name.ends_with(".json"))
+                        else {
+                            continue;
+                        };
+                        let id = filename.strip_suffix(".json").unwrap();
+                        // A name listed twice counts once.
+                        if sql(self
+                            .catalog
+                            .db
+                            .execute("INSERT OR IGNORE INTO receipt_walk_seen VALUES(?)", [id]))?
+                            == 0
+                        {
+                            continue;
+                        }
+                        let path = entry.path();
+                        let cached: Option<String> = sql(self
+                            .catalog
+                            .db
+                            .query_row(
+                                "SELECT stamp FROM receipt_rows WHERE source=? AND request=?",
+                                params![walk.source.key(), id],
+                                |row| row.get(0),
+                            )
+                            .optional())?;
+                        let unchanged = file_state(&path).is_some_and(|(stamp, modified)| {
+                            modified < walk.at - COARSE_CLOCK && cached.as_deref() == Some(&stamp)
+                        });
+                        let indexed = if unchanged {
+                            true
+                        } else {
+                            examined += 1;
+                            match read_original(&path) {
+                                Ok(value) => {
+                                    if self.catalog.remember(walk.source, &path, &value).is_err() {
+                                        self.catalog.error(walk.source, filename, "corrupt")?;
+                                    }
+                                }
+                                Err(reason) => self.catalog.error(walk.source, filename, reason)?,
+                            }
+                            sql(self.catalog.db.query_row(
+                                "SELECT EXISTS(SELECT 1 FROM receipt_rows WHERE source=? AND request=?)",
+                                params![walk.source.key(), id],
+                                |row| row.get(0),
+                            ))?
+                        };
+                        if indexed {
+                            catchup.matched += 1;
+                        }
+                    }
+                    Some(Err(_)) => {
+                        examined += 1;
+                        self.catalog.error(
+                            walk.source,
+                            "@enumeration",
+                            "enumeration_incomplete",
+                        )?;
+                        walk.catchup = None;
+                        publish(&self.catalog, walk, &walk.started.clone(), false)?;
+                        self.walk = None;
+                    }
+                    None => {
+                        let current = stamp(&self.catalog.state.join(walk.source.directory()));
+                        let (epoch, count, schema) = source_witness(&self.catalog, walk.source)?;
+                        let quiet = current
+                            .as_ref()
+                            .is_ok_and(|stamp| *stamp == catchup.started)
+                            && epoch == catchup.epoch
+                            && schema == catchup.schema;
+                        let sealed = quiet
+                            && count == catchup.matched + walk.gaps
+                            && self.catalog.source_witness_current(walk.source.key());
+                        if sealed {
+                            let started = catchup.started.clone();
+                            walk.catchup = None;
+                            publish(&self.catalog, walk, &started, true)?;
+                            self.walk = None;
+                        } else if !begin_catchup(&self.catalog, walk)? {
+                            publish(&self.catalog, walk, &walk.started.clone(), false)?;
+                            self.walk = None;
+                        }
+                    }
+                }
+                continue;
+            }
             if let Some(entries) = walk.entries.as_mut() {
                 match entries.next() {
                     Some(Ok(entry)) => {
@@ -341,6 +519,7 @@ impl Migration {
                         // is a durable explicit gap, never an absent send or
                         // permission to replay. Publish a change so history
                         // consumers revisit an already imported original too.
+                        walk.gaps += 1;
                         self.catalog.error(walk.source, &filename, reason)?;
                         let stamp = format!("gap:{reason}");
                         let previous: String = sql(self.catalog.db.query_row(
@@ -380,25 +559,14 @@ impl Migration {
             // also repair an existing file without changing its directory
             // stamp or epoch. The trigger witness catches that race.
             let complete = witnessed && current.as_ref().is_ok_and(|stamp| *stamp == walk.started);
-            sql(self.catalog.db.execute(
-                "UPDATE receipt_sources SET stamp=?1,complete=?2 WHERE source=?3",
-                params![walk.started, complete, source.key()],
-            ))?;
-            sql(self.catalog.db.execute(
-                "DELETE FROM receipt_errors WHERE source=? AND name IN('@source','@enumeration')",
-                [source.key()],
-            ))?;
-            if complete && walk.witness_error {
-                sql(self.catalog.db.execute(
-                    "DELETE FROM receipt_errors WHERE source=? AND name='@witness'",
-                    [source.key()],
-                ))?;
+            publish(&self.catalog, walk, &walk.started.clone(), complete)?;
+            // A directory or row set that changed under the walk gets a short
+            // catch-up listing (zerus-kj3mb). A recorded mismatch never does:
+            // that walk must not seal (zerus-z5uax).
+            let mismatch = guarded && !witnessed;
+            if complete || mismatch || !begin_catchup(&self.catalog, walk)? {
+                self.walk = None;
             }
-            sql(self.catalog.db.execute(
-                        "INSERT INTO receipt_meta VALUES('verified_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                        [now().to_string()],
-                    ))?;
-            self.walk = None;
         }
         sql(transaction.commit())?;
         Ok(false)
