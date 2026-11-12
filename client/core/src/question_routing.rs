@@ -94,9 +94,10 @@ pub fn classify(
         .ok()
         .filter(Value::is_object);
     if code != 0 {
+        // Only a closed refusal that claims no result is a refusal.
         let error = reply
             .as_ref()
-            .filter(|reply| reply["ok"] == false)
+            .filter(|reply| reply["ok"] == false && reply.get("applied").is_none())
             .and_then(|reply| reply["error"].as_str())
             .unwrap_or("");
         return Err(refusal(error).to_owned());
@@ -245,6 +246,50 @@ mod tests {
             classify(&t, false, 0, Exit::TimedOut).unwrap_err(),
             UNCONFIRMED
         );
+    }
+
+    /// The shared contract the phones and the connector follow
+    /// (mobile/android/app/src/test/resources/question-routing-contract.json).
+    #[test]
+    fn the_shared_contract_settles_each_reply_the_same_way() {
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../mobile/android/app/src/test/resources/question-routing-contract.json"
+        ))
+        .unwrap();
+        assert_eq!(contract["marker"], MARKER);
+        let change = &contract["change"];
+        let t = Target {
+            computer: String::new(),
+            name: "claude/project/child".into(),
+            run_id: change["session"]["run_id"].as_str().unwrap().into(),
+            conversation_id: change["session"]["conversation_id"]
+                .as_str()
+                .unwrap()
+                .into(),
+        };
+        let current = &change["routing"];
+        let send = !current["send_to_parent"].as_bool().unwrap();
+        let revision = current["revision"].as_i64().unwrap();
+        let call = invocation(&t, send, revision).unwrap();
+        let input: Value = serde_json::from_slice(call.stdin.as_ref().unwrap()).unwrap();
+        assert_eq!(input, change["payload"]);
+        for case in contract["results"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let exit = reply(
+                case["result"].clone(),
+                case["exit"].as_i64().unwrap() as i32,
+            );
+            let settled = classify(&t, send, revision, exit);
+            match case["outcome"].as_str().unwrap() {
+                "confirmed" => assert!(settled.is_ok(), "{name}"),
+                "refused" => assert_eq!(
+                    settled.unwrap_err(),
+                    refusal(case["error"].as_str().unwrap()),
+                    "{name}"
+                ),
+                _ => assert_eq!(settled.unwrap_err(), UNCONFIRMED, "{name}"),
+            }
+        }
     }
 
     #[test]

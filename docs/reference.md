@@ -1060,9 +1060,25 @@ first question as one quoted line labelled as the child's data, `hgs inspect
 fields (run, conversation, question ID and hash) and "If only the person can
 decide, say so in your reply." It carries no ticket, wait or other authority.
 v1 routes on Linux only; macOS follows the deferred-send actor's macOS child
-seam and Windows keeps today's behaviour. There is no Activity outcome line
-yet (zerus-sa9qn.33). The service advertises `Desktop question route:
-route-questions-v1` in `hgs --help`; an older service does not route.
+seam and Windows keeps today's behaviour. The service advertises `Desktop
+question route: route-questions-v1` in `hgs --help`; an older service does not
+route.
+
+A submitted route shows one line in the child's and in the parent's desktop
+Activity (zerus-sa9qn.33): **Question sent to the parent session** with the
+parent's name, or **Question from a child session** with the child's name,
+then the route's own preview of at most 300 characters as plain text and the
+child's reference with Copy. The parent's own message of exactly the routed
+text folds into its line, behind **Show the received message**; any other
+line is placed by its time. Refused, reserved and unknown routes show nothing
+in this version. The lines come from the background service's read-only
+`question_route_activity` request (`request_id` and the session's durable
+`session_id`, exactly): at most the 20 newest submitted routes where the
+session is the child or the parent, read by two partial indexes of the route
+ledger (Store schema 38) and each route's own saved original. The read sends,
+settles and grants nothing. The desktop reads it for a local session in
+background service mode: once when the session is shown, then at most every
+3 s while its Activity changes, and a shown child every 15 s.
 
 The person has two switches, both on by default (zerus-sa9qn.32):
 
@@ -1083,9 +1099,18 @@ The person has two switches, both on by default (zerus-sa9qn.32):
   stops accidental agent use only; it is not a security boundary, because a
   same-user agent can clear its session variables, leave its process tree or
   write `question-routing.json` directly. The person-only control is the
-  global switch above (zerus-sa9qn.49). Listing rows carry `question_routing`
-  (`send_to_parent`, `revision`), null when the setting is unreadable or the
-  session has no durable ID.
+  global switch above (zerus-sa9qn.49). Listing rows and `hgs inspect` carry
+  `question_routing` (`send_to_parent`, `revision`), null when the setting is
+  unreadable or the session has no durable ID. Android and iOS show the same
+  entry in a live Claude child's Session actions and change it through the
+  mobile relay's Rust-only `session_question_routing` operation and the Rust
+  connector (zerus-sa9qn.33); the legacy Python connector refuses it. Phones
+  see the switch only once both the relay and the computer advertise it: the
+  relay lists the operation, and the connector offers it only when the
+  computer's `hgs --help` shows the `session-question-routing-v1` marker.
+  `mobile/android/app/src/test/resources/question-routing-contract.json` is
+  the shared contract of the desktop, the connector, the relay, Android and
+  iOS.
 
 The router reads nothing while the global switch is off. Every reservation
 reads both switches again in its own transaction, so a switch turned off

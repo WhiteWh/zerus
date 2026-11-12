@@ -1365,6 +1365,17 @@ and expected revision are checked by the durable request; no client changes the
 setting optimistically. Archives and child sessions cannot change it. Missing
 metadata leaves the control unavailable rather than creating a phone-only mute.
 
+A live Claude child with a parent link offers Send questions to PARENT (or Stop
+sending questions to PARENT) when both relay and computer advertise
+`session_question_routing` and the row reports a valid `question_routing`
+(zerus-sa9qn.33). It changes the child's per-child switch of the owner-approved
+question route (`hgs question-routing`, marker `session-question-routing-v1`)
+through the Rust-only relay operation and the Rust connector; the legacy Python
+connector refuses it. The same exact run/conversation and expected revision
+apply, nothing changes optimistically, and only the computer's exact reply
+settles it: an unknown or uncertain result is never retried. The shared
+contract is `question-routing-contract.json` in the Android test resources.
+
 Muted conversations retain their native state, unread replies, pending requests
 and Needs attention/Active membership. Attention and unread styling becomes
 neutral with a mute icon; Working and error signals remain visible. Notification

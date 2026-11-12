@@ -27,6 +27,9 @@ mod ledger;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod policy;
 pub(super) use policy::{decorate, frontend, result_request};
+/// The read-only Activity lines of submitted routes (zerus-sa9qn.33).
+mod activity;
+pub(super) use activity::request as activity_request;
 #[cfg(target_os = "linux")]
 mod runtime;
 #[cfg(target_os = "linux")]
@@ -43,9 +46,20 @@ pub(super) fn migrate(tx: &rusqlite::Transaction<'_>) -> anyhow::Result<()> {
 pub(super) fn migrate_policy(tx: &rusqlite::Transaction<'_>) -> anyhow::Result<()> {
     policy::migrate(tx)
 }
-/// Test rewind of the schema-37 switch leaf.
+/// The Activity leaf's indexes (zerus-sa9qn.33); merge-order allocation as above.
+pub(super) const ACTIVITY_SCHEMA: i64 = 38;
+pub(super) fn migrate_activity(tx: &rusqlite::Transaction<'_>) -> anyhow::Result<()> {
+    activity::migrate(tx)
+}
+/// Test rewind of the schema-38 Activity leaf.
+#[cfg(test)]
+pub(super) fn remove_activity_fixture(db: &rusqlite::Connection) {
+    activity::remove_fixture(db);
+}
+/// Test rewind of the schema-37 switch leaf, the later Activity leaf first.
 #[cfg(test)]
 pub(super) fn remove_policy_fixture(db: &rusqlite::Connection) {
+    remove_activity_fixture(db);
     db.execute_batch(
         "DROP TABLE desktop_question_route_policy; DROP TABLE desktop_question_route_policy_requests;",
     )

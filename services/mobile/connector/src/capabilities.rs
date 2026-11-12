@@ -38,6 +38,7 @@ pub const WINDOWS_OPERATIONS: &[&str] = &[
     "compact_context",
     "mark_read",
     "session_notifications",
+    "session_question_routing",
     "terminal_snapshot",
     "terminal_input",
     "hooks_status",
@@ -77,6 +78,7 @@ pub const IMPLEMENTED: &[&str] = &[
     "inspect",
     "mark_read",
     "session_notifications",
+    "session_question_routing",
     "process_output",
     "project_assignment",
     "project_assign",
@@ -146,6 +148,8 @@ pub enum Gate {
     TaskActions,
     Repository,
     SendReceipt,
+    /// The person's per-child question route switch (zerus-sa9qn.33).
+    QuestionRouting,
 }
 
 impl Gate {
@@ -158,6 +162,7 @@ impl Gate {
             Gate::TaskActions => flags.task_actions,
             Gate::Repository => flags.repository,
             Gate::SendReceipt => flags.send_receipt,
+            Gate::QuestionRouting => flags.question_routing,
         }
     }
 
@@ -171,6 +176,7 @@ impl Gate {
             Gate::TaskActions => "task_actions",
             Gate::Repository => "repository",
             Gate::SendReceipt => "send_receipt",
+            Gate::QuestionRouting => "question_routing",
         }
     }
 
@@ -183,6 +189,7 @@ impl Gate {
             Gate::TaskActions => "hgs task mobile-send|mobile-cancel|mobile-done --json",
             Gate::Repository => crate::repositories::HELP_MARKER,
             Gate::SendReceipt => crate::send_receipt::HELP_MARKER,
+            Gate::QuestionRouting => crate::session_question_routing::HELP_MARKER,
         }
     }
 }
@@ -256,6 +263,12 @@ pub const CONNECTOR_ONLY: &[ConnectorOnly] = &[
         gate: Gate::TaskActions,
         class: Class::Read,
     },
+    // The person's per-child question route switch (zerus-sa9qn.33).
+    ConnectorOnly {
+        operation: "session_question_routing",
+        gate: Gate::QuestionRouting,
+        class: Class::Mutation,
+    },
 ];
 
 /// Whether only this connector executes the operation.
@@ -325,6 +338,8 @@ pub struct Flags {
     pub directory_create: bool,
     pub read: bool,
     pub session_notifications: bool,
+    /// The exact `session-question-routing-v1` line (zerus-sa9qn.33).
+    pub question_routing: bool,
     pub preference: bool,
     pub attachment_read: bool,
     pub file_read: bool,
@@ -386,6 +401,9 @@ impl Flags {
             session_notifications: help
                 .lines()
                 .any(|line| line.trim() == crate::session_notifications::HELP_MARKER),
+            question_routing: help
+                .lines()
+                .any(|line| line.trim() == crate::session_question_routing::HELP_MARKER),
             preference: has("swarm preference set mobile_delivery"),
             attachment_read: has("attachment <session> --request ID --index N"),
             file_read: has("file-read <session> --json"),

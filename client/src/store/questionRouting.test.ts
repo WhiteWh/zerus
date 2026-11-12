@@ -13,6 +13,7 @@ vi.mock("./desktopService", () => ({ desktopService: { state: calls.state } }));
 vi.mock("./actions", () => ({ errorText: (error: unknown) => String(error instanceof Error ? error.message : error) }));
 import { GLOBAL_UNCONFIRMED, SEND_OFF, SEND_OFFLINE, SEND_ON, SEND_UNKNOWN, globalRouting, routingEntry, routingOf, setGlobalRouting, toggleRouting } from "./questionRouting";
 import type { Session } from "../ui/sessions/types";
+import contract from "../../../mobile/android/app/src/test/resources/question-routing-contract.json";
 
 function child(patch: Partial<Session> = {}): Session {
   return {
@@ -98,5 +99,23 @@ describe("the global switch in Settings", () => {
     calls.invoke.mockResolvedValue({ accepted: null, pending: true, enabled: true });
     await setGlobalRouting(true);
     expect(calls.notify).toHaveBeenCalledWith("error", GLOBAL_UNCONFIRMED, true);
+  });
+});
+
+describe("the shared question routing contract", () => {
+  it("shows the switch for live Claude children only, as the phones do", () => {
+    for (const c of contract.availability) {
+      const row = c.row as Record<string, unknown> & { name: string; cmd: string; state: string; parent?: { name: string } };
+      const s = child({ name: row.name, cmd: row.cmd, state: row.state,
+        parent: row.parent ? { machine: "m", session_id: "p", name: row.parent.name, conversation_id: "c", run_id: "r", state: "live" } : undefined,
+        questionRouting: row.question_routing
+          ? { sendToParent: (row.question_routing as { send_to_parent: boolean }).send_to_parent, revision: (row.question_routing as { revision: number }).revision }
+          : undefined } as Partial<Session>);
+      const entry = routingEntry(s);
+      expect(!!entry, c.name).toBe(c.shown);
+      if (!entry) continue;
+      expect(!entry.disabled, c.name).toBe(c.enabled);
+      expect(entry.label.endsWith(c.parent ?? ""), c.name).toBe(true);
+    }
   });
 });

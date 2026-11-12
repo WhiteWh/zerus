@@ -779,6 +779,8 @@
   "Prompt cache": "Кэш промпта",
   "Qt and Zerus settings": "Настройки Qt и Zerus",
   "Qt preferences": "Настройки Qt",
+  "Question from a child session": "Вопрос от дочерней сессии",
+  "Question sent to the parent session": "Вопрос отправлен родительской сессии",
   "Queued": "В очереди",
   "Queued message removed.": "Сообщение удалено из очереди.",
   "Quit": "Выйти",
@@ -1482,5 +1484,7 @@
   "winget: %1": "winget: %1",
   "worktree %1": "рабочее дерево %1",
   "~%1 GB estimated": "~%1 ГБ по оценке",
+  "▸ Show the received message": "▸ Показать полученное сообщение",
+  "▾ Hide the received message": "▾ Скрыть полученное сообщение",
   "✓ %1": "✓ %1"
 }

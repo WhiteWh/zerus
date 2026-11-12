@@ -1526,6 +1526,15 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                                 &store.db,
                                 hello.request.as_ref().unwrap(),
                             )
+                        } else if hello
+                            .request
+                            .as_ref()
+                            .is_some_and(|v| v["op"] == "question_route_activity")
+                        {
+                            question_route::activity_request(
+                                &store.db,
+                                hello.request.as_ref().unwrap(),
+                            )
                         } else if let Some(runtime) = &mut background {
                             let request_value = hello.request.as_ref().unwrap_or(&Value::Null);
                             if matches!(

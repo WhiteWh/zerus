@@ -451,6 +451,14 @@ pub fn validate(
         crate::session_notifications::validate(payload).map_err(error)?;
         return Ok(validated(session, Some(payload.clone())));
     }
+    if operation == crate::session_question_routing::OPERATION {
+        if !context.sessions.contains(session) {
+            return Err(error(NONARCHIVED));
+        }
+        let payload = request.get("payload").unwrap_or(&Value::Null);
+        crate::session_question_routing::validate(payload).map_err(error)?;
+        return Ok(validated(session, Some(payload.clone())));
+    }
     if operation == "mark_read" {
         if !context.sessions.contains(session) {
             return Err(error(NONARCHIVED));

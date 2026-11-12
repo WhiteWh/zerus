@@ -82,6 +82,7 @@ mod fleet_requests;
 pub mod frontend;
 mod mode_transition;
 pub(crate) mod notification_controls;
+mod question_route_activity;
 mod read_import;
 mod reconnect;
 pub(crate) mod retained_import;
@@ -1189,6 +1190,31 @@ impl Service {
             self.shared.changed.notify_one();
         }
         changed
+    }
+    /// The read-only Activity lines of one local session's submitted
+    /// question routes (zerus-sa9qn.33): one bounded service read by the
+    /// session's durable ID. It sends, settles and grants nothing.
+    pub async fn question_route_activity(&self, session_id: String) -> Result<Value, &'static str> {
+        if !question_route_activity::canonical(&session_id) {
+            return Err("invalid_question_route_activity");
+        }
+        let stop = self
+            .shared
+            .cancellation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .ok_or("service_unavailable")?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let receipt = request(
+            &self.shared,
+            question_route_activity::query(&id, &session_id),
+            stop,
+        )
+        .await?;
+        question_route_activity::routes(&receipt, &id, &session_id)
+            .map(|routes| json!({"routes": routes}))
+            .ok_or("invalid_service_receipt")
     }
     pub async fn read_marks(
         &self,
@@ -2714,6 +2740,22 @@ pub async fn desktop_service_automatic_approvals(
         categories,
     )
     .await
+}
+
+/// The read-only Activity lines of a local session's submitted question
+/// routes (zerus-sa9qn.33); none outside background service mode.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn desktop_service_question_route_activity(
+    source: tauri::State<'_, crate::commands::AppState>,
+    session_id: String,
+) -> Result<Value, String> {
+    match source.desktop_service().filter(|_| mode()) {
+        Some(service) => service
+            .question_route_activity(session_id)
+            .await
+            .map_err(str::to_owned),
+        None => Ok(json!({"routes": []})),
+    }
 }
 
 /// The person's global switch of the owner-approved question route

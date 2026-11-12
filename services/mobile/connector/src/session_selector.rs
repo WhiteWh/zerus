@@ -139,6 +139,7 @@ pub fn auxiliary_argv(argv: &[String], selection: &Selection) -> Option<Vec<Stri
         "hooks",
         "read",
         "notifications",
+        "question-routing",
         "file-read",
         "attachment",
         "voice",
