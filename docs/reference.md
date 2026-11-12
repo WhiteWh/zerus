@@ -1022,8 +1022,10 @@ reads both switches and the latch again in its own transaction, so a switch turn
 before it stops the send and writes nothing; off never cancels or replays a
 question already reserved, sent or unknown. Turning routing on again reads the
 catalog from a new baseline: a question still pending and supervised then is
-routed once, while one asked and answered while routing was off is never sent,
-and a question already in the route ledger never routes again.
+routed once, also when it was first read, or its reservation found a switch or
+the latch off, while routing was off (zerus-sa9qn.45). One asked and answered
+while routing was off is never sent, and a question already in the route
+ledger never routes again.
 
 Android (zerus-sa9qn.4) and iOS (zerus-sa9qn.5) apply the same contract, iOS
 in ZerusKit `ChildSessions` and the session card: child cards nest under a
