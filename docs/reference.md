@@ -4419,6 +4419,33 @@ for that session, and the project settings can keep agents to their own
 session or limit how many tasks they start per hour. `settings --set` reads a
 JSON object and changes only the fields it names.
 
+Another computer's hgs, reached as `hgs @host …`, sees no marker of the agent
+that calls it and takes the caller for the person. So an agent's process
+never forwards a command whose handler tells the person from an agent that way
+(zerus-ppd26.9). Those commands are `task`, `team` and `question-routing`
+(`PERSON_ONLY_FORWARDED` in `src/cli.rs`); a newer peer's `team` or
+`question-routing` is covered too.
+- **Where the check runs:** on this computer before any ssh, `--dry-run`
+  included, on every route: plain `@host`, `@host --expect-machine ID
+  [--client C]`, the private `__state` entry and a session reference's
+  verified hop.
+- **Who counts as an agent:** a process that claims a session (`HGS_SESSION`
+  and `HGS_RUN_ID`, proven or not), a resident DeepSeek tool call
+  (`HGS_AGENT=dsh`), or a process a live session proves as its caller, a
+  Claude background job included.
+- **What the agent does instead:** it runs `hgs task` on its own computer,
+  which reaches every computer's copy. A person's shell that inherited an
+  agent's variables can unset them.
+- **Unchanged:** tasks' own forwarding of `send` and `cancel` to the
+  executor's computer (`--agent NODE/SESSION`).
+- **Still forwarded for an agent:** `answer`, `interrupt` and terminal input
+  act the same for an agent and the person; `wait` acts on its ticket;
+  `parent` and `wait begin` refuse a caller the other computer cannot see;
+  `desktop` and `approval-log` refuse every other computer.
+
+This guards against accidental agent use, not against an agent that clears its
+own environment. Forwarding a verified caller instead is future work.
+
 The desktop cancellation dialog uses `hgs task cancel-execution REF --project P --json`,
 with schema 1 JSON on stdin: `dispatch_id`, `stage_at`, executor `machine` and `session_id`,
 and `reason`. It checks the exact active execution while holding the project lock,

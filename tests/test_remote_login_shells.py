@@ -325,5 +325,84 @@ class RemoteLoginShells(unittest.TestCase):
                 (self.peer / 'shell-pwd').unlink()
 
 
+    def test_a_person_only_command_never_reaches_another_computer_from_an_agent(self):
+        # zerus-ppd26.9: another computer's hgs sees no marker of the agent that
+        # calls it and takes it for the person. So an agent's call of a command
+        # in PERSON_ONLY_FORWARDED stops before ssh on every route, --dry-run
+        # included, while the person's goes on. Commands an agent may use on
+        # another computer still forward for it.
+        import hashlib
+        import re
+        import uuid
+        table = re.search(r'const PERSON_ONLY_FORWARDED: &\[&str\] = &\[(.*?)\];', (ROOT / 'src/cli.rs').read_text(), re.S)
+        person_only = re.findall(r'"([a-z_-]+)"', table.group(1))
+        self.assertEqual(sorted(person_only), ['question-routing', 'task', 'team'])
+        state = self.root / 'state'
+        state.mkdir(exist_ok=True)
+
+        def started(pid):
+            return subprocess.check_output(['ps', '-p', str(pid), '-o', 'lstart='],
+                                           env=dict(self.env, LC_ALL='C', TZ='UTC'), text=True).strip()
+
+        def record(name, run, pid, conversation):
+            value = dict(version=1, name=name, agent='claude', run_id=run, conversation_id=conversation,
+                         session_id=str(uuid.uuid4()), pid=pid, process_start=started(pid), activity='idle',
+                         phase='idle', active_tools={}, subagents={})
+            (state / (hashlib.sha256(name.encode()).hexdigest() + '.json')).write_text(json.dumps(value))
+
+        # A proven agent: this test process is its agent.
+        record('claude/example/agent', 'run-agent', os.getpid(), str(uuid.uuid4()))
+        # A Claude background job, with no HGS markers: its session's window
+        # holds the job this process runs under.
+        window = subprocess.Popen(['sleep', '60'])
+        self.addCleanup(window.wait)
+        self.addCleanup(window.kill)
+        conversation, job = str(uuid.uuid4()), str(uuid.uuid4())
+        record('claude/example/window', 'run-window', window.pid, conversation)
+        registry = self.root / 'claude/sessions'
+        registry.mkdir(parents=True)
+        (registry / f'{window.pid}.json').write_text(json.dumps(dict(pid=window.pid, kind='interactive', parkedJobId=job)))
+        (registry / f'{os.getpid()}.json').write_text(
+            json.dumps(dict(pid=os.getpid(), kind='bg', jobId=job, sessionId=conversation)))
+        agents = {
+            'proven': dict(HGS_SESSION='claude/example/agent', HGS_RUN_ID='run-agent'),
+            'unproven': dict(HGS_SESSION='claude/example/gone', HGS_RUN_ID='run-gone'),
+            'hosted': dict(HGS_AGENT='dsh'),
+            'background': dict(CLAUDE_PID=str(os.getpid()), CLAUDE_CODE_SESSION_ID=conversation,
+                               CLAUDE_CONFIG_DIR=str(self.root / 'claude')),
+        }
+        shell = login_shells()['sh']
+
+        def run(args, extra):
+            (self.root / 'ssh-args.json').unlink(missing_ok=True)
+            result = subprocess.run([str(HGS), *args], input='', text=True, capture_output=True, timeout=30,
+                                    env=dict(self.env, REMOTE_LOGIN_SHELL=shell, **extra))
+            return result, (self.root / 'ssh-args.json').exists() or result.stdout.startswith('ssh ')
+
+        machine = '55555555-5555-4555-8555-555555555555'
+        for command in person_only:
+            forms = (['@peer', command, 'x', '--json'],
+                     ['--dry-run', '@peer', command, 'x', '--json'],
+                     ['@peer', '--expect-machine', machine, command, 'x', '--json'],
+                     ['@peer', '--expect-machine', machine, '--client', 'other', command, 'x', '--json'],
+                     ['@peer', '__state', command, 'x', '--json'],
+                     ['@peer', '--expect-machine', machine, '__state', command, 'x', '--json'])
+            for form in forms:
+                with self.subTest(form=' '.join(form)):
+                    result, reached = run(form, {})
+                    self.assertTrue(reached, result.stdout + result.stderr)
+                    for name, extra in agents.items():
+                        result, reached = run(form, extra)
+                        self.assertFalse(reached, name)
+                        self.assertEqual(result.returncode, 1, (name, result.stderr))
+                        self.assertIn(f'hgs {command} on another computer would act as the person', result.stderr, name)
+        for form in (['@peer', 'answer', 'x', '--json'], ['@peer', 'interrupt', 'x'], ['@peer', 'wait', 'ack', '--json'],
+                     ['@peer', 'inspect', 'x']):
+            for name, extra in agents.items():
+                with self.subTest(form=' '.join(form), agent=name):
+                    result, reached = run(form, extra)
+                    self.assertTrue(reached, (name, result.stderr))
+
+
 if __name__ == '__main__':
     unittest.main()
