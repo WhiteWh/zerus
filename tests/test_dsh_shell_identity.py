@@ -361,6 +361,26 @@ class HostStartedByHgs(Hosted, unittest.TestCase):
         # The person outside the host still acts as the person.
         self.call('task', 'comment', ref, input='from the person')
 
+    def test_a_hosted_call_cannot_switch_question_routing(self):
+        # zerus-ppd26.1: with or without its identity file a hosted call is
+        # refused before anything changes; the person outside the host is not.
+        session = self.launch()
+        identity = self.host_dir / 'shells' / (session['conversation_id'] + '.json')
+        launcher = self.launcher
+        request = json.dumps(dict(expected_run_id=launcher['run_id'], expected_conversation_id=launcher['conversation_id'],
+                                  expected_revision=0, send_to_parent=False))
+        routing = ('routing', [str(HGS), 'question-routing', launcher['name'], '--json'], request)
+        for state in ('identity', 'missing'):
+            with self.subTest(state):
+                if state == 'missing':
+                    identity.unlink()
+                result = self.shell(session, runs=[routing])['runs']['routing']
+                self.assertEqual(result['code'], 1, result)
+                self.assertEqual(json.loads(result['stdout']), {'ok': False, 'error': 'agent_refused'})
+        self.assertFalse((self.state / 'question-routing.json').exists())
+        person = self.call('question-routing', launcher['name'], '--json', input=request)
+        self.assertEqual(json.loads(person.stdout)['question_routing'], {'send_to_parent': False, 'revision': 1})
+
 
 class DirectlyStarted(Hosted):
     """A host started outside hgs with an old launcher's markers in its environment."""

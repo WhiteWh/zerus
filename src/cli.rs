@@ -818,7 +818,11 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
     } else {
         Some(command.as_str())
     };
-    if routed == Some("question-routing") && crate::state::session_graph::caller_record().is_some()
+    // A resident DeepSeek host's tool call is an agent's even without a provable
+    // session (zerus-ppd26.1).
+    if routed == Some("question-routing")
+        && (crate::state::session_graph::caller_record().is_some()
+            || crate::state::session_graph::hosted_agent_call())
     {
         println!(
             "{}",
