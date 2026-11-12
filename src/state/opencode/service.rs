@@ -790,7 +790,9 @@ pub(super) fn ensure_started() -> Result<Service> {
         command.env("XDG_RUNTIME_DIR", runtime);
     }
     let mut child = crate::platform::spawn_detached(&mut command).map_err(|_| {
-        if let Some(overlay) = &overlay { super::context_hint::spawn_failed(overlay); }
+        if let Some(overlay) = &overlay {
+            super::context_hint::spawn_failed(overlay);
+        }
         "OpenCode could not be started; install OpenCode 2".to_owned()
     })?;
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -811,7 +813,9 @@ pub(super) fn ensure_started() -> Result<Service> {
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-    if let Some(overlay) = &overlay { super::context_hint::observe(overlay); }
+    if let Some(overlay) = &overlay {
+        super::context_hint::observe(overlay);
+    }
     reap(child);
     if failed {
         return Err("OpenCode could not be started; install OpenCode 2".into());
