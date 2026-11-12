@@ -153,6 +153,24 @@ class ReceiptIndex(unittest.TestCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM receipt_rows WHERE source='terminal'").fetchone(), (2,))
         self.assertFalse(self.directory.exists())
 
+    def test_worker_cannot_seal_an_unrestored_cache_scope(self):
+        # id-settings-cx's real-CLI cache-scope probe (zerus-a4mub.42).
+        path = self.original(1)
+        before = path.read_bytes(), path.stat().st_mtime_ns
+        self.migrate()
+        self.assertEqual(self.ids(self.inspect()), [path.stem])
+        with closing(sqlite3.connect(self.database)) as db, db:
+            db.execute("UPDATE receipt_rows SET agent='foreign-child' WHERE request=?", (path.stem,))
+        invalid = self.inspect()["receipt_projection"]
+        self.assertFalse(invalid["catalog_complete_at_snapshot"])
+        self.migrate()
+        restored = self.inspect()
+        self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), before)
+        self.assertEqual(self.ids(restored), [path.stem],
+                         "worker declared complete coverage without restoring the original scope")
+        self.assertTrue(restored["receipt_projection"]["migration_complete"])
+        self.assertEqual(restored["receipt_projection"]["gaps"], [])
+
     def test_snapshot_pages_survive_backdated_arrivals_and_reject_other_scopes(self):
         originals = [self.original(n) for n in range(1, 13)]
         self.migrate()

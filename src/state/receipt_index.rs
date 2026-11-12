@@ -223,6 +223,31 @@ impl Binding {
     }
 }
 
+// Rebuildable projection metadata; the original fingerprint and the pinned
+// conversation still have to agree before any of these fields may be repaired.
+struct CachedRow {
+    fingerprint: String,
+    stamp: String,
+    name: String,
+    run: String,
+    conversation: String,
+    agent: String,
+    first: i64,
+    at: f64,
+    files: i64,
+}
+impl CachedRow {
+    fn matches(&self, binding: &Binding) -> bool {
+        self.name == binding.name
+            && self.run == binding.run
+            && self.conversation == binding.conversation
+            && self.agent == binding.agent
+            && self.first == i64::from(binding.first)
+            && self.at == binding.at
+            && self.files == i64::from(binding.files)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct Locator {
     source: Source,
@@ -583,6 +608,29 @@ impl Catalog {
             self.remember_row(source, path, value)
         }
     }
+    fn cached_row(&self, source: Source, request: &str) -> Result<Option<CachedRow>> {
+        sql(self
+            .db
+            .query_row(
+                "SELECT binding,stamp,name,run,conversation,agent,first_message,at,files
+               FROM receipt_rows WHERE source=? AND request=?",
+                params![source.key(), request],
+                |row| {
+                    Ok(CachedRow {
+                        fingerprint: row.get(0)?,
+                        stamp: row.get(1)?,
+                        name: row.get(2)?,
+                        run: row.get(3)?,
+                        conversation: row.get(4)?,
+                        agent: row.get(5)?,
+                        first: row.get(6)?,
+                        at: row.get(7)?,
+                        files: row.get(8)?,
+                    })
+                },
+            )
+            .optional())
+    }
     fn remember_row(&self, source: Source, path: &Path, value: &Value) -> Result<()> {
         let filename = path
             .file_name()
@@ -590,39 +638,34 @@ impl Catalog {
             .ok_or("Invalid receipt name")?;
         let binding = Binding::parse(source, value, filename)?;
         let stamp = file_stamp(path)?;
-        let prior: Option<(String, String, String)> = sql(self
-            .db
-            .query_row(
-                "SELECT binding,conversation,stamp FROM receipt_rows WHERE source=? AND request=?",
-                params![source.key(), binding.id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional())?;
-        if let Some((original, conversation, prior_stamp)) = prior {
-            if original != binding.fingerprint
-                || (!conversation.is_empty() && conversation != binding.conversation)
+        if let Some(prior) = self.cached_row(source, &binding.id)? {
+            if prior.fingerprint != binding.fingerprint
+                || (!prior.conversation.is_empty() && prior.conversation != binding.conversation)
             {
                 return self.error(source, filename, "binding_changed");
             }
-            // A content update keeps the immutable binding: the same original
-            // identity, a new file stamp and one change for consumers. Only the
-            // existing one-way first-prompt resolution may move scope.
-            let resolved = conversation.is_empty();
-            let conversation = if resolved {
-                binding.conversation.clone()
-            } else {
-                conversation
-            };
-            if resolved || prior_stamp != stamp {
+            // An unchanged original can have corrupted cached projection fields.
+            // Restore those too; preserve the immutable fingerprint and the
+            // existing one-way first-prompt conversation pin.
+            let resolved = prior.conversation.is_empty();
+            if resolved || prior.stamp != stamp || !prior.matches(&binding) {
                 let change = self.bump()?;
                 sql(self.db.execute(
                     "UPDATE receipt_rows SET name=?,run=?,conversation=?,agent=?,first_message=?,at=?,files=?,stamp=?,change=? WHERE source=? AND request=?",
-                    params![binding.name, binding.run, conversation, binding.agent, binding.first, binding.at, binding.files, stamp, change, source.key(), binding.id],
+                    params![binding.name, binding.run, binding.conversation, binding.agent, binding.first, binding.at, binding.files, stamp, change, source.key(), binding.id],
                 ))?;
             }
         } else {
             let change = self.bump()?;
             sql(self.db.execute("INSERT INTO receipt_rows(source,request,name,run,conversation,agent,first_message,at,files,binding,stamp,change) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",params![source.key(),binding.id,binding.name,binding.run,binding.conversation,binding.agent,binding.first,binding.at,binding.files,binding.fingerprint,stamp,change]))?;
+        }
+        // Clear a discrepancy only after verifying the actual stored row. A
+        // failed write or another cache trigger must keep explicit unknownness.
+        let verified = self.cached_row(source, &binding.id)?;
+        if verified.is_none_or(|row| {
+            row.fingerprint != binding.fingerprint || row.stamp != stamp || !row.matches(&binding)
+        }) {
+            return self.error(source, filename, "index_row_changed");
         }
         sql(self.db.execute(
             "DELETE FROM receipt_errors WHERE source=? AND name=?",

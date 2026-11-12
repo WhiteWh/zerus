@@ -1869,6 +1869,9 @@ Older caches remain unverified until the worker reconciles their originals.
 Removing a locator or changing its indexed identity invalidates coverage and
 snapshot cursors. Every worker restart reconciles the original directory even
 when its modification time is unchanged; inspection never does that walk.
+Before clearing a cache discrepancy, the worker verifies every projection field
+against its validated original and repairs compatible metadata. A conflicting
+original fingerprint or pinned conversation remains an explicit gap.
 The worker also checks indexed bindings not encountered in that walk, counting
 retained bindings within the same bounded pass. Finishing a source does not
 rescan its rows. A missing original keeps its binding and becomes an explicit gap with a history change
