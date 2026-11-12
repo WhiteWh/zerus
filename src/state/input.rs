@@ -1390,7 +1390,9 @@ fn before_input(typed: bool, witness: NotOffered) -> Failure {
 /// paste to settle and for Claude's proof. Its marker on the record keeps every
 /// other input to that session out meanwhile: sends and session actions
 /// (`checked_input`), Terminal input and Clear input (`terminal::check_handoff`).
-/// It lasts the send's window plus slack, so a crash never blocks for long.
+/// It lasts the send's window plus slack, so a crash never blocks for long. The
+/// window starts after the paste, and so does the marker's last term
+/// (zerus-iitw8.8): slow work before the paste never lets it lapse inside it.
 const TYPING: &str = "input_typing";
 const TYPING_SECONDS: f64 = settle::WINDOW.as_secs_f64() + 4.0;
 
@@ -1407,11 +1409,26 @@ fn typing_ours(current: &Value, request_id: &str, run_id: &str) -> bool {
     string(current, "run_id") == run_id && input_typing(current) == Some(request_id)
 }
 
-/// Ends this send's marker, under the state lock. Any native proof also
-/// confirms the input (zerus-iitw8.6): Claude's UserPromptSubmit hook may be
-/// missing or late, and a queued prompt has none until it is dequeued. Only
-/// this send's own pending input is confirmed, never a later one.
-fn end_typing(name: &str, record: &Value, request_id: &str, submitted_at: f64, proven: bool) {
+/// Starts this send's marker term again when its window starts, after the
+/// paste (zerus-iitw8.8). The send has held the state lock since it wrote the
+/// marker, so the marker is still its own however long the paste took; the
+/// term stays one window plus slack.
+fn typing_from_paste(name: &str, request_id: &str, run_id: &str) -> Result<()> {
+    let mut current = read(name)?;
+    if string(&current, "run_id") != run_id || current[TYPING]["request_id"] != request_id {
+        return Err("the session changed while the message was pasted; no Enter was pressed".into());
+    }
+    current[TYPING]["until"] = json!(now() + TYPING_SECONDS);
+    write(&mut current)
+}
+
+/// Ends this send's marker, under the state lock. Claude's own record of the
+/// message, in its transcript or queue, also confirms the input
+/// (zerus-iitw8.6): its UserPromptSubmit hook may be missing or late, and a
+/// queued prompt has none until it is dequeued. An emptied composer alone
+/// never does (zerus-iitw8.8). Only this send's own pending input is
+/// confirmed, never a later one.
+fn end_typing(name: &str, record: &Value, request_id: &str, submitted_at: f64, recorded: bool) {
     let Ok(mut current) = read(name) else {
         return;
     };
@@ -1424,7 +1441,7 @@ fn end_typing(name: &str, record: &Value, request_id: &str, submitted_at: f64, p
             fields.remove(TYPING);
         }
     }
-    let seen = proven && current["input_pending_at"].as_f64() == Some(submitted_at);
+    let seen = recorded && current["input_pending_at"].as_f64() == Some(submitted_at);
     if seen {
         current["input_seen_at"] = json!(now());
     }
@@ -1621,6 +1638,8 @@ fn submit_core(
         terminal.paste(&buffer, pane, backend::Paste::Composer)?;
         deadline = std::time::Instant::now() + settle::WINDOW;
         if native {
+            // Still under the lock: the marker's term starts with the window.
+            typing_from_paste(name, &request_id, string(&record, "run_id"))?;
             // Enter only once the composer shows the paste settled: an Enter
             // while Claude still processes pasted images submits nothing. The
             // wait reads only the terminal and holds no lock, so every other
@@ -1701,7 +1720,7 @@ fn submit_core(
         drop(guard.take());
         let proof = settle::confirm(terminal, &claim, transcript.as_mut(), &text, pasted_at, deadline);
         let _guard = lock(None).map_err(unknown)?;
-        end_typing(name, &record, &request_id, submitted_at, proof.is_ok());
+        end_typing(name, &record, &request_id, submitted_at, matches!(proof, Ok(proof) if proof.recorded()));
         match proof {
             Ok(proof) => {
                 receipt["status"] = json!("submitted");
