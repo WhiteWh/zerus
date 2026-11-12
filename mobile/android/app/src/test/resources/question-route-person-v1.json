@@ -1,0 +1,21 @@
+{
+  "canonical_hex": "7a657275732d7175657374696f6e2d726f7574652d706572736f6e2d76310000000011776f726b73706163652d666978747572650000002430303030303030302d303030302d343030302d383030302d3030303030303030303030320000002430303030303030302d303030302d343030302d383030302d3030303030303030303030310000002430303030303030302d303030302d343030302d383030302d3030303030303030303063310000000572756e2d310000000e636f6e766572736174696f6e2d3100000001000000002430303030303030302d303030302d343030302d383030302d30303030303030303030643100000008000000007735939c000000080000000077359464",
+  "description": "The person's latch statement of a child's question route (zerus-sa9qn.50): a phone signs it for one gateway with its workspace signing key; the gateway's service applies it at most once before expires_at (seconds). Rust (services/mobile/crypto), Android and iOS check the canonical bytes, and verify the signature with the phone's signing public key.",
+  "domain": "zerus-question-route-person-v1",
+  "phone_signing_public_key": "IVL40Zt5HSRFMkLhXy6rbLfP-ntqXtMAl5YOBpiB2xI",
+  "phone_signing_seed": "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI",
+  "signature": "foGUzDQ6ccBKsZZFVkpapl9grWim94NxiL7sLVjNXDZlFWL18F9Uts3dlrJoPZC2JTq8YOb7vNE-ylQMaaXyCA",
+  "statement": {
+    "conversation_id": "conversation-1",
+    "device_id": "00000000-0000-4000-8000-000000000002",
+    "expires_at": 2000000100,
+    "gateway_id": "00000000-0000-4000-8000-000000000001",
+    "issued_at": 1999999900,
+    "person_off": false,
+    "request_id": "00000000-0000-4000-8000-0000000000d1",
+    "run_id": "run-1",
+    "session_id": "00000000-0000-4000-8000-0000000000c1",
+    "workspace_id": "workspace-fixture"
+  },
+  "warning": "PUBLIC SYNTHETIC TEST KEYS; NEVER USE IN SERVICE"
+}

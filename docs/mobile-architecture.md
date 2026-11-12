@@ -1310,6 +1310,14 @@ connector refuses it. The same exact run/conversation and expected revision
 apply, nothing changes optimistically, and only the computer's exact reply
 settles it: an unknown or uncertain result is never retried. The shared
 contract is `question-routing-contract.json` in the Android test resources.
+On an encrypted workspace whose relay and computer also offer
+`session_question_route_person`, the same entry sends the person's latch
+instead (zerus-sa9qn.50). The phone signs a statement for its gateway with
+its workspace signing key (`RoutePersonStatement`). The gateway's desktop
+service verifies it through its own connector and applies it once, so an
+agent on the computer cannot clear a phone's "off" with commands. The
+statement's shared vector is
+`services/mobile/crypto/tests/vectors/question-route-person-v1.json`.
 
 Muted conversations retain their native state, unread replies, pending requests
 and Needs attention/Active membership. Attention and unread styling becomes

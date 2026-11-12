@@ -979,6 +979,20 @@ The person has two switches, both on by default (zerus-sa9qn.32):
   never clear the latch. Like the global switch, the latch is kept in the
   service Store, which the same user can edit directly; that is outside
   this protection. A remote child's latch is set on its own computer.
+  A phone on an encrypted workspace sets the latch too, where its relay
+  and the computer both offer `session_question_route_person` (help marker
+  `question-route-person-v1`). The phone signs a statement with its
+  workspace Ed25519 key: domain `zerus-question-route-person-v1`, with
+  the workspace, phone, gateway, child session, run, conversation, value
+  and request ID, valid at most 5 minutes. The connector forwards it as one
+  `hgs desktop request` (`question_route_person`). The service runs this
+  computer's connector itself
+  (`zerus-mobile-connector --workspace verify-question-route-person`)
+  to check that a current phone of this workspace signed exactly that
+  statement for this gateway. It then sets the latch once per request ID,
+  and the child's host file follows. Peers and Windows gateways do not
+  offer it, and a legacy connection keeps the host switch. The shared
+  vector is `services/mobile/crypto/tests/vectors/question-route-person-v1.json`.
 
 The router reads nothing while the global switch is off. Every reservation
 reads both switches and the latch again in its own transaction, so a switch turned off

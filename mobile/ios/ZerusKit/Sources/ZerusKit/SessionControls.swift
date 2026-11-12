@@ -6,7 +6,7 @@ public enum SessionActionPolicies {
     public static let lifecycle: Set<String> = ["pause", "resume", "archive", "rename", "fork", "terminate", "restore", "forget"]
     public static let operations: Set<String> = lifecycle.union(["send_now", "settings", "process_stop", "terminal_input", "launch", "worktree_create",
                                                                  "directory_create", RepositoryAcquisition.clone, "recovery_action", SessionNotificationPreferences.operation,
-                                                                 SessionQuestionRouting.operation])
+                                                                 SessionQuestionRouting.operation, SessionQuestionRouting.personOperation])
     public static let terminalKeys: Set<String> = ["Enter", "Escape", "Tab", "BTab", "BSpace", "Up", "Down", "Left", "Right", "Home", "End", "PPage",
                                                    "NPage", "DC", "C-c", "C-d", "C-l", "C-a", "C-e", "C-u", "C-w"]
     /// The relay's fixed effort levels; other native variants need `effortVariants`.
@@ -36,6 +36,7 @@ public enum SessionActionPolicies {
         }
         if operation == SessionNotificationPreferences.operation { return try SessionNotificationPreferences.arguments(raw) }
         if operation == SessionQuestionRouting.operation { return try SessionQuestionRouting.arguments(raw) }
+        if operation == SessionQuestionRouting.personOperation { return try SessionQuestionRouting.personArguments(raw) }
         guard operations.contains(operation) else { throw ZerusError.invalid("Unsupported session action.") }
         let allowed: Set<String>
         switch operation {
@@ -142,6 +143,7 @@ public enum SessionActionPolicies {
         switch operation {
         case SessionNotificationPreferences.operation: fields = ["run_id","conversation_id","archive_id","notification_preferences"]
         case SessionQuestionRouting.operation: fields = ["run_id","conversation_id","archive_id","question_routing","parent","state"]
+        case SessionQuestionRouting.personOperation: fields = ["run_id","conversation_id","archive_id","question_routing","parent","state","session_id"]
         case "settings": fields = ["model", "effort", "model_options", "effort_options", "pending_model", "pending_effort", "pending_settings_id",
                                    "settings_apply_when", "settings_change_supported"]
         case "send_now": fields = ["input_queue"]
@@ -155,10 +157,14 @@ public enum SessionActionPolicies {
 
     /// Why a fresh inspection no longer permits this action, or "" when it does.
     public static func inspectReason(_ target: Target, _ operation: String, _ args: JSONObject, _ raw: JSONObject) -> String {
-        if operation == SessionQuestionRouting.operation {
+        if operation == SessionQuestionRouting.operation || operation == SessionQuestionRouting.personOperation {
             let reason = SessionQuestionRouting.reason(target,raw)
             if !reason.isEmpty { return reason }
-            return SessionQuestionRouting.parse(raw)?.revision == args.int64("expected_revision") ? "" : SessionQuestionRouting.stale
+            if SessionQuestionRouting.parse(raw)?.revision != args.int64("expected_revision") { return SessionQuestionRouting.stale }
+            if operation == SessionQuestionRouting.personOperation && raw["session_id"] != args["session_id"] {
+                return SessionQuestionRouting.refusals["stale_identity"] ?? ""
+            }
+            return ""
         }
         if operation == SessionNotificationPreferences.operation {
             let reason = SessionNotificationPreferences.reason(target,raw)
@@ -234,6 +240,7 @@ public enum SessionActionPolicies {
         }
         if action.operation == SessionNotificationPreferences.operation { return SessionNotificationPreferences.result(action,receipt) }
         if action.operation == SessionQuestionRouting.operation { return SessionQuestionRouting.result(action,receipt) }
+        if action.operation == SessionQuestionRouting.personOperation { return SessionQuestionRouting.personResult(action,receipt) }
         if action.operation == MobileDelivery.operation { return MobileDelivery.result(action, receipt) }
         if action.operation == DirectoryCreation.operation { return DirectoryCreation.result(action, receipt) }
         let native = receipt.object("result")

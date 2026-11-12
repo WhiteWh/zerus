@@ -1935,7 +1935,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         if (target.archiveId.isNotBlank() && operation !in setOf("restore", "forget", "rename", "fork")) return "This archived conversation is read-only."
         if (target.archiveId.isBlank() && operation == "restore") return "Select an archived version first."
         if(operation == SessionNotificationPreferences.operation) SessionNotificationPreferences.reason(target,raw).takeIf { it.isNotBlank() }?.let { return it }
-        if(operation == SessionQuestionRouting.operation) SessionQuestionRouting.reason(target,raw).takeIf { it.isNotBlank() }?.let { return it }
+        if(operation == SessionQuestionRouting.operation || operation == SessionQuestionRouting.personOperation) SessionQuestionRouting.reason(target,raw).takeIf { it.isNotBlank() }?.let { return it }
         if(operation in SessionActionPolicies.lifecycle && raw.optJSONArray("allowed_actions")?.let { value -> (0 until value.length()).any { value.optString(it) == operation } } != true) return raw.optJSONObject("action_reasons")?.string(operation).orEmpty().ifBlank { "Native session controls are unavailable for this action." }
         if (contextBlocked(target) || outgoing.any { it.belongsTo(target) && it.blocksSending } || target.key in preparingTargets || compactContinuationActive) return "Resolve the pending delivery or action first."
         if (attachmentImporting || attachmentPreparing || pickerDraft?.target == target || drafts.any { it.target == target && it.status in listOf("submitting", "uncertain") }) return "Wait for the current answer or file selection."
@@ -2036,6 +2036,11 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         return request.operation.takeIf { request.navigation == navigationId && request.target == target }
     }
     private fun submitSessionAction(target:Target,operation:String,args:JSONObject,authorized:SessionAction?=null,frame:Frame?=null,terminalBuffer:TerminalBuffer?=null,retry:ScheduledSettingsRetry.ConsumedGrant?=null) {
+        // zerus-sa9qn.50: where an encrypted connection, its relay and the computer offer it, the person's switch is this
+        // phone's signed latch statement, which only the computer's own service applies; elsewhere the host switch alone.
+        if(operation == SessionQuestionRouting.operation && authorized == null && SessionQuestionRouting.person(connections.find { it.id == target.connectionId },
+                relayOperations[target.connectionId].orEmpty(),machineOperations[MachineKey(target.connectionId,target.computerId)].orEmpty()))
+            return submitSessionAction(target,SessionQuestionRouting.personOperation,JSONObject(args.toString()).put("session_id",(frame?.raw ?: activity)?.string("session_id").orEmpty()),null,frame,terminalBuffer,retry)
         val inspected=frame?.raw ?: activity ?: JSONObject()
         val reason = if(authorized == null) actionReason(target,operation) else authorizedSettingsReason(target,args,authorized,frame,retry?.grant); if(reason.isNotBlank()) { error=reason; return }
         val nativeEfforts = nativeEffortsSupported(target,inspected)
@@ -2070,6 +2075,8 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
                 check(SessionActionPolicies.inspectReason(target,operation,arguments,live).isBlank()) { "The native action target or catalog changed before delivery." }
                 val payload = if(operation == SessionNotificationPreferences.operation) SessionNotificationPreferences.payload(target,arguments)
                     else if(operation == SessionQuestionRouting.operation) SessionQuestionRouting.payload(target,arguments)
+                    else if(operation == SessionQuestionRouting.personOperation) api.signRoutePerson(connection,target.computerId,arguments.getString("session_id"),
+                        target.run,target.conversation,!arguments.getBoolean("send_to_parent"),action.requestId)
                     else JSONObject(arguments.toString()).put("request_id",action.requestId).put("expected_run_id",target.run).put("expected_conversation_id",target.conversation)
                 if(target.archiveId.isNotBlank()) payload.put("archive_id",target.archiveId)
                 attempted=true
@@ -2167,7 +2174,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
             next
         })
         // The computer's listing and inspection show the confirmed switch.
-        if(action.operation == SessionQuestionRouting.operation) refresh(explicit=true)
+        if(action.operation == SessionQuestionRouting.operation || action.operation == SessionQuestionRouting.personOperation) refresh(explicit=true)
         if(action.operation == SessionNotificationPreferences.operation) {
             if(result.status=="completed") confirmNotificationPreference(result)
             refresh(explicit=true)

@@ -31,6 +31,54 @@ public enum SessionQuestionRouting {
         "revision_exhausted": "The question routing revision is exhausted. The setting was not changed.",
     ]
 
+    /// The person's latch through this phone's signed statement (zerus-sa9qn.50).
+    public static let personOperation = "session_question_route_person"
+    /// Only an encrypted workspace connection can sign, and only where both the relay and the computer offer it.
+    public static func person(_ connection: Connection?, relay: Set<String>, machine: Set<String>) -> Bool {
+        connection?.protocolVersion == 2 && relay.contains(personOperation) && machine.contains(personOperation)
+    }
+    /// The toggled switch at the row's revision, for the child's durable session ID.
+    public static func personArguments(_ raw: JSONObject) throws -> JSONObject {
+        guard raw.count == 3, case .string(let session)? = raw["session_id"], (try? WorkspaceProtocol.identifier(session)) != nil else {
+            throw ZerusError.invalid("Invalid question routing setting.")
+        }
+        var plain = raw
+        plain["session_id"] = nil
+        _ = try arguments(plain)
+        return raw
+    }
+    public static let personRefusals: [String: String] = [
+        "not_verified": "The computer did not accept this phone's signature. Refresh this workspace and try again.",
+        "stale_identity": "The conversation changed. Refresh its exact identity before applying.",
+        "not_found": "This conversation is no longer available.",
+        "capacity": "The computer's question routing storage is full. The setting was not changed.",
+        "invalid_request": "The computer refused this request. Refresh and try again.",
+    ]
+    /// Only the service's exact receipt of this statement settles it; a closed refusal fails; anything else is uncertain.
+    public static func personResult(_ action: SessionAction, _ receipt: JSONObject) -> SessionAction {
+        var copy = action
+        let value = receipt.object("result")
+        let args = try? personArguments(action.arguments)
+        let completed = receipt["request_id"] == .string(action.requestId) && receipt["state"] == .string("completed") && args != nil
+            && value?["request_id"] == .string(action.requestId) && value?["op"] == .string("question_route_child")
+        if completed, let value, value["accepted"] == .bool(false), value.count == 5, value["durable"] == .bool(false),
+           case .string(let code)? = value["code"], let message = personRefusals[code] {
+            copy.status = "failed"
+            copy.error = message
+            return copy
+        }
+        guard completed, let value, let args, value.count == 10, value["accepted"] == .bool(true), value["durable"] == .bool(true),
+              value["session_id"] == args["session_id"], case .bool(let send)? = args["send_to_parent"], value["person_off"] == .bool(!send),
+              integer(value["revision"]) != nil, case .bool(_)? = value["applied"], case .bool(_)? = value["host"], value["code"] == .string("") else {
+            copy.status = "uncertain"
+            copy.error = uncertain
+            return copy
+        }
+        copy.status = "completed"
+        copy.error = ""
+        return copy
+    }
+
     private static func integer(_ value: JSON?) -> Int64? {
         guard case .int(let number)? = value, number >= 0 else { return nil }
         return number

@@ -61,6 +61,38 @@ object SessionQuestionRouting {
         "capacity" to "The computer's question routing storage is full. The setting was not changed.",
         "revision_exhausted" to "The question routing revision is exhausted. The setting was not changed.")
     const val uncertain = "Where this child's questions go was not confirmed. Check its original receipt; it has not been retried."
+
+    /** The person's latch through this phone's signed statement (zerus-sa9qn.50). */
+    const val personOperation = "session_question_route_person"
+    /** Only an encrypted workspace connection can sign, and only where both the relay and the computer offer it. */
+    fun person(connection: Connection?, relay: Set<String>, machine: Set<String>) =
+        connection?.protocolVersion == 2 && personOperation in relay && personOperation in machine
+    /** The toggled switch at the row's revision, for the child's durable session ID. */
+    fun personArguments(raw: JSONObject): JSONObject {
+        require(raw.length()==3 && (raw.opt("session_id") as? String)?.let { runCatching { WorkspaceProtocol.identifier(it) }.isSuccess } == true) { "Invalid question routing setting." }
+        arguments(JSONObject(raw.toString()).apply { remove("session_id") })
+        return JSONObject(raw.toString())
+    }
+    val personRefusals = mapOf(
+        "not_verified" to "The computer did not accept this phone's signature. Refresh this workspace and try again.",
+        "stale_identity" to "The conversation changed. Refresh its exact identity before applying.",
+        "not_found" to "This conversation is no longer available.",
+        "capacity" to "The computer's question routing storage is full. The setting was not changed.",
+        "invalid_request" to "The computer refused this request. Refresh and try again.")
+    /** Only the service's exact receipt of this statement settles it; a closed refusal fails; anything else is uncertain. */
+    fun personResult(action: SessionAction, receipt: JSONObject): SessionAction {
+        val value = receipt.optJSONObject("result")
+        val args = runCatching { personArguments(JSONObject(action.arguments)) }.getOrNull()
+        val completed = receipt.opt("request_id")==action.requestId && receipt.opt("state")=="completed" && args != null && value != null &&
+            value.opt("request_id")==action.requestId && value.opt("op")=="question_route_child"
+        if(completed && value!!.opt("accepted")==false && value.length()==5 && value.opt("durable")==false)
+            personRefusals[value.opt("code") as? String]?.let { return action.copy(status="failed",error=it) }
+        val valid = completed && value!!.length()==10 && value.opt("accepted")==true && value.opt("durable")==true &&
+            value.opt("session_id")==args!!.getString("session_id") && value.opt("person_off")==!args.getBoolean("send_to_parent") &&
+            (value.opt("revision") as? Number)?.toLong()?.let { it >= 0 } == true && value.opt("applied") is Boolean &&
+            value.opt("host") is Boolean && value.opt("code")==""
+        return if(valid) action.copy(status="completed",error="") else action.copy(status="uncertain",error=uncertain)
+    }
     /** Only the computer's exact reply settles it: a closed refusal fails, the exact confirmation completes, anything else is uncertain. */
     fun result(action: SessionAction, receipt: JSONObject): SessionAction {
         val value = receipt.optJSONObject("result")
