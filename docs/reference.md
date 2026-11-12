@@ -5431,7 +5431,17 @@ A host an older Zerus started keeps the markers it inherited and its adapter
 until it exits on its own; it is never restarted or reloaded for this. Its
 `ping` has no `shellIdentity`, and the existing refusals for those inherited
 markers stay. The adapter version is unchanged, so this Zerus keeps using such a
-host.
+host. Such a host started from a process without session markers, such as the
+desktop or a plain terminal, gives its tool calls neither markers nor
+`HGS_AGENT`: the guards above cannot tell those calls from the person, and only
+a check of recorded host ancestry, such as the Agent Teams caller proof, refuses
+them.
+
+The official minimal composition's persistent `bash` tool keeps one shell per
+agent across calls, which starts with the environment of the call that opened
+it. Its later commands keep that session's markers, which can name an earlier
+run after a relaunch. The `hgs` profile Zerus launches uses the per-call `bash`
+tool.
 
 Reviewed adoption of `0.2.1-rc.5` (2026-10-29, `zerus-r7d4`): the rc.2-only
 startup gate rejected rc.5 before starting the host. Comparison of the official

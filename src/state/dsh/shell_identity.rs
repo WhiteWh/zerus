@@ -79,7 +79,11 @@ pub(super) fn write(record: &Value) -> Result<()> {
     if current.as_deref() == Some(text.as_bytes()) {
         return Ok(());
     }
-    atomic(&path, &text)
+    // A write that fails leaves no older file naming a previous run
+    // (zerus-ppd26.3): that session's calls then carry no markers at all.
+    atomic(&path, &text).inspect_err(|_| {
+        let _ = fs::remove_file(&path);
+    })
 }
 
 /// Removes the record's identity file; a forgotten binding names nothing.
@@ -178,6 +182,17 @@ mod tests {
         assert!(file.exists());
         remove(&binding);
         assert!(!file.exists());
+        // A failed write never leaves the previous run's file behind.
+        write(&binding).unwrap();
+        binding["run_id"] = json!("run-4");
+        crate::state::storage::cut::arm(0);
+        let failed = write(&binding);
+        crate::state::storage::cut::disarm();
+        assert!(failed.is_err());
+        assert!(!file.exists(), "the previous run must not stay named");
+        write(&binding).unwrap();
+        let value: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(value["run"], "run-4");
     }
 
     #[test]
