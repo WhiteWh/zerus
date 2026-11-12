@@ -14,14 +14,16 @@ export function RemoveAnywayDialog(props: { id: string; close: () => void }) {
   const [error, setError] = createSignal("");
   let consumed = false;
   const cancel = () => { if (!sending()) props.close(); };
+  // Loading first: reading a pending offer() here would suspend the review's
+  // Suspense boundary and detach the whole review until the offer answers.
   const allowed = () => {
-    if (offer.error) return false;
+    if (offer.loading || offer.error) return false;
     const v = offer(), c = consents();
     return v?.ready && !sending() && (!v.required.local_files || c.local_files)
       && (!v.required.discard_changes || c.discard_changes) && (!v.required.unchecked_processes || c.unchecked_processes);
   };
   const confirm = async () => {
-    const v = offer(); if (!v || !allowed()) return;
+    if (!allowed()) return; const v = offer(); if (!v) return;
     setSending(true); consumed = true;
     try { applyCleanup(await terminationCleanupManualConfirm(id, v.confirmation, consents())); props.close(); }
     catch (e) { setError(String(e)); }
