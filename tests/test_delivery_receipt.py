@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 import uuid
 
 HGS = Path(os.environ.get('HGS_TEST_BIN', Path(__file__).resolve().parents[1] / 'target/debug/hgs')).resolve()
@@ -226,8 +227,26 @@ class DeliveryReceipt(unittest.TestCase):
 @unittest.skipIf(os.name == 'nt', 'private scripted tmux fixture')
 class ProducedDeliveryReceipt(unittest.TestCase):
     def test_actual_send_retains_binding_and_lookup_never_replays(self):
+        self.actual_send()
+
+    def test_actual_send_with_symlinked_tmpdir_retains_binding_and_never_replays(self):
+        # Keep this socket path short on macOS as well as Linux.
+        with tempfile.TemporaryDirectory(prefix='hgs-dr-', dir='/tmp') as scratch:
+            root = Path(scratch).resolve()
+            physical, alias = root / 'p', root / 'a'
+            physical.mkdir(mode=0o700)
+            alias.symlink_to(physical, target_is_directory=True)
+            with mock.patch.object(tempfile, 'tempdir', str(alias)):
+                self.actual_send()
+
+    def actual_send(self):
         from test_input import InputTransport
-        fixture = InputTransport(methodName='runTest'); fixture.setUp()
+        # InputTransport keeps its temporary path verbatim. macOS prefixes
+        # such as /var alias /private/var, while the identity reader deliberately
+        # refuses links in any ancestor. Allocate this fixture's entire namespace
+        # under the physical prefix, before its env, paths and socket are built.
+        with mock.patch.object(tempfile, 'tempdir', str(Path(tempfile.gettempdir()).resolve())):
+            fixture = InputTransport(methodName='runTest'); fixture.setUp()
         try:
             for key, folder in [('CODEX_HOME', 'codex'), ('CLAUDE_CONFIG_DIR', 'claude'), ('KIMI_CODE_HOME', 'kimi'),
                                 ('DSH_HOME', 'dsh'), ('OPENCODE_HOME', 'opencode'), ('XDG_DATA_HOME', 'data'),
