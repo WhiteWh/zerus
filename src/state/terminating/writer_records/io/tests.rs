@@ -92,8 +92,13 @@ fn pre_spawn_refusal_returns_the_same_original_reservation_without_an_effect() {
     case("expired-admission");
     case("damaged-admission");
 }
+#[test]
+fn expired_admission_is_reached_after_slow_original_setup() {
+    case("expired-admission-slow-setup");
+}
 
 fn original(until: Instant) -> Reservation {
+    let started = Instant::now();
     let _writer = storage::writer_until(until).unwrap().unwrap();
     reserve(
         &scope(),
@@ -103,7 +108,13 @@ fn original(until: Instant) -> Reservation {
         &"b".repeat(64),
         until,
     )
-    .unwrap()
+    .unwrap_or_else(|error| {
+        panic!(
+            "original reservation setup: {error}; elapsed={:?}; remaining={:?}",
+            started.elapsed(),
+            until.saturating_duration_since(Instant::now())
+        )
+    })
 }
 fn admit(original: Reservation) -> IoAdmission {
     IoAdmission::reserve(original).unwrap_or_else(|(_, failure)| panic!("{failure:?}"))
@@ -158,7 +169,11 @@ fn gate(case: &str) {
 #[test]
 #[ignore = "bounded private reexec; no real agent, installed scope or controller"]
 fn private_probe() {
-    let case = std::env::var("HGS_TEST_WRITER_IO").unwrap();
+    let mut case = std::env::var("HGS_TEST_WRITER_IO").unwrap();
+    let slow_setup = case == "expired-admission-slow-setup";
+    if slow_setup {
+        case = "expired-admission".into();
+    }
     if matches!(case.as_str(), "gate-held" | "gate-free") {
         let store = Store::open(&scope(), end()).unwrap();
         let result = store.exclusive(Instant::now() + Duration::from_millis(80));
@@ -167,17 +182,24 @@ fn private_probe() {
     }
     drop(storage::lock(None).unwrap());
     initialize(&scope(), end()).unwrap();
-    let deadline = if case == "expired-admission" {
-        Instant::now() + Duration::from_millis(50)
-    } else {
-        end()
-    };
-    let reservation = original(deadline);
+    let setup_deadline = end();
+    if slow_setup {
+        // Deterministic scheduling/storage delay within the original fixture
+        // setup budget; admission expiry must not time this durable setup.
+        std::thread::sleep(Duration::from_millis(75));
+    }
+    let mut reservation = original(setup_deadline);
+    if case == "expired-admission" {
+        // First construct the original, then shorten its lifetime. Starting a
+        // 50 ms clock before reservation/fsync tested machine speed instead of
+        // the intended expired-admission refusal. No production bound changes.
+        reservation.until = Instant::now();
+    }
+    let deadline = reservation.until;
+    let entry = reservation.entry.clone();
     let weak = Arc::downgrade(reservation.lease.as_ref().unwrap());
     if case.ends_with("admission") {
-        if case == "expired-admission" {
-            until(|| Instant::now() >= deadline);
-        } else {
+        if case != "expired-admission" {
             replace_intent();
         }
         let (mut returned, failure) = match IoAdmission::reserve(reservation) {
@@ -185,6 +207,7 @@ fn private_probe() {
             Err(original) => original,
         };
         assert_eq!(returned.entry.request, REQUEST);
+        assert_eq!(returned.entry, entry);
         assert_eq!(returned.until, deadline);
         assert_eq!(pending(&scope(), end()).unwrap().len(), 1);
         assert_eq!(weak.strong_count(), 1);
