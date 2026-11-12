@@ -276,6 +276,13 @@ class NativeHarness(unittest.TestCase):
         b=self.create()
         self.cli('send',b,self.payload(b,text='SHELL_BACKGROUND_FIXTURE',attachments=[]))
         data=self.wait(lambda: (d if d['phase']=='idle' and d.get('processes',{}).get('active_count')==1 else None) if (d:=self.cli('inspect',b)) else None)
+        # zerus-yj7ef: the listing itself reports the running background job (Background),
+        # from the bridge's bounded listJobs summary, without an inspection.
+        self.assertIs(self.rpc('ping').get('listJobs'),True)
+        def listed():
+            return next(r for r in json.loads(subprocess.check_output([str(HGS),'ls','--local','--json'],env=self.env,text=True))['sessions'] if r['name']==b['name'])
+        row=listed()
+        self.assertEqual((row['activity'],row['phase'],row['process_work']['count']),('idle','idle',1),row)
         light=subprocess.run([str(HGS),'inspect',b['name'],'--skip-processes'],env=self.env,text=True,capture_output=True,timeout=15)
         self.assertEqual(light.returncode,0,light.stderr);self.assertNotIn('processes',json.loads(light.stdout))
         self.assertNotIn('jobs',self.rpc('inspect',{'sessionId':b['conversation_id'],'includeProcesses':False}))
@@ -301,6 +308,9 @@ class NativeHarness(unittest.TestCase):
         stopped=process('--stop');self.assertEqual(stopped.returncode,0,stopped.stderr)
         final=self.wait(lambda: (d if any(j['status']=='stopped' for j in d['processes']['items']) else None) if (d:=self.cli('inspect',b)) else None)
         self.assertEqual(final['processes']['active_count'],0)
+        # A settled job is no background work: a count of 0, not unknown.
+        row=self.wait(lambda: (r if r['phase']=='idle' else None) if (r:=listed()) else None)
+        self.assertEqual(row['process_work']['count'],0,row)
 
     def test_foreground_shell_failure_keeps_output_after_registry_removal(self):
         b=self.create();self.cli('send',b,self.payload(b,text='SHELL_FOREGROUND_FIXTURE',attachments=[]))

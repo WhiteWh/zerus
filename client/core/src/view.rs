@@ -2027,6 +2027,16 @@ mod tests {
             status(json!({"tracked": true, "phase": "idle", "activity": "idle"})),
             s("ready", "Ready")
         );
+        // zerus-yj7ef: an idle DeepSeek listing row, with the count its bridge's
+        // listJobs summary gives (null from an older bridge: unknown).
+        let dsh = |count: Value| {
+            json!({"tracked": true, "backend": "dsh", "account_id": "native-dsh", "state": "running",
+                "phase": "idle", "activity": "idle",
+                "process_work": {"count": count, "started_at": null, "command": "", "sampled_at": 1.0}})
+        };
+        assert_eq!(status(dsh(json!(1))), s("background", "Background"));
+        assert_eq!(status(dsh(json!(0))), s("ready", "Ready"));
+        assert_eq!(status(dsh(Value::Null)), s("ready", "Ready"));
         assert_eq!(
             status(json!({"tracked": true, "activity": "unknown"})),
             s("ready", "Status unknown")

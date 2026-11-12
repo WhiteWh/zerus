@@ -981,7 +981,25 @@ fn normalize(record: &Value, row: &Value, inspected: &Value) -> Value {
         value["native_recovery"] = pending_recovery.clone();
     }
     recovery::enrich(record,&mut value);
-    let process_source = if inspected["jobs"].is_array() || inspected["shellCalls"].is_array() { inspected } else { row };
+    // An inspection reads the host's processes. A listing row carries the
+    // bridge's bounded `listJobs` summary instead (zerus-yj7ef). Only a
+    // complete summary is a count; an incomplete one, or a row without one
+    // from an older bridge, leaves the count unknown, never idle.
+    let listed_jobs = &row["listJobs"];
+    let listed = listed_jobs["complete"] == true
+        && listed_jobs["jobs"]
+            .as_array()
+            .map(Vec::len)
+            .is_some_and(|n| listed_jobs["count"] == json!(n));
+    let listed_source =
+        json!({"jobs": if listed { listed_jobs["jobs"].clone() } else { Value::Null }});
+    let process_source = if inspected["jobs"].is_array() || inspected["shellCalls"].is_array() {
+        inspected
+    } else if listed {
+        &listed_source
+    } else {
+        row
+    };
     value["process_work"] = processes::dsh_work(record,process_source,alive && value["activity"] == "idle" && value["phase"] == "idle");
     value
 }
@@ -2093,6 +2111,15 @@ mod current_read_tests {
         run_private("state::dsh::current_read_tests::child_rows");
     }
 
+    /// zerus-yj7ef: an idle DeepSeek row in a listing reports its running
+    /// background jobs from the bridge's bounded summary: one running job is
+    /// Background, a settled one is none, and a row from an older bridge, or
+    /// one over the bound, stays unknown.
+    #[test]
+    fn listed_rows_report_background_work() {
+        run_private("state::dsh::current_read_tests::list_processes");
+    }
+
     /// Runs the ignored fixture `test` in a child process with private state.
     fn run_private(test: &str) {
         let state = tempfile::tempdir().unwrap();
@@ -2212,6 +2239,56 @@ mod current_read_tests {
         );
         // A row without a parent link carries no field.
         assert!(listed(&record(), idle).get("human_request").is_none());
+    }
+
+    #[test]
+    #[ignore = "run by listed_rows_report_background_work"]
+    fn list_processes() {
+        if std::env::var_os("ZERUS_DSH_CURRENT_READ_FIXTURE").is_none() {
+            return;
+        }
+        let unasked =
+            |method: &str, _: Value| -> Result<Value> { Err(format!("{method} was not expected")) };
+        let listed = |row: Value| {
+            snapshot_with(&record(), &list("host-1", vec![row]), &mut |m, p| {
+                unasked(m, p)
+            })
+        };
+        let job = |status: &str, owner: &str| json!({"id":"7","kind":"bash","owner":owner,"status":status,"startedAt":1_000_000.0,"label":"npm run dev","callId":"call-1"});
+        let mut idle = row(&[3], None);
+        idle["running"] = json!(false);
+        let with = |jobs: Vec<Value>| {
+            let mut row = idle.clone();
+            row["listJobs"] = json!({"complete":true,"count":jobs.len(),"jobs":jobs});
+            row
+        };
+        let work = |row: Value| listed(row)["process_work"].clone();
+        let running = work(with(vec![job("running", "session-A")]));
+        assert_eq!(
+            (&running["count"], &running["command"]),
+            (&json!(1), &json!("npm run dev")),
+            "{running}"
+        );
+        // A subagent's job is its parent's background work too, as in an inspection.
+        assert_eq!(work(with(vec![job("running", "child-1")]))["count"], 1);
+        assert_eq!(work(with(vec![]))["count"], 0, "a settled job leaves none");
+        assert_eq!(work(with(vec![job("completed", "session-A")]))["count"], 0);
+        // An older bridge sends no summary, and an incomplete one (no registry,
+        // or over the bound) is no count: both stay unknown.
+        assert!(work(idle.clone())["count"].is_null());
+        let mut over = idle.clone();
+        over["listJobs"] = json!({"complete":false,"count":null,"jobs":[]});
+        assert!(work(over)["count"].is_null());
+        let mut torn = with(vec![job("running", "session-A")]);
+        torn["listJobs"]["count"] = json!(2);
+        assert!(
+            work(torn)["count"].is_null(),
+            "a count that disagrees with its jobs is unknown"
+        );
+        // A working row reports no count, as before.
+        let mut busy = with(vec![job("running", "session-A")]);
+        busy["running"] = json!(true);
+        assert!(work(busy)["count"].is_null());
     }
 
     #[test]

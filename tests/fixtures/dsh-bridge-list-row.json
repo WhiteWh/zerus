@@ -1,0 +1,117 @@
+{
+  "about": "The real bridge's ping and list answers for the zerus-yj7ef listJobs contract, written by tests/test_dsh_bridge.py ListJobs. Regenerate: ZERUS_REGENERATE_DSH_BRIDGE_CAPTURE=1 python3 -m unittest test_dsh_bridge.ListJobs (from tests/).",
+  "list": {
+    "generation": "<generation>",
+    "items": [
+      {
+        "accountStatus": "unavailable",
+        "agentAvailable": true,
+        "authRequired": false,
+        "goal": null,
+        "listJobs": {
+          "complete": true,
+          "count": 2,
+          "jobs": [
+            {
+              "callId": null,
+              "id": "job-1",
+              "kind": "bash",
+              "label": "sleep job-1",
+              "owner": "session-busy",
+              "startedAt": 1790000000000,
+              "status": "running"
+            },
+            {
+              "callId": null,
+              "id": "job-4",
+              "kind": "bash",
+              "label": "sleep job-4",
+              "owner": "session-child",
+              "startedAt": 1790000000000,
+              "status": "running"
+            }
+          ]
+        },
+        "nativeRecovery": null,
+        "pendingQuestions": [],
+        "running": false,
+        "selection": null,
+        "sessionId": "session-busy"
+      },
+      {
+        "accountStatus": "unavailable",
+        "agentAvailable": true,
+        "authRequired": false,
+        "goal": null,
+        "listJobs": {
+          "complete": true,
+          "count": 1,
+          "jobs": [
+            {
+              "callId": null,
+              "id": "job-4",
+              "kind": "bash",
+              "label": "sleep job-4",
+              "owner": "session-child",
+              "startedAt": 1790000000000,
+              "status": "running"
+            }
+          ]
+        },
+        "nativeRecovery": null,
+        "origin": "subagent",
+        "parentSessionId": "session-busy",
+        "pendingQuestions": [],
+        "running": true,
+        "selection": null,
+        "sessionId": "session-child"
+      },
+      {
+        "accountStatus": "unavailable",
+        "agentAvailable": true,
+        "authRequired": false,
+        "goal": null,
+        "listJobs": {
+          "complete": true,
+          "count": 0,
+          "jobs": []
+        },
+        "nativeRecovery": null,
+        "pendingQuestions": [],
+        "running": false,
+        "selection": null,
+        "sessionId": "session-idle"
+      },
+      {
+        "accountStatus": "unavailable",
+        "agentAvailable": true,
+        "authRequired": false,
+        "goal": null,
+        "listJobs": {
+          "complete": false,
+          "count": null,
+          "jobs": []
+        },
+        "nativeRecovery": null,
+        "pendingQuestions": [],
+        "running": false,
+        "selection": null,
+        "sessionId": "session-many"
+      }
+    ]
+  },
+  "ping": {
+    "accountPermissions": true,
+    "generation": "<generation>",
+    "listJobs": true,
+    "nativeOperations": [
+      "fork",
+      "history-search",
+      "schedules"
+    ],
+    "protocol": 1,
+    "schedule": false,
+    "sessionActions": true,
+    "version": "0.2.1-rc.2"
+  }
+}
