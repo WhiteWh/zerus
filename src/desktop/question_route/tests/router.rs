@@ -2250,3 +2250,98 @@ fn a_phone_statement_issued_before_a_desktop_decision_is_refused() {
     assert_eq!(newer["accepted"], true, "{newer}");
     assert!(!super::super::latch::latched(&f.store.db, CHILD_ID).unwrap());
 }
+
+/// zerus-sa9qn.45: a question read while its child's own switch was off at
+/// the reservation (the row still said on) routes once when the switch is
+/// on again; another turn never routes it twice.
+#[test]
+fn a_question_refused_off_at_its_reservation_routes_once_when_on_again() {
+    let mut f = Fixture::new();
+    child_switch(&f, false);
+    f.snapshot(vec![child_row(), parent_row()]);
+    f.settle();
+    assert_eq!((f.reads(), f.sent(), f.routes().len()), (2, 0, 0));
+    assert!(f.route.fixture_off() >= 1);
+    assert_eq!(
+        f.route.fixture_remembered(),
+        (0, 0),
+        "the edge is forgotten"
+    );
+    // The person turns it on again; its row shows the new revision, with
+    // the same pending question.
+    child_switch(&f, true);
+    let mut on = child_row();
+    on["question_routing"] = json!({"send_to_parent": true, "revision": 1});
+    f.delta(on.clone());
+    f.until("submitted", |f| f.states() == ["submitted"]);
+    assert_eq!(f.sent(), 1);
+    // A later change of the same row reads it again but never routes twice.
+    on["question_routing"]["revision"] = json!(2);
+    f.delta(on);
+    f.settle();
+    assert_eq!((f.sent(), f.states()), (1, vec!["submitted".to_owned()]));
+}
+
+/// zerus-sa9qn.45: a question whose first read finished after the global
+/// switch went off routes once when it is on again.
+#[test]
+fn a_question_read_before_routing_went_off_routes_once_when_on_again() {
+    let mut f = Fixture::new();
+    let gate = Arc::new(Mutex::new(()));
+    let held = gate.lock().unwrap();
+    let (reads, waiting) = (f.reads.clone(), gate.clone());
+    f.route = Runtime::fixture(
+        &f.epoch,
+        Arc::new(move |edge: &route::Edge| {
+            reads.fetch_add(1, Ordering::SeqCst);
+            let _wait = waiting.lock().unwrap();
+            Some(Fetched {
+                inspect: inspect(vec![card("tool:toolu_1")]),
+                reference: reference_of(edge),
+            })
+        }),
+        f.config.state.clone(),
+    );
+    f.route.fixture_clock(f.now);
+    f.snapshot(vec![child_row(), parent_row()]);
+    f.tick();
+    f.advance(SETTLE + Duration::from_millis(1));
+    f.tick();
+    assert_eq!(f.route.fixture_pending(), (0, 1), "the first read started");
+    switch(&mut f, false);
+    f.tick();
+    drop(held);
+    f.settle();
+    assert_eq!((f.sent(), f.routes().len()), (0, 0));
+    // On again: the still-pending, supervised question routes once.
+    switch(&mut f, true);
+    f.until("submitted", |f| f.states() == ["submitted"]);
+    assert_eq!(f.sent(), 1);
+    // Off and on again never routes it twice: the ledger is the guard.
+    switch(&mut f, false);
+    f.tick();
+    switch(&mut f, true);
+    f.settle();
+    assert_eq!((f.sent(), f.states()), (1, vec!["submitted".to_owned()]));
+}
+
+/// zerus-sa9qn.45: turning routing on again considers every edge afresh, so
+/// an edge first read before its question showed is read again.
+#[test]
+fn an_edge_read_before_its_question_showed_is_read_again_when_on_again() {
+    let mut f = Fixture::new();
+    f.reply(vec![inspect(vec![])]);
+    f.snapshot(vec![child_row(), parent_row()]);
+    f.settle();
+    assert_eq!((f.reads(), f.routes().len()), (1, 0));
+    // The question shows on the same row: a remembered edge is not read
+    // again.
+    f.reply(vec![inspect(vec![card("tool:toolu_1")])]);
+    f.settle();
+    assert_eq!((f.reads(), f.routes().len()), (1, 0));
+    switch(&mut f, false);
+    f.tick();
+    switch(&mut f, true);
+    f.until("submitted", |f| f.states() == ["submitted"]);
+    assert_eq!(f.sent(), 1);
+}

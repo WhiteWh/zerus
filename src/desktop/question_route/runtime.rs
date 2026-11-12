@@ -308,6 +308,11 @@ impl Runtime {
             }
         } else if self.off {
             self.off = false;
+            // Every edge is considered afresh (zerus-sa9qn.45): a question
+            // read before routing went off, and still pending, routes once;
+            // the ledger never routes a question identity twice.
+            self.seen.clear();
+            self.done.clear();
             self.rebaseline(store)?;
         }
         self.collect(store, send, exclusion)?;
@@ -429,6 +434,15 @@ impl Runtime {
             }
         }
     }
+    /// Forgets an edge that was read but not reserved because routing was
+    /// off (zerus-sa9qn.45), so a later change of its row reads it again.
+    /// The ledger, not this set, keeps a question from routing twice.
+    fn forget(&mut self, key: &str, signature: &str) {
+        let entry = (key.to_owned(), signature.to_owned());
+        if self.seen.remove(&entry) {
+            self.done.retain(|other| other != &entry);
+        }
+    }
     fn start(&mut self) -> Result<()> {
         let now = self.now();
         while self.reads.len() < READS && self.reader.is_some() {
@@ -510,7 +524,8 @@ impl Runtime {
                         }
                     }
                     fresh.truncate(QUESTIONS_PER_READ);
-                    // Off reads nothing more.
+                    // Off reads nothing more; on again considers every
+                    // edge afresh.
                     if !fresh.is_empty() && !self.off {
                         self.spawn(key, edge, Step::Confirm(fresh))?;
                     }
@@ -614,7 +629,10 @@ impl Runtime {
             Routed::Admitted => self.counts.routed += 1,
             Routed::Refused => self.counts.refused += 1,
             Routed::Unavailable => self.counts.unavailable += 1,
-            Routed::Off => self.counts.off += 1,
+            Routed::Off => {
+                self.counts.off += 1;
+                self.forget(key, &edge.signature);
+            }
         }
         Ok(())
     }
@@ -664,5 +682,9 @@ impl Runtime {
     #[cfg(test)]
     pub(super) fn fixture_pending(&self) -> (usize, usize) {
         (self.candidates.len(), self.reads.len())
+    }
+    #[cfg(test)]
+    pub(super) fn fixture_remembered(&self) -> (usize, usize) {
+        (self.seen.len(), self.done.len())
     }
 }
