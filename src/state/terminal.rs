@@ -357,6 +357,12 @@ fn rounds(
 /// stops as soon as the composer is empty or stops changing.
 fn clear(name: &str, request: &Request, path: &Path, hash: &str) -> Result<Value> {
     let _guard = lock(None)?;
+    // zerus-iitw8.7: a send in its proof window refuses Clear input with the
+    // wording `composer_state` shows, before `check_handoff` refuses the same
+    // window by the send's typing marker (zerus-iitw8.5).
+    if input::send_in_flight(&checked(name, request)?) {
+        return Err(IN_FLIGHT.into());
+    }
     let record = check_handoff(name, request)?;
     if string(&record, "activity") == "busy" {
         return Err("The agent is busy; clear its input once it is idle".into());
