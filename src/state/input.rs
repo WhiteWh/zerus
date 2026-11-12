@@ -348,6 +348,15 @@ pub(crate) const PROOF_LIMIT: Duration = Duration::from_secs(40);
 /// discard it and settle the send's pending gate. A send that ended uncertain
 /// (its receipt names a `delivery`), was submitted or is older than
 /// [`PROOF_LIMIT`] never blocks: an uncertain or stuck input stays clearable.
+///
+/// The window is measured on the wall clock (`now()` against
+/// `input_pending_at`); the record keeps no monotonic or boot-time stamp of
+/// its input. A backward clock step therefore keeps a crashed sender's
+/// `in_progress` receipt in flight for longer, until the clock passes
+/// `input_pending_at` + [`PROOF_LIMIT`] again: by at most the size of the
+/// step, and only for a sender that never recorded an outcome. That errs
+/// toward refusing Clear input, never toward discarding a message being
+/// delivered (zerus-wkj9l.5 item 3).
 pub(crate) fn send_in_flight(record: &Value) -> bool {
     let root = absolute_root().ok();
     in_flight(record, now(), |request| {
@@ -371,12 +380,18 @@ fn in_flight(record: &Value, at: f64, receipt: impl FnOnce(&str) -> Option<Value
         return true;
     };
     match receipt(&request) {
-        Some(receipt) => {
+        // The named receipt decides only when it is this pending input's own:
+        // submit_core writes its `submitted_at` as `input_pending_at`. Another
+        // writer of `input_pending_at` (the ready-send keeper's `mark_input`)
+        // leaves an earlier send's request beside a newer time; that receipt
+        // says nothing about this input, so the recent pending input decides,
+        // as for a receipt that cannot be read (zerus-wkj9l.5 item 2).
+        Some(receipt) if receipt["submitted_at"].as_f64() == Some(pending) => {
             receipt["status"] == "in_progress"
                 && receipt.get("delivery").is_none_or(Value::is_null)
                 && string(&receipt, "run_id") == string(record, "run_id")
         }
-        None => true,
+        _ => true,
     }
 }
 
@@ -2518,7 +2533,7 @@ mod clear_input_tests {
         let record = json!({"run_id": "run", "input_pending_at": 100.0, "input_seen_at": 0.0,
             "input_pending_request": request});
         let receipt = |status: &str, delivery: Option<&str>| {
-            let mut receipt = json!({"request_id": request, "run_id": "run", "status": status});
+            let mut receipt = json!({"request_id": request, "run_id": "run", "status": status, "submitted_at": 100.0});
             if let Some(delivery) = delivery {
                 receipt["delivery"] = json!(delivery);
             }
@@ -2532,7 +2547,7 @@ mod clear_input_tests {
         assert!(!in_flight(&record, at, |_| Some(receipt("in_progress", Some("uncertain")))));
         assert!(!in_flight(&record, at, |_| Some(receipt("submitted", None))));
         // Another run's receipt under this ID is not this send.
-        assert!(!in_flight(&record, at, |_| Some(json!({"run_id": "other", "status": "in_progress"}))));
+        assert!(!in_flight(&record, at, |_| Some(json!({"run_id": "other", "status": "in_progress", "submitted_at": 100.0}))));
         // An unreadable receipt within the window holds back, as does a send
         // recorded before the request field; after the limit nothing does.
         assert!(in_flight(&record, at, |_| None));
@@ -2552,5 +2567,70 @@ mod clear_input_tests {
         let mut odd = record.clone();
         odd["input_pending_request"] = json!("../../etc/passwd");
         assert!(in_flight(&odd, at, |_| panic!("no path is read for a malformed ID")));
+    }
+
+    /// zerus-wkj9l.5 item 2: the ready-send keeper's `mark_input` writes a newer
+    /// `input_pending_at` without `input_pending_request`, so an earlier send's
+    /// request stays beside it. That earlier receipt, even submitted or ended
+    /// uncertain, never settles the newer input's window; only the receipt
+    /// whose `submitted_at` is this `input_pending_at` decides.
+    #[test]
+    fn an_earlier_sends_receipt_never_decides_a_newer_pending_input() {
+        let request = "6f9a1b2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c";
+        let record = json!({"run_id": "run", "input_pending_at": 200.0, "input_seen_at": 0.0,
+            "input_pending_request": request});
+        let earlier = |status: &str, delivery: Option<&str>| {
+            let mut receipt = json!({"request_id": request, "run_id": "run", "status": status, "submitted_at": 100.0});
+            if let Some(delivery) = delivery {
+                receipt["delivery"] = json!(delivery);
+            }
+            receipt
+        };
+        let at = 205.0;
+        assert!(in_flight(&record, at, |_| Some(earlier("submitted", None))));
+        assert!(in_flight(&record, at, |_| Some(earlier(
+            "in_progress",
+            Some("uncertain")
+        ))));
+        assert!(in_flight(&record, at, |_| Some(
+            json!({"run_id": "other", "status": "submitted", "submitted_at": 100.0})
+        )));
+        // The conservative rule still ends with the window.
+        let late = 200.0 + PROOF_LIMIT.as_secs_f64() + 1.0;
+        assert!(!in_flight(&record, late, |_| Some(earlier(
+            "submitted",
+            None
+        ))));
+        // This input's own receipt still decides.
+        let own = json!({"request_id": request, "run_id": "run", "status": "submitted", "submitted_at": 200.0});
+        assert!(!in_flight(&record, at, |_| Some(own.clone())));
+    }
+
+    /// zerus-wkj9l.5 item 3: the window is on the wall clock. After a backward
+    /// step a crashed sender's `in_progress` receipt stays in flight until the
+    /// clock passes `input_pending_at` + PROOF_LIMIT again: Clear input is
+    /// refused a little longer, never allowed during a send.
+    #[test]
+    fn a_backward_clock_step_keeps_an_unfinished_send_in_flight_until_the_window_passes_again() {
+        let request = "6f9a1b2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c";
+        let record = json!({"run_id": "run", "input_pending_at": 1000.0, "input_seen_at": 0.0,
+            "input_pending_request": request});
+        let crashed = json!({"request_id": request, "run_id": "run", "status": "in_progress", "submitted_at": 1000.0});
+        for stepped_back_to in [999.0, 900.0, 1000.0 - 3600.0] {
+            assert!(
+                in_flight(&record, stepped_back_to, |_| Some(crashed.clone())),
+                "{stepped_back_to}"
+            );
+        }
+        assert!(in_flight(
+            &record,
+            1000.0 + PROOF_LIMIT.as_secs_f64(),
+            |_| Some(crashed.clone())
+        ));
+        assert!(!in_flight(
+            &record,
+            1000.0 + PROOF_LIMIT.as_secs_f64() + 1.0,
+            |_| Some(crashed.clone())
+        ));
     }
 }
