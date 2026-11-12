@@ -8,7 +8,8 @@ vi.hoisted(() => {
   // The dialogs module registers Solid's delegated events when it loads; nothing renders here.
   vi.stubGlobal("window", { document: { addEventListener: () => {} } });
 });
-vi.mock("../../store/endActions", () => ({ endActions: { schedule: async (_captures: unknown[], run: (refs: unknown[], key: string) => Promise<unknown>) => run([{ id: "test-delay", index: 0 }], "test-end") } }));
+// The undo window, answered at once: each capture gets its own delay reference.
+vi.mock("../../store/endActions", () => ({ endActions: { schedule: async (captures: unknown[], run: (refs: unknown[], key: string) => Promise<unknown>) => run(captures.map((_, index) => ({ id: "test-delay", index })), "test-end") } }));
 vi.mock("../../bridge", () => ({
   // The session entry points also initialize the bounded creation-card store.
   onCreations: vi.fn(async () => () => {}), creationsView: vi.fn(async () => []),
@@ -31,7 +32,8 @@ import * as bridge from "../../bridge";
 import { applyBatch, catalog } from "../../store/catalog";
 import { archive, archiveCount } from "../../store/archive";
 import { notices } from "../../store/actions";
-import { bindBatchConfirm } from "../../store/batch";
+import { bindBatchConfirm, run } from "../../store/batch";
+import { forgetArchived } from "../../store/restores";
 import { selected, selectedKey, setSelectedKey, setStateFilter, setProjectFilter, stateFilter } from "../../store/ui";
 import { actionEntries, renameSession } from "./ActionDialogs";
 import { snapshotOf } from "./actions-ui";
@@ -213,6 +215,30 @@ describe("the selection counts", () => {
   });
 });
 
+describe("Forget archived session goes through the undo window (zerus-sa9qn.27)", () => {
+  const target = (n: number) => ({ computer: "", name: `codex/example/r${n}`, run_id: `run-r${n}`, conversation_id: `conv-r${n}` });
+
+  it("from its confirmation: one call with a delay reference and the listed identities", async () => {
+    await loadArchive(archived(30));
+    mocked.runAction.mockResolvedValue(done());
+    await forgetArchived(snapshotOf(archive.row(key(30))!));
+    await flush();
+    expect(mocked.runAction.mock.calls).toEqual([[target(30), { kind: "forget_archive", archive_id: uuid(30) }, { id: "test-delay", index: 0 }]]);
+  });
+
+  it("for a selection, each archived row with its own delay reference", async () => {
+    await loadArchive(archived(31), archived(32));
+    mocked.runAction.mockResolvedValue(done());
+    await run("forget", [archive.row(key(31))!, archive.row(key(32))!]);
+    await flush();
+    expect(copies).toHaveLength(1);
+    expect(mocked.runAction.mock.calls).toEqual([
+      [target(31), { kind: "forget_archive", archive_id: uuid(31) }, { id: "test-delay", index: 0 }],
+      [target(32), { kind: "forget_archive", archive_id: uuid(32) }, { id: "test-delay", index: 1 }],
+    ]);
+  });
+});
+
 describe("Clear archive (Qt SessionSelection.cpp 171-181, 226-235)", () => {
   it("forgets the loaded archived rows with Qt's confirmation, then reloads the archive once", async () => {
     await loadArchive(archived(7), archived(8));
@@ -226,6 +252,8 @@ describe("Clear archive (Qt SessionSelection.cpp 171-181, 226-235)", () => {
     expect(copies[0]).toMatchObject({ title: "Clear archive", confirm: "Clear archive", details: ["box / codex/example/r8", "box / codex/example/r7"] });
     expect(copies[0].text).toBe("Remove 2 loaded archived sessions in the current date and machine scope? Unloaded entries are kept.\n\nOnly these saved or archived entries are removed. Live sessions and native conversation history are kept.");
     expect(mocked.runAction.mock.calls.map((c) => c[1])).toEqual([{ kind: "forget_archive", archive_id: uuid(8) }, { kind: "forget_archive", archive_id: uuid(7) }]);
+    // Clear archive bypasses the undo window by design; each call is bound to its archive ID.
+    expect(mocked.runAction.mock.calls.map((c) => c[2])).toEqual([undefined, undefined]);
     expect(texts()).toContain("Forget: 2 of 2 completed.");
     // Leaving the Archive filter kept the pages; the batch's end drops them for a reload.
     expect(archive.rows()).toEqual([]);
