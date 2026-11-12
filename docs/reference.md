@@ -944,7 +944,9 @@ The person has two switches, both on by default (zerus-sa9qn.32):
   `expected_revision`, `send_to_parent`; marker
   `session-question-routing-v1`) and refuses a change from an agent's own
   process tree (`agent_refused`), on the switch's own computer and, for `hgs
-  @host question-routing`, in the local CLI before forwarding. That refusal
+  @host question-routing`, in the local CLI before forwarding (also in the
+  guarded `--expect-machine ID [--client C] [__state]` forms and `__state
+  question-routing`, zerus-sa9qn.51). That refusal
   stops accidental agent use only; it is not a security boundary, because a
   same-user agent can clear its session variables, leave its process tree or
   write `question-routing.json` directly. The person-only control is the
