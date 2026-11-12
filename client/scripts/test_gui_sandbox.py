@@ -37,10 +37,10 @@ NOT_APP_STARTS = {
 
 
 class Sandbox(unittest.TestCase):
-    def wrapped(self, keep=()):
+    def wrapped(self, keep=(), read_only=()):
         with mock.patch.object(gui_sandbox.shutil, "which", return_value="/usr/bin/bwrap"), \
                 mock.patch.object(gui_sandbox.sys, "platform", "linux"):
-            return gui_sandbox.sandboxed(["dbus-run-session", "--", "app", Path("/x")], keep=keep)
+            return gui_sandbox.sandboxed(["dbus-run-session", "--", "app", Path("/x")], keep=keep, read_only=read_only)
 
     def test_private_tmp_run_user_network_and_ipc_around_the_exact_command(self):
         command = self.wrapped()
@@ -63,6 +63,22 @@ class Sandbox(unittest.TestCase):
             self.assertGreater(bind, command.index("/tmp"))
         with self.assertRaises(FileNotFoundError):
             self.wrapped(keep=["/nonexistent-zerus-sandbox-path"])
+
+    def test_read_only_paths_precede_kept_paths_so_a_kept_path_below_stays_writable(self):
+        # zerus-2ldeb.4: the person's real HOME read-only, the walk's own root writable.
+        with tempfile.TemporaryDirectory() as home:
+            kept = Path(home) / "kept"
+            kept.mkdir()
+            command = self.wrapped(keep=[kept], read_only=[home])
+            ro = command.index("--ro-bind")
+            self.assertEqual(command[ro + 1:ro + 3], [str(Path(home).resolve())] * 2)
+            bind = command.index("--bind")
+            self.assertEqual(command[bind + 1:bind + 3], [str(kept.resolve())] * 2)
+            self.assertLess(ro, bind)
+            self.assertGreater(ro, command.index("/tmp"))
+        with self.assertRaises(FileNotFoundError):
+            self.wrapped(read_only=["/nonexistent-zerus-sandbox-path"])
+        self.assertNotIn("--ro-bind", self.wrapped())
 
     def test_there_is_no_unsandboxed_mode(self):
         with mock.patch.object(gui_sandbox.shutil, "which", return_value=None), \
