@@ -488,12 +488,13 @@ def run_suites(suites, env, timeout, scratch, log, absolute_end=None):
     return run.returncode, out.read_bytes().decode('utf-8', 'replace')
 
 
-def run_macos_claude_suites(suites, env, timeout, scratch, log):
-    """Only this fully private matrix uses two processes under its original end."""
+def run_partitioned_suites(suites, env, timeout, scratch, log, *, native_variable):
+    """Private Codex and macOS Claude partitions share their original row end."""
     spec = importlib.util.spec_from_file_location('native_suite_workers', ROOT / 'scripts/ci/native_suite_workers.py')
     workers = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(workers)
-    return workers.run_suites(suites, env, timeout, scratch, log)
+    return workers.run_suites(suites, env, timeout, scratch, log, native_variable=native_variable,
+                             worker_count=3 if native_variable == 'HGS_CODEX_TEST_BIN' else 2)
 
 
 def method_names(value):
@@ -624,12 +625,16 @@ def qualify(agent, package, work, results, hgs, hint_inputs=None, package_cache=
                 test_env.update(ZERUS_HINT_INPUTS=json.dumps(hint_inputs),
                                 ZERUS_HINT_RESULTS=str(directory / 'hook-output'),
                                 ZERUS_NATIVE_EXPECTED_IDS=json.dumps(suites), ZERUS_NATIVE_FAILFAST='1')
-            runner = run_macos_claude_suites if hint_inputs is None and (agent, target) == ('claude', 'darwin-arm64') else run_suites
             arguments = (suites, test_env, timeout, work / agent / version, directory / (case + '.log'))
-            if hint_inputs is None:
-                status, stdout = runner(*arguments)
+            if hint_inputs is None and (agent, target) in (('claude', 'darwin-arm64'), ('codex', 'linux-x64')):
+                # The 57 Codex cases outgrew a serial 180 s row in CI
+                # 43228147234/43238924877. Preserve that end and every occurrence;
+                # use the same checked, private partitioner as macOS Claude.
+                status, stdout = run_partitioned_suites(*arguments, native_variable=spec['variable'])
+            elif hint_inputs is None:
+                status, stdout = run_suites(*arguments)
             else:
-                status, stdout = runner(*arguments, absolute_end=hint_end)
+                status, stdout = run_suites(*arguments, absolute_end=hint_end)
             marker = next((line.removeprefix('ZERUS_NATIVE_RESULT=') for line in stdout.splitlines()
                            if line.startswith('ZERUS_NATIVE_RESULT=')), None)
             if marker is not None:
