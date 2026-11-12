@@ -1,6 +1,11 @@
 #!/usr/bin/python3
 """Built-app cleanup/recovery walk, private D-Bus/Xvfb and fake hgs only.
 
+A replay never holds native ownership, so the Terminate walk proves the
+cleanup offer refuses (native origin unavailable) and reviews the folders
+the CLI itself reports after Terminate. It does not exercise the native
+program-cleanup offer, stop or generated-folder removal path.
+
 After npm run build, build the app with --features media,tauri/custom-protocol.
 The default development-mode binary expects a separately running dev server.
 """
@@ -57,7 +62,7 @@ if args==['--help']:
  print('guarded-create-v1\\n hgs [@host] session-action <session> --json scoped native lifecycle action');sys.exit(0)
 guarded=args[:2]==['--expect-machine','11111111-1111-4111-8111-111111111111']
 if guarded:args=args[2:]
-else:assert ((root/'legacy').exists() and args[0]=='archive') or ((root/'recovery').exists() and args[0]=='worktrees' and len(args)>1 and args[1].startswith('--')) or (args[0]=='inspect' and '--after' in args and args[args.index('--after')+1]==str(2**63-1) and args[1].startswith('codex/example/')),args
+else:assert ((root/'legacy').exists() and args[0] in ('archive','session-action')) or ((root/'recovery').exists() and args[0]=='worktrees' and len(args)>1 and args[1].startswith('--')) or (args[0]=='inspect' and '--after' in args and args[args.index('--after')+1]==str(2**63-1) and args[1].startswith('codex/example/')),args
 def arg(key):return args[args.index(key)+1]
 if (root/'recovery').exists():
  import uuid
@@ -68,10 +73,12 @@ if (root/'recovery').exists():
    'ownership_id':'owner-'+tag,'zerus_owned':True,'archive_restore_ready':True,'changes':2,'untracked':1,'ignored_count':1,
    'sessions':['synthetic/other'],'process_count':2,'processes':[{'pid':1},{'pid':2}],'unreadable_processes':[{'pid':3}],
    'disk_bytes':1024,'disk_complete':True,'integration':{'kind':'ancestor','base':'main'}}
- if args[0]=='archive' or (args[0]=='session-action' and (root/'undo-native').exists()):
+ if args[0] in ('archive','session-action'):
+  # Delayed Archive uses a scoped lifecycle envelope even with legacy help.
   scoped=None
   if args[0]=='session-action':
    scoped=json.load(sys.stdin);assert scoped['action']=='archive'
+   with (root/'scoped.jsonl').open('a') as f:f.write(json.dumps(scoped)+'\\n')
   name=args[1];tag=name.rsplit('/',1)[-1];(root/('archived-'+tag)).write_text(archive_id(tag))
   report={'status':'unconfirmed' if tag in ('unknown','extra-60') else 'kept','path':str(root/'repo'/tag),'common_dir':str(root/'repo/.git'),
    'reason':'Cannot remove private paths: '+', '.join('/private/secret-'+str(n) for n in range(30)),
@@ -106,14 +113,24 @@ if (root/'recovery').exists():
   if '--worktree' in args:tags=[tag for tag in tags if str(root/'repo'/tag)==arg('--worktree')]
   print(json.dumps({'state':'ok','common_dir':str(root/'repo/.git'),'worktrees':[review_row(tag) for tag in tags]}));sys.exit(0)
 if args[0]=='inspect':
- name=args[1];tag=name.rsplit('/',1)[-1];counter=root/('inspect-'+tag)
- n=int(counter.read_text())+1 if counter.exists() else 1;counter.write_text(str(n))
- print(json.dumps({'name':name,'run_id':'run-'+tag,'conversation_id':'conv-'+tag,'tracked':True,'runtime_state':'live','agent':'codex','git_worktree':True,'git_root':str(root/'repo'/tag),'git_common_dir':str(root/'repo/.git'),'worktree_owner_id':'replacement' if tag=='changed' and n>1 else 'owner-'+tag}));sys.exit(0)
+ # Native shape: paused recovery rows inspect as stopped, live Terminate rows as live.
+ name=args[1];tag=name.rsplit('/',1)[-1]
+ changed=tag=='changed' and not (root/'recovery').exists()
+ print(json.dumps({'name':name,'run_id':'replacement' if changed else 'run-'+tag,'conversation_id':'conv-'+tag,'tracked':True,'runtime_state':'stopped' if (root/'recovery').exists() else 'live','agent':'codex','git_worktree':True,'git_root':str(root/'repo'/tag),'git_common_dir':str(root/'repo/.git'),'worktree_owner_id':'owner-'+tag}));sys.exit(0)
 if args[0]=='session-action':
  name=args[1];tag=name.rsplit('/',1)[-1];data=json.load(sys.stdin)
  assert data['action']=='terminate' and data['expected_run_id']=='run-'+tag and data['expected_conversation_id']=='conv-'+tag
  assert tag!='changed','changed source must never reach mutation'
- print(json.dumps({'request_id':data['request_id'],'name':name,'run_id':'run-'+tag,'conversation_id':'conv-'+tag,'status':'completed','result_target':{'name':name,'run_id':'run-'+tag,'conversation_id':'conv-'+tag,'archive_id':'22222222-2222-4222-8222-222222222222'}}));sys.exit(0)
+ import uuid
+ archive=str(uuid.uuid5(uuid.NAMESPACE_URL,'https://example.test/terminate/'+tag))
+ if tag!='clean':
+  # The CLI's own cleanup report after Terminate; the GUI never removed anything.
+  print('ZERUS_WORKTREE_CLEANUP '+json.dumps({'status':'kept' if tag=='kept' else 'unconfirmed','path':str(root/'repo'/tag),'common_dir':str(root/'repo/.git'),'reason':'Uncommitted changes need review.',
+   'archive':{'version':1,'archive_id':archive,'name':name,'run_id':'run-'+tag,'conversation_id':'conv-'+tag,'owner_id':'owner-'+tag,'launch_owned':True},
+   'review':{'path':str(root/'repo'/tag),'kind':'linked','available':True,'branch':tag,'head':'head-'+tag,'merged':True,'verdict':'blocked','fingerprint':'fp-'+tag,
+    'reasons':[{'code':'changes','message':'Uncommitted changes need review.'}],'ownership_id':'owner-'+tag,'zerus_owned':True,'archive_restore_ready':True,'changes':1,'untracked':0,'ignored_count':0,
+    'sessions':[],'process_count':0,'processes':[],'unreadable_processes':[],'disk_bytes':1200,'disk_complete':True,'integration':{'kind':'ancestor','base':'main'}}}),file=sys.stderr)
+ print(json.dumps({'request_id':data['request_id'],'name':name,'run_id':'run-'+tag,'conversation_id':'conv-'+tag,'status':'completed','result_target':{'name':name,'run_id':'run-'+tag,'conversation_id':'conv-'+tag,'archive_id':archive}}));sys.exit(0)
 if args[:2]==['worktrees','review']:
  path=Path(arg('--worktree'));tag=path.name;common=arg('--path');assert path.is_relative_to(root)
  if tag=='clean':time.sleep(2)
@@ -146,7 +163,8 @@ raise RuntimeError(args)
     (root/'environment.json').write_text(json.dumps(env))
     print('Private Archive recovery walk:' if args.recovery else 'Private Terminate cleanup walk:', root, flush=True)
     child = subprocess.Popen(gui_sandbox.sandboxed(['/usr/bin/dbus-run-session','--config-file',str(root/'bus.conf'),'--','/usr/bin/xvfb-run','-a','-s','-screen 0 1440x900x24','/usr/bin/python3',str(Path(__file__).resolve()),'--worker',str(root),str(app),*(['recovery'] if args.recovery else [])],keep=[root]),env=env,start_new_session=True)
-    try: result=child.wait(timeout=95)
+    # Each single Archive waits for its three-second Undo window (66 in the full recovery walk).
+    try: result=child.wait(timeout=270 if args.recovery and not (args.legacy or args.undo_native or args.undo_ui) else 95)
     except subprocess.TimeoutExpired:
         os.killpg(child.pid,signal.SIGTERM);child.wait(timeout=5);raise
     raise SystemExit(result)
@@ -171,17 +189,20 @@ display=x.XOpenDisplay(None);assert display
 with (root/'app.log').open('wb') as log:
     gui_sandbox.refuse_reachable_guard()
     child=subprocess.Popen([str(app)],env=env,stdout=log,stderr=log,cwd=REPO/'client')
-    stages=set();deadline=time.monotonic()+85
+    full_recovery=recovery and not undo_native and not (root/'legacy').exists()
+    stages=set();deadline=time.monotonic()+(260 if full_recovery else 85)
     try:
         while time.monotonic()<deadline:
             output=(root/'app.log').read_text()
             prefix='undo-ui: ' if undo_ui else 'undo-native: ' if undo_native else 'archive-smoke: ' if recovery else 'cleanup-smoke: '
-            for stage in (('UNDO','FIVE','CLOSE','RESTORED','BATCH') if undo_ui else ('NATIVE','RESTORED','SOURCE_CHANGED') if undo_native else ('NOTICE','REVIEW','RESTORING','RESTORED','REFUSED','UNOWNED','UNKNOWN','OVERFLOW') if recovery else ('CLEANING','MIXED','REOPENED','UNKNOWN','INSPECTION')):
+            for stage in (('UNDO','FIVE','CLOSE','RESTORED','BATCH') if undo_ui else ('NATIVE','RESTORED','SOURCE_CHANGED') if undo_native else ('NOTICE','REVIEW','RESTORING','RESTORED','REFUSED','UNOWNED','UNKNOWN','OVERFLOW') if recovery else ('OFFER_REFUSED','MIXED','REOPENED','UNKNOWN','INSPECTION')):
                 if prefix+stage in output and stage not in stages:
                     if (undo_ui and stage=='CLOSE') or (not undo_ui and undo_native and stage=='NATIVE'):(root/'pending-observed').write_text(str(time.monotonic()))
                     stages.add(stage);time.sleep(.15)
                     subprocess.run(['/usr/bin/import','-window','root',str(root/(stage.lower()+'.png'))],check=True,env=env)
-            if ('archive-smoke: ESCAPE_REVIEW' if recovery else 'cleanup-smoke: ESCAPE_CLEANING') in output and 'escape' not in stages:
+            if prefix+'FAIL' in output and 'fail' not in stages:
+                stages.add('fail');subprocess.run(['/usr/bin/import','-window','root',str(root/'fail.png')],check=False,env=env)
+            if ('archive-smoke: ESCAPE_REVIEW' if recovery else 'cleanup-smoke: ESCAPE_REVIEW') in output and 'escape' not in stages:
                 tree=subprocess.check_output(['/usr/bin/xwininfo','-root','-tree'],env=env,text=True)
                 windows=re.findall(r'(0x[0-9a-f]+) "Zerus(?: Next)?"',tree)
                 assert windows,'private main window is missing'
@@ -222,10 +243,13 @@ with (root/'app.log').open('wb') as log:
             print('PASS native five-second/cancel/hidden/exact source/quit seam; one scoped fake archive only')
             raise SystemExit(0)
         if recovery:
-            archives=[c for c in calls if 'archive' in c];restores=[c for c in calls if 'resume' in c]
+            archives=[c for c in calls if 'archive' in c or 'session-action' in c];restores=[c for c in calls if 'resume' in c]
             if (root/'legacy').exists():
+                # A delayed Archive keeps its scoped envelope; a legacy peer only loses the machine guard.
                 assert len(archives)==1 and '--expect-machine' not in archives[0],archives
-                assert not restores and not removals and not effects,'legacy recovery must not run Restore or cleanup'
+                assert not restores and not removals,'legacy recovery must not run Restore or cleanup'
+                scoped=[json.loads(l) for l in (root/'scoped.jsonl').read_text().splitlines()]
+                assert len(scoped)==len(effects)==1 and scoped[0]['action']=='archive','legacy recovery may only archive'
                 assert {'NOTICE','REVIEW','escape'}<=stages,stages
                 assert 'archive-smoke: LEGACY_PASS' in output,output
                 assert all((root/'repo'/tag/'changes.txt').exists() for tag in json.loads((root/'recovery').read_text()))
@@ -233,7 +257,9 @@ with (root/'app.log').open('wb') as log:
                 raise SystemExit(0)
             assert len(archives)==66,len(archives)
             assert len(restores)==3,restores
-            assert not removals and not effects,'recovery must not replay cleanup or terminate'
+            scoped=[json.loads(l) for l in (root/'scoped.jsonl').read_text().splitlines()]
+            assert len(scoped)==len(effects)==66 and all(s['action']=='archive' for s in scoped),'recovery may only archive'
+            assert not removals,'recovery must not replay cleanup'
             assert all('--expect-machine' in c for c in archives+restores)
             assert {'NOTICE','REVIEW','RESTORING','RESTORED','REFUSED','UNOWNED','UNKNOWN','OVERFLOW'}<=stages,stages
             assert (root/'restored-kept').exists() and (root/'restored-extra-60').exists()
@@ -241,12 +267,11 @@ with (root/'app.log').open('wb') as log:
             assert all((root/'repo'/tag/'changes.txt').exists() for tag in json.loads((root/'recovery').read_text()))
             print('PASS bounded archive notices, exact guarded restore, refusal, source change, unknown non-replay, overflow and Escape focus; fake hgs only')
             raise SystemExit(0)
-        assert len(effects)==4,effects
-        assert len(removals)==4,removals
-        assert len([c for c in removals if c[c.index('--path')+1].endswith('/unknown')])==1,'unknown was repeated'
+        assert [c[c.index('session-action')+1] for c in effects]==[f'codex/example/{t}' for t in ('clean','kept','unknown','unknown-only')],effects
+        assert len(removals)==1 and removals[0][removals[0].index('--path')+1].endswith('/kept'),'only the reviewed, consented folder may be removed'
         assert all('--expect-machine' in c for c in effects+removals)
         assert all((root/'repo'/tag/'changes.txt').exists() for tag in ('clean','kept','unknown','unknown-only','changed')),'fake hgs must not delete even fixture files'
-        assert {'CLEANING','MIXED','REOPENED','UNKNOWN','INSPECTION'}<=stages
-        print('PASS exact scoped fake termination; generated cleanup; explicit discard; unknown non-replay; source change refusal; chip, review, inspection, Escape and Keep; no real removal')
+        assert {'OFFER_REFUSED','MIXED','REOPENED','UNKNOWN','INSPECTION','escape'}<=stages,stages
+        print('PASS replay offer refusal (native origin); exact scoped fake termination; CLI-reported review; explicit discard; unknown non-replay; source change refusal; chip, review, inspection, Escape and Keep; no real removal')
     finally:
         if child.poll() is None: child.terminate();child.wait(timeout=5)
