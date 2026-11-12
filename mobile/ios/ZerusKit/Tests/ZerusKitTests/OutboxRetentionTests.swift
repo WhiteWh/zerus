@@ -197,13 +197,24 @@ final class OutboxRetentionTests: XCTestCase {
         sink.failing.withLock { $0 = false }
         let store = OrderedStatePersistence(initial: initial, debounce: .milliseconds(200),
             normalize: { OutboxRetention.normalize($0, pinned: pins.snapshot()) }, write: { try sink.write($0) })
+        defer { store.close() }
+        let publishedWrite = expectation(description: "Debounced write published on the actor")
+        var written = false
+        store.onResult = { error in
+            XCTAssertNil(error)
+            written = error == nil
+        }
+        store.onChange = { _ in
+            // Processing the edit can publish before the debounce writes it.
+            if written { publishedWrite.fulfill() }
+        }
         store.edit { $0 }
         XCTAssertEqual(store.state.outgoing.count, 105)
         pins.replace([])
-        try await Task.sleep(for: .milliseconds(600))
+        let publication = await XCTWaiter.fulfillment(of: [publishedWrite], timeout: 10)
+        XCTAssertEqual(publication, .completed)
         XCTAssertEqual(store.state.outgoing.count, 100)
         XCTAssertEqual(try JSONDecoder().decode(MessageState.self, from: sink.data.withLock { $0 }), store.state)
-        store.close()
     }
 
     func testCheckingCompactUncertaintyDoesNotReintroduceCanonicalPayloadCopies() {
