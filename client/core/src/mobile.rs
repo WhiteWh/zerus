@@ -816,16 +816,10 @@ pub struct PhoneList {
 }
 
 /// One POSIX shell word: as it is when nothing in it needs quoting.
+/// `shell::shell_quote`, which has the same plain characters and also keeps
+/// the word whole when it is pasted into fish (zerus-sa9qn.43).
 fn posix_word(text: &str) -> String {
-    let plain = !text.is_empty()
-        && text
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_.:/@=+,%".contains(c));
-    if plain {
-        text.to_owned()
-    } else {
-        format!("'{}'", text.replace('\'', "'\\''"))
-    }
+    crate::shell::shell_quote(text)
 }
 
 /// One PowerShell word. `@` starts a splat and `,` an array there, so both

@@ -41,12 +41,89 @@ fn all_in(value: &str, allowed: impl Fn(char) -> bool) -> bool {
 }
 
 /// A POSIX sh word: bare when it only has safe characters, else single-quoted.
+/// The person may paste it into fish, which reads `\\` and `\'` even inside
+/// single quotes, so every backslash and quote stays outside them
+/// (`'a'\\'b'`); POSIX shells read that identically (zerus-sa9qn.43).
 pub fn shell_quote(value: &str) -> String {
     let safe = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
     if all_in(value, safe) {
         return value.to_owned();
     }
-    format!("'{}'", value.replace('\'', "'\\''"))
+    let mut quoted = String::from("'");
+    for c in value.chars() {
+        match c {
+            '\'' => quoted.push_str(r"'\''"),
+            '\\' => quoted.push_str(r"'\\'"),
+            c => quoted.push(c),
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
+/// How fish reads one command line, modelled on fish's documented quoting
+/// (fish is not installed on the build machines; zerus-sa9qn.43): inside
+/// single quotes only `\'` and `\\` are escapes and every other character is
+/// literal; outside quotes a backslash escapes the next character, whitespace
+/// separates words, and anything fish would act on (`;`, `&`, `|`, `<`, `>`,
+/// `(`, `)`, `$`, `*`, `?`, `{`, `}`, a double quote, a newline, or `~` and
+/// `#` at the start of a word) is reported instead of read. The same model
+/// as hgs's `platform::fish_commands`.
+#[cfg(test)]
+pub(crate) fn fish_words(line: &str) -> Result<Vec<String>, String> {
+    let (mut words, mut word, mut started) = (Vec::new(), String::new(), false);
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            ' ' | '\t' => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                }
+                started = false;
+                continue;
+            }
+            '\'' => loop {
+                match chars.next() {
+                    None => return Err(format!("an unterminated quote in {line:?}")),
+                    Some('\'') => break,
+                    Some('\\') if matches!(chars.peek(), Some('\'' | '\\')) => {
+                        word.push(chars.next().expect("peeked"));
+                    }
+                    Some(c) => word.push(c),
+                }
+            },
+            '\\' => match chars.next() {
+                Some(
+                    c @ ('a'
+                    | 'b'
+                    | 'e'
+                    | 'f'
+                    | 'n'
+                    | 'r'
+                    | 't'
+                    | 'v'
+                    | 'x'
+                    | 'X'
+                    | 'u'
+                    | 'U'
+                    | 'c'
+                    | '0'..='7'),
+                ) => return Err(format!("the escape \\{c} in {line:?}")),
+                Some(c) => word.push(c),
+                None => return Err(format!("a trailing backslash in {line:?}")),
+            },
+            '~' | '#' if !started => return Err(format!("{c:?} starts a word in {line:?}")),
+            ';' | '&' | '|' | '<' | '>' | '(' | ')' | '$' | '*' | '?' | '{' | '}' | '"' | '\n' => {
+                return Err(format!("fish acts on {c:?} in {line:?}"))
+            }
+            c => word.push(c),
+        }
+        started = true;
+    }
+    if started {
+        words.push(word);
+    }
+    Ok(words)
 }
 
 /// A PowerShell literal: single quotes, with every quote PowerShell accepts as
@@ -353,6 +430,73 @@ mod tests {
     fn an_unterminated_windows_quote_is_no_argument_list() {
         assert_eq!(windows_split_arguments(r#" --hgs "C:\no end"#), None);
         assert_eq!(windows_split_arguments(r#" ""#), None);
+    }
+
+    /// Words a person pastes, from session names and folders; `x\'; touch
+    /// pwned; #` is the #2127 review's folder name.
+    const HOSTILE: &[&str] = &[
+        "claude/p/x\\'; touch pwned; #",
+        "a\\b",
+        "x\\",
+        "\\'",
+        "\\\\'",
+        "it's",
+        "$(touch pwned)",
+        "`touch pwned`",
+        "a\"b; touch pwned",
+        "x;touch pwned",
+        "x\u{2019}; touch pwned",
+        "",
+    ];
+
+    /// zerus-sa9qn.43: a copied session command reads back exactly in fish
+    /// (modelled, `fish_words`) and in sh (run).
+    #[test]
+    fn copied_posix_commands_read_back_exactly_in_fish_and_sh() {
+        for word in HOSTILE.iter().copied() {
+            assert_eq!(
+                fish_words(&shell_quote(word)),
+                Ok(vec![word.to_owned()]),
+                "{word:?}"
+            );
+        }
+        let hgs = "/home/example/.local/bin/hgs";
+        for (index, name) in HOSTILE.iter().copied().enumerate() {
+            let line = open_command(hgs, "mac\\'", name, None, Shell::Posix);
+            let mut words = vec![hgs.to_owned()];
+            words.extend(open_arguments("mac\\'", name, None));
+            assert_eq!(fish_words(&line), Ok(words.clone()), "{line}");
+            #[cfg(unix)]
+            {
+                // The program word is plain, so sh can run a stand-in instead.
+                let script = format!(
+                    "run() {{ printf '%s\\0' \"$@\"; }}\n{}",
+                    line.strip_prefix(hgs)
+                        .map(|rest| format!("run{rest}"))
+                        .unwrap()
+                );
+                let folder = std::env::temp_dir()
+                    .join(format!("zerus-shell-fish-{}-{index}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&folder);
+                std::fs::create_dir_all(&folder).unwrap();
+                let out = std::process::Command::new("/bin/sh")
+                    .arg("-c")
+                    .arg(script)
+                    .current_dir(&folder)
+                    .env("PATH", "/usr/bin:/bin")
+                    .output()
+                    .unwrap();
+                let ran = folder.join("pwned").exists();
+                std::fs::remove_dir_all(&folder).unwrap();
+                assert!(!ran, "{line}");
+                let read: Vec<String> = String::from_utf8(out.stdout)
+                    .unwrap()
+                    .split_terminator('\0')
+                    .map(str::to_owned)
+                    .collect();
+                assert_eq!(read, words[1..], "{line}");
+            }
+        }
     }
 
     #[test]
