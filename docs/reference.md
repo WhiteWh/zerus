@@ -5784,17 +5784,23 @@ desktop or a plain terminal, gives its tool calls neither markers nor
 check of recorded host ancestry below refuses them.
 
 Under a recorded host, no other identity (zerus-ppd26.15). The process tree and
-the host records decide this, never a marker the caller sets. hgs walks a
-command's ancestry through processes of the same user, at most 64, up to the
-first process of another user. When that walk contains a DeepSeek host this
+the host records decide this, never a marker the caller sets. hgs reads the host
+records first: a computer or account that records no DeepSeek host is never
+affected by the rest of this check. Otherwise hgs walks a command's ancestry
+through processes of the same user, at most 64, up to the first process of
+another user. When that walk contains a DeepSeek host this
 computer records in `dsh/hosts`, matched by process ID and birth, the command is
 never another agent's session and never the person, even when that agent's
 process is also an ancestor, as it is while the `hgs` that started the host
 still runs. The send and `hgs wait begin` origin and the parent link of a launch,
 local and forwarded with `--parent-link`, are left unattributed; `hgs task`,
 `hgs self`, `hgs parent adopt`, question routing (locally and before `@host`
-forwarding) and desktop mode registration refuse. `HGS_AGENT=dsh` stays an extra
-guard. The checks also refuse in both directions, the person's commands and
+forwarding) and desktop mode registration refuse. An unmarked `hgs send` or
+`send-now` under a host found is refused too, locally, by reference and before
+`@host` forwarding, because its target would receive it without a sender; an
+unverifiable check refuses no send, so a sandboxed agent's sender-less send
+keeps working. A launch under a host keeps an empty parent. `HGS_AGENT=dsh` stays
+an extra guard. The checks also refuse in both directions, the person's commands and
 task reads included, when:
 - a host record cannot be read or is malformed;
 - there are more than 64 host folders or 1024 entries;

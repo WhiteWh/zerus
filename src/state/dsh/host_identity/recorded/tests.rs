@@ -608,6 +608,88 @@ fn a_recorded_host_matches_an_ancestor_by_id_and_birth() {
     );
 }
 
+/// zerus-ppd26.18: the records come first. With none, the walk never runs,
+/// so nothing it would refuse (a separate PID namespace, a /proc that hides
+/// root's processes) applies; an unreadable record refuses without a walk.
+/// With records, the walk's refusal stands, and a chain without the host is
+/// read again, where a change refuses.
+#[test]
+fn the_records_come_first_and_none_means_no_walk() {
+    let walked = std::cell::Cell::new(false);
+    let found = decide(
+        || Ok(Vec::new()),
+        || {
+            walked.set(true);
+            Err(Refusal::IsolatedPidNamespace)
+        },
+        |_| Err(Refusal::UnreadableAncestry),
+    );
+    assert_eq!(found, Ok(None));
+    assert!(!walked.get(), "no record, no walk");
+    let record = |pid: u32, birth: &str| Recorded {
+        named: named(pid, Some(birth)),
+        record: PathBuf::from(format!("/state/dsh/hosts/{pid}/host.identity.json")),
+    };
+    let unreadable = PathBuf::from("/state/dsh/hosts/x/host.identity.json");
+    assert_eq!(
+        decide(
+            || Err(Refusal::UnreadableRecord(unreadable.clone())),
+            || -> Result<Vec<Ancestor>, Refusal> { panic!("walked before the records refused") },
+            |_| Ok(()),
+        ),
+        Err(Refusal::UnreadableRecord(unreadable.clone()))
+    );
+    assert_eq!(
+        decide(
+            || Ok(vec![record(99, "b99")]),
+            || Err(Refusal::IsolatedPidNamespace),
+            |_| Ok(())
+        ),
+        Err(Refusal::IsolatedPidNamespace),
+        "with a record the walk's refusal stands"
+    );
+    let rows = [
+        (10, own(20, Some("b10"))),
+        (20, own(1, Some("b20"))),
+        (1, Inspection::Foreign),
+    ];
+    let chain = walk(10, table(&rows)).unwrap();
+    let rechecked = std::cell::Cell::new(false);
+    assert_eq!(
+        decide(
+            || Ok(vec![record(99, "b99")]),
+            || Ok(chain.clone()),
+            |_| {
+                rechecked.set(true);
+                Ok(())
+            },
+        ),
+        Ok(None)
+    );
+    assert!(rechecked.get(), "a chain without the host is read again");
+    assert_eq!(
+        decide(
+            || Ok(vec![record(99, "b99")]),
+            || Ok(chain.clone()),
+            |_| Err(Refusal::UnreadableAncestry)
+        ),
+        Err(Refusal::UnreadableAncestry),
+        "a chain that changed refuses"
+    );
+    assert_eq!(
+        decide(
+            || Ok(vec![record(20, "b20")]),
+            || Ok(chain.clone()),
+            |_| Err(Refusal::UnreadableAncestry)
+        ),
+        Ok(Some(Host {
+            pid: 20,
+            birth: "b20".into()
+        })),
+        "a host found needs no second read"
+    );
+}
+
 /// This process's own walk reaches a top of another user.
 #[test]
 fn this_process_walks_to_a_top() {

@@ -171,14 +171,18 @@ class UnderARecordedHost(unittest.TestCase):
                                str(HGS), *args], input=input, env=env, text=True, capture_output=True, timeout=60,
                               cwd=self.root / 'ws')
 
-    def test_a_separate_pid_namespace_is_named_for_marked_and_unmarked_commands(self):
-        # zerus-ppd26.17: a host outside a separate PID namespace cannot be seen,
-        # so the check refuses there with its own sentence, for a marked claim
-        # (whose run is not visible inside either) as for the person.
+    def need_namespaces(self):
         if shutil.which('unshare') is None or subprocess.run(
                 ['unshare', '--user', '--map-current-user', '--pid', '--mount-proc', '--fork', 'true'],
                 capture_output=True, timeout=30).returncode != 0:
             self.skipTest('unprivileged user and PID namespaces are not available here')
+
+    def test_a_separate_pid_namespace_is_named_for_marked_and_unmarked_commands(self):
+        # zerus-ppd26.17: a host outside a separate PID namespace cannot be seen,
+        # so the check refuses there with its own sentence, for a marked claim
+        # (whose run is not visible inside either) as for the person. This
+        # computer records a host here (zerus-ppd26.18).
+        self.need_namespaces()
         sentence = "This command runs inside a separate process namespace (for example an agent's sandbox)"
         claimed = self.unshared('task', 'comment', self.ref, env=self.claim, input='as the lead')
         self.assertNotEqual(claimed.returncode, 0, claimed.stdout)
@@ -198,6 +202,52 @@ class UnderARecordedHost(unittest.TestCase):
         self.assertEqual((routing.returncode, reply['error']), (1, 'host_unverified'))
         self.assertTrue(reply['message'].startswith(sentence), reply)
         self.assertEqual(self.history(), ['created'])
+
+    def test_a_person_in_a_pid_namespace_acts_when_no_host_is_recorded(self):
+        # zerus-ppd26.18: with no DeepSeek host recorded, the walk does not run,
+        # so a person in a sandboxed terminal is the person.
+        self.need_namespaces()
+        shutil.rmtree(self.state / 'dsh')
+        person = self.unshared('task', 'comment', self.ref, env=self.env, input='from a sandboxed terminal')
+        self.assertEqual(person.returncode, 0, person.stderr)
+        request = json.dumps(dict(expected_run_id='r', expected_conversation_id='c', expected_revision=0,
+                                  send_to_parent=False))
+        routing = self.unshared('question-routing', 'claude/example/child', '--json', env=self.env, input=request)
+        self.assertNotIn('agent_refused', routing.stdout)
+        self.assertNotIn('host_unverified', routing.stdout)
+        self.assertEqual(self.history(), ['created', 'comment'])
+
+    def send_request(self):
+        return json.dumps({'request_id': str(uuid.uuid4()), 'expected_run_id': self.lead['run_id'],
+                           'expected_conversation_id': self.lead['conversation_id'], 'text': 'probe'})
+
+    def test_an_unmarked_send_under_a_recorded_host_is_refused(self):
+        # zerus-ppd26.19: a live target would receive it without a sender. Every
+        # form is refused before anything is sent or forwarded: send, send-now,
+        # a zerus:// reference and @host.
+        uri = json.loads(self.call('self', '--json', env=self.claim).stdout)['uri']
+        peer = dict(self.env, HGS_PEERS='peerx')
+        forms = ((('send', self.lead['name'], '--json'), self.env),
+                 (('send-now', self.lead['name'], '--json'), self.env),
+                 (('send', uri, '--json'), self.env),
+                 (('--dry-run', '@peerx', 'send', 'claude/p/s', '--json'), peer))
+        for args, env in forms:
+            hosted = self.hosted(*args, env=env, input=self.send_request())
+            self.assertNotEqual(hosted.returncode, 0, (args, hosted.stdout))
+            self.assertIn(UNDER_HOST, hosted.stderr, args)
+            self.assertNotIn('ssh', hosted.stdout, args)
+            outside = self.call(*args, env=env, input=self.send_request(), ok=False)
+            self.assertNotIn(UNDER_HOST, outside.stdout + outside.stderr, args)
+        forwarded = self.call('--dry-run', '@peerx', 'send', 'claude/p/s', '--json', env=peer, input='{}', ok=False)
+        self.assertIn('ssh', forwarded.stdout, 'the person\'s @host send is forwarded')
+        # Only unmarked commands: a marked call keeps today's unattributed send.
+        marked = self.hosted('send', self.lead['name'], '--json', env=self.claim, input=self.send_request())
+        self.assertNotIn(UNDER_HOST, marked.stdout + marked.stderr)
+        # Only a host actually found: an unverifiable check refuses no send.
+        self.record.write_text('{')
+        unverified = self.hosted('send', self.lead['name'], '--json', env=self.env, input=self.send_request())
+        self.assertNotIn(UNDER_HOST, unverified.stdout + unverified.stderr)
+        self.assertNotIn('Cannot verify the DeepSeek agent host record', unverified.stdout + unverified.stderr)
 
     def test_an_unreadable_host_record_refuses_both_directions_and_names_it(self):
         self.record.write_text('{')

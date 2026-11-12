@@ -826,6 +826,20 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
             return Ok(1);
         }
     }
+    // An unmarked send under a recorded DeepSeek host is not the person's: a
+    // live target would receive it without a sender. Refuse it here, before
+    // any reference hop or `@host` forwarding (zerus-ppd26.19). Only a host
+    // actually found refuses: an unverifiable check, such as a sandboxed
+    // agent's sender-less send, keeps working as before.
+    let marked = ["HGS_SESSION", "HGS_RUN_ID"]
+        .iter()
+        .all(|name| env::var(name).is_ok_and(|value| !value.is_empty()));
+    if matches!(routed, Some("send" | "send-now")) && !marked {
+        let check = crate::state::dsh::host_check();
+        if check == crate::state::dsh::HostCheck::Under {
+            return Err(Error::new(1, check.sentence().unwrap_or_default()));
+        }
+    }
     // zerus-ucck P1c: a session reference selects the session it names on every
     // session command, through the same checks as `--session-id`. `inspect`
     // keeps its own read-only reference path below.

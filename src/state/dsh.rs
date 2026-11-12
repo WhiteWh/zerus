@@ -62,17 +62,25 @@ pub(crate) fn host_check() -> HostCheck {
     }
 }
 
+impl HostCheck {
+    /// The sentence that refuses the command, or `None` outside every
+    /// recorded host.
+    pub(crate) fn sentence(self) -> Option<String> {
+        match self {
+            HostCheck::Outside => None,
+            #[cfg(unix)]
+            HostCheck::Under => Some(host_identity::recorded::UNDER_HOST.to_owned()),
+            #[cfg(not(unix))]
+            HostCheck::Under => None,
+            HostCheck::Unverified(sentence) => Some(sentence),
+        }
+    }
+}
+
 /// The sentence that refuses this command as an agent session and as the
 /// person, or `None` outside every recorded host.
 pub(crate) fn host_refusal() -> Option<String> {
-    match host_check() {
-        HostCheck::Outside => None,
-        #[cfg(unix)]
-        HostCheck::Under => Some(host_identity::recorded::UNDER_HOST.to_owned()),
-        #[cfg(not(unix))]
-        HostCheck::Under => None,
-        HostCheck::Unverified(sentence) => Some(sentence),
-    }
+    host_check().sentence()
 }
 
 #[cfg(unix)]

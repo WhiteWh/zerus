@@ -33,6 +33,9 @@
 //! every record atomically (a synced temporary file renamed into place, then
 //! the folder synced), so a crash leaves the previous record or the new one.
 //!
+//! The records are read first: with none recorded there is no host to find,
+//! so the walk does not run and nothing it would refuse applies.
+//!
 //! The walk is Agent Teams' ancestry rule without its environment reads: from
 //! the command up through processes of the same effective user, at most
 //! [`ANCESTRY_STEPS`], to the first process of another user, which is the
@@ -161,11 +164,31 @@ pub(crate) const UNDER_HOST: &str = "This command runs under a DeepSeek agent ho
 /// The recorded DeepSeek host that is an ancestor of this process, `None`
 /// only when the whole walk and every record were read and none is.
 pub(crate) fn hosted_ancestor() -> Result<Option<Host>, Refusal> {
-    let chain = walk(std::process::id(), inspect)?;
-    let hosts = recorded_hosts()?;
+    decide(
+        recorded_hosts,
+        || walk(std::process::id(), inspect),
+        |chain| unchanged(chain, inspect),
+    )
+}
+
+/// The records first (zerus-ppd26.18): a computer or account that records no
+/// DeepSeek host is never affected by the walk, so a person in a sandboxed
+/// terminal (a PID namespace of their own) or with a /proc that hides
+/// root's processes is not refused. With records, the walk, the match and,
+/// when no host matched, the chain read again.
+pub(super) fn decide(
+    records: impl FnOnce() -> Result<Vec<Recorded>, Refusal>,
+    walk: impl FnOnce() -> Result<Vec<Ancestor>, Refusal>,
+    recheck: impl FnOnce(&[Ancestor]) -> Result<(), Refusal>,
+) -> Result<Option<Host>, Refusal> {
+    let hosts = records()?;
+    if hosts.is_empty() {
+        return Ok(None);
+    }
+    let chain = walk()?;
     let found = hosted(&chain, &hosts)?;
     if found.is_none() {
-        unchanged(&chain, inspect)?;
+        recheck(&chain)?;
     }
     Ok(found)
 }
