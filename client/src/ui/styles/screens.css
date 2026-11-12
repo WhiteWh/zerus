@@ -200,6 +200,8 @@
   .bc-list li > .ell { flex: 1 1 auto; }
   .bc-files { flex-wrap: wrap; }
   .bc-archive .bc-list { margin-top: 10px; }
+  .bc-load-failed { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+  .bc-load-failed p { margin: 0; overflow-wrap: anywhere; }
   .bc-blockers .hint, .bc-other { margin: 0; overflow-wrap: anywhere; }
   .bc-live { display: flex; align-items: center; gap: 6px; }
   .bc-result b { flex: none; }
