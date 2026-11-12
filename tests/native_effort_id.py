@@ -192,7 +192,12 @@ def key_log(case, existing=None):
                       '  with pathlib.Path(' + repr(str(Path(case.root) / 'native-pending-outer-receipts.jsonl')) + ").open('a') as file:\n"
                       "   file.write(json.dumps(dict(args=args,receipt=receipt))+'\\n')\n"
                       'raise SystemExit(subprocess.call([' + repr(str(original)) + ']+args))\n')
-    case.script('tmux', '#!/bin/sh\nexec ' + shlex.quote(sys.executable) + ' ' +
+    # Only keys need this Python observer. Starting another interpreter for
+    # every capture/probe can consume the keeper's original finite budget on
+    # macOS; preserve the retained wrapper's exact read path and any observer
+    # it already supplies, including its argv and inherited streams.
+    case.script('tmux', '#!/bin/sh\nif [ "$1" != send-keys ]; then exec ' +
+                shlex.quote(str(original)) + ' "$@"; fi\nexec ' + shlex.quote(sys.executable) + ' ' +
                 shlex.quote(str(script)) + ' "$@"\n')
 
     return attempts
