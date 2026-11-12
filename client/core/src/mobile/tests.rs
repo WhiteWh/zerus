@@ -292,6 +292,19 @@ fn pair_and_revoke_name_the_pinned_commands_qt_runs() {
     assert_eq!(powershell_word("it's mine"), "'it''s mine'");
     assert_eq!(powershell_word("@mac"), "'@mac'");
     assert_eq!(powershell_word("a,b"), "'a,b'");
+    // zerus-sa9qn.38: PowerShell also closes a single-quoted string on the
+    // quotes U+2018 to U+201B, so each doubles like `'`; an alias such as
+    // `mac\u{2019};calc;\u{2019}` stays one word (fleet::valid_alias accepts it).
+    for quote in ['\u{2018}', '\u{2019}', '\u{201a}', '\u{201b}'] {
+        assert_eq!(
+            powershell_word(&format!("@mac{quote};calc;{quote}")),
+            format!("'@mac{quote}{quote};calc;{quote}{quote}'")
+        );
+    }
+    assert_eq!(
+        powershell_word("it's \u{2019}$(calc)`"),
+        "'it''s \u{2019}\u{2019}$(calc)`'"
+    );
     assert_eq!(
         powershell_word("https://relay.example.com"),
         "https://relay.example.com"

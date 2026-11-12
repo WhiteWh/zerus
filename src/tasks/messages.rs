@@ -313,7 +313,9 @@ pub(super) fn prompt(
     worker: Option<&zerus_replica::TaskWorker>,
 ) -> String {
     let worker = worker.map(|w| format!("\nCoordinator: relay this feedback to the registered child {} only if its exact current identity still matches; otherwise explain why it cannot be delivered.", w.id)).unwrap_or_default();
+    // The header is a label; the commands name the task as one safe word (zerus-sa9qn.38).
+    let reference = zerus_replica::command_reference(project_name, task_id);
     format!("[Zerus task {project_name}/{task_id} message {id}]\n{}\n\n{text}{worker}\n\n{}",
         if mode == "reopen" { "The person requests changes. Continue this task." } else { "The person added task feedback." },
-        format_args!("Read the task context with `hgs task get {project_name}/{task_id}` and report the result with `hgs task report {project_name}/{task_id}`."))
+        format_args!("Read the task context with `hgs task get {reference}` and report the result with `hgs task report {reference}`."))
 }

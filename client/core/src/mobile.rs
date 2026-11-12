@@ -829,17 +829,25 @@ fn posix_word(text: &str) -> String {
 }
 
 /// One PowerShell word. `@` starts a splat and `,` an array there, so both
-/// are quoted; a quote doubles inside single quotes.
+/// are quoted; inside single quotes every quote PowerShell closes on doubles:
+/// `'` and U+2018 to U+201B, as `shell::power_shell_quote` (zerus-sa9qn.38).
 fn powershell_word(text: &str) -> String {
     let plain = !text.is_empty()
         && text
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "-_.:/=+%".contains(c));
     if plain {
-        text.to_owned()
-    } else {
-        format!("'{}'", text.replace('\'', "''"))
+        return text.to_owned();
     }
+    let mut word = String::from("'");
+    for c in text.chars() {
+        word.push(c);
+        if matches!(c, '\'' | '\u{2018}'..='\u{201b}') {
+            word.push(c);
+        }
+    }
+    word.push('\'');
+    word
 }
 
 /// One word of the terminal the person types the command into: PowerShell

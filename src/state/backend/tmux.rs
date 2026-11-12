@@ -781,8 +781,11 @@ impl TerminalBackend for Tmux {
         match operation {
             DryRun::ListJson => "tmux list-clients -F \"#{client_session}\\t#{client_tty}\"\ntmux list-sessions -F \"#{session_name}\\t#{session_attached}\\t#{session_created}\\t#{session_id}\\t#{HGS_LAUNCH_ID}\"".into(),
             DryRun::List => "tmux list-sessions".into(),
+            // Every word as the shell reads it: a session name is free text (zerus-sa9qn.38).
             DryRun::Attach { session, client } => format!(
-                "tmux set-environment -t ={session} HGS_CLIENT {client}\ntmux -u attach-session -t ={session}"
+                "tmux set-environment -t {target} HGS_CLIENT {client}\ntmux -u attach-session -t {target}",
+                target = platform::quote(&format!("={session}")),
+                client = platform::quote(client)
             ),
             DryRun::AttachExisting { session, run_id } => format!(
                 "tmux attach existing session {}{}",
@@ -791,17 +794,20 @@ impl TerminalBackend for Tmux {
                     .map(|id| format!(" (run {})", platform::quote(id)))
                     .unwrap_or_default()
             ),
-            DryRun::Kill { session } => format!("tmux kill-session -t ={session}"),
+            DryRun::Kill { session } => format!(
+                "tmux kill-session -t {}",
+                platform::quote(&format!("={session}"))
+            ),
             DryRun::Launch(spec) => format!(
                 "tmux -u new-session {}{} -s {} -c {} -- {}",
                 if spec.detached { "-d " } else { "" },
                 spec.env
                     .iter()
-                    .map(|v| format!("-e {v}"))
+                    .map(|v| format!("-e {}", platform::quote(v)))
                     .collect::<Vec<_>>()
                     .join(" "),
-                spec.name,
-                spec.cwd,
+                platform::quote(&spec.name),
+                platform::quote(&spec.cwd),
                 platform::join(&spec.command)
             ),
             DryRun::Start(spec) => {
@@ -817,6 +823,94 @@ impl TerminalBackend for Tmux {
 mod tests {
     use super::super::PaneField::*;
     use super::*;
+
+    /// zerus-sa9qn.38: `--dry-run` prints commands a person may paste; each
+    /// line passes a hostile session name, folder and variable to tmux as the
+    /// same single words and runs nothing else.
+    #[test]
+    fn dry_runs_print_hostile_names_as_single_words() {
+        let names = [
+            "claude/p/x;touch pwned;#",
+            "claude/$(touch pwned)/t",
+            "claude/p/`touch pwned`",
+            "claude/p/it's \"q\" | touch pwned",
+            "claude/p/x\ntouch pwned",
+        ];
+        for name in names {
+            let spec = LaunchSpec {
+                name: name.into(),
+                cwd: format!("/work/{name}"),
+                env: vec![format!("HGS_SESSION={name}")],
+                command: vec!["/x/hgs".into(), "0".into()],
+                detached: true,
+            };
+            let launch = Tmux.describe(&DryRun::Launch(&spec));
+            for (line, args) in [
+                (
+                    Tmux.describe(&DryRun::Attach {
+                        session: name,
+                        client: "local",
+                    }),
+                    vec![
+                        vec![
+                            "set-environment".to_owned(),
+                            "-t".into(),
+                            format!("={name}"),
+                            "HGS_CLIENT".into(),
+                            "local".into(),
+                        ],
+                        vec![
+                            "-u".into(),
+                            "attach-session".into(),
+                            "-t".into(),
+                            format!("={name}"),
+                        ],
+                    ],
+                ),
+                (
+                    Tmux.describe(&DryRun::Kill { session: name }),
+                    vec![vec!["kill-session".into(), "-t".into(), format!("={name}")]],
+                ),
+                (
+                    launch,
+                    vec![["-u", "new-session", "-d", "-e"]
+                        .map(String::from)
+                        .into_iter()
+                        .chain([
+                            format!("HGS_SESSION={name}"),
+                            "-s".into(),
+                            name.into(),
+                            "-c".into(),
+                            format!("/work/{name}"),
+                            "--".into(),
+                            "/x/hgs".into(),
+                            "0".into(),
+                        ])
+                        .collect()],
+                ),
+            ] {
+                let folder = tempfile::tempdir().unwrap();
+                let script = format!("tmux() {{ printf '%s\\0' \"$@\"; printf '\\n'; }}\n{line}");
+                let out = Command::new("/bin/sh")
+                    .arg("-c")
+                    .arg(script)
+                    .current_dir(folder.path())
+                    .env("PATH", "/usr/bin:/bin")
+                    .output()
+                    .unwrap();
+                assert!(
+                    !folder.path().join("pwned").exists(),
+                    "{line:?} ran a payload"
+                );
+                let calls: Vec<Vec<String>> = String::from_utf8(out.stdout)
+                    .unwrap()
+                    .split_terminator("\0\n")
+                    .map(|call| call.split('\0').map(str::to_owned).collect())
+                    .collect();
+                assert_eq!(calls, args, "{line}");
+            }
+        }
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -997,14 +1091,14 @@ mod tests {
         );
         assert_eq!(
             Tmux.describe(&DryRun::Launch(&spec)),
-            "tmux -u new-session -e A=1 -e B=two words -s claude/p/t -c /tmp/a b -- /bin/bash -lic 'exec \"$0\" --run \"$@\"' /x/hgs 0 claude"
+            "tmux -u new-session -e A=1 -e 'B=two words' -s claude/p/t -c '/tmp/a b' -- /bin/bash -lic 'exec \"$0\" --run \"$@\"' /x/hgs 0 claude"
         );
         spec.detached = true;
         spec.env.clear();
         assert_eq!(launch_args(&spec)[..3], ["-u", "new-session", "-d"]);
         assert!(Tmux
             .describe(&DryRun::Launch(&spec))
-            .starts_with("tmux -u new-session -d  -s claude/p/t -c /tmp/a b -- "));
+            .starts_with("tmux -u new-session -d  -s claude/p/t -c '/tmp/a b' -- "));
     }
 
     #[test]

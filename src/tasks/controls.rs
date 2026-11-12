@@ -88,6 +88,6 @@ pub(super) fn pin_dispatch(prompt: &mut String, project: &str, task: &str, attem
 /// Only fresh send/handoff/reopen uses this instruction. Ordinary feedback
 /// keeps its report origin and never requests a second acknowledgement.
 pub(super) fn pin_begin(prompt: &mut String, project: &str, task: &str, attempt: &str) {
-    let reference = crate::platform::quote(&format!("{project}/{task}"));
+    let reference = zerus_replica::command_reference(project, task);
     prompt.push_str(&format!("\n\n[Zerus acknowledgement origin: {attempt}]\nAcknowledge this execution exactly once with `hgs task begin-attempt {reference} --attempt {attempt}`. This replaces any plain task start instruction above; do not run both. Keep this original attempt UUID. A start acknowledgement cannot substitute a newer attempt."));
 }
