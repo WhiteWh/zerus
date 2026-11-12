@@ -20,12 +20,12 @@ const REENTRY: &str = "ZERUS_TEST_CONTEXT_ORIGINAL_CASE";
 static SPAWNS: AtomicUsize = AtomicUsize::new(0);
 struct State {
     active: usize,
-    failed: bool,
+    failed: Option<String>,
 }
 static CHILDREN: (Mutex<State>, Condvar) = (
     Mutex::new(State {
         active: 0,
-        failed: false,
+        failed: None,
     }),
     Condvar::new(),
 );
@@ -34,9 +34,10 @@ impl Permit {
     fn acquire() -> Arc<Self> {
         let mut state = CHILDREN.0.lock().unwrap();
         loop {
-            if state.failed {
+            if let Some(case) = &state.failed {
+                let case = case.clone();
                 drop(state);
-                panic!("an isolated fixture failed; further fixture launches are fenced");
+                panic!("isolated fixture {case} failed; further fixture launches are fenced");
             }
             if state.active < LIMIT {
                 state.active += 1;
@@ -55,16 +56,21 @@ impl Drop for Permit {
 }
 
 pub(crate) fn non_agent() -> bool {
-    isolate(Context::NonAgent, Duration::from_secs(90))
+    isolate(Context::NonAgent, Duration::from_secs(90), false)
 }
 pub(crate) fn native() -> bool {
-    isolate(Context::Native, Duration::from_secs(30))
+    isolate(Context::Native, Duration::from_secs(30), false)
 }
 /// Desktop component models own their configuration and terminal context.
 /// Remove inherited context only in a fresh original test process, before its
 /// fixture, frozen environment or process-wide mode/caller cache is created.
 pub(crate) fn desktop_fixture() -> bool {
-    isolate(Context::DesktopFixture, Duration::from_secs(90))
+    isolate(Context::DesktopFixture, Duration::from_secs(90), false)
+}
+/// Static executable fixtures must be staged before ANY sibling can fork and
+/// inherit their temporary writers, even when the caller's context is clean.
+pub(crate) fn isolated_desktop_fixture() -> bool {
+    isolate(Context::DesktopFixture, Duration::from_secs(90), true)
 }
 #[derive(Clone, Copy)]
 enum Context {
@@ -81,7 +87,7 @@ fn desktop_keys() -> Vec<std::ffi::OsString> {
         })
         .collect()
 }
-fn isolate(context: Context, timeout: Duration) -> bool {
+fn isolate(context: Context, timeout: Duration, always: bool) -> bool {
     let thread = std::thread::current();
     let case = thread.name().expect("named libtest fixture");
     let native = matches!(context, Context::Native);
@@ -98,7 +104,7 @@ fn isolate(context: Context, timeout: Duration) -> bool {
         assert!(clean, "isolated original still has inherited context");
         return false;
     }
-    if clean {
+    if clean && !always {
         return false;
     }
     let original = case.to_owned();
@@ -207,7 +213,12 @@ fn run_case(case: &str, timeout: Duration, configure: impl FnOnce(&mut Command) 
     // An error can return before physical pipe drain. Its Permit stays in the
     // original runner's resources; never free it or keep queued fixtures
     // waiting forever on that uncertain original.
-    CHILDREN.0.lock().unwrap().failed = true;
+    CHILDREN
+        .0
+        .lock()
+        .unwrap()
+        .failed
+        .get_or_insert_with(|| case.to_owned());
     CHILDREN.1.notify_all();
     panic!(
         "isolated fixture {case} did not settle successfully: {}",
@@ -350,4 +361,34 @@ fn native_fixtures_select_explicit_mode_before_the_process_cache() {
             .env(zerus_client_core::desktop::service::MODE_ENV, "1")
             .env("HGS_SESSION_ID", "synthetic-agent-context");
     });
+}
+
+#[test]
+fn a_clean_desktop_fixture_can_require_its_own_original_process() {
+    const STAGE: &str = "ZERUS_TEST_CONTEXT_FORCE_CLEAN";
+    if std::env::var_os(STAGE).is_some() {
+        assert!(desktop_keys().is_empty());
+        let before = SPAWNS.load(Ordering::Relaxed);
+        if isolated_desktop_fixture() {
+            assert_eq!(SPAWNS.load(Ordering::Relaxed), before + 1);
+        } else {
+            assert!(std::env::var_os(REENTRY).is_some());
+            assert_eq!(SPAWNS.load(Ordering::Relaxed), before);
+        }
+        return;
+    }
+    let before = run::FrozenEnvironment::capture().unwrap();
+    let thread = std::thread::current();
+    let keys = desktop_keys();
+    run_case(
+        thread.name().unwrap(),
+        Duration::from_secs(90),
+        move |command| {
+            for key in keys {
+                command.env_remove(key);
+            }
+            command.env_remove(REENTRY).env(STAGE, "clean");
+        },
+    );
+    assert!(before.current());
 }
