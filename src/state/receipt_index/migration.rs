@@ -131,8 +131,10 @@ struct Walk {
     witness_error: bool,
     // When the walk began, for the coarse-clock re-read in catch-up.
     at: f64,
-    // Rows whose originals the row pass found missing (explicit gaps).
-    gaps: i64,
+    // A source or enumeration error recorded before this walk began. Like
+    // a witness mismatch, only a complete walk that started after it may
+    // clear it; an incomplete walk keeps it visible (zerus-kj3mb.2).
+    walk_errors: bool,
     attempts: u32,
     catchup: Option<CatchUp>,
 }
@@ -140,7 +142,8 @@ struct Walk {
 /// under. It re-reads only unknown, changed or recently modified originals,
 /// and seals at its own starting stamp only if nothing changed while it
 /// listed, the source's token shows an exact counter, and every row maps to
-/// a listed original or a known gap. Appends therefore cost a short, cheap
+/// a listed original or a recorded gap, both from the listing's own view
+/// (zerus-kj3mb.1). Appends therefore cost a short, cheap
 /// listing instead of another full walk; a listing that sees a change is
 /// retried a bounded number of times, then the source stays unknown.
 struct CatchUp {
@@ -148,7 +151,13 @@ struct CatchUp {
     started: String,
     epoch: String,
     schema: i64,
+    // Listed originals whose row ends this listing without a gap stamp.
     matched: i64,
+}
+// A test seam: the next catch-up entry reads as an enumeration failure.
+#[cfg(test)]
+thread_local! {
+    static FAIL_CATCHUP_ENTRY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 /// One source's outcome: stamp and completeness, the walk's bookkeeping
 /// errors, a witness error this complete walk may clear, and the time.
@@ -157,10 +166,12 @@ fn publish(catalog: &Catalog, walk: &Walk, stamp: &str, complete: bool) -> Resul
         "UPDATE receipt_sources SET stamp=?1,complete=?2 WHERE source=?3",
         params![stamp, complete, walk.source.key()],
     ))?;
-    sql(catalog.db.execute(
-        "DELETE FROM receipt_errors WHERE source=? AND name IN('@source','@enumeration')",
-        [walk.source.key()],
-    ))?;
+    if complete && walk.walk_errors {
+        sql(catalog.db.execute(
+            "DELETE FROM receipt_errors WHERE source=? AND name IN('@source','@enumeration')",
+            [walk.source.key()],
+        ))?;
+    }
     if complete && walk.witness_error {
         sql(catalog.db.execute(
             "DELETE FROM receipt_errors WHERE source=? AND name='@witness'",
@@ -303,6 +314,11 @@ impl Migration {
                     [source.key()],
                     |row| row.get(0),
                 ))?;
+                let walk_errors: bool = sql(self.catalog.db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM receipt_errors WHERE source=? AND name IN('@source','@enumeration'))",
+                    [source.key()],
+                    |row| row.get(0),
+                ))?;
                 self.walk = Some(Walk {
                     source,
                     entries,
@@ -315,14 +331,21 @@ impl Migration {
                     schema,
                     witness_error,
                     at: now(),
-                    gaps: 0,
+                    walk_errors,
                     attempts: 0,
                     catchup: None,
                 });
             }
             let walk = self.walk.as_mut().unwrap();
             if let Some(catchup) = walk.catchup.as_mut() {
-                match catchup.entries.next() {
+                let next = catchup.entries.next();
+                #[cfg(test)]
+                let next = if FAIL_CATCHUP_ENTRY.with(|fail| fail.replace(false)) {
+                    Some(Err(std::io::Error::other("injected enumeration failure")))
+                } else {
+                    next
+                };
+                match next {
                     Some(Ok(entry)) => {
                         light += 1;
                         if light % self.light == 0 {
@@ -357,6 +380,8 @@ impl Migration {
                         let unchanged = file_state(&path).is_some_and(|(stamp, modified)| {
                             modified < walk.at - COARSE_CLOCK && cached.as_deref() == Some(&stamp)
                         });
+                        // A row counts as matched only without a gap stamp:
+                        // gap-stamped rows are counted once, as gaps, below.
                         let indexed = if unchanged {
                             true
                         } else {
@@ -370,7 +395,8 @@ impl Migration {
                                 Err(reason) => self.catalog.error(walk.source, filename, reason)?,
                             }
                             sql(self.catalog.db.query_row(
-                                "SELECT EXISTS(SELECT 1 FROM receipt_rows WHERE source=? AND request=?)",
+                                "SELECT EXISTS(SELECT 1 FROM receipt_rows WHERE source=? AND request=?
+                                   AND substr(stamp,1,4)<>'gap:')",
                                 params![walk.source.key(), id],
                                 |row| row.get(0),
                             ))?
@@ -398,8 +424,17 @@ impl Migration {
                             .is_ok_and(|stamp| *stamp == catchup.started)
                             && epoch == catchup.epoch
                             && schema == catchup.schema;
+                        // Rows recorded as explicit gaps, counted now: a gap
+                        // restored since the row pass is matched above, and
+                        // a listed original that vanished is in neither.
+                        let gaps: i64 = sql(self.catalog.db.query_row(
+                            "SELECT COUNT(*) FROM receipt_rows INDEXED BY receipt_gap
+                               WHERE source=? AND substr(stamp,1,4)='gap:'",
+                            [walk.source.key()],
+                            |row| row.get(0),
+                        ))?;
                         let sealed = quiet
-                            && count == catchup.matched + walk.gaps
+                            && count == catchup.matched + gaps
                             && self.catalog.source_witness_current(walk.source.key());
                         if sealed {
                             let started = catchup.started.clone();
@@ -519,7 +554,6 @@ impl Migration {
                         // is a durable explicit gap, never an absent send or
                         // permission to replay. Publish a change so history
                         // consumers revisit an already imported original too.
-                        walk.gaps += 1;
                         self.catalog.error(walk.source, &filename, reason)?;
                         let stamp = format!("gap:{reason}");
                         let previous: String = sql(self.catalog.db.query_row(

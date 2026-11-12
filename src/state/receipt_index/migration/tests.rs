@@ -34,7 +34,7 @@ fn finishing(migration: &mut Migration, count: u128) {
             .unwrap(),
         witness_error: false,
         at: now(),
-        gaps: 0,
+        walk_errors: false,
         attempts: 0,
         catchup: None,
         epoch: migration
@@ -109,6 +109,17 @@ fn state(migration: &Migration) -> (i64, bool) {
         .unwrap()
 }
 
+/// Step the started walk to its end. Its catch-up listing may take more
+/// than one budgeted step on a loaded machine.
+fn finish_walk(migration: &mut Migration) {
+    for _ in 0..1_000 {
+        if migration.step().unwrap() {
+            return;
+        }
+    }
+    panic!("the walk did not finish");
+}
+
 fn finish(state: &Path) -> Migration {
     let mut migration = Migration::new(state).unwrap();
     while !migration.step().unwrap() {}
@@ -126,7 +137,7 @@ fn a_backdated_arrival_preserves_the_live_count_until_a_stable_restart() {
     // stays 3; the walk's catch-up listing then verifies all three originals
     // against their rows and seals the exact count (zerus-kj3mb).
     original(&migration.catalog, 0);
-    assert!(migration.step().unwrap());
+    finish_walk(&mut migration);
     assert_eq!(state(&migration), (3, true));
     assert!(migration.catalog.coverage_verified());
     let restarted = finish(temp.path());
@@ -153,7 +164,7 @@ fn a_changed_rowset_cannot_publish_the_old_partial_count() {
     // The old partial count (2) is never published over the live count (1):
     // the catch-up listing re-reads the original whose row was lost and
     // seals only the re-verified set.
-    assert!(migration.step().unwrap());
+    finish_walk(&mut migration);
     assert_eq!(state(&migration), (2, true));
     assert!(migration.catalog.coverage_verified());
     let restarted = finish(temp.path());

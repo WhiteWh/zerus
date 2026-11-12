@@ -306,3 +306,93 @@ fn a_recorded_mismatch_never_gets_a_catch_up_even_if_its_token_returns() {
         )
         .unwrap());
 }
+
+fn error_for(catalog: &Catalog, name: &str) -> bool {
+    catalog
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM receipt_errors WHERE source='terminal' AND name=?)",
+            [name],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+/// zerus-kj3mb.1, the review probe: a gap restored after the row pass and an
+/// already listed original that vanishes must not cancel out.
+#[test]
+fn a_restored_gap_cannot_offset_a_vanished_original() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(temp.path(), true).unwrap();
+    let mut paths = Vec::new();
+    for n in 1..=150 {
+        paths.push(original(&catalog, n));
+    }
+    // #3's original is missing before the walk: the row pass records its gap.
+    let kept = fs::read(&paths[2]).unwrap();
+    fs::remove_file(&paths[2]).unwrap();
+    let third = format!("{}.json", uuid::Uuid::from_u128(3));
+    let seventh = format!("{}.json", uuid::Uuid::from_u128(7));
+    let mut migration = walker(temp.path());
+    let mut swapped = false;
+    drive(&mut migration, |migration| {
+        let Some(walk) = migration.walk.as_ref() else {
+            return;
+        };
+        // After the row pass recorded #3's gap, before the walk publishes:
+        // #3 comes back and #7, already listed, disappears.
+        if walk.entries.is_none()
+            && walk.catchup.is_none()
+            && error_for(&catalog, &third)
+            && !swapped
+        {
+            fs::write(&paths[2], &kept).unwrap();
+            fs::remove_file(&paths[6]).unwrap();
+            swapped = true;
+        }
+    });
+    assert!(swapped);
+    // The row without an original keeps the source unknown.
+    assert_eq!(state(&migration), (150, false));
+    assert!(!error_for(&catalog, &third), "the restored gap was re-read");
+    // The next walk records #7's explicit gap and seals with it.
+    let next = finish(temp.path());
+    assert_eq!(state(&next), (150, true));
+    assert!(error_for(&catalog, &seventh));
+}
+
+/// zerus-kj3mb.2: a catch-up that cannot enumerate leaves a visible error,
+/// which only a complete walk that started after it clears.
+#[test]
+fn a_catch_up_enumeration_failure_stays_visible_until_a_complete_walk() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(temp.path(), true).unwrap();
+    for n in 1..=150 {
+        original(&catalog, n);
+    }
+    let mut migration = walker(temp.path());
+    let mut appended = false;
+    drive(&mut migration, |migration| {
+        if !appended {
+            raw(&catalog, 4_000, 4_000.0);
+            appended = true;
+        } else if catching_up(migration) {
+            FAIL_CATCHUP_ENTRY.with(|fail| fail.set(true));
+        }
+    });
+    assert!(!state(&migration).1);
+    assert!(error_for(&catalog, "@enumeration"));
+    // An incomplete walk (a change in every listing) keeps it.
+    let mut migration = walker(temp.path());
+    let mut next = 5_000;
+    drive(&mut migration, |_| {
+        raw(&catalog, next, next as f64);
+        next += 1;
+    });
+    assert!(!state(&migration).1);
+    assert!(error_for(&catalog, "@enumeration"));
+    // A complete walk clears it.
+    let migration = finish(temp.path());
+    assert!(state(&migration).1);
+    assert!(!error_for(&catalog, "@enumeration"));
+}

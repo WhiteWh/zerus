@@ -527,7 +527,8 @@ impl Catalog {
                 "CREATE INDEX IF NOT EXISTS receipt_change ON receipt_rows(source,change);
                  CREATE INDEX IF NOT EXISTS receipt_change_scope ON receipt_rows(source,agent,conversation,change,request);
                  CREATE INDEX IF NOT EXISTS receipt_change_initial ON receipt_rows(source,agent,run,change,request);
-                 CREATE INDEX IF NOT EXISTS receipt_seq ON receipt_rows(source,seq);",
+                 CREATE INDEX IF NOT EXISTS receipt_seq ON receipt_rows(source,seq);
+                 CREATE INDEX IF NOT EXISTS receipt_gap ON receipt_rows(source) WHERE substr(stamp,1,4)='gap:';",
             ))?;
 
             // The frontier must cover every seeded row, repairing a persisted
