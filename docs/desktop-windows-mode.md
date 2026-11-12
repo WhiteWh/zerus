@@ -396,6 +396,15 @@ remaining time. The original child exchange remains bounded by the shared
 runner's existing 30 s maximum. Its timeout still leaves uncertainty pending
 for observation, never permission to replay a manager call.
 
+A refusal within Stop also includes `stop_timing` diagnostics
+(`desktop-mode-stop-timing-v1`): the unchanged budget, elapsed milliseconds,
+and fixed counters/times for native rechecks, metadata synchronization, the
+instance Stop call and physical-exit confirmation. Nested rechecks are charged
+to their own step, without double counting. Elapsed values cap at 60,000 ms;
+unattributed time is explicit. These fields never select a deadline or change
+the refusal wording, pending phase, authority or replay rules. The mode path
+has no separate failure audit; the refusal detail carries this bounded snapshot.
+
 If a fresh frontend Rearm won before hold acquisition, explicitly cancel only
 the obsolete saved rollback metadata:
 

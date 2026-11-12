@@ -94,6 +94,7 @@ pub(super) fn cancel_ready(
     .context("The recorded original instance is not ready; keep its pending UUID.")?;
     let (source, identity) = instances::selected_image(Path::new(&plan.argv[0]))?;
     let mut fence = Fence {
+        stop_timing: None,
         admission,
         location,
         background: false,
@@ -218,6 +219,7 @@ pub(super) fn observe(
     };
     let (source, identity) = instances::selected_image(Path::new(&plan.argv[0]))?;
     let mut fence = Fence {
+        stop_timing: None,
         admission,
         location,
         background: desired == Mode::Background,

@@ -7,6 +7,7 @@ pub(in crate::desktop) const RECORD_BYTES: usize = 8192;
 pub(in crate::desktop) mod first;
 pub(in crate::desktop) mod refresh;
 pub(in crate::desktop) mod review;
+pub(in crate::desktop) mod timing;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
