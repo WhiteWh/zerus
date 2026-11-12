@@ -16,7 +16,7 @@ pub(super) mod rollback_backup;
 #[path = "store_startup.rs"]
 mod startup;
 
-pub const SCHEMA: i64 = super::creation_worktree::SLOTS_SCHEMA;
+pub const SCHEMA: i64 = super::question_route::SCHEMA;
 pub struct HandoffLock {
     _lock: platform::FileLock,
     root: PathBuf,
@@ -666,6 +666,12 @@ impl Store {
             if let Some(original) = original {
                 original.verify()?;
             }
+            tx.commit()?;
+        }
+        if version < super::question_route::SCHEMA {
+            let tx = db.transaction()?;
+            super::question_route::migrate(&tx)?;
+            tx.pragma_update(None, "user_version", super::question_route::SCHEMA)?;
             tx.commit()?;
         }
         // Opening Store follows acquisition of the real exclusive serve owner.

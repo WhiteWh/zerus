@@ -23,6 +23,8 @@ pub(super) fn migrate_slots(tx: &rusqlite::Transaction<'_>) -> anyhow::Result<()
 }
 #[cfg(test)]
 pub(super) fn rewind_slots(db: &rusqlite::Connection) {
+    // Rewind the later schema-36 question route leaf too.
+    super::question_route::remove_fixture(db);
     ledger::rewind_slots(db);
 }
 /// Test rewind of this leaf for older-version upgrade fixtures; dropping the
