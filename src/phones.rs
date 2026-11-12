@@ -256,6 +256,7 @@ fn protected_call(connection:&Connection,action:&str,input:&Value)->Result<Value
     Ok(result)
 }
 /// The verifier's own marker in its reply (zerus-sa9qn.50).
+#[cfg(unix)]
 pub(crate) const ROUTE_PERSON_VERIFIER: &str = "question-route-person-v1";
 
 /// A file's device, inode, size and modification time.
