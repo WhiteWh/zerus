@@ -30,7 +30,8 @@ export async function endActionNativeSmoke(allowed: boolean) {
     const ready = invoke<boolean>("action_delay_wait", { id }); await log("NATIVE"); await sleep(400);
     let returned = false;
     const away = invoke("perf_away", { how: "hide", window_ms: 6_000 }).then(() => { returned = true; });
-    require(await ready, "hidden window lost its deadline"); require(performance.now() - started >= 5_000, "deadline released early");
+    // Native UNDO_WINDOW in client/core/src/end_action.rs is three seconds.
+    require(await ready, "hidden window lost its deadline"); require(performance.now() - started >= 3_000, "deadline released early");
     const out = await run(id, kept); require(out.outcome === "done", JSON.stringify(out));
     require(!returned, "action waited for window visibility instead of its native deadline");
     await log("EXECUTED_HIDDEN"); await away; await log("RESTORED"); await sleep(500);

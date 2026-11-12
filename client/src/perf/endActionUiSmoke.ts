@@ -17,7 +17,8 @@ export async function endActionUiSmoke(allowed: boolean) {
     await until(() => Object.keys(catalog.rows).length === 66);
     const row = (tag: string) => Object.values(catalog.rows).find((r) => r.name === `codex/example/${tag}`)!;
     const cancelled = perform(snapshotOf(row("kept")), { kind: "archive" });
-    await until(() => undo().length === 1); require(undo()[0].textContent === "Undo (5)", "initial countdown");
+    // Native UNDO_WINDOW in client/core/src/end_action.rs is three seconds.
+    await until(() => undo().length === 1); require(undo()[0].textContent === "Undo (3)", "initial countdown");
     undo()[0].focus(); await log("UNDO"); await sleep(500); require(document.activeElement === undo()[0], "countdown replaced focused Undo"); undo()[0].click();
     require((await cancelled).outcome === "failed", "Undo ran archive"); clear();
 
