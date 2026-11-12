@@ -46,6 +46,11 @@ pub(super) fn inherit_fork(record: &mut Value, revision: Option<&str>) {
     }
 }
 
+/// A host or native session receives the fixed hint unless its account opted out.
+pub(super) fn for_account(account: &str) -> Option<&'static str> {
+    crate::config::configured_agent_hint(account).then_some(HINT)
+}
+
 /// Only the lifecycle's already-verified same-conversation resume calls this.
 /// A new run ID is expected, while provider and conversation must still match.
 pub(super) fn carry_resume(previous: &Value, record: &mut Value) {

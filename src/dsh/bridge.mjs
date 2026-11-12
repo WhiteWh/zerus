@@ -11,6 +11,23 @@ import { isDeepStrictEqual } from 'node:util';
 export const name = 'hgs-native-dsh';
 export const inject = ['sessionController', 'agents', 'goals', 'llm', 'agentDefaultModel', 'sessionQuery', 'userQuestions', 'workspaceRegistry', 'subagents', 'permissionPresets', 'approval', 'commands'];
 
+export const AGENT_HINT_SECTION = 'hgs:agent-hint';
+export function registerAgentHint(ctx, hint, owned) {
+  if (!(owned instanceof Map) || typeof hint !== 'string' || !hint) return false;
+  try {
+    const prompts = ctx.get('systemPrompt');
+    if (typeof prompts?.section !== 'function') return false;
+    ctx.effect(() => prompts.section({
+      name: AGENT_HINT_SECTION, order: 10300, interpolate: false,
+      text: context => owned.has(context.agent?.session?.id) ? hint : '',
+    }));
+    return true;
+  } catch (error) {
+    console.warn('hgs: optional agent hint registration failed: ' + String(error?.message ?? error));
+    return false;
+  }
+}
+
 // 0.2.2 moved selection from the controller's WeakMap to the Agent's native
 // model object. Both reads are side-effect-free; never use selectionFor or
 // public selectModel (which also saves the profile default) as a fallback.
@@ -150,6 +167,7 @@ export function apply(ctx, config) {
   const control = api.agents;
   const models = modelSelectionAdapter(control);
   const owned = new Map(), opening = new Map(), questions = new Map();
+  registerAgentHint(ctx, config?.agentHint, owned);
   const generation = randomUUID();
   const shellContext = new AsyncLocalStorage(), shellCalls = new Map(), jobCalls = new Map();
   const jobRegistry = ctx.get('jobs');

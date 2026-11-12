@@ -389,6 +389,21 @@ fn hint_policy_environment(policy: std::result::Result<HintPolicy, ()>) -> Vec<S
     }
 }
 
+/// A native host or session launch resolves its own current policy. Unlike a
+/// tracked hook, it does not require a previously forwarded process snapshot.
+pub(crate) fn configured_agent_hint(account: &str) -> bool {
+    let policy = platform::home()
+        .ok_or(())
+        .and_then(|home| read_hint_policy(&config_dir(&home), &home));
+    match policy {
+        Ok(policy) => policy.allows(account),
+        Err(()) => {
+            eprintln!("{HINT_POLICY_DIAGNOSTIC}");
+            false
+        }
+    }
+}
+
 /// A tracked hook consumes a complete process snapshot; it never supplements
 /// it from a different default config. Windows removes an empty environment
 /// entry, so absent OFF with a resolved 0/1 means the empty exclusion list.

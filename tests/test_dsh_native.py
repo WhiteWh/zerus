@@ -863,6 +863,11 @@ class NativeHarness(unittest.TestCase):
                 # A cold restart reuses the native profile rather than trying
                 # to create it a second time with --from-default-profile.
                 pidfile=next((root/'state/dsh/hosts').glob('*/host.pid'))
+                overlay=json.loads((pidfile.parent/'hgs.patch.json').read_text())
+                bridge=next(entry for patch in overlay for entry in patch.get('insert',[])
+                            if entry.get('id')=='hgs-native-dsh')
+                self.assertEqual(bridge['config'].get('agentHint'),
+                    'This agent runs in a Zerus session: the hgs CLI reads, messages, launches and stops other agent sessions on this and other computers. Run hgs guide before using it.')
                 pid=int(pidfile.read_text())
                 original=host_process(pid)
                 self.assertIsNotNone(original)
