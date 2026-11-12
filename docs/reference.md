@@ -795,15 +795,20 @@ Ending a parent never ends its children by itself (zerus-sa9qn.17).
 them too. The parent runs first with its own command and rules; only when it
 succeeds does each live (non-archived) descendant on that computer get the same
 command, one at a time, every child before any grandchild and at most eight
-levels deep. Descendants are matched as the listing matches a parent: by
-session ID, or by conversation for a parent listed without one; a link another
-computer forwarded never matches. Each child call is bound to the session ID,
-run and conversation the listing showed, so a session that took the label
-meanwhile is refused, and Terminate also passes `--expected-run-id`. Each child
-keeps its own rules: Archive takes only stopped or paused sessions, a DeepSeek
-or OpenCode child refuses an action it does not support, and no working folder
-removal is implied; the configured worktree maintenance treats an archived
-child as any archived session. A child that is not ended is reported on
+levels deep. A link names a parent by its session ID; only a link without a
+session ID names a parent listed without one, by conversation. This is stricter
+than the listing's nesting, which also falls back to the conversation for a
+link with a session ID. A link another computer forwarded never matches. Each
+child call is bound to the session ID, run and conversation the listing showed,
+so a session that took the label meanwhile, or the child restarted into another
+run or given another conversation, is refused, and Terminate also passes
+`--expected-run-id`. Each child keeps its own rules: Archive takes only stopped
+or paused sessions, Terminate stops a running child and also moves a stopped or
+paused child to Archive (as `hgs terminate` does for any such session; the
+desktop's Terminate leaves those children as they are), a DeepSeek or OpenCode
+child refuses an action it does not support, and no working folder removal is
+implied; the configured worktree maintenance treats an archived child as any
+archived session. A child that is not ended is reported on
 standard error and never retried, and the command exits 1 with how many were
 not ended. With `--dry-run` it validates the parent and lists the children it
 would end. A parent refused or unknown ends no child. An older peer without the
@@ -815,13 +820,17 @@ such a session, list them and offer **Also end N child sessions** (Archive:
 **Also archive N child sessions**), off by default. Children the action does
 not apply to now (Terminate takes running sessions, Archive stopped or paused
 ones; an offline computer or a write in flight leaves one out too) are listed
-as staying. At most 50 are named; the rest are counted. When chosen, the
-children run after the parent's own outcome is done as one preconfirmed
-selection batch: each through its own guarded action, rechecked as the same
-instance, one at a time and never retried, without the parent's Remove working
-folder choice. A Terminate child without an HGS archive is ended as its own
-Terminate and a selection's Terminate end it. A parent that failed or whose
-outcome is unknown keeps every child. One notice counts the children ended,
+as staying. The count and the list cover every level, not only the direct
+children, and the confirmation says so. At most 50 are named; the rest are
+counted. When chosen, the children run after the parent's own outcome is done
+as one preconfirmed selection batch: each through its own guarded action,
+rechecked as the same instance, one at a time and never retried, without the
+parent's Remove working folder choice. A Terminate child without an HGS archive
+is killed, as its own Terminate and a selection's Terminate kill it: it leaves
+the list and any native conversation history is kept. The confirmation marks
+each such child and counts them. Terminate lists a stopped or paused child as
+staying and notes that `hgs terminate --with-children` would move it to
+Archive. A parent that failed or whose outcome is unknown keeps every child. One notice counts the children ended,
 failed or changed, and unknown.
 
 `hgs ls --json` rows carry `parent` with `state` from the same listing: `live`

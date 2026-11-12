@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { toSession } from "../../store/catalog";
-import { childChoiceText, childOffer, childStayText, liveDescendants, CHILD_DEPTH } from "./end-children";
+import { childChoiceText, childHintText, childKillText, childLineText, childOffer, childStayText, childStoppedText, killedByTerminate, liveDescendants, stoppedChild, CHILD_DEPTH } from "./end-children";
 import { parentIndex } from "./model";
 import { selectionSnapshot } from "./selection";
 import type { ParentLinkOut, ViewRow } from "../../types";
@@ -72,6 +72,31 @@ describe("a parent's live descendants (zerus-sa9qn.17)", () => {
     expect(childChoiceText("archive", 2)).toBe("Also archive 2 child sessions");
     expect(childStayText("archive", 1)).toBe("1 child session cannot be archived now and stays as it is:");
     expect(childStayText("terminate", 4)).toBe("4 child sessions cannot be terminated now and stay as they are:");
+  });
+
+  it("say that the count covers every level, not only the direct children (#2086 review)", () => {
+    for (const a of ["terminate", "archive"] as const) {
+      expect(childHintText(a)).toContain(`The count and the list include child sessions of child sessions, up to ${CHILD_DEPTH} levels deep.`);
+    }
+    expect(childHintText("terminate")).toContain("Their working folders are kept.");
+  });
+
+  it("mark a Terminate child without an HGS archive: the batch kills it, as its own Terminate does (#2086 review)", () => {
+    const tracked = selectionSnapshot(session(2, 1, { agent: "claude" }));
+    const untracked = selectionSnapshot(session(3, 1, { agent: "claude", tracked: false }));
+    const other = selectionSnapshot(session(4, 1, { agent: "gemini" }));
+    expect([tracked, untracked, other].map(killedByTerminate)).toEqual([false, true, true]);
+    expect(childLineText("terminate", tracked)).toBe("kimi/p/s2");
+    expect(childLineText("terminate", untracked)).toBe("kimi/p/s3 (no HGS archive)");
+    // Archive never kills: no mark.
+    expect(childLineText("archive", untracked)).toBe("kimi/p/s3");
+    expect(childKillText(1)).toBe("1 of them has no HGS archive and is killed: it leaves the list, and any native conversation history is kept.");
+    expect(childKillText(2)).toBe("2 of them have no HGS archive and are killed: they leave the list, and any native conversation history is kept.");
+  });
+
+  it("say that Terminate keeps a stopped or paused child while the command line archives it (#2086 review)", () => {
+    expect(["stopped", "paused", "running", "archived"].map((state) => stoppedChild({ state }))).toEqual([true, true, false, false]);
+    expect(childStoppedText()).toBe("Stopped or paused child sessions keep their state here. On the command line, hgs terminate --with-children moves them to Archive.");
   });
 });
 

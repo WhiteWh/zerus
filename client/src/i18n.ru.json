@@ -57,6 +57,7 @@
   "%1 (%2)": "%1 (%2)",
   "%1 (PID %2)": "%1 (PID %2)",
   "%1 (local changes %2)": "%1 (локальные изменения %2)",
+  "%1 (no HGS archive)": "%1 (без архива HGS)",
   "%1 (question answer)": "%1 (ответ на вопрос)",
   "%1 (this computer)": "%1 (этот компьютер)",
   "%1 / %2\nMachines online": "%1 / %2\nКомпьютеров в сети",
@@ -218,6 +219,11 @@
     "%n сообщения",
     "%n сообщений"
   ],
+  "%n of them have no HGS archive and are killed: they leave the list, and any native conversation history is kept.": [
+    "%n из них без архива HGS и будет принудительно завершена: она исчезнет из списка, а любая собственная история разговоров сохранится.",
+    "%n из них без архива HGS и будут принудительно завершены: они исчезнут из списка, а любая собственная история разговоров сохранится.",
+    "%n из них без архива HGS и будут принудительно завершены: они исчезнут из списка, а любая собственная история разговоров сохранится."
+  ],
   "%n project conflict(s) need review in Swarm.": [
     "В общем пространстве нужно проверить %n конфликт проектов.",
     "В общем пространстве нужно проверить %n конфликта проектов.",
@@ -270,6 +276,7 @@
   "1 child session cannot be terminated now and stays as it is:": "1 дочернюю сессию сейчас нельзя завершить, она остаётся как есть:",
   "1 machine loaded": "загружен 1 компьютер",
   "1 needs attention": "Требует внимания: 1",
+  "1 of them has no HGS archive and is killed: it leaves the list, and any native conversation history is kept.": "1 из них без архива HGS и будет принудительно завершена: она исчезнет из списка, а любая собственная история разговоров сохранится.",
   "1 other program will be asked to stop. Save its work before continuing.": "Будет запрошена остановка ещё 1 программы. Прежде чем продолжить, сохраните её данные.",
   "1 session": "1 сессия",
   "1 session is on an offline or stale machine. Its last known status is shown on the machine cards.": "1 сессия находится на компьютере, который не в сети или давно не отвечал. Её последнее известное состояние показано на карточках компьютеров.",
@@ -1188,8 +1195,6 @@
   "Each computer keeps its own permission mode. Changing it on one computer leaves the others as they are.": "У каждого компьютера свой режим разрешений. Изменение на одном компьютере не затрагивает остальные.",
   "Each delay must be at least the one before.": "Каждая задержка должна быть не меньше предыдущей.",
   "Each file must be readable, nonempty, and at most 10 MiB.": "Каждый файл должен быть читаемым, непустым и иметь размер не более 10 МБ.",
-  "Each one moves to Archive through its own Move to archive after this session does.": "Каждая перемещается в архив собственным действием «Переместить в архив» после этой сессии.",
-  "Each one stops through its own Terminate after this session ends. Their working folders are kept.": "Каждая останавливается собственным завершением после этой сессии. Их рабочие папки сохраняются.",
   "Each ping reads the whole cached context (about %1 tokens) from this account's usage.": "Каждый пинг читает весь закэшированный контекст (около %1 токенов) за счёт лимитов этого аккаунта.",
   "Each ping reads the whole cached context from this account's usage.": "Каждый пинг читает весь закэшированный контекст за счёт лимитов этого аккаунта.",
   "Each positive number is a delay before the next attempt. End with −1 to stop, or 0 to repeat the previous delay forever.\nExample: 300, 0 retries every 5 minutes until stopped.\n\nNew messages and Stop cancel recovery. Sign-in, balance, other quota and context errors require your action.": "Каждое положительное число — задержка перед следующей попыткой. Завершите список числом −1, чтобы остановиться, или 0, чтобы бесконечно повторять предыдущую задержку.\nПример: 300, 0 — повтор каждые 5 минут до остановки.\n\nНовые сообщения и «Остановить» отменяют восстановление. Ошибки входа, баланса, других квот и контекста требуют вашего вмешательства.",
@@ -2921,6 +2926,7 @@
   "Stop was not confirmed": "Остановка не подтверждена",
   "Stopped": "Остановлено",
   "Stopped by you. It stays stopped until you choose Start connector.": "Остановлен вами. Он не запустится, пока вы не выберете «Запустить коннектор».",
+  "Stopped or paused child sessions keep their state here. On the command line, hgs terminate --with-children moves them to Archive.": "Остановленные и приостановленные дочерние сессии здесь сохраняют своё состояние. В командной строке hgs terminate --with-children перемещает их в архив.",
   "Stopped. Choose Start connector once and Zerus will start it automatically from then on.": "Остановлен. Выберите «Запустить коннектор» один раз, и дальше Zerus будет запускать его автоматически.",
   "Stopped. It starts the next time Zerus starts.": "Остановлен. Запустится при следующем запуске Zerus.",
   "Stopping programs…": "Остановка программ…",
@@ -3091,6 +3097,8 @@
   "The connection changed meanwhile. Check its state and try again.": "Подключение тем временем изменилось. Проверьте его состояние и повторите.",
   "The connection changed. Review it before removing.": "Подключение изменилось. Проверьте его перед удалением.",
   "The connector is draining its current request. Refresh status to confirm it has stopped.": "Коннектор завершает текущий запрос. Обновите состояние, чтобы убедиться, что он остановлен.",
+  "The count and the list include child sessions of child sessions, up to %1 levels deep. Each one moves to Archive through its own Move to archive after this session does.": "Число и список включают дочерние сессии дочерних сессий, до %1 уровней вложенности. Каждая перемещается в архив собственным действием «Переместить в архив» после этой сессии.",
+  "The count and the list include child sessions of child sessions, up to %1 levels deep. Each one stops through its own Terminate after this session ends. Their working folders are kept.": "Число и список включают дочерние сессии дочерних сессий, до %1 уровней вложенности. Каждая останавливается собственным завершением после этой сессии. Их рабочие папки сохраняются.",
   "The current draft cannot be replaced while it is loading, sending or waiting to send.": "Текущий черновик нельзя заменить, пока он загружается, отправляется или ждёт отправки.",
   "The current filters hide every session. Filters change only this list, never the open conversation.": "Текущие фильтры скрывают все сессии. Фильтры меняют только этот список, а не открытый разговор.",
   "The desktop service did not confirm the message. Its original was kept for review and will not be sent again.": "Служба рабочего стола не подтвердила сообщение. Оригинал сохранён для проверки и не будет отправлен повторно.",

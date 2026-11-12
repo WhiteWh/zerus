@@ -12,7 +12,7 @@ import type { Details, Outcome } from "../../types";
 import type { Session } from "./types";
 import { FRESH_CHANGED, STATE_CHANGED, archiveNameOccupied, canStartStopped, FRESH_TIP, copyState, dialogReducer, freshCopy, freshEntry, freshStillValid, menuState, notificationsState, renameParts, renameProblem, forgetArchivedCopy, forgetCopy, forgetOpening, snapshotOf, terminateCopy, terminates, type ForgetScope, type ActionRow, type DialogEvent } from "./actions-ui";
 import type { BatchConfirmation, SelectionRow } from "./selection";
-import { childChoiceText, childHintText, childStayText, type ChildAction, type ChildOffer } from "./end-children";
+import { childChoiceText, childHintText, childKillText, childLineText, childStayText, childStoppedText, killedByTerminate, stoppedChild, type ChildAction, type ChildOffer } from "./end-children";
 import { terminationCleanupOffer, terminationCleanupCancel } from "../../bridge";
 import { targetOf } from "../../store/actions";
 import { setSetting } from "../../store/settings";
@@ -302,26 +302,33 @@ const CHILDREN_SHOWN = 50;
 /**
  * A parent's live child sessions in its Terminate or Archive confirmation
  * (zerus-sa9qn.17): the opt-in, off by default, with the children the action
- * would end, and the children it cannot end now, which stay as they are.
+ * would end, and the children it cannot end now, which stay as they are. The
+ * copy says that the count covers every level, that Terminate kills a child
+ * without an HGS archive (the batch asks nothing more), and that a stopped or
+ * paused child stays here while `hgs terminate --with-children` archives it.
  */
 function ChildSessions(props: { action: ChildAction; offer: ChildOffer; checked: boolean; onChange: (checked: boolean) => void }) {
-  const names = (rows: readonly SelectionRow[]) => (
+  const names = (rows: readonly SelectionRow[], line: (s: SelectionRow) => string = (s) => s.name) => (
     <ul class="dlg-children" style={{ "max-height": "140px", overflow: "auto", margin: "4px 0 6px", "padding-left": "24px", "list-style": "none", color: "var(--z-color-dim)", "font-size": "var(--fs-sm)" }}>
-      <For each={rows.slice(0, CHILDREN_SHOWN)}>{(s) => <li dir="auto" class="ell" title={s.name}>{s.name}</li>}</For>
+      <For each={rows.slice(0, CHILDREN_SHOWN)}>{(s) => <li dir="auto" class="ell" title={line(s)}>{line(s)}</li>}</For>
       <Show when={rows.length > CHILDREN_SHOWN}><li>{tr("+%1 more", rows.length - CHILDREN_SHOWN)}</li></Show>
     </ul>
   );
+  const killed = props.action === "terminate" ? props.offer.ending.filter(killedByTerminate).length : 0;
+  const stopped = props.action === "terminate" && props.offer.staying.some(stoppedChild);
   return (
     <Show when={props.offer.ending.length + props.offer.staying.length > 0}>
       <section class="dlg-child-sessions" aria-label={tr("Child sessions")}>
         <Show when={props.offer.ending.length > 0}>
           <label class="check" style={{ "margin-top": "10px" }}><input type="checkbox" checked={props.checked} onChange={(e) => props.onChange(e.currentTarget.checked)} /> {childChoiceText(props.action, props.offer.ending.length)}</label>
-          {names(props.offer.ending)}
+          {names(props.offer.ending, (s) => childLineText(props.action, s))}
           <p class="hint">{childHintText(props.action)}</p>
+          <Show when={killed > 0}><p class="hint dlg-child-killed">{childKillText(killed)}</p></Show>
         </Show>
         <Show when={props.offer.staying.length > 0}>
           <p class="hint" style={{ "margin-top": "8px" }}>{childStayText(props.action, props.offer.staying.length)}</p>
           {names(props.offer.staying)}
+          <Show when={stopped}><p class="hint dlg-child-stopped">{childStoppedText()}</p></Show>
         </Show>
       </section>
     </Show>

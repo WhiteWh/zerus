@@ -99,6 +99,47 @@ describe("Terminate of a parent with live child sessions", () => {
     expect(calls.endAfter).toHaveBeenCalledExactlyOnceWith("terminate", expect.anything(), done, []);
   });
 
+  it("starts with the opt-in off again in a reopened confirmation: the choice is never remembered", async () => {
+    calls.children = { ending: [child("worker-a")], staying: [] };
+    const row = selectionSnapshot(session("lead"));
+    mount(TerminateDialog, row); await flush();
+    box()!.click(); expect(box()!.checked).toBe(true);
+    dispose?.(); dispose = undefined; document.body.replaceChildren();
+    mount(TerminateDialog, row); await flush();
+    expect(document.querySelectorAll(".dlg-child-sessions")).toHaveLength(1);
+    expect(box()?.checked).toBe(false);
+  });
+
+  it("keeps the chosen children when releasing an unused cleanup offer fails: the parent never ran", async () => {
+    const workers = [child("worker-a"), child("worker-b")];
+    calls.children = { ending: workers, staying: [] };
+    calls.offer.mockResolvedValue({ id: "offer-1", checked: false });
+    calls.cancel.mockRejectedValue("release refused");
+    const row = selectionSnapshot(session("lead", { git_worktree: true }));
+    mount(TerminateDialog, row); await flush();
+    expect(calls.offer).toHaveBeenCalledOnce();
+    box()!.click();
+    button("Stop and archive").click(); await flush();
+    expect(calls.cancel).toHaveBeenCalledExactlyOnceWith("offer-1");
+    expect(calls.notify).toHaveBeenCalledWith("error", "release refused", true);
+    expect(calls.end).not.toHaveBeenCalled();
+    // No outcome: endAfter keeps every child (store/batch.test.ts).
+    expect(calls.endAfter).toHaveBeenCalledExactlyOnceWith("terminate", row, undefined, workers);
+  });
+
+  it("says the count covers every level, marks and counts children without an HGS archive, and notes stopped children", async () => {
+    calls.children = {
+      ending: [child("worker-a"), child("plain", { tracked: false })],
+      staying: [child("saved", { state: "stopped" }), child("held", { state: "paused" })],
+    };
+    mount(TerminateDialog, selectionSnapshot(session("lead"))); await flush();
+    expect(listed()).toEqual(["kimi/zerus/worker-a", "kimi/zerus/plain (no HGS archive)", "kimi/zerus/saved", "kimi/zerus/held"]);
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("The count and the list include child sessions of child sessions, up to 8 levels deep.");
+    expect(document.querySelector(".dlg-child-killed")?.textContent).toBe("1 of them has no HGS archive and is killed: it leaves the list, and any native conversation history is kept.");
+    expect(document.querySelector(".dlg-child-stopped")?.textContent).toBe("Stopped or paused child sessions keep their state here. On the command line, hgs terminate --with-children moves them to Archive.");
+  });
+
   it("names at most 50 children one by one and counts the rest", async () => {
     calls.children = { ending: Array.from({ length: 53 }, (_, i) => child(`w${i}`)), staying: [] };
     mount(TerminateDialog, selectionSnapshot(session("lead"))); await flush();
@@ -123,6 +164,34 @@ describe("Move to archive of a parent with live child sessions", () => {
     expect(calls.perform).toHaveBeenCalledExactlyOnceWith(row, { kind: "archive" });
     expect(calls.refresh).toHaveBeenCalledOnce();
     expect(calls.endAfter).toHaveBeenCalledExactlyOnceWith("archive", row, done, workers);
+  });
+
+  it("confirming without the opt-in archives only the parent", async () => {
+    calls.children = { ending: [child("worker-a", { state: "stopped" })], staying: [] };
+    const row = selectionSnapshot(session("lead", { state: "stopped" }));
+    mount(ArchiveDialog, row); await flush();
+    expect(box()?.checked).toBe(false);
+    button("Move to archive").click(); await flush();
+    expect(calls.perform).toHaveBeenCalledExactlyOnceWith(row, { kind: "archive" });
+    expect(calls.endAfter).toHaveBeenCalledExactlyOnceWith("archive", row, done, []);
+  });
+
+  it("ticking and unticking the opt-in before confirming archives only the parent", async () => {
+    calls.children = { ending: [child("worker-a", { state: "stopped" })], staying: [] };
+    const row = selectionSnapshot(session("lead", { state: "stopped" }));
+    mount(ArchiveDialog, row); await flush();
+    box()!.click(); box()!.click(); expect(box()!.checked).toBe(false);
+    button("Move to archive").click(); await flush();
+    expect(calls.endAfter).toHaveBeenCalledExactlyOnceWith("archive", row, done, []);
+  });
+
+  it("says the count covers every level, without Terminate's archive and stopped-child lines", async () => {
+    calls.children = { ending: [child("plain", { state: "stopped", tracked: false })], staying: [child("saved", { state: "paused" })] };
+    mount(ArchiveDialog, selectionSnapshot(session("lead", { state: "stopped" }))); await flush();
+    expect(listed()).toEqual(["kimi/zerus/plain", "kimi/zerus/saved"]);
+    expect(document.body.textContent).toContain("The count and the list include child sessions of child sessions, up to 8 levels deep.");
+    expect(document.querySelector(".dlg-child-killed")).toBeNull();
+    expect(document.querySelector(".dlg-child-stopped")).toBeNull();
   });
 
   it("Cancel archives nothing", async () => {

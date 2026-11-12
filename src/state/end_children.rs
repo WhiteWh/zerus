@@ -7,10 +7,12 @@
 //! is never implied), Archive takes only stopped sessions, and a provider
 //! without the action refuses it. Each child is bound to its exact session ID
 //! and, for Terminate, its listed run. A child's outcome is reported and never
-//! retried. Descendants come from one listing, matched as listings match a
-//! parent (`parent_link::decorate`): by session ID, or by conversation for a
-//! parent listed without one; a link another computer forwarded never
-//! matches. The walk stops after eight levels and never visits a session twice.
+//! retried. Descendants come from one listing: a link names a parent by its
+//! session ID, and only a link without a session ID names a parent listed
+//! without one, by conversation. That is stricter than the listing's nesting
+//! (`parent_link::decorate`), which also falls back to the conversation for an
+//! identified link. A link another computer forwarded never matches. The walk
+//! stops after eight levels and never visits a session twice.
 //! The configured worktree maintenance treats each archived child as it treats
 //! any archived session; no Remove working folder choice reaches a child.
 use super::*;
@@ -161,8 +163,22 @@ pub(super) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
         eprintln!("hgs: {name} was not {verb}; no child session was {verb}");
         return Ok(code);
     }
+    let failed = end_each(command, verb, &children);
+    if failed > 0 {
+        return Err(format!(
+            "{failed} of {} child sessions were not {verb}; nothing was retried",
+            children.len()
+        ));
+    }
+    Ok(0)
+}
+
+/// Each listed child in turn, after its parent ended: the same command, bound
+/// to the identities the listing showed. Returns how many were not ended;
+/// none is retried.
+fn end_each(command: &str, verb: &str, children: &[Child]) -> usize {
     let mut failed = 0;
-    for child in &children {
+    for child in children {
         // Every read of this child's label must carry each identity it was
         // listed with, as a guarded command's selection does: a session that
         // took the label since, or a child resumed into another run, refuses.
@@ -195,13 +211,7 @@ pub(super) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
             }
         }
     }
-    if failed > 0 {
-        return Err(format!(
-            "{failed} of {} child sessions were not {verb}; nothing was retried",
-            children.len()
-        ));
-    }
-    Ok(0)
+    failed
 }
 
 #[cfg(test)]
@@ -282,5 +292,149 @@ mod tests {
         let found = descendants(&chain, &chain[0]);
         assert_eq!(found.len(), DEPTH);
         assert_eq!(found.last().unwrap().depth, DEPTH);
+    }
+
+    /// Re-runs `fixture` alone in this test binary with private state, as
+    /// `parent_link`'s fixtures do: a command reads the process's state root
+    /// and its selection.
+    #[cfg(unix)]
+    fn isolated(fixture: &str) {
+        let root = tempfile::tempdir().unwrap();
+        for folder in ["state", "config", "home", "xdg", "tmux"] {
+            std::fs::create_dir(root.path().join(folder)).unwrap();
+        }
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            &format!("state::end_children::tests::{fixture}"),
+            "--ignored",
+            "--test-threads=1",
+        ]);
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("HGS_") || key == "TMUX" {
+                command.env_remove(key);
+            }
+        }
+        let output = command
+            .env("HGS_STATE_DIR", root.path().join("state"))
+            .env("HGS_CONFIG_DIR", root.path().join("config"))
+            .env("HOME", root.path().join("home"))
+            .env("XDG_STATE_HOME", root.path().join("xdg"))
+            .env("TMUX_TMPDIR", root.path().join("tmux"))
+            .env("HGS_SELF", "fixture")
+            .env("HGS_PEERS", "")
+            .env("ZERUS_END_CHILDREN_FIXTURE", "1")
+            .output()
+            .unwrap();
+        let out = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.status.success(), "{out}");
+        // An --exact filter that matched nothing would pass without running it.
+        assert!(out.contains("test result: ok. 1 passed"), "{out}");
+    }
+
+    /// A stopped tracked session in the private state's legacy layout, as
+    /// tests/test_end_children.py writes them.
+    #[cfg(unix)]
+    fn saved(n: u32, label: &str, parent: Option<&Value>) -> Value {
+        let mut record = json!({"version":1,"name":format!("codex/example/{label}"),"agent":"codex",
+            "run_id":format!("run-{n}"),"conversation_id":format!("conversation-{n}"),"session_id":id(n),
+            "account_id":"fixture","subagents":{},"created":1_700_000_000 + n,"cwd":root().display().to_string(),
+            "pid":1,"process_start":"not this process"});
+        if let Some(parent) = parent {
+            record["parent"] = json!({"schema":1,"machine":MACHINE,"host":"fixture",
+                "session_id":string(parent, "session_id"),"name":string(parent, "name"),
+                "conversation_id":string(parent, "conversation_id"),"run_id":string(parent, "run_id"),
+                "source":"launch","at":1_700_000_000});
+        }
+        write_saved(&record);
+        record
+    }
+
+    #[cfg(unix)]
+    fn write_saved(record: &Value) {
+        std::fs::write(
+            legacy_record_path(string(record, "name")),
+            record.to_string(),
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_child_that_changed_after_the_listing_is_refused() {
+        isolated("changed_child_fixture");
+    }
+
+    /// #2086 review (t1, t2): a child restarted into another run, or given
+    /// another conversation, between the listing and its turn is refused by
+    /// both commands and kept as it is; the same child unchanged is ended.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "process-isolated private state fixture"]
+    fn changed_child_fixture() {
+        if std::env::var("ZERUS_END_CHILDREN_FIXTURE").as_deref() != Ok("1") {
+            return;
+        }
+        let mut n = 10;
+        for command in ["archive", "terminate"] {
+            let verb = if command == "terminate" {
+                "terminated"
+            } else {
+                "archived"
+            };
+            for change in ["", "run_id", "conversation_id"] {
+                n += 2;
+                let label = format!(
+                    "{command}-{}",
+                    if change.is_empty() { "same" } else { change }
+                );
+                let parent = saved(n, &format!("{label}-lead"), None);
+                let child = saved(n + 1, &format!("{label}-child"), Some(&parent));
+                session_id::clear();
+                let rows = listing().unwrap();
+                let listed = rows
+                    .iter()
+                    .find(|row| string(row, "name") == string(&parent, "name"))
+                    .unwrap();
+                let children = descendants(&rows, listed);
+                assert_eq!(children.len(), 1, "{label}: {rows:?}");
+                assert_eq!(children[0].run_id, string(&child, "run_id"), "{label}");
+                assert_eq!(
+                    children[0].conversation_id,
+                    string(&child, "conversation_id"),
+                    "{label}"
+                );
+                let mut now = child.clone();
+                if !change.is_empty() {
+                    now[change] = json!(format!("{}-new", string(&child, change)));
+                    write_saved(&now);
+                }
+                let failed = end_each(command, verb, &children);
+                let archived: Vec<Value> = archive::records()
+                    .unwrap()
+                    .into_iter()
+                    .filter(|entry| string(entry, "name") == string(&child, "name"))
+                    .collect();
+                let path = legacy_record_path(string(&child, "name"));
+                if change.is_empty() {
+                    assert_eq!(failed, 0, "{label}");
+                    assert_eq!(archived.len(), 1, "{label}");
+                    assert!(!path.exists(), "{label}");
+                } else {
+                    assert_eq!(
+                        failed, 1,
+                        "{label}: a child that changed after the listing must be refused"
+                    );
+                    assert!(archived.is_empty(), "{label}: {archived:?}");
+                    let kept: Value =
+                        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                    assert_eq!(kept[change], now[change], "{label}");
+                }
+            }
+        }
     }
 }
