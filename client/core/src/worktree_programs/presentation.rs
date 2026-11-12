@@ -15,7 +15,7 @@ pub struct Identity {
 }
 impl Identity {
     fn valid(&self) -> bool {
-        self.pid > 1 && super::bounded(&self.birth, 128)
+        self.pid > 0 && super::bounded(&self.birth, 128)
     }
     fn matches(&self, program: &Program) -> bool {
         self.pid == program.pid && self.birth == program.birth
@@ -155,5 +155,31 @@ mod tests {
             }
             assert_eq!(pids(&current, Some(&value)), [10, 20, 30, 40]);
         }
+    }
+
+    #[test]
+    fn namespace_init_identities_stay_valid_but_pid_zero_is_refused() {
+        let (mut manifest, _) = fixture();
+        manifest.programs = vec![
+            Program {
+                pid: 1,
+                birth: "birth-1".into(),
+                label: "agent".into(),
+            },
+            Program {
+                pid: 2,
+                birth: "birth-2".into(),
+                label: "supervisor".into(),
+            },
+        ];
+        let identity = |pid| Identity {
+            pid,
+            birth: format!("birth-{pid}"),
+        };
+        let display = Presentation::new(&manifest, identity(1), identity(2));
+        assert_eq!(pids(&manifest, Some(&display)), Vec::<u32>::new());
+        let mut invalid = display;
+        invalid.agent.pid = 0;
+        assert_eq!(pids(&manifest, Some(&invalid)), [1, 2]);
     }
 }

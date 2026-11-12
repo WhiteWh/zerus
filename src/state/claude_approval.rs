@@ -554,7 +554,12 @@ pub(super) fn current(record:&Value)->Option<Value> {current_with(record,false)}
 /// panel into its unviewed pane, and only for a recorded request; guards and
 /// answers read the screen as it is.
 pub(super) fn listed(record:&Value)->Option<Value> {current_with(record,true)}
+// The `fit` the last approval read on this thread received (tests only):
+// questions' tests pin which reads are listings.
+#[cfg(test)]
+thread_local! {pub(super) static LAST_FIT:std::cell::Cell<Option<bool>>=const {std::cell::Cell::new(None)};}
 fn current_with(record:&Value,fit:bool)->Option<Value> {
+    #[cfg(test)] LAST_FIT.with(|last|last.set(Some(fit)));
     if record["agent"]!="claude"||pause_active(record)||!string(record,"error").is_empty()
         ||!active_phase(record) {return None;}
     let live=kimi_tui_choice::identity(record).ok();

@@ -8,9 +8,9 @@ import { For, Show, Suspense, createMemo, createEffect, createSignal, lazy, on, 
 import { createVirtualizer } from "@tanstack/solid-virtual";
 import { Icon } from "../lib/icons";
 import { tr, trNoop } from "../../i18n";
-import { listRows, rowHeight, shownSummary, machineChoices, projectChoices, filterCounts as counts, pickerCounts, type Row } from "./model";
+import { listRows, rowHeight, shownSummary, machineChoices, projectChoices, filterCounts as counts, pickerCounts, type Container, type Row } from "./model";
 import {
-  SessionCard, ChildCard, CompactCard, teamSummary, AgentBadge, StatusBadge, badgeKind, statusCaption, stripCaption,
+  SessionCard, ChildCard, CompactCard, ContainerCard, teamSummary, AgentBadge, StatusBadge, badgeKind, statusCaption, stripCaption,
   emphasis, childStatus, captionText, gitTooltip, paletteIndex, folderOf, ProviderGlyph,
 } from "./SessionCard";
 import { agentKind, catalog, computerFresh, computerOffline } from "../../store/catalog";
@@ -271,6 +271,22 @@ function openSessionMenu(e: MouseEvent, s: Session) {
   e.preventDefault();
   e.stopPropagation();
   update = setMenu({ x: e.clientX, y: e.clientY, items, sessionKey: s.key }, Promise.all([inspected, cleared]).then(snapshot));
+}
+
+/**
+ * An ended parent's container (zerus-sa9qn.17): Open, Resume or Restore, and
+ * Move to archive of its own listed row through the row's existing entries;
+ * for a parent known only from its children, Open in Archive. Nothing else:
+ * the container grants no session action of its own.
+ */
+export function containerMenu(c: Container): MenuEntry[] {
+  const row = c.key ? catalog.rows[c.key] : undefined;
+  if (row) {
+    const act = actionEntries(row, undefined, { context: true });
+    return [{ label: tr("Open"), icon: "chevron-right", action: () => setSelectedKey(row.key) }, act.change, ...(act.archive ? [act.archive] : [])];
+  }
+  if (c.state === "archived") return [{ label: tr("Open in Archive"), icon: "archive", action: () => { setSearch(c.name); setStateFilter("archived"); } }];
+  return [{ label: tr("Open"), icon: "chevron-right", disabled: true, hint: tr("This parent session is no longer listed on %1.", c.machine), action: () => {} }];
 }
 
 /** A context target is independent of the open conversation and selection. */
@@ -626,7 +642,8 @@ export function SessionList() {
   const onKey = (e: KeyboardEvent) => {
     if ((e.target as Element).closest?.("input,textarea,[contenteditable]")) return;
     const rows = list.rows();
-    const nav = rows.filter((r) => r.type !== "header");
+    // An ended parent's container (zerus-sa9qn.17) is not a session: never a keyboard target.
+    const nav = rows.filter((r) => r.type !== "header" && r.type !== "container");
     const i = nav.findIndex((r) => r.id === selectedKey());
     const scrollTo = (row: Row) => list.virtualizer.scrollToIndex(rows.indexOf(row), { align: "auto" });
     // The project header of a session whose collapsed project hides its row.
@@ -659,7 +676,7 @@ export function SessionList() {
       if (header) {
         // From a row its collapsed project hides: the next row past the project, as Qt's hidden current item.
         const at = rows.indexOf(header);
-        move(down ? rows.slice(at + 1).find((r) => r.type !== "header") : rows.slice(0, at).reverse().find((r) => r.type !== "header"));
+        move(down ? rows.slice(at + 1).find((r) => r.type !== "header" && r.type !== "container") : rows.slice(0, at).reverse().find((r) => r.type !== "header" && r.type !== "container"));
       } else move(nav[Math.max(0, Math.min(nav.length - 1, i + (down ? 1 : -1)))]);
     } else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
       const right = e.key === "ArrowRight";
@@ -681,7 +698,7 @@ export function SessionList() {
         else if (r.expandable && (right ? !expandedChildren[r.session.key] : !!expandedChildren[r.session.key])) setExpandedChildren(r.session.key, right);
         // Child sessions (zerus-sa9qn.2): Right expands, Left collapses, then moves to the parent.
         else if (r.team && r.team.collapsed === right) setTeamCollapsed(r.session.key, !right);
-        else if (!right && r.parentKey) setSelectedKey(r.parentKey);
+        else if (!right && r.parentKey && catalog.rows[r.parentKey]) setSelectedKey(r.parentKey);
         else if (!r.expandable && !r.team) project(r.session.key);
       }
     } else if (e.key === "Enter" && e.target === e.currentTarget && i >= 0 && nav[i].type !== "creation" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -877,6 +894,8 @@ export function sessionRowName(row: Row | undefined): string | undefined {
   if (row.type === "child") return [row.child.name,
     childStatus(row.child, currentChildren(row.parent, !computerOffline(row.parent.computer))).caption,
     folderOf(row.parent) || row.parent.project, row.parent.machine].filter(Boolean).join(", ");
+  if (row.type === "container") return [row.container.title, row.container.state === "archived" ? tr("Archived") : tr("Ended"), row.container.machine,
+    row.team ? tr(row.team.collapsed ? "%1 child sessions, collapsed" : "%1 child sessions, expanded", row.team.total) : ""].filter(Boolean).join(", ");
   const s = row.session;
   const state = computerOffline(s.computer) ? tr("Offline") : s.status === "ready" && s.draft ? tr("Draft") : captionText(s.caption);
   return [s.title, state, folderOf(s) || s.project, s.machine,
@@ -913,6 +932,23 @@ function ListRow(props: { id: string; list: RowSource }) {
         )}
       </Show>
       <Show when={row()?.type === "creation" ? (row() as Extract<Row, { type: "creation" }>) : undefined}>{(v) => <CreationCard card={v().creation} />}</Show>
+      <Show when={row()?.type === "container" ? (row() as Extract<Row, { type: "container" }>) : undefined}>
+        {(v) => (
+          <>
+          <Show when={(v().depth ?? 0) > 0}>
+            <i class="team-tree compact" classList={{ last: !!v().lastChild }} aria-hidden="true" style={{ "--indent": `${indentOf(v().depth)}px` }} />
+          </Show>
+          {/* zerus-sa9qn.17: presentational. Opening its own listed row is the only selection; no drag, multi-selection or attention. */}
+          <div class="rowhit" classList={{ nested: (v().depth ?? 0) > 0, "context-target": visibleMenu()?.sessionKey === v().id }}
+            style={(v().depth ?? 0) > 0 ? { left: `${indentOf(v().depth) + 26}px` } : undefined}
+            onClick={() => { const key = v().container.key; if (key && catalog.rows[key]) setSelectedKey(key); }}
+            onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setMenu({ x: e.clientX, y: e.clientY, items: containerMenu(v().container), sessionKey: v().id }); }}>
+            <ContainerCard container={v().container} selected={!!v().container.key && selectedKey() === v().container.key}
+              team={v().team} onToggleTeam={() => setTeamCollapsed(v().id.slice("container:".length), !teamCollapsed(v().id.slice("container:".length)))} />
+          </div>
+          </>
+        )}
+      </Show>
       <Show when={row()?.type === "card" ? (row() as Extract<Row, { type: "card" }>) : undefined}>
         {(v) => (
           <>

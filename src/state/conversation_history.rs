@@ -895,57 +895,69 @@ fn backfill(db: &Connection, parent: &Value) -> Result<()> {
 }
 
 fn receipts(db: &Connection, parent: &Value, r: &Request) -> Result<bool> {
-    let directory = attachments::history_directory(parent);
-    let Ok(entries) = std::fs::read_dir(&directory) else {
-        return Ok(true);
-    };
-    let mut seen = std::collections::HashMap::<String, String>::new();
-    let mut query = db
-        .prepare("SELECT name,stamp FROM receipt_seen")
-        .map_err(|e| e.to_string())?;
-    for row in query
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|e| e.to_string())?
-    {
-        let (name, stamp) = row.map_err(|e| e.to_string())?;
-        seen.insert(name, stamp);
-    }
-    let mut paths = Vec::new();
-    let mut count = 0;
-    for entry in entries.flatten().take(100001) {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.ends_with(".json") {
-            continue;
-        }
-        count += 1;
-        let metadata = entry.metadata().map_err(|e| e.to_string())?;
-        let (modified, nanos) = crate::platform::modified(&metadata);
-        let stamp = format!("{}:{}:{}", metadata.len(), modified, nanos);
-        if seen.get(&name) != Some(&stamp) {
-            paths.push((name, stamp, entry.path()));
-        }
-    }
-    if count >= 100000 {
-        set(db, "gap", "receipt_catalog_budget_exhausted")?;
-    }
-    paths.sort_by(|a, b| a.0.cmp(&b.0));
-    let complete = paths.len() <= 64;
-    for (name, stamp, path) in paths.into_iter().take(64) {
-        match attachments::history_receipt(parent, r.agent_id.as_deref().unwrap_or(""), &path) {
-            Ok(Some((mut row, submitted))) => {
-                row["native_match_hash"] = json!(hash(&submitted));
-                add(db, &key(parent, r), row, "attachment")?;
+    let agent = r.agent_id.as_deref().unwrap_or("");
+    let mut cursor = get(db, "receipt_cursor")?.unwrap_or_default();
+    let mut retried = false;
+    loop {
+        let (catalog, page) = match receipt_index::changed(parent, agent, &cursor, 64, true) {
+            Ok(value) => value,
+            // The locator was rebuilt or its schema changed. Restart the
+            // frontier explicitly; receipt_seen still decides which originals
+            // need a new import, so nothing is replayed from scratch.
+            Err(error) if error == receipt_index::CURSOR_REJECTED && !retried => {
+                retried = true;
+                cursor.clear();
+                set(db, "receipt_cursor", "")?;
+                continue;
             }
-            Ok(None) => {}
             Err(_) => {
-                set(db, "gap", "receipt_source_gap")?;
+                // The rebuildable locator is unavailable or not yet migrated:
+                // project indexing, never an empty receipt namespace.
+                receipt_index::request_migration();
+                return Ok(false);
+            }
+        };
+        if page.coverage == receipt_index::Coverage::Gap {
+            set(db, "gap", "receipt_source_gap")?;
+        }
+        for row in page.rows {
+            let name = format!("{}.json", row.locator.id);
+            let seen: Option<String> = db
+                .query_row(
+                    "SELECT stamp FROM receipt_seen WHERE name=?",
+                    params![name],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| error.to_string())?;
+            if seen.as_deref() == Some(row.stamp.as_str()) {
+                continue;
+            }
+            match catalog.original(&row.locator) {
+                Ok(value) => {
+                    if let Some((mut projected, submitted)) =
+                        attachments::history_receipt_value(parent, agent, &value)
+                    {
+                        projected["native_match_hash"] = json!(hash(&submitted));
+                        add(db, &key(parent, r), projected, "attachment")?;
+                    }
+                    db.execute(
+                        "INSERT INTO receipt_seen(name,stamp) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET stamp=excluded.stamp",
+                        params![name, row.stamp],
+                    )
+                    .map_err(|error| error.to_string())?;
+                }
+                Err(_) => {
+                    // A changed, missing or rebound original is an explicit
+                    // gap for this receipt; never rewrite it and never infer
+                    // that untouched receipts are absent.
+                    set(db, "gap", "receipt_source_gap")?;
+                }
             }
         }
-        db.execute("INSERT INTO receipt_seen(name,stamp) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET stamp=excluded.stamp",params![name,stamp]).map_err(|e|e.to_string())?;
+        set(db, "receipt_cursor", &page.cursor)?;
+        return Ok(page.ready && !page.restart_required && page.drained && !page.pending);
     }
-    Ok(complete)
 }
 fn mac(secret: &str, text: &str) -> String {
     let mut key = [0u8; 64];

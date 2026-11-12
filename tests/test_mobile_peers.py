@@ -550,7 +550,19 @@ time.sleep(10)
 
     def transport_envelope(self, helper, request, budget=77000):
         return dict(schema=1, via='b', helper=helper, request=request, parent_pid=os.getpid(),
-                    deadline_ms=int(time.monotonic()*1000)+budget)
+                    deadline_ms=time.clock_gettime_ns(time.CLOCK_MONOTONIC)//1_000_000+budget)
+
+    def test_transport_uses_the_wire_clock_when_python_monotonic_differs(self):
+        (self.root / 'repository-probe').touch()
+        local = self.request(self.repository_clone_argv())
+        del local['via']
+        # On a Mac that has slept, mach_absolute_time (Python's local elapsed
+        # clock) and the protocol's CLOCK_MONOTONIC have different origins.
+        with patch.object(time, 'monotonic', return_value=0):
+            valid = self.transport_envelope('local', local)
+        result = self.call('a', 'swarm', '__mobile-peer-transport', '--json', data=valid, ok=False)
+        self.assertEqual((result.returncode, result.stderr), (7, 'fixture'))
+        self.assertTrue(self.calls())
 
     @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux-only short transport-budget control')
     def test_delayed_shell_discovery_cannot_outlive_the_original_transport_budget(self):
@@ -593,9 +605,9 @@ time.sleep(10)
         self.assertGreater(len(self.calls()), len(before))
 
     def test_supervisor_rejects_arbitrary_helpers_and_deadline_overrides(self):
-        original = dict(schema=1, via='b', helper='help', request=None, parent_pid=os.getpid(), deadline_ms=int(time.monotonic()*1000)+2000)
+        original = self.transport_envelope('help', None, 2000)
         for field, value in [('helper', 'sh -c fixture'), ('deadline_ms', 0),
-                             ('deadline_ms', int(time.monotonic()*1000)+60000), ('parent_pid', 1), ('command', 'fixture')]:
+                             ('deadline_ms', time.clock_gettime_ns(time.CLOCK_MONOTONIC)//1_000_000+60000), ('parent_pid', 1), ('command', 'fixture')]:
             request = {**original, field: value}
             self.call('a', 'swarm', '__mobile-peer-transport', '--json', data=request, ok=False)
         self.assertEqual(self.calls(), [])

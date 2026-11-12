@@ -1,7 +1,9 @@
 //! Attachment access uses durable delivery receipts, never a caller's file path.
 use super::*;
 use base64::{engine::general_purpose::STANDARD, Engine};
-use std::fs::{self, OpenOptions};
+use std::fs::OpenOptions;
+#[cfg(all(test, unix))]
+use std::fs;
 use std::io::{Read, Write};
 const MAX_FILE: u64 = 10 * 1024 * 1024;
 
@@ -155,54 +157,98 @@ fn message_text(receipt: &Value) -> String {
     }
     text.trim().to_owned()
 }
-pub(super) fn messages(record: &Value, agent: &str) -> Value {
-    let mut paths = fs::read_dir(directory(record))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|p| p.path().extension().is_some_and(|e| e == "json"))
-        .filter_map(|p| Some((p.metadata().ok()?.modified().ok()?, p.path())))
-        .collect::<Vec<_>>();
-    paths.sort_unstable_by_key(|p| std::cmp::Reverse(p.0));
-    let mut messages = Vec::new();
-    for (_, path) in paths.into_iter().take(512) {
-        let Ok(mut receipt) = receipt(&path) else {
-            continue;
+fn projected_page(record:&Value,agent:&str,cursor:&str,limit:usize)->Result<(Value,Value)> {
+    let (catalog,mut page)=receipt_index::page(record,agent,cursor,limit)?;
+    let mut messages=Vec::new();
+    let mut gaps=Vec::new();
+    if page.metadata["index_protocol_verified"] != true || page.metadata["unattributed_errors"] != 0 {
+        gaps.push(json!({"state":"receipt_index_gap"}));
+    }
+    for locator in &page.locators {
+        let mut receipt=match catalog.original(locator) {
+            Ok(value)=>value,
+            Err(reason)=>{
+                gaps.push(json!({"request_id":locator.id,"state":reason}));
+                continue;
+            }
         };
-        if !belongs(&receipt, record, agent)
-            || receipt["attachments"].as_array().is_none_or(Vec::is_empty)
-        {
+        if !belongs(&receipt,record,agent) {
+            gaps.push(json!({"request_id":locator.id,"state":if receipt["status"]!="submitted" {"unconfirmed"}else{"target_changed"}}));
             continue;
         }
-        if string(&receipt, "conversation_id").is_empty()
-            && string(&receipt, "resolved_conversation_id").is_empty()
-            && !string(record, "conversation_id").is_empty()
-            && receipt["run_id"] == record["run_id"]
+        if receipt["attachments"].as_array().is_none_or(Vec::is_empty) {
+            gaps.push(json!({"request_id":locator.id,"state":"attachment_metadata_changed"}));
+            continue;
+        }
+        if string(&receipt,"conversation_id").is_empty()
+            && string(&receipt,"resolved_conversation_id").is_empty()
+            && !string(record,"conversation_id").is_empty()
+            && receipt["run_id"]==record["run_id"]
         {
-            // Pin the first prompt once its provider creates the conversation.
-            // Preserve the original acknowledgement for idempotent send retries.
-            receipt["resolved_conversation_id"] = record["conversation_id"].clone();
-            let _ = atomic(&path, &receipt.to_string());
+            // Existing one-way first-prompt pin. Original request/run/digest and
+            // conversation bindings remain unchanged; migration itself is read-only.
+            receipt["resolved_conversation_id"]=record["conversation_id"].clone();
+            let _=receipt_index::persist(&directory(record).join(format!("{}.json",locator.id)),&receipt);
         }
         messages.push(json!({"type":"UserPromptSubmit","source":"hgs_delivery","message_id":receipt["request_id"],"agent_id":"",
             "at":receipt.get("submitted_at").unwrap_or(&receipt["at"]),"detail":message_text(&receipt),"submitted_text":receipt["submitted_text"],"attachments":public_files(&receipt)}));
-        if messages.len() >= 100 {
-            break;
-        }
     }
-    json!(messages)
+    if !gaps.is_empty() {page.metadata["state"]=json!("partial");}
+    page.metadata["gaps"]=json!(gaps);
+    Ok((json!(messages),page.metadata))
+}
+
+pub(super) fn decorate(record:&Value,agent:&str,output:&mut Value) {
+    let (messages,metadata)=projected_page(record,agent,"",receipt_index::PAGE_LIMIT).unwrap_or_else(|_| {
+        receipt_index::request_migration();
+        (json!([]),json!({"schema":1,"state":"unavailable","coverage":"unknown","absence_confirmed":false,"migration_complete":false,"catalog_complete_at_snapshot":false,"index_protocol_verified":false,"reason":"receipt_index_unavailable","gaps":[{"state":"receipt_index_gap"}]}))
+    });
+    output["attachment_messages"]=messages;
+    output["receipt_projection"]=metadata;
+}
+
+/// Internal bounded paging seam for native receipt consumers. It neither sends
+/// nor interprets missing data as an original-send absence or retry authority.
+pub(super) fn page_dispatch(args:&[String])->Result<i32> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Request {
+        expected_run_id:String,
+        expected_conversation_id:String,
+        #[serde(default)] agent_id:String,
+        #[serde(default)] archive_id:String,
+        #[serde(default)] cursor:String,
+        #[serde(default)] limit:Option<usize>,
+    }
+    let [name,flag]=args else {return Err("Expected receipt-index-page SESSION --json".into())};
+    if flag!="--json" {return Err("Expected receipt-index-page SESSION --json".into());}
+    let mut bytes=Vec::new();io::stdin().take(8193).read_to_end(&mut bytes).map_err(|e|e.to_string())?;
+    if bytes.len()>8192 {return Err("Receipt page request is too large".into());}
+    let request:Request=serde_json::from_slice(&bytes).map_err(|_|"Invalid receipt page request")?;
+    if request.expected_run_id.is_empty() || request.expected_run_id.len()>128 || request.expected_conversation_id.len()>512 || request.agent_id.len()>512 || request.archive_id.len()>128 {
+        return Err("Invalid receipt target identity".into());
+    }
+    let record=if !request.archive_id.is_empty() {archive::read_archive(name,&request.archive_id)?}
+        else if opencode::exists(name) {opencode::binding(name)?}
+        else if dsh::exists(name) {dsh::binding(name)?}
+        else {read(name)?};
+    if string(&record,"run_id")!=request.expected_run_id || string(&record,"conversation_id")!=request.expected_conversation_id {
+        return Err("Receipt target identity changed".into());
+    }
+    let (messages,metadata)=projected_page(&record,&request.agent_id,&request.cursor,request.limit.unwrap_or(receipt_index::PAGE_LIMIT))?;
+    println!("{}",json!({"run_id":record["run_id"],"conversation_id":record["conversation_id"],"attachment_messages":messages,"receipt_projection":metadata}));
+    Ok(0)
 }
 
 /// Public history projection for one immutable receipt. Raw paths and native
 /// terminal-expanded attachment instructions never leave this local helper.
-pub(super) fn history_receipt(record:&Value,agent:&str,path:&Path)->Result<Option<(Value,String)>> {
-    let receipt=receipt(path)?;
-    if !belongs(&receipt,record,agent)||receipt["attachments"].as_array().is_none_or(Vec::is_empty){return Ok(None);}
-    let text=message_text(&receipt);
-    Ok(Some((json!({"type":"UserPromptSubmit","source":"hgs_delivery","message_id":receipt["request_id"],"agent_id":"",
-        "at":receipt.get("submitted_at").unwrap_or(&receipt["at"]),"detail":text,"submitted_text":text,"attachments":public_files(&receipt)}),string(&receipt,"submitted_text").to_owned())))
-}
-pub(super) fn history_directory(record:&Value)->PathBuf {directory(record)
+/// The same projection from an already validated original. The canonical
+/// history imports what the binding-validated locator page returned.
+pub(super) fn history_receipt_value(record:&Value,agent:&str,receipt:&Value)->Option<(Value,String)> {
+    if !belongs(receipt,record,agent)||receipt["attachments"].as_array().is_none_or(Vec::is_empty){return None;}
+    let text=message_text(receipt);
+    Some((json!({"type":"UserPromptSubmit","source":"hgs_delivery","message_id":receipt["request_id"],"agent_id":"",
+        "at":receipt.get("submitted_at").unwrap_or(&receipt["at"]),"detail":text,"submitted_text":text,"attachments":public_files(receipt)}),string(receipt,"submitted_text").to_owned()))
 }
 
 /// Explicitly requested Graph evidence from one exact durable send. It does

@@ -665,6 +665,8 @@ class DeliveryFixture(Fixture):
         # The agent's next hook event confirms the pasted input.
         record = json.loads(self.record_path.read_text())
         record["last_event_at"] = record.get("input_pending_at", time.time()) + 1
+        # An input-acceptance event, as UserPromptSubmit records it (zerus-iitw8).
+        record["input_seen_at"] = record["last_event_at"]
         self.record_path.write_text(json.dumps(record))
 
     def settings(self, **changes):
@@ -776,6 +778,7 @@ class TaskDelivery(DeliveryFixture):
         # The agent has not confirmed that input yet.
         record = json.loads(self.record_path.read_text())
         record["last_event_at"] = record["input_pending_at"] - 1
+        record["input_seen_at"] = record["input_pending_at"] - 1
         self.record_path.write_text(json.dumps(record))
         identity = str(uuid.uuid4())
         refused = self.message(task, "Revise after the other", mode="reopen", identity=identity)

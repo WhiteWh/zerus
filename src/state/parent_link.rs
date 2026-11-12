@@ -256,6 +256,18 @@ pub(super) fn human_request(session: &Value, questions: Option<&[Value]>) -> boo
         })
 }
 
+/// Sets a supervised child row's `human_request` for every listing path:
+/// generic records, DeepSeek and OpenCode (zerus-lgr9s). Without it a client
+/// cannot tell a child's unread reply, which is its parent's, from a request
+/// for the person. DeepSeek and OpenCode list a pending tool approval as a
+/// question in the `input` phase; `approval` stands in for the `approval`
+/// phase other agents report.
+pub(super) fn mark_human_request(session: &mut Value, questions: Option<&[Value]>, approval: bool) {
+    if session.get("parent").is_some() {
+        session["human_request"] = json!(approval || human_request(session, questions));
+    }
+}
+
 /// The session `id` without an index entry: its own ID layout record, or the
 /// record at the label a link names, each read bounded, regular, no-follow
 /// and nonblocking, and only when it carries that ID.

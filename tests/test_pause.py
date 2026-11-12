@@ -2,6 +2,7 @@
 """End-to-end lifecycle tests: private tmux socket, fake agents, no model calls."""
 import hashlib
 import hook_command_fixtures as shell_probes
+import receipt_locator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import json
@@ -981,6 +982,13 @@ class Harness(unittest.TestCase):
             if r.get("name") == name and not r.get("rename_shadow"):
                 return r
         return {}
+
+    def archive_inspection(self, name, archive_id, *extra):
+        # `receipt_projection` reports the rebuildable locator's coverage, which
+        # moves from unknown to indexed as its background worker finishes
+        # (zerus-a4mub.11). Compared inspections read a settled locator.
+        receipt_locator.settle(HGS, self.env)
+        return json.loads(self.hgs("inspect", name, "--archive", archive_id, *extra))
 
     def assertInspectionEqual(self, actual, expected):
         # Process sampling is a fresh observation, even for immutable archives.
@@ -3477,7 +3485,7 @@ class Recipes(Harness):
         # argument, not another shell-encoded copy of the whole runner.
         runner = tmux_command[command_start + 3:]
         expected = ('exec env HGS_AGENT_HINT=1 HGS_AGENT_HINT_OFF= "$0" --run "$@"'
-                    if agent in ('claude', 'codex') else 'exec "$0" --run "$@"')
+                    if agent in ('claude', 'codex', 'kimi') else 'exec "$0" --run "$@"')
         self.assertEqual(runner[2], expected)
         self.assertEqual(runner[4], "0")
         return runner[5:], record["conversation_id"]
@@ -3825,7 +3833,7 @@ class Archive(Harness):
         return [row for row in self.rows(name) if row.get("state") == "archived"]
 
     def archive_info(self, name, archive_id, *extra):
-        info = json.loads(self.hgs("inspect", name, "--archive", archive_id, *extra))
+        info = self.archive_inspection(name, archive_id, *extra)
         # These fields come from current native history, not the saved archive.
         # Deleting that history may change its availability but not the archive.
         for key in ("goal", "goal_observed_at", "goal_source", "provider_messages", "provider_messages_error", "session_usage"):
@@ -4712,24 +4720,24 @@ exec {tmux} "$@"
         self.hgs("pause", old_name)
         self.hgs("archive", old_name)
         first = next(row for row in self.rows() if row.get("state") == "archived")
-        before = json.loads(self.hgs("inspect", old_name, "--archive", first["archive_id"]))
+        before = self.archive_inspection(old_name, first["archive_id"])
         self.start("codex")
         self.hgs("pause", old_name)
         self.hgs("archive", old_name)
         second = next(row for row in self.rows() if row["archive_id"] != first["archive_id"])
-        second_before = json.loads(self.hgs("inspect", old_name, "--archive", second["archive_id"]))
+        second_before = self.archive_inspection(old_name, second["archive_id"])
         new_name = "codex/p/archived-review"
         self.hgs("rename", old_name, new_name, "--archive", first["archive_id"], "--dry-run")
-        self.assertInspectionEqual(json.loads(self.hgs("inspect", old_name, "--archive", first["archive_id"])), before)
+        self.assertInspectionEqual(self.archive_inspection(old_name, first["archive_id"]), before)
         self.hgs("rename", old_name, new_name, "--archive", first["archive_id"])
-        renamed = json.loads(self.hgs("inspect", new_name, "--archive", first["archive_id"]))
+        renamed = self.archive_inspection(new_name, first["archive_id"])
         for key in ("archive_id", "archived_at", "run_id", "conversation_id", "prompt", "events"):
             self.assertEqual(renamed[key], before[key], key)
-        self.assertInspectionEqual(json.loads(self.hgs("inspect", old_name, "--archive", second["archive_id"])), second_before)
+        self.assertInspectionEqual(self.archive_inspection(old_name, second["archive_id"]), second_before)
         self.hgs("resume", new_name, "--archive", first["archive_id"], "-d")
         self.wait(lambda: self.binding(new_name).get("conversation_id") == before["conversation_id"])
         self.assertEqual(self.binding(new_name)["conversation_id"], before["conversation_id"])
-        self.assertInspectionEqual(json.loads(self.hgs("inspect", old_name, "--archive", second["archive_id"])), second_before)
+        self.assertInspectionEqual(self.archive_inspection(old_name, second["archive_id"]), second_before)
 
     def test_archive_rename_can_coexist_with_live_and_saved_names(self):
         old_name = self.start()

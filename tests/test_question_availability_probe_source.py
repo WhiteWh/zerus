@@ -14,7 +14,8 @@ original_review_fixture = _focus_projection.original_review_fixture
 # Fixture pin includes one-time post-resume live-label preparation; the approval harness retains exact 95ef by reverse projection.
 MAIN = ROOT / "mobile/android/app/src/main/java/app/zerus/mobile"
 # Keep the reviewed 9b217ddd/b9c1e29c reconstruction pins unchanged. The exact
-# fixtures first reverse the send-entry and transport-evidence additions, then
+# fixtures first reverse the outbox-retention and send-receipt additions, then
+# the send-entry and transport-evidence additions, then
 # presentation, delivery recovery, recent-Activity, child-session and
 # visible-refresh additions, then the reviewed task-tracker additions to 86aeab6d, then
 # the composed workspace and push-registration changes to ac601e36,
@@ -71,11 +72,27 @@ PRESENTATION_UPDATES_SHA = "dde1e6eb48faf7d29a8407726be4cf74b176e95802fd1249bb95
 # entry. One reviewed file; question eligibility, native availability, every
 # verification assignment and all historical pins stay exact. Reverse it first,
 # before the #2041 evidence delta it builds on.
+# Exact question-projection completeness delta of zerus-a4mub.27: a verified
+# projection that is still indexing (pending_questions_complete=false) can never
+# close or replace an expansion; an older CLI omits the field and stays
+# complete. One reviewed file; all historical reconstruction pins stay exact.
+# Reverse it first, before the presence delta it extends.
+QUESTION_PROJECTION_COMPLETE_UPDATES = ROOT / "tests/fixtures/question-availability-question-projection-complete-updates.patch"
+QUESTION_PROJECTION_COMPLETE_UPDATES_SHA = "1209c0704fc6ae050db05e274127450bae3480c8bb42efa79ec9ff888cfdbcfe"
+QUESTION_PROJECTION_COMPLETE_FILES = ("ZerusViewModel.kt",)
+# Exact expanded-question presence delta of zerus-a4mub.12: the verified
+# question projection records when it was last checked, so an obsolete
+# expansion can show its check age instead of a refresh demand. One reviewed
+# file; question eligibility, native availability, every verification writer
+# and all historical reconstruction pins stay exact. Reverse it after newer reviewed updates.
+QUESTION_PRESENCE_UPDATES = ROOT / "tests/fixtures/question-availability-question-presence-updates.patch"
+QUESTION_PRESENCE_UPDATES_SHA = "d9dab9d7203e2142c97440db106f8ade2b0b7dc9ffdcfd1db20db254cf38d008"
+QUESTION_PRESENCE_FILES = ("ZerusViewModel.kt",)
 # Exact Android outbox follow-up delta of zerus-a4mub.22/.23: a send proven
 # Not sent before the transport marker releases its sealed reservation and the
 # outbox shows its allowlisted local reason. Two reviewed files; question
 # eligibility, native availability, every verification assignment and all
-# historical reconstruction pins stay exact. Reverse it first.
+# historical reconstruction pins stay exact. Reverse it after newer reviewed updates.
 OUTBOX_RELEASE_REASON_UPDATES = ROOT / "tests/fixtures/question-availability-outbox-release-reason-updates.patch"
 OUTBOX_RELEASE_REASON_UPDATES_SHA = "fd8c60cc4c63947e781283532f12e0153a9bb5e95373e5313d3f4cb987834505"
 OUTGOING_SEND_UPDATES = ROOT / "tests/fixtures/question-availability-outgoing-send-updates.patch"
@@ -90,9 +107,54 @@ SEND_ATTEMPT_FILES = ("ZerusViewModel.kt",)
 # banner; the model publishes the shown frame's observation time, the read
 # failure's kind and observed shared-read outcomes. Presentation only: question
 # eligibility, native availability, every verification writer and all historical
-# reconstruction pins stay exact. Reverse it first, as the newest reviewed update.
+# reconstruction pins stay exact. Reverse it after newer reviewed updates.
 SYNC_STATUS_UPDATES = ROOT / "tests/fixtures/question-availability-sync-status-updates.patch"
 SYNC_STATUS_UPDATES_SHA = "fc55b33f20190f4ac88fa7012c03a304d855caeb2f238ce9f39f9a4b6a70bf77"
+# Exact two-file current-read delta babdce3c1..3220a3158 (zerus-a4mub.9, #2060):
+# the open conversation acknowledges its verified inspection's current reply and
+# attention after the settled visibility dwell (tail, newest row and questions
+# flags, the current values' dwell key), explicit Mark read shares them, and every
+# shared mark goes through one launchSharedRead, which now holds #2053's Pending
+# note. Shared reads only: question eligibility, native availability, every
+# verification writer and all historical reconstruction pins stay exact. Reverse
+# it after newer reviewed updates.
+CURRENT_READ_UPDATES = ROOT / "tests/fixtures/question-availability-current-read-updates.patch"
+CURRENT_READ_UPDATES_SHA = "1f1e6f291f1568fdf2d6fecb7847c3bff9826d7925e8e8422e2bbb5ef93d5ea5"
+# Exact two-file current-read flags delta d2fa7b274..417ed2404 (zerus-a4mub.30, #2066):
+# the settled layout reaches one CurrentFlags value through
+# ConversationViewport.currentFlags/visibleEventIds, and the view model passes it
+# whole to SharedReadPolicies.currentShown. Shared reads only: question eligibility,
+# native availability, every verification writer and all historical reconstruction
+# pins stay exact. Reverse it first, as the newest reviewed update.
+CURRENT_READ_FLAGS_UPDATES = ROOT / "tests/fixtures/question-availability-current-read-flags-updates.patch"
+CURRENT_READ_FLAGS_UPDATES_SHA = "773de1b95877011a63741d2c8ce795cb7a1c1a062b041cf10988f2059c141289"
+# Exact one-file readable-visibility delta 10f3a8455..6b147ec95 (zerus-a4mub.31, #2069): the
+# settled layout passes the shared readable height in pixels to
+# ConversationViewport.visibleEventIds and currentFlags. Visibility for reading only:
+# question eligibility, native availability, every verification writer and all
+# historical reconstruction pins stay exact. Reverse it first, as the newest reviewed update.
+READABLE_VISIBILITY_UPDATES = ROOT / "tests/fixtures/question-availability-readable-visibility-updates.patch"
+READABLE_VISIBILITY_UPDATES_SHA = "37238564a4fd15832d0dcd543462939d2708d1d497a23ed202b9477040c15dc4"
+READABLE_VISIBILITY_FILES = ("MainActivity.kt",)
+# Exact send-receipt delta of #2087 (zerus-a4mub.4.3) as merged in batch 7
+# (e2e3526e9): a text-only send freezes its exact original send intent, and a
+# receipt settles it only from that intent's acknowledgement, under a deadline.
+# One reviewed file; it changes settleOutgoing's signature, a context line of
+# the older outbox-release delta, so reverse it before that delta. Question
+# eligibility, native availability, every verification writer and all
+# historical reconstruction pins stay exact.
+SEND_RECEIPT_UPDATES = ROOT / "tests/fixtures/question-availability-send-receipt-updates.patch"
+SEND_RECEIPT_UPDATES_SHA = "d2266323766b80c1425252796d6f06735d6f38aa80fa7023918c1b4fbfc0a648"
+SEND_RECEIPT_FILES = ("ZerusViewModel.kt",)
+# Exact outbox-retention delta of #2118 (zerus-a4mub.47) as merged in batch 7
+# (a4f0e6aa9): the outbox retains settled send identities compactly and bounds
+# redundant rows on every outbox write, and a draft review records its
+# coverage. One reviewed file, built on the #2087 send-receipt delta; reverse it
+# first, as the newest reviewed update. Question eligibility, native
+# availability, every verification writer and all historical pins stay exact.
+OUTBOX_RETENTION_UPDATES = ROOT / "tests/fixtures/question-availability-outbox-retention-updates.patch"
+OUTBOX_RETENTION_UPDATES_SHA = "fcf4a926f61bfb059fd4bf1efbcd934dd76b4d6a85ef11ccaed0f0bc3618bebc"
+OUTBOX_RETENTION_FILES = ("ZerusViewModel.kt",)
 WORKSPACE_BASE_SHA = {
     "ZerusViewModel.kt": "5932d92ca74ccf37da9595a580bcb1457c93c83951976606c8defa8d1ee83326",
     "MainActivity.kt": "f68902349d1e0ac939582e9e139548663f5763c430a3c566f8823d9f045645f0",
@@ -150,7 +212,30 @@ def reverse_reviewed_patch(name, source, fixture, fixture_sha,
     return source
 
 
+def reviewed_hunk(fixture, fixture_sha, addition):
+    """The new text of the one reviewed hunk of `fixture` that adds the line
+    `addition`, read as reverse_reviewed_patch reads hunks; a refusal test
+    duplicates it whole."""
+    raw = fixture.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != fixture_sha:
+        raise AssertionError("reviewed source-update fixture changed")
+    found = [hunk for hunk in re.split(r"(?m)^@@[^\n]*\n", raw.decode())[1:]
+             if "+" + addition in hunk.splitlines(keepends=True)]
+    if len(found) != 1:
+        raise AssertionError("no single reviewed hunk adds this line")
+    return "".join(line[1:] for line in found[0].splitlines(keepends=True) if line[0] in " +")
+
+
 def reverse_reviewed_updates(name, source):
+    source = reverse_reviewed_patch(name, source, OUTBOX_RETENTION_UPDATES, OUTBOX_RETENTION_UPDATES_SHA,
+                                    OUTBOX_RETENTION_FILES)
+    source = reverse_reviewed_patch(name, source, SEND_RECEIPT_UPDATES, SEND_RECEIPT_UPDATES_SHA, SEND_RECEIPT_FILES)
+    source = reverse_reviewed_patch(name, source, READABLE_VISIBILITY_UPDATES, READABLE_VISIBILITY_UPDATES_SHA,
+                                    READABLE_VISIBILITY_FILES)
+    source = reverse_reviewed_patch(name, source, CURRENT_READ_FLAGS_UPDATES, CURRENT_READ_FLAGS_UPDATES_SHA)
+    source = reverse_reviewed_patch(name, source, CURRENT_READ_UPDATES, CURRENT_READ_UPDATES_SHA)
+    source = reverse_reviewed_patch(name, source, QUESTION_PROJECTION_COMPLETE_UPDATES, QUESTION_PROJECTION_COMPLETE_UPDATES_SHA, QUESTION_PROJECTION_COMPLETE_FILES)
+    source = reverse_reviewed_patch(name, source, QUESTION_PRESENCE_UPDATES, QUESTION_PRESENCE_UPDATES_SHA, QUESTION_PRESENCE_FILES)
     source = reverse_reviewed_patch(name, source, SYNC_STATUS_UPDATES, SYNC_STATUS_UPDATES_SHA)
     source = reverse_reviewed_patch(name, source, OUTBOX_RELEASE_REASON_UPDATES, OUTBOX_RELEASE_REASON_UPDATES_SHA)
     source = reverse_reviewed_patch(name, source, OUTGOING_SEND_UPDATES, OUTGOING_SEND_UPDATES_SHA, OUTGOING_SEND_FILES)
@@ -182,6 +267,22 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
         for name, digest in WORKSPACE_BASE_SHA.items():
             with self.subTest(source=name):
                 current = reverse_reviewed_patch(name, (MAIN / name).read_text(),
+                                                OUTBOX_RETENTION_UPDATES, OUTBOX_RETENTION_UPDATES_SHA,
+                                                OUTBOX_RETENTION_FILES)
+                current = reverse_reviewed_patch(name, current,
+                                                SEND_RECEIPT_UPDATES, SEND_RECEIPT_UPDATES_SHA, SEND_RECEIPT_FILES)
+                current = reverse_reviewed_patch(name, current,
+                                                READABLE_VISIBILITY_UPDATES, READABLE_VISIBILITY_UPDATES_SHA,
+                                                READABLE_VISIBILITY_FILES)
+                current = reverse_reviewed_patch(name, current,
+                                                CURRENT_READ_FLAGS_UPDATES, CURRENT_READ_FLAGS_UPDATES_SHA)
+                current = reverse_reviewed_patch(name, current,
+                                                CURRENT_READ_UPDATES, CURRENT_READ_UPDATES_SHA)
+                current = reverse_reviewed_patch(name, current,
+                                                QUESTION_PROJECTION_COMPLETE_UPDATES, QUESTION_PROJECTION_COMPLETE_UPDATES_SHA, QUESTION_PROJECTION_COMPLETE_FILES)
+                current = reverse_reviewed_patch(name, current,
+                                                QUESTION_PRESENCE_UPDATES, QUESTION_PRESENCE_UPDATES_SHA, QUESTION_PRESENCE_FILES)
+                current = reverse_reviewed_patch(name, current,
                                                 SYNC_STATUS_UPDATES, SYNC_STATUS_UPDATES_SHA)
                 current = reverse_reviewed_patch(name, current,
                                                 OUTBOX_RELEASE_REASON_UPDATES, OUTBOX_RELEASE_REASON_UPDATES_SHA)
@@ -233,6 +334,54 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
             self.assertIn(expression, main)
             self.assertFalse(original_source("MainActivity.kt", main.replace(expression, "true", 1)))
 
+    def test_outbox_retention_projection_refuses_changed_missing_or_duplicate_reviewed_hunks(self):
+        # The #2118 retention delta stays an exact hunk: changing, removing or
+        # duplicating it must break its own reversal and the reconstruction.
+        # A whole hunk present twice must be refused too, not reversed once.
+        addition = "    private fun retainOutbox() {\n"
+        source = (MAIN / "ZerusViewModel.kt").read_text()
+        hunk = reviewed_hunk(OUTBOX_RETENTION_UPDATES, OUTBOX_RETENTION_UPDATES_SHA, addition)
+        self.assertEqual(source.count(addition), 1)
+        self.assertEqual(source.count(hunk), 1)
+        for kind, changed in (
+                ("changed", source.replace(addition, addition.rstrip("\n") + " // changed reviewed addition\n", 1)),
+                ("missing", source.replace(addition, "", 1)),
+                ("duplicated line", source.replace(addition, addition + addition, 1)),
+                ("duplicated hunk", source.replace(hunk, hunk + hunk, 1))):
+            with self.subTest(kind=kind):
+                with self.assertRaises(AssertionError):
+                    reverse_reviewed_patch("ZerusViewModel.kt", changed,
+                                           OUTBOX_RETENTION_UPDATES, OUTBOX_RETENTION_UPDATES_SHA, OUTBOX_RETENTION_FILES)
+                self.assertFalse(original_source("ZerusViewModel.kt", changed))
+
+    def test_send_receipt_projection_refuses_changed_missing_or_duplicate_reviewed_hunks(self):
+        # The #2087 send-receipt delta stays exact hunks: changing, removing or
+        # duplicating one of its additions must break its own reversal, after
+        # the newer #2118 delta, and the reconstruction. A whole hunk present
+        # twice after that reversal must be refused too, not reversed once.
+        for addition in (
+                "    private fun captureSendIntent(target:Target,id:String,text:String,compactionId:String?=null):SendIntent? {\n",
+                "        val frozen=if(original.attachments.isEmpty()) captureSendIntent(target,id,original.text,expectedCompactionId.takeIf { it.isNotBlank() }) else null\n"):
+            source = (MAIN / "ZerusViewModel.kt").read_text()
+            self.assertEqual(source.count(addition), 1)
+            for replacement in (addition.rstrip("\n") + " // changed reviewed addition\n", "", addition + addition):
+                with self.subTest(addition=addition[:40], replacement=replacement[:40]):
+                    changed = source.replace(addition, replacement, 1)
+                    newer = reverse_reviewed_patch("ZerusViewModel.kt", changed,
+                                                   OUTBOX_RETENTION_UPDATES, OUTBOX_RETENTION_UPDATES_SHA, OUTBOX_RETENTION_FILES)
+                    with self.assertRaises(AssertionError):
+                        reverse_reviewed_patch("ZerusViewModel.kt", newer,
+                                               SEND_RECEIPT_UPDATES, SEND_RECEIPT_UPDATES_SHA, SEND_RECEIPT_FILES)
+                    self.assertFalse(original_source("ZerusViewModel.kt", changed))
+            newer = reverse_reviewed_patch("ZerusViewModel.kt", source,
+                                           OUTBOX_RETENTION_UPDATES, OUTBOX_RETENTION_UPDATES_SHA, OUTBOX_RETENTION_FILES)
+            hunk = reviewed_hunk(SEND_RECEIPT_UPDATES, SEND_RECEIPT_UPDATES_SHA, addition)
+            self.assertEqual(newer.count(hunk), 1)
+            with self.subTest(addition=addition[:40], kind="duplicated hunk"):
+                with self.assertRaises(AssertionError):
+                    reverse_reviewed_patch("ZerusViewModel.kt", newer.replace(hunk, hunk + hunk, 1),
+                                           SEND_RECEIPT_UPDATES, SEND_RECEIPT_UPDATES_SHA, SEND_RECEIPT_FILES)
+
     def test_outbox_release_reason_projection_refuses_changed_missing_or_duplicate_reviewed_hunks(self):
         # The release and local-reason delta stays exact: changing, removing or
         # duplicating either reviewed hunk must break the reconstruction.
@@ -260,9 +409,14 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
     def test_send_attempt_projection_refuses_changed_missing_or_duplicate_reviewed_hunks(self):
         # The reviewed evidence delta stays an exact hunk: changing, removing
         # or duplicating it must break the reconstruction, never be hidden. The
-        # newer #2044 send-entry delta is reversed first, as in the chain.
+        # newer #2044 send-entry delta is reversed first, as in the chain, after
+        # the still newer #2118 and #2087 deltas.
         addition = "        val attempt = SendAttempt(); var rejected: RelayException? = null\n"
         source = reverse_reviewed_patch("ZerusViewModel.kt", (MAIN / "ZerusViewModel.kt").read_text(),
+                                        OUTBOX_RETENTION_UPDATES, OUTBOX_RETENTION_UPDATES_SHA, OUTBOX_RETENTION_FILES)
+        source = reverse_reviewed_patch("ZerusViewModel.kt", source,
+                                        SEND_RECEIPT_UPDATES, SEND_RECEIPT_UPDATES_SHA, SEND_RECEIPT_FILES)
+        source = reverse_reviewed_patch("ZerusViewModel.kt", source,
                                         OUTBOX_RELEASE_REASON_UPDATES, OUTBOX_RELEASE_REASON_UPDATES_SHA)
         source = reverse_reviewed_patch("ZerusViewModel.kt", source,
                                         OUTGOING_SEND_UPDATES, OUTGOING_SEND_UPDATES_SHA, OUTGOING_SEND_FILES)
@@ -272,6 +426,44 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     reverse_reviewed_patch("ZerusViewModel.kt", source.replace(addition, replacement, 1),
                                            SEND_ATTEMPT_UPDATES, SEND_ATTEMPT_UPDATES_SHA, SEND_ATTEMPT_FILES)
+
+    def test_readable_visibility_projection_refuses_changed_missing_or_duplicate_reviewed_hunks(self):
+        # The readable-visibility delta stays exact reviewed hunks in its one file:
+        # changing, removing or duplicating one of its additions must break the reconstruction.
+        for name, addition in (
+                ("MainActivity.kt", "    val readableHeight = with(LocalDensity.current) { ConversationViewport.READABLE_HEIGHT_DP.dp.roundToPx() }\n"),
+                ("MainActivity.kt", "                val ids=ConversationViewport.visibleEventIds(items,start,end,readableHeight,::displayedEventId)\n")):
+            source = (MAIN / name).read_text()
+            self.assertEqual(source.count(addition), 1)
+            for replacement in (addition.replace("\n", " // changed reviewed addition\n", 1), "", addition + addition):
+                with self.subTest(source=name, replacement=replacement[:40]):
+                    self.assertFalse(original_source(name, source.replace(addition, replacement, 1)))
+        # It never touches the view model.
+        self.assertEqual(READABLE_VISIBILITY_FILES, ("MainActivity.kt",))
+
+    def test_current_read_flags_projection_refuses_changed_missing_or_duplicate_reviewed_hunks(self):
+        # The flags mapping stays exact reviewed hunks in both files: changing,
+        # removing or duplicating one of its additions must break the reconstruction.
+        for name, addition in (
+                ("ZerusViewModel.kt", "    fun visibleCurrent(target:Target,key:String,flags:ConversationViewport.CurrentFlags) {\n"),
+                ("MainActivity.kt", "                model.visibleCurrent(target,viewport.current,viewport.flags)\n")):
+            source = (MAIN / name).read_text()
+            self.assertEqual(source.count(addition), 1)
+            for replacement in (addition.replace("\n", " // changed reviewed addition\n", 1), "", addition + addition):
+                with self.subTest(source=name, replacement=replacement[:40]):
+                    self.assertFalse(original_source(name, source.replace(addition, replacement, 1)))
+
+    def test_current_read_projection_refuses_changed_missing_or_duplicate_reviewed_hunks(self):
+        # The current-read acknowledgement stays exact reviewed hunks in both files:
+        # changing, removing or duplicating one of its additions must break the reconstruction.
+        for name, addition in (
+                ("ZerusViewModel.kt", "    private fun launchSharedRead(request:SharedReadRequest) {\n"),
+                ("MainActivity.kt", "                model.visibleMessages(target, viewport.ids)\n")):
+            source = (MAIN / name).read_text()
+            self.assertEqual(source.count(addition), 1)
+            for replacement in (addition.replace("\n", " // changed reviewed addition\n", 1), "", addition + addition):
+                with self.subTest(source=name, replacement=replacement[:40]):
+                    self.assertFalse(original_source(name, source.replace(addition, replacement, 1)))
 
     def test_sync_status_projection_refuses_changed_missing_or_duplicate_reviewed_hunks(self):
         # The status strip stays exact reviewed hunks in both files: changing,
@@ -284,6 +476,26 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
             for replacement in (addition.replace("\n", " // changed reviewed addition\n", 1), "", addition + addition):
                 with self.subTest(source=name, replacement=replacement[:40]):
                     self.assertFalse(original_source(name, source.replace(addition, replacement, 1)))
+
+    def test_question_presence_projection_refuses_changed_missing_or_duplicate_reviewed_hunk(self):
+        # The check-age projection stays one exact reviewed hunk: changing,
+        # removing or duplicating it must break the reconstruction.
+        addition = "    var questionCheckedAt by mutableStateOf(0L); private set\n"
+        source = (MAIN / "ZerusViewModel.kt").read_text()
+        self.assertEqual(source.count(addition), 1)
+        for replacement in (addition.rstrip("\n") + " // changed reviewed addition\n", "", addition + addition):
+            with self.subTest(replacement=replacement):
+                self.assertFalse(original_source("ZerusViewModel.kt", source.replace(addition, replacement, 1)))
+
+    def test_question_projection_complete_projection_refuses_changed_missing_or_duplicate_reviewed_hunk(self):
+        # The completeness projection stays an exact reviewed hunk: changing,
+        # removing or duplicating it must break the reconstruction.
+        addition = "    var questionProjectionComplete by mutableStateOf(true); private set\n"
+        source = (MAIN / "ZerusViewModel.kt").read_text()
+        self.assertEqual(source.count(addition), 1)
+        for replacement in (addition.rstrip("\n") + " // changed reviewed addition\n", "", addition + addition):
+            with self.subTest(replacement=replacement):
+                self.assertFalse(original_source("ZerusViewModel.kt", source.replace(addition, replacement, 1)))
 
     def test_visible_refresh_projection_refuses_modified_missing_or_duplicate_hunks(self):
         # Reversing the exact UI change must not hide a later policy edit. The
@@ -465,7 +677,7 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
 
     def test_question_ui_and_entire_physical_fixture_match_the_reviewed_baselines(self):
         self.assertEqual(hashlib.sha256((MAIN / "QuestionUi.kt").read_bytes()).hexdigest(),
-                         "841c0d5b2df250497b0f54ef8854574ca386e83cb735dc1a0873096d719e22a2")
+                         "53816da954ccfc33a8a64a72f5d5930b286f51b7586cc577bbcb4e2762317cb3")
         fixture = ROOT / "mobile/android/app/src/androidTest/java/app/zerus/mobile/ApprovalChoicesSmokeInstrumentation.kt"
         # The fixture baseline includes the parent-selection and Compose role-child corrections;
         # physical case oracles stay exact.

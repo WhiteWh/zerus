@@ -8,6 +8,9 @@ use std::sync::OnceLock;
 /// Final replies are the conversation itself, not an excerpt: Activity reads
 /// them from the journal once the provider transcript window has moved on.
 pub(super) const REPLY_LIMIT: usize = 32_000;
+/// `pending_questions_error` while the Codex question index is incomplete:
+/// the questions are unknown, not absent (zerus-a4mub.8).
+const QUESTIONS_INDEXING: &str = "Codex questions are still being indexed; refresh shortly";
 
 /// Claude records text pasted into its prompt as
 /// `<pasted_content id="…">\n…\n</pasted_content id="…">`. The person sent only
@@ -1061,10 +1064,21 @@ pub(super) fn inspection_with(
     }
     #[cfg(test)]
     read_order::note("listed_questions");
-    match questions::inspection(&record, panes.is_some()) {
-        Ok(pending) => output["pending_questions"] = pending,
+    // Codex question indexing shares one bounded budget per inspection and
+    // keeps its progress; until it is complete the questions are unknown,
+    // and recent messages never wait for it (zerus-a4mub.8).
+    let question_deadline = read_marks::question_budget();
+    match questions::inspection(&record, panes.is_some(), question_deadline) {
+        Ok((pending, complete)) => {
+            output["pending_questions"] = pending;
+            output["pending_questions_complete"] = json!(complete);
+            if !complete {
+                output["pending_questions_error"] = json!(QUESTIONS_INDEXING);
+            }
+        }
         Err(error) => {
             output["pending_questions"] = json!([]);
+            output["pending_questions_complete"] = json!(false);
             output["pending_questions_error"] = json!(error);
         }
     }
@@ -1120,8 +1134,14 @@ pub(super) fn inspection_with(
         Err(error) => output["provider_messages_error"] = json!(error),
     }
     // Optional-question indexing must never suppress successfully read replies.
-    match codex_questions::messages(&record) {
-        Ok(questions) => {
+    match codex_questions::messages(&record, question_deadline) {
+        Ok(None) => {
+            output["pending_questions_complete"] = json!(false);
+            if output.get("pending_questions_error").is_none() {
+                output["pending_questions_error"] = json!(QUESTIONS_INDEXING);
+            }
+        }
+        Ok(Some(questions)) => {
             let mut messages = output["provider_messages"].as_array().cloned().unwrap_or_default();
             messages.extend(questions);
             messages.sort_by(|a,b|a["at"].as_f64().unwrap_or(0.).total_cmp(&b["at"].as_f64().unwrap_or(0.)));
@@ -1175,7 +1195,7 @@ pub(super) fn inspection_with(
     output["message_events_truncated"] = json!(truncated);
     output["message_events_limit"] = json!(MESSAGE_EVENTS_LIMIT);
     output["message_events_max_bytes"] = json!(MESSAGE_EVENTS_BYTES);
-    output["attachment_messages"] = attachments::messages(&record, "");
+    attachments::decorate(&record, "", &mut output);
     output["voice_messages"] = conversation_history::inspected_voice_messages(&record, &output, None);
     // The lock was released after `snapshot`, so a rename may have landed since.
     // The pane folders go by the session IDs, which a rename keeps, to the name
@@ -1469,6 +1489,9 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
     }
     match kind {
         "UserPromptSubmit" | "UserPromptQueued" | "TurnStarted" | "TaskStarted" => {
+            // The agent accepted input: this, not a later tool event of a
+            // busy turn, confirms what hgs typed (input::input_unconfirmed).
+            record["input_seen_at"] = json!(timestamp);
             record["activity"] = json!("busy");
             if kind != "UserPromptQueued" || record["phase"] != "compacting" {
                 record["phase"] = json!("working");

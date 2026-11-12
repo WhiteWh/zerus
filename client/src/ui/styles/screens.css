@@ -186,10 +186,26 @@
   .bc-table th:nth-child(4) { width: 36%; }
   .bc-table td { height: 46px; }
   .bc-result { display: flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; white-space: nowrap; }
-  .worktree-cleanup .bc-result { flex-wrap: wrap; overflow: visible; white-space: normal; }
-  .cleanup-source, .cleanup-blockers { white-space: normal; overflow-wrap: anywhere; }
-  .cleanup-blockers { margin: 0; padding-inline-start: 20px; }
-  .cleanup-blockers li { margin-block: 4px; }
+  .cleanup-source { white-space: normal; overflow-wrap: anywhere; }
+  .bc-actions { flex-wrap: wrap; row-gap: 6px; }
+  .bc-actions .btn { max-width: 100%; min-width: 0; }
+  .bc-name { display: inline-block; max-width: 180px; vertical-align: bottom; }
+  .bc-blockers { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .bc-blockers .notice { align-items: center; }
+  .bc-next { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .bc-group { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .bc-group-title { margin: 0; font-size: var(--fs-sm); font-weight: 600; color: var(--z-color-text); }
+  .bc-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .bc-list li { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .bc-list li > .ell { flex: 1 1 auto; }
+  .bc-files { flex-wrap: wrap; }
+  .bc-archive .bc-list { margin-top: 10px; }
+  /* The mockup's danger notice (base.css .notice.danger): icon, then the sentence and its detail. */
+  .bc-load-failed { margin-top: 10px; }
+  .bc-load-failed > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .bc-load-failed p { margin: 0; overflow-wrap: anywhere; }
+  .bc-blockers .hint, .bc-other { margin: 0; overflow-wrap: anywhere; }
+  .bc-live { display: flex; align-items: center; gap: 6px; }
   .bc-result b { flex: none; }
   .bc-result[data-outcome="removed"] b, .bc-result[data-outcome="forgotten"] b { color: var(--z-color-accent); }
   .bc-result[data-outcome="unknown"] b { color: var(--z-color-warn); }

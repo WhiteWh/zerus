@@ -86,8 +86,8 @@ pub struct NativeChild {
 }
 impl NativeChild {
     pub fn valid(&self) -> bool {
-        self.pid > 1
-            && self.parent > 0
+        self.pid > 0
+            && (self.parent > 0 || self.pid == 1 && self.parent == 0)
             && self.parent != self.pid
             && !self.birth.is_empty()
             && self.birth.len() <= 128
@@ -425,5 +425,19 @@ mod tests {
         let mut changed = input;
         changed.original.push('\n');
         assert_ne!(binding, Binding::for_input(pipeline, &changed));
+    }
+
+    #[test]
+    fn native_child_accepts_namespace_init_and_rejects_invalid_zero_identities() {
+        let child = |pid, parent| NativeChild {
+            pid,
+            parent,
+            birth: "native".into(),
+            audit: None,
+        };
+        assert!(child(1, 0).valid());
+        assert!(child(1, 2).valid());
+        assert!(!child(0, 1).valid());
+        assert!(!child(2, 0).valid());
     }
 }

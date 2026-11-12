@@ -1,0 +1,31 @@
+diff --git a/mobile/android/app/src/main/java/app/zerus/mobile/ZerusViewModel.kt b/mobile/android/app/src/main/java/app/zerus/mobile/ZerusViewModel.kt
+index 02be14b01..ee698b8fc 100644
+--- a/mobile/android/app/src/main/java/app/zerus/mobile/ZerusViewModel.kt
++++ b/mobile/android/app/src/main/java/app/zerus/mobile/ZerusViewModel.kt
+@@ -868,6 +868,8 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
+     var activityVerified by mutableStateOf(false); private set
+     /** When the verified question projection was last installed; `0` means never. */
+     var questionCheckedAt by mutableStateOf(0L); private set
++    /** The projection's own completeness; an older CLI omits the field and stays complete. */
++    var questionProjectionComplete by mutableStateOf(true); private set
+     var historyCached by mutableStateOf(false); private set
+     /** When the shown conversation's messages were observed (wall clock), null for a saved copy without a time (zerus-a4mub.10). */
+     var conversationObservedAt by mutableStateOf<Long?>(null); private set
+@@ -1112,7 +1114,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
+                 conversationEvents = prepared.events; conversationOutgoing = prepared.messages; conversationQuestions = prepared.questions
+                 activity = frame.raw; activityVerified = verified /* BEGIN QUESTION_AVAILABILITY_PROBE writer-install-presentation */; questionVerificationProbe(QuestionUiProbe.VerificationWriter.INSTALL_PRESENTATION) /* END QUESTION_AVAILABILITY_PROBE writer-install-presentation */; historyCached = !verified; conversationHistoryTruncated = frame.truncated
+                 conversationObservedAt = frame.observedAt.takeIf { it > 0 }
+-                if (verified) questionCheckedAt = android.os.SystemClock.elapsedRealtime()
++                if (verified) { questionCheckedAt = android.os.SystemClock.elapsedRealtime(); questionProjectionComplete = frame.raw.optBoolean("pending_questions_complete", true) }
+                 publishPagingMetadata(frame)
+                 captureUnreadBoundary(frame.target,prepared.events)
+             }
+@@ -1157,7 +1159,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
+                 if (conversationOutgoing != messages) conversationOutgoing = messages
+                 activity = frame.raw; activityVerified = activeFrameVerified /* BEGIN QUESTION_AVAILABILITY_PROBE writer-prepare-presentation */; questionVerificationProbe(QuestionUiProbe.VerificationWriter.PREPARE_PRESENTATION) /* END QUESTION_AVAILABILITY_PROBE writer-prepare-presentation */; historyCached = !activeFrameVerified; conversationHistoryTruncated = frame.truncated
+                 conversationObservedAt = frame.observedAt.takeIf { it > 0 }
+-                if (activeFrameVerified) questionCheckedAt = android.os.SystemClock.elapsedRealtime()
++                if (activeFrameVerified) { questionCheckedAt = android.os.SystemClock.elapsedRealtime(); questionProjectionComplete = frame.raw.optBoolean("pending_questions_complete", true) }
+                 publishPagingMetadata(frame)
+                 if(pendingHistoryPosition==frame.target.key) { pendingHistoryPosition="";readPositionReady=true }
+                 captureUnreadBoundary(frame.target,merged.events)

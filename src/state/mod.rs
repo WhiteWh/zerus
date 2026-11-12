@@ -15,11 +15,14 @@ mod claude_question;
 mod claude_statusline;
 mod claude_subagents;
 mod attachments;
+mod delivery;
+mod receipt_index;
 mod computer_files;
 pub(crate) mod voice;
 mod interrupt;
 mod clear_context;
 mod codex_clear_recovery;
+mod codex_sqlite;
 mod compact_context;
 mod continuations;
 mod cache_hint;
@@ -29,6 +32,7 @@ pub(crate) mod backend;
 pub(crate) mod dsh;
 pub(crate) mod opencode;
 mod effort;
+mod end_children;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod guarded_recovery;
 mod external_agents;
@@ -83,6 +87,8 @@ mod codex_goal_resume;
 mod codex_rate_limit;
 mod read_marks;
 mod notifications;
+/// The per-child switch of the owner-approved question route (zerus-sa9qn.32).
+pub(crate) mod question_routing;
 pub(crate) mod parent_link;
 mod recipes;
 mod rename;
@@ -442,6 +448,7 @@ pub fn merge_listing_archives(mut box_value: Value, ids: &BTreeMap<String, Strin
     let marks = read_marks::load();
     let notification_preferences = notifications::load();
     let keep_warm_settings = keep_warm::load();
+    let question_routing = question_routing::load();
     let sessions = box_value
         .get_mut("sessions")
         .and_then(Value::as_array_mut)
@@ -485,7 +492,7 @@ pub fn merge_listing_archives(mut box_value: Value, ids: &BTreeMap<String, Strin
             .extend(telemetry::unavailable().as_object().unwrap().clone());
     }
     // Bounds question indexing for the whole listing.
-    let shared = Shared { marks: &marks, preferences: notification_preferences.as_ref(), keep_warm: keep_warm_settings.as_ref(), budget: read_marks::question_budget() };
+    let shared = Shared { marks: &marks, preferences: notification_preferences.as_ref(), keep_warm: keep_warm_settings.as_ref(), question_routing: question_routing.as_ref(), budget: read_marks::question_budget() };
     let mut process_work = processes::WorkSample::default();
     for record in bindings {
         if archive::equivalent(&record, &archived) {
@@ -527,6 +534,7 @@ pub fn merge_listing_archives(mut box_value: Value, ids: &BTreeMap<String, Strin
         read_marks::enrich_listing(&mut session, &marks, journal::journal_name(&record), Ok(Some(Vec::new())));
         notifications::enrich(&mut session, notification_preferences.as_ref(), journal::journal_name(&record));
         keep_warm::enrich(&mut session, keep_warm_settings.as_ref(), &record);
+        question_routing::enrich(&mut session, question_routing.as_ref());
         sessions.push(session);
     }
     for record in archived {
@@ -557,6 +565,7 @@ struct Shared<'a> {
     marks: &'a Value,
     preferences: Option<&'a notifications::Store>,
     keep_warm: Option<&'a keep_warm::Store>,
+    question_routing: Option<&'a question_routing::Store>,
     /// Bounds question indexing for the whole listing.
     budget: std::time::Instant,
 }
@@ -592,13 +601,15 @@ fn live_row(session: &mut Value, record: Value, shared: &Shared, process_work: &
         .ok_or("invalid session")?
         .extend(summary.as_object().ok_or("invalid summary")?.clone());
     let questions = read_marks::pending_questions(&record, session, true, shared.budget);
-    if session.get("parent").is_some() {
-        let pending = questions.as_ref().ok().and_then(|questions| questions.as_deref());
-        session["human_request"] = json!(parent_link::human_request(session, pending));
-    }
+    let pending = questions
+        .as_ref()
+        .ok()
+        .and_then(|questions| questions.as_deref());
+    parent_link::mark_human_request(session, pending, false);
     read_marks::enrich_listing(session, shared.marks, journal::journal_name(&record), questions);
     notifications::enrich(session, shared.preferences, journal::journal_name(&record));
     keep_warm::enrich(session, shared.keep_warm, &record);
+    question_routing::enrich(session, shared.question_routing);
     Ok(())
 }
 
@@ -1396,8 +1407,16 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
         if args.len()!=1 {return Err("Unexpected picker custodian arguments".into());}
         return effort::picker_custodian_entry();
     }
+    if args.first().map(String::as_str)==Some("receipt-index-worker") {
+        if args.len()!=1 {return Err("Unexpected receipt worker arguments".into());}
+        return receipt_index::worker();
+    }
+    if args.first().map(String::as_str)==Some("receipt-index-page") {
+        return attachments::page_dispatch(&args[1..]);
+    }
     // Receipt observation needs neither a native host nor a state writer.
     if args.first().map(String::as_str)==Some("session-action-status") { return session_action::status_dispatch(&args[1..]); }
+    if args.first().map(String::as_str)==Some("delivery") { return delivery::dispatch(&args[1..]); }
     // Coordination metadata never starts or controls a native session host.
     if args.first().map(String::as_str)==Some("wait") { return waits::dispatch(&args[1..]); }
     if args.first().map(String::as_str)==Some("repository") { return repositories::dispatch(&args[1..]); }
@@ -1409,6 +1428,12 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
     let Some((command, args)) = args.split_first() else {
         return Err("missing state operation".into());
     };
+    // Only this explicit flag ends a parent's live child sessions after it
+    // (zerus-sa9qn.17). Before provider routing, so a DeepSeek or OpenCode
+    // parent refuses with its own message and no child is touched.
+    if matches!(command.as_str(), "terminate" | "archive") && args.iter().any(|arg| arg == end_children::FLAG) {
+        return end_children::dispatch(command, args);
+    }
     if command == "worktrees" { return worktrees::dispatch(args); }
     if command == "git-status" { return git_status::dispatch(args); }
     if command == "dirs" {
@@ -1467,6 +1492,7 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
     if command == "read" { return read_marks::dispatch(args); }
     if command == "notifications" { return notifications::dispatch(args); }
     if command == "keep-warm" { return keep_warm::dispatch(args); }
+    if command == "question-routing" { return question_routing::dispatch(args); }
     if command == "history" { return conversation_history::dispatch(args); }
     if command == "history-projection" { return conversation_history::projection_dispatch(args); }
     if command == "terminal" { return terminal::dispatch(args); }

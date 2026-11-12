@@ -56,6 +56,7 @@ pub(super) struct Owner {
     helpers: AtomicUsize,
     failure: Mutex<Option<String>>,
     pub(super) reservation: Mutex<Option<transaction::Reservation>>,
+    pub(super) send: Mutex<Option<send::Reservation>>,
     _complete: Completion,
 }
 
@@ -87,6 +88,7 @@ impl Owner {
                 helpers: AtomicUsize::new(0),
                 failure: Mutex::new(None),
                 reservation: Mutex::new(None),
+                send: Mutex::new(None),
                 _complete: Completion(send),
             }),
             done,
@@ -212,6 +214,7 @@ impl Owner {
             match self.control.frame().operation {
                 host::frame::Operation::Effort => Receipts::Effort,
                 host::frame::Operation::Settings => Receipts::Settings,
+                host::frame::Operation::Send => Receipts::Send,
             },
             self.until,
         )?;

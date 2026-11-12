@@ -17,6 +17,7 @@ pub mod attention_store;
 pub mod batch;
 pub mod cache;
 pub mod child_environment;
+pub mod clear_input;
 #[cfg(windows)]
 mod conpty;
 pub mod content_search;
@@ -58,6 +59,7 @@ pub mod processes;
 #[cfg(unix)]
 mod pty;
 pub mod qt_lock;
+pub mod question_routing;
 pub mod questions;
 pub mod quit_journal;
 pub mod quit_origin;

@@ -1,0 +1,28 @@
+diff --git a/mobile/android/app/src/main/java/app/zerus/mobile/MainActivity.kt b/mobile/android/app/src/main/java/app/zerus/mobile/MainActivity.kt
+index d59c61151..b00a38fad 100644
+--- a/mobile/android/app/src/main/java/app/zerus/mobile/MainActivity.kt
++++ b/mobile/android/app/src/main/java/app/zerus/mobile/MainActivity.kt
+@@ -1034,7 +1034,9 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
+         snapshotFlow { listState.isScrollInProgress && !programmatic && listState.firstVisibleItemIndex <= 3 }
+             .distinctUntilChanged().collect { nearTop -> if(nearTop) model.loadOlder(target) }
+     }
+-    LaunchedEffect(target.key, listState, readable) {
++    // The shared readable-visibility rule (zerus-a4mub.31) in this screen's pixels.
++    val readableHeight = with(LocalDensity.current) { ConversationViewport.READABLE_HEIGHT_DP.dp.roundToPx() }
++    LaunchedEffect(target.key, listState, readable, readableHeight) {
+         if (!readable) return@LaunchedEffect
+         snapshotFlow {
+             val layout = listState.layoutInfo
+@@ -1044,10 +1046,10 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
+             }.let { rows ->
+                 val items=layout.visibleItemsInfo.map { ConversationViewport.Item(it.key.toString(),it.offset,it.size) }
+                 val start=layout.viewportStartOffset;val end=layout.viewportEndOffset
+-                val ids=ConversationViewport.visibleEventIds(items,start,end,::displayedEventId)
++                val ids=ConversationViewport.visibleEventIds(items,start,end,readableHeight,::displayedEventId)
+                 ReadViewport(ids,rows.firstOrNull()?.let { row -> displayedEventId(row.key.toString())?.let { it to (-row.offset).coerceAtLeast(0) } },
+                     model.visibleReadEvidence(target,ids),model.currentReadKey(target),
+-                    ConversationViewport.currentFlags(items,start,end,model.newestDisplayedEventId(target),::displayedEventId))
++                    ConversationViewport.currentFlags(items,start,end,readableHeight,model.newestDisplayedEventId(target),::displayedEventId))
+             }
+         }.distinctUntilChanged().collectLatest { viewport ->
+             if (viewport == null) return@collectLatest

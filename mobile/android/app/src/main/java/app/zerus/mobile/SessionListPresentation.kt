@@ -16,8 +16,8 @@ data class SessionListPresentation(
             val drafted = SessionFilters.draftedSessions(sessions, drafts)
             val online = machines.filter { it.online }.mapTo(hashSetOf()) { MachineKey(it.connectionId, it.id) }
             fun online(row: Session) = SessionFilters.machineKey(row.target) in online
-            val visible = scoped.filter { SessionFilters.matches(it, filter, online(it), it.target.key in drafted) &&
-                (filter != SessionFilter.Archive || it.raw.optDouble("archived_at",0.0).let { at -> at >= archiveRange.from && at < archiveRange.until }) }
+            // The list, the tab counts and the machine chooser read one rule (SessionFilters.listed, zerus-sa9qn.19).
+            val visible = scoped.filter { SessionFilters.listed(it, filter, online(it), it.target.key in drafted, archiveRange) }
             // Child sessions nest under a parent listed in the same project group (zerus-sa9qn.4).
             val uuids = machines.associate { MachineKey(it.connectionId, it.id) to it.machineId }
             fun uuid(row: Session) = uuids[SessionFilters.machineKey(row.target)]
@@ -26,8 +26,8 @@ data class SessionListPresentation(
                 group.copy(cards = ChildSessions.nest(group.sessions, parentKey, ::online) { teams.collapsed(it, uuid(it)) })
             }
             return SessionListPresentation(groups,
-                SessionFilters.counts(scoped, machines, drafted),
-                SessionFilters.machineCounts(sessions, machines, filter, drafted, project),
+                SessionFilters.counts(scoped, machines, drafted, archiveRange),
+                SessionFilters.machineCounts(sessions, machines, filter, drafted, project, archiveRange),
                 if (filter == SessionFilter.Archive) emptyList() else scoped.filter { ReadAllPolicies.listCandidate(it, online(it)) }.map { it.target }, visible.size)
         }
     }

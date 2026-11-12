@@ -743,12 +743,24 @@ npm config set prefix "$HOME/.local"
 
 Keep an existing working npm prefix if you already manage native agents there.
 The current official DeepSeek Harness adapter is pinned to
-`@deepseek-ai/dsh@0.2.1-rc.2`:
+`@deepseek-ai/dsh@0.2.2-rc.1`. That release still pins
+`@modelcontextprotocol/client` 2.2.0 and a nested fflate 0.8.2, so apply the
+reviewed security overrides in DSH's own package root:
 
 ```sh
-npm install -g @deepseek-ai/dsh@0.2.1-rc.2
+npm install -g @deepseek-ai/dsh@0.2.2-rc.1
+npm pkg set --prefix "$(npm root -g)/@deepseek-ai/dsh" \
+  'overrides.@modelcontextprotocol/client=2.3.0' 'overrides.fflate=0.8.3'
+npm install --omit=dev --prefix "$(npm root -g)/@deepseek-ai/dsh"
 hgs account login native-dsh
 ```
+
+The last two commands also apply to an existing 0.2.2-rc.1 installation. They
+change only DSH's package manifest and dependency lock, not other agents in a
+shared npm prefix. A bare global install retains the cross-origin redirect and
+malformed-ZIP64 denial-of-service vulnerabilities. These two overrides do not
+suppress other dependency alerts or guarantee a clean audit; keep reviewing
+other upstream advisories normally.
 
 Then choose **DeepSeek Harness** in **New session**.
 [Adapter capabilities and limitations](reference.md#deepseek).

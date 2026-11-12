@@ -37,6 +37,7 @@ pub mod pyvalue;
 pub mod repositories;
 pub mod request;
 pub mod runtime;
+pub mod send_receipt;
 mod session_labels;
 pub mod session_notifications;
 pub mod session_projects;

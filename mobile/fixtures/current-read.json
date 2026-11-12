@@ -1,0 +1,1789 @@
+{
+ "schema": 1,
+ "description": "zerus-a4mub.9 current-read acknowledgement: SharedReadPolicies.current and currentPayload on Android and iOS. target and row are the open conversation; inspection is its verified native inspection; reply_shown is the tail or newest row visible after the settled dwell; attention_shown is its questions (or, without questions, the same tail) visible. current is the parsed authority, payload the mark_read. viewports: SharedReadPolicies.currentShown for one settled viewport. layouts: one settled viewport (offsets and sizes in dp on Android, pt on iOS) mapped by the shared readable-visibility rule (zerus-a4mub.31) to the items it shows (visible), then flags, then currentShown. The rule: an item is shown when the part of it inside the viewport is at least min(its height, readable, the viewport height); the 1-unit history:tail sentinel is shown when it starts inside the viewport and ends at most 2 units past it. Both platforms feed the same shown items to the canonical read dwell and to the current flags.",
+ "cases": [
+  {
+   "name": "reply and attention after both were shown",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": {
+    "reply_id": "7:100.5",
+    "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "attention_complete": true
+   },
+   "payload": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "reply_id": "7:100.5",
+    "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+   }
+  },
+  {
+   "name": "reply shown, attention presentation not shown",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": false,
+   "current": {
+    "reply_id": "7:100.5",
+    "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "attention_complete": true
+   },
+   "payload": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "reply_id": "7:100.5",
+    "attention_signature": null
+   }
+  },
+  {
+   "name": "attention shown, tail and newest row not shown",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": false,
+   "attention_shown": true,
+   "current": {
+    "reply_id": "7:100.5",
+    "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "attention_complete": true
+   },
+   "payload": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "reply_id": null,
+    "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+   }
+  },
+  {
+   "name": "nothing shown yet",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": false,
+   "attention_shown": false,
+   "current": {
+    "reply_id": "7:100.5",
+    "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "attention_complete": true
+   },
+   "payload": null
+  },
+  {
+   "name": "questions not indexed in time are never acknowledged",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": false
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": {
+    "reply_id": "7:100.5",
+    "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "attention_complete": false
+   },
+   "payload": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "reply_id": "7:100.5",
+    "attention_signature": null
+   }
+  },
+  {
+   "name": "the computer already has both values",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": {
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "at": 1.0
+    }
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": {
+    "reply_id": "7:100.5",
+    "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "attention_complete": true
+   },
+   "payload": null
+  },
+  {
+   "name": "the computer has the reply, the attention is new",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": {
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+     "at": 1.0
+    }
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": {
+    "reply_id": "7:100.5",
+    "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "attention_complete": true
+   },
+   "payload": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "reply_id": null,
+    "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+   }
+  },
+  {
+   "name": "a mark of another conversation does not count",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": {
+     "conversation_id": "conversation-0",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "at": 1.0
+    }
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": {
+    "reply_id": "7:100.5",
+    "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "attention_complete": true
+   },
+   "payload": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "reply_id": "7:100.5",
+    "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+   }
+  },
+  {
+   "name": "no catalog row yet still sends what was shown",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": null,
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": {
+    "reply_id": "7:100.5",
+    "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "attention_complete": true
+   },
+   "payload": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "reply_id": "7:100.5",
+    "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+   }
+  },
+  {
+   "name": "an archived row sends nothing",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "archived",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": {
+    "reply_id": "7:100.5",
+    "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "attention_complete": true
+   },
+   "payload": null
+  },
+  {
+   "name": "nothing needs acknowledgement",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": null,
+     "attention_signature": null,
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": {
+    "reply_id": null,
+    "attention_signature": null,
+    "attention_complete": true
+   },
+   "payload": null
+  },
+  {
+   "name": "a cached frame is no authority",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": false,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": null,
+   "payload": null
+  },
+  {
+   "name": "an archive target has none",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "archive-1",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": null,
+   "payload": null
+  },
+  {
+   "name": "a subagent target has none",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": "agent-1"
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": null,
+   "payload": null
+  },
+  {
+   "name": "an older computer sends no current_read",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1"
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": null,
+   "payload": null
+  },
+  {
+   "name": "the inspection names another run",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-2",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": null,
+   "payload": null
+  },
+  {
+   "name": "the inspection names another conversation",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-2",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": null,
+   "payload": null
+  },
+  {
+   "name": "current_read names another run",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-2",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": null,
+   "payload": null
+  },
+  {
+   "name": "current_read names another conversation",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-2",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": null,
+   "payload": null
+  },
+  {
+   "name": "schema 2 is not understood",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 2,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": null,
+   "payload": null
+  },
+  {
+   "name": "an extra field is refused",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true,
+     "read": null
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": null,
+   "payload": null
+  },
+  {
+   "name": "a missing field is refused",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": null,
+   "payload": null
+  },
+  {
+   "name": "completeness must be a boolean",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": "true"
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": null,
+   "payload": null
+  },
+  {
+   "name": "an uppercase signature is refused",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": null,
+   "payload": null
+  },
+  {
+   "name": "a short signature is refused",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:100.5",
+     "attention_signature": "abc",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": null,
+   "payload": null
+  },
+  {
+   "name": "a numeric reply is refused",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": 7,
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": null,
+   "payload": null
+  },
+  {
+   "name": "an empty reply is refused",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": null,
+   "payload": null
+  },
+  {
+   "name": "an oversized reply is refused",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": null,
+   "payload": null
+  },
+  {
+   "name": "a control character in the reply is refused",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": {
+     "schema": 1,
+     "run_id": "run-1",
+     "conversation_id": "conversation-1",
+     "reply_id": "7:\n100.5",
+     "attention_signature": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+     "attention_complete": true
+    }
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": null,
+   "payload": null
+  },
+  {
+   "name": "current_read must be an object",
+   "target": {
+    "run": "run-1",
+    "conversation": "conversation-1",
+    "archive_id": "",
+    "agent_id": ""
+   },
+   "verified": true,
+   "inspection": {
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "current_read": "current"
+   },
+   "row": {
+    "state": "running",
+    "read": null
+   },
+   "reply_shown": true,
+   "attention_shown": true,
+   "current": null,
+   "payload": null
+  }
+ ],
+ "viewports": [
+  {
+   "name": "following the tail",
+   "latest": true,
+   "tail_visible": true,
+   "newest_visible": false,
+   "questions_listed": false,
+   "questions_visible": false,
+   "reply_shown": true,
+   "attention_shown": true
+  },
+  {
+   "name": "the newest row visible above an unsettled tail",
+   "latest": true,
+   "tail_visible": false,
+   "newest_visible": true,
+   "questions_listed": false,
+   "questions_visible": false,
+   "reply_shown": true,
+   "attention_shown": true
+  },
+  {
+   "name": "scrolled up: neither tail nor newest row",
+   "latest": true,
+   "tail_visible": false,
+   "newest_visible": false,
+   "questions_listed": false,
+   "questions_visible": false,
+   "reply_shown": false,
+   "attention_shown": false
+  },
+  {
+   "name": "an older canonical window is never the latest",
+   "latest": false,
+   "tail_visible": true,
+   "newest_visible": true,
+   "questions_listed": false,
+   "questions_visible": false,
+   "reply_shown": false,
+   "attention_shown": false
+  },
+  {
+   "name": "questions listed and visible with the tail",
+   "latest": true,
+   "tail_visible": true,
+   "newest_visible": false,
+   "questions_listed": true,
+   "questions_visible": true,
+   "reply_shown": true,
+   "attention_shown": true
+  },
+  {
+   "name": "questions listed but scrolled out of view",
+   "latest": true,
+   "tail_visible": true,
+   "newest_visible": false,
+   "questions_listed": true,
+   "questions_visible": false,
+   "reply_shown": true,
+   "attention_shown": false
+  },
+  {
+   "name": "question-only view: questions visible, no newest row",
+   "latest": true,
+   "tail_visible": false,
+   "newest_visible": false,
+   "questions_listed": true,
+   "questions_visible": true,
+   "reply_shown": false,
+   "attention_shown": true
+  },
+  {
+   "name": "questions visible in an older window",
+   "latest": false,
+   "tail_visible": false,
+   "newest_visible": false,
+   "questions_listed": true,
+   "questions_visible": true,
+   "reply_shown": false,
+   "attention_shown": false
+  }
+ ],
+ "layouts": [
+  {
+   "name": "following the tail",
+   "viewport": [
+    0,
+    900
+   ],
+   "items": [
+    {
+     "key": "event:e1",
+     "offset": 0,
+     "size": 400
+    },
+    {
+     "key": "event:e2",
+     "offset": 400,
+     "size": 400
+    },
+    {
+     "key": "history:newer",
+     "offset": 800,
+     "size": 40
+    },
+    {
+     "key": "history:tail",
+     "offset": 840,
+     "size": 1
+    }
+   ],
+   "visible": [
+    "event:e1",
+    "event:e2",
+    "history:newer",
+    "history:tail"
+   ],
+   "newest": "e2",
+   "latest": true,
+   "questions_listed": false,
+   "flags": {
+    "tail": true,
+    "newest": true,
+    "questions": false
+   },
+   "reply_shown": true,
+   "attention_shown": true
+  },
+  {
+   "name": "scrolled up: only an older row",
+   "viewport": [
+    0,
+    900
+   ],
+   "items": [
+    {
+     "key": "event:e1",
+     "offset": 0,
+     "size": 1000
+    },
+    {
+     "key": "event:e2",
+     "offset": 1000,
+     "size": 400
+    },
+    {
+     "key": "history:tail",
+     "offset": 1400,
+     "size": 1
+    }
+   ],
+   "visible": [
+    "event:e1"
+   ],
+   "newest": "e2",
+   "latest": true,
+   "questions_listed": false,
+   "flags": {
+    "tail": false,
+    "newest": false,
+    "questions": false
+   },
+   "reply_shown": false,
+   "attention_shown": false
+  },
+  {
+   "name": "the newest row visible, the tail below",
+   "viewport": [
+    0,
+    900
+   ],
+   "items": [
+    {
+     "key": "event:e1",
+     "offset": 0,
+     "size": 300
+    },
+    {
+     "key": "event:e2",
+     "offset": 300,
+     "size": 500
+    },
+    {
+     "key": "history:newer",
+     "offset": 800,
+     "size": 400
+    },
+    {
+     "key": "history:tail",
+     "offset": 1200,
+     "size": 1
+    }
+   ],
+   "visible": [
+    "event:e1",
+    "event:e2",
+    "history:newer"
+   ],
+   "newest": "e2",
+   "latest": true,
+   "questions_listed": false,
+   "flags": {
+    "tail": false,
+    "newest": true,
+    "questions": false
+   },
+   "reply_shown": true,
+   "attention_shown": true
+  },
+  {
+   "name": "questions and tail visible",
+   "viewport": [
+    0,
+    900
+   ],
+   "items": [
+    {
+     "key": "event:e2",
+     "offset": 0,
+     "size": 300
+    },
+    {
+     "key": "history:questions",
+     "offset": 300,
+     "size": 500
+    },
+    {
+     "key": "history:tail",
+     "offset": 800,
+     "size": 1
+    }
+   ],
+   "visible": [
+    "event:e2",
+    "history:questions",
+    "history:tail"
+   ],
+   "newest": "e2",
+   "latest": true,
+   "questions_listed": true,
+   "flags": {
+    "tail": true,
+    "newest": true,
+    "questions": true
+   },
+   "reply_shown": true,
+   "attention_shown": true
+  },
+  {
+   "name": "questions listed below an older row",
+   "viewport": [
+    0,
+    900
+   ],
+   "items": [
+    {
+     "key": "event:e1",
+     "offset": 0,
+     "size": 900
+    },
+    {
+     "key": "event:e2",
+     "offset": 900,
+     "size": 300
+    },
+    {
+     "key": "history:questions",
+     "offset": 1200,
+     "size": 400
+    },
+    {
+     "key": "history:tail",
+     "offset": 1600,
+     "size": 1
+    }
+   ],
+   "visible": [
+    "event:e1"
+   ],
+   "newest": "e2",
+   "latest": true,
+   "questions_listed": true,
+   "flags": {
+    "tail": false,
+    "newest": false,
+    "questions": false
+   },
+   "reply_shown": false,
+   "attention_shown": false
+  },
+  {
+   "name": "question-only view",
+   "viewport": [
+    0,
+    900
+   ],
+   "items": [
+    {
+     "key": "history:empty",
+     "offset": 0,
+     "size": 60
+    },
+    {
+     "key": "history:questions",
+     "offset": 60,
+     "size": 600
+    },
+    {
+     "key": "history:tail",
+     "offset": 660,
+     "size": 1
+    }
+   ],
+   "visible": [
+    "history:empty",
+    "history:questions",
+    "history:tail"
+   ],
+   "newest": "",
+   "latest": true,
+   "questions_listed": true,
+   "flags": {
+    "tail": true,
+    "newest": false,
+    "questions": true
+   },
+   "reply_shown": true,
+   "attention_shown": true
+  },
+  {
+   "name": "question-only view with the tail below",
+   "viewport": [
+    0,
+    900
+   ],
+   "items": [
+    {
+     "key": "history:questions",
+     "offset": 0,
+     "size": 1200
+    },
+    {
+     "key": "history:tail",
+     "offset": 1200,
+     "size": 1
+    }
+   ],
+   "visible": [
+    "history:questions"
+   ],
+   "newest": "",
+   "latest": true,
+   "questions_listed": true,
+   "flags": {
+    "tail": false,
+    "newest": false,
+    "questions": true
+   },
+   "reply_shown": false,
+   "attention_shown": true
+  },
+  {
+   "name": "an older window never counts",
+   "viewport": [
+    0,
+    900
+   ],
+   "items": [
+    {
+     "key": "event:e1",
+     "offset": 0,
+     "size": 400
+    },
+    {
+     "key": "event:e2",
+     "offset": 400,
+     "size": 400
+    },
+    {
+     "key": "history:tail",
+     "offset": 840,
+     "size": 1
+    }
+   ],
+   "visible": [
+    "event:e1",
+    "event:e2",
+    "history:tail"
+   ],
+   "newest": "",
+   "latest": false,
+   "questions_listed": false,
+   "flags": {
+    "tail": true,
+    "newest": false,
+    "questions": false
+   },
+   "reply_shown": false,
+   "attention_shown": false
+  },
+  {
+   "name": "separators and markers are not event rows",
+   "viewport": [
+    0,
+    900
+   ],
+   "items": [
+    {
+     "key": "history:inherited:e1",
+     "offset": 0,
+     "size": 40
+    },
+    {
+     "key": "event:e1",
+     "offset": 40,
+     "size": 400
+    },
+    {
+     "key": "history:unread",
+     "offset": 440,
+     "size": 30
+    },
+    {
+     "key": "event:e2",
+     "offset": 470,
+     "size": 300
+    },
+    {
+     "key": "history:tail",
+     "offset": 770,
+     "size": 1
+    }
+   ],
+   "visible": [
+    "history:inherited:e1",
+    "event:e1",
+    "history:unread",
+    "event:e2",
+    "history:tail"
+   ],
+   "newest": "e2",
+   "latest": true,
+   "questions_listed": false,
+   "flags": {
+    "tail": true,
+    "newest": true,
+    "questions": false
+   },
+   "reply_shown": true,
+   "attention_shown": true
+  },
+  {
+   "name": "a newest id that is a marker's suffix is not a row",
+   "viewport": [
+    0,
+    900
+   ],
+   "items": [
+    {
+     "key": "history:inherited:e2",
+     "offset": 0,
+     "size": 40
+    },
+    {
+     "key": "event:e1",
+     "offset": 40,
+     "size": 400
+    },
+    {
+     "key": "history:tail",
+     "offset": 1400,
+     "size": 1
+    }
+   ],
+   "visible": [
+    "history:inherited:e2",
+    "event:e1"
+   ],
+   "newest": "e2",
+   "latest": true,
+   "questions_listed": false,
+   "flags": {
+    "tail": false,
+    "newest": false,
+    "questions": false
+   },
+   "reply_shown": false,
+   "attention_shown": false
+  },
+  {
+   "name": "a sliver of the questions pane is not shown",
+   "viewport": [
+    0,
+    900
+   ],
+   "items": [
+    {
+     "key": "event:e2",
+     "offset": 0,
+     "size": 880
+    },
+    {
+     "key": "history:questions",
+     "offset": 880,
+     "size": 400
+    },
+    {
+     "key": "history:tail",
+     "offset": 1280,
+     "size": 1
+    }
+   ],
+   "visible": [
+    "event:e2"
+   ],
+   "newest": "e2",
+   "latest": true,
+   "questions_listed": true,
+   "flags": {
+    "tail": false,
+    "newest": true,
+    "questions": false
+   },
+   "reply_shown": true,
+   "attention_shown": false
+  },
+  {
+   "name": "a questions pane taller than twice the viewport is shown",
+   "viewport": [
+    0,
+    900
+   ],
+   "items": [
+    {
+     "key": "history:questions",
+     "offset": 0,
+     "size": 2000
+    },
+    {
+     "key": "history:tail",
+     "offset": 2000,
+     "size": 1
+    }
+   ],
+   "visible": [
+    "history:questions"
+   ],
+   "newest": "",
+   "latest": true,
+   "questions_listed": true,
+   "flags": {
+    "tail": false,
+    "newest": false,
+    "questions": true
+   },
+   "reply_shown": false,
+   "attention_shown": true
+  },
+  {
+   "name": "the readable part of a tall newest row is enough",
+   "viewport": [
+    0,
+    900
+   ],
+   "items": [
+    {
+     "key": "event:e1",
+     "offset": 0,
+     "size": 852
+    },
+    {
+     "key": "event:e2",
+     "offset": 852,
+     "size": 600
+    },
+    {
+     "key": "history:tail",
+     "offset": 1452,
+     "size": 1
+    }
+   ],
+   "visible": [
+    "event:e1",
+    "event:e2"
+   ],
+   "newest": "e2",
+   "latest": true,
+   "questions_listed": false,
+   "flags": {
+    "tail": false,
+    "newest": true,
+    "questions": false
+   },
+   "reply_shown": true,
+   "attention_shown": true
+  },
+  {
+   "name": "one unit short of the readable part is not shown",
+   "viewport": [
+    0,
+    900
+   ],
+   "items": [
+    {
+     "key": "event:e1",
+     "offset": 0,
+     "size": 853
+    },
+    {
+     "key": "event:e2",
+     "offset": 853,
+     "size": 600
+    },
+    {
+     "key": "history:tail",
+     "offset": 1453,
+     "size": 1
+    }
+   ],
+   "visible": [
+    "event:e1"
+   ],
+   "newest": "e2",
+   "latest": true,
+   "questions_listed": false,
+   "flags": {
+    "tail": false,
+    "newest": false,
+    "questions": false
+   },
+   "reply_shown": false,
+   "attention_shown": false
+  },
+  {
+   "name": "a short row must be fully visible",
+   "viewport": [
+    0,
+    900
+   ],
+   "items": [
+    {
+     "key": "event:e1",
+     "offset": 0,
+     "size": 870
+    },
+    {
+     "key": "event:e2",
+     "offset": 870,
+     "size": 40
+    },
+    {
+     "key": "history:tail",
+     "offset": 922,
+     "size": 1
+    }
+   ],
+   "visible": [
+    "event:e1"
+   ],
+   "newest": "e2",
+   "latest": true,
+   "questions_listed": false,
+   "flags": {
+    "tail": false,
+    "newest": false,
+    "questions": false
+   },
+   "reply_shown": false,
+   "attention_shown": false
+  },
+  {
+   "name": "a short row fully visible at the edge is shown",
+   "viewport": [
+    0,
+    900
+   ],
+   "items": [
+    {
+     "key": "event:e1",
+     "offset": 0,
+     "size": 860
+    },
+    {
+     "key": "event:e2",
+     "offset": 860,
+     "size": 40
+    },
+    {
+     "key": "history:tail",
+     "offset": 912,
+     "size": 1
+    }
+   ],
+   "visible": [
+    "event:e1",
+    "event:e2"
+   ],
+   "newest": "e2",
+   "latest": true,
+   "questions_listed": false,
+   "flags": {
+    "tail": false,
+    "newest": true,
+    "questions": false
+   },
+   "reply_shown": true,
+   "attention_shown": true
+  },
+  {
+   "name": "a viewport shorter than the readable part caps it",
+   "viewport": [
+    0,
+    30
+   ],
+   "items": [
+    {
+     "key": "event:e2",
+     "offset": -100,
+     "size": 200
+    },
+    {
+     "key": "history:tail",
+     "offset": 112,
+     "size": 1
+    }
+   ],
+   "visible": [
+    "event:e2"
+   ],
+   "newest": "e2",
+   "latest": true,
+   "questions_listed": false,
+   "flags": {
+    "tail": false,
+    "newest": true,
+    "questions": false
+   },
+   "reply_shown": true,
+   "attention_shown": true
+  },
+  {
+   "name": "the tail within its rounding slack is shown",
+   "viewport": [
+    0,
+    900
+   ],
+   "items": [
+    {
+     "key": "history:empty",
+     "offset": 0,
+     "size": 60
+    },
+    {
+     "key": "history:tail",
+     "offset": 900,
+     "size": 1
+    }
+   ],
+   "visible": [
+    "history:empty",
+    "history:tail"
+   ],
+   "newest": "",
+   "latest": true,
+   "questions_listed": false,
+   "flags": {
+    "tail": true,
+    "newest": false,
+    "questions": false
+   },
+   "reply_shown": true,
+   "attention_shown": true
+  },
+  {
+   "name": "a tail past its rounding slack is not shown",
+   "viewport": [
+    0,
+    900
+   ],
+   "items": [
+    {
+     "key": "history:empty",
+     "offset": 0,
+     "size": 60
+    },
+    {
+     "key": "history:tail",
+     "offset": 902,
+     "size": 1
+    }
+   ],
+   "visible": [
+    "history:empty"
+   ],
+   "newest": "",
+   "latest": true,
+   "questions_listed": false,
+   "flags": {
+    "tail": false,
+    "newest": false,
+    "questions": false
+   },
+   "reply_shown": false,
+   "attention_shown": false
+  }
+ ],
+ "readable": 48
+}

@@ -136,6 +136,8 @@ class TaskRouting(unittest.TestCase):
         # The agent's next hook event confirms the pasted input.
         record = json.loads(self.record.read_text())
         record["last_event_at"] = record.get("input_pending_at", time.time()) + 1
+        # An input-acceptance event, as UserPromptSubmit records it (zerus-iitw8).
+        record["input_seen_at"] = record["last_event_at"]
         self.record.write_text(json.dumps(record))
 
     def received(self):

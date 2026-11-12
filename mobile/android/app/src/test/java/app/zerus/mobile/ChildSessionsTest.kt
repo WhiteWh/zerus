@@ -129,9 +129,13 @@ class ChildSessionsTest {
                 .put("optional_question_ids", JSONArray()).put("main_attention", JSONObject.NULL).put("child_attention", JSONObject())))
         assertTrue(SessionNotificationPreferences.muted(mutedError))
         assertEquals(DesktopBadgeKind.Error, DesktopSessionPalette.badge(mutedError, true).kind)
-        // It still needs attention, so it stays in Needs attention and Active (spec 2.1).
-        assertTrue(SessionFilters.matches(rows[2], SessionFilter.Attention, true))
-        assertTrue(SessionFilters.matches(rows[2], SessionFilter.Active, true))
+        // Its request waits for the parent, so it leaves Needs attention and Active; an approval only the person can
+        // answer stays in both (spec 2.1, zerus-sa9qn.18/.19).
+        assertTrue(SessionFilters.needsAttention(rows[2], true))
+        assertFalse(SessionFilters.matches(rows[2], SessionFilter.Attention, true))
+        assertFalse(SessionFilters.matches(rows[2], SessionFilter.Active, true))
+        assertTrue(SessionFilters.matches(rows[3], SessionFilter.Attention, true))
+        assertTrue(SessionFilters.matches(rows[3], SessionFilter.Active, true))
         // Shown subagents join the one counter.
         val subagents = listOf(SessionCardChild("a", "a", "Working", "", "claude", DesktopBadgeKind.Working, false),
             SessionCardChild("b", "b", "Ready", "", "claude", DesktopBadgeKind.Neutral, false))

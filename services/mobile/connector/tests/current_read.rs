@@ -211,6 +211,47 @@ async fn a_value_that_does_not_name_exactly_the_checked_session_is_dropped() {
     assert_eq!(h.inspect(expected()).await["current_read"], nulls);
 }
 
+/// zerus-a4mub.24: DeepSeek and OpenCode inspections carry their own reply
+/// identities; the unchanged gate passes them through as values a mark may
+/// carry, including unknown attention.
+#[tokio::test(flavor = "current_thread")]
+async fn deepseek_and_opencode_values_pass_the_unchanged_gate() {
+    let h = Harness::new("current-read-providers", true).await;
+    for (label, reply, signature, complete) in [
+        ("DeepSeek turn", json!("dsh-turn-3"), json!(SIGNATURE), true),
+        (
+            "DeepSeek unknown requests",
+            json!("dsh-turn-3"),
+            json!(null),
+            false,
+        ),
+        (
+            "OpenCode reply",
+            json!("msg_14bb2d63e001NhfRTKy4frROM8"),
+            json!(null),
+            true,
+        ),
+        (
+            "OpenCode without an observation",
+            json!(null),
+            json!(null),
+            false,
+        ),
+    ] {
+        let mut value = current();
+        value["reply_id"] = reply;
+        value["attention_signature"] = signature;
+        value["attention_complete"] = json!(complete);
+        *h.connector.native.current.borrow_mut() = value.clone();
+        let result = h.inspect(expected()).await;
+        assert!(
+            h.last_inspect().contains(&"--current-read".to_owned()),
+            "{label}"
+        );
+        assert_eq!(result["current_read"], value, "{label}");
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn bounding_keeps_it_only_while_the_newest_rows_survive() {
     let h = Harness::new("current-read-bound", true).await;

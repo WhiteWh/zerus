@@ -125,9 +125,21 @@ hash map, rebuilt with the list; there is no per-session cache and no extra read
 | Parent | Child shows |
 | --- | --- |
 | Listed in the same project group and visible under the current filters | nested under it |
-| Listed elsewhere, hidden by a filter, or in another project | at top level of its own group, with a **from PARENT** chip that selects the parent |
-| Archived (Archive view lists it) | nested in Archive; in the live list at top level with **from PARENT (archived)** |
-| Not listed: terminated, removed, its computer offline, or unknown | at top level with **from PARENT** using the recorded name; the tooltip says the parent is not listed |
+| Stopped or paused (or its agent ended), in the same project group, hidden by a filter | nested under a dimmed **Ended** container of the parent's own row (zerus-sa9qn.17) |
+| Running but hidden by a filter, or listed in another project | at top level of its own group, with a **from PARENT** chip that selects the parent |
+| Archived, including terminated (its link says `archived`) | in the live list nested under a dimmed **Archived** container built from the link; nested in Archive (zerus-sa9qn.17) |
+| Not listed on the child's own computer: forgotten or removed (link `missing` there, or `saved` but unlisted) | nested under a dimmed **Ended** container built from the link (zerus-sa9qn.17) |
+| Not listed elsewhere: on another computer, that computer offline, or unknown | at top level with **from PARENT** using the recorded name; the tooltip says the parent is not listed |
+
+**Ended parents (zerus-sa9qn.17, owner 2026-11-11).** Ending a parent never
+orphans its live children in the list: the ended parent stays as their
+container until no live (non-archived) child remains, then leaves the list by
+itself. The container is presentation only and grants nothing: it is not a
+session row, takes no selection, keyboard step, drag target or attention, and
+its menu offers only Open, Resume or Restore, and Move to archive of the
+parent's own listed row, or Open in Archive for a parent known only from the
+link. It appears only for children the filters show, and is built in the same
+single pass with one hash map per kind, without extra reads.
 
 **Cycles** can only come from `adopt` across computers or from a rewritten
 record. The writer refuses local cycles. The list builder walks parents with a
@@ -201,9 +213,12 @@ is. A supervised child therefore treats its signals as **quiet** or **human**:
 * **Quiet** is the existing mute treatment: no system notification, no rail,
   tray or project-header count, neutral gray badges and edge mark, and a crossed
   bell replaced by the supervised mark. The session's actual state, Activity,
-  unread identity, questions and approvals are unchanged, and it stays in the
-  Active and Needs attention filters, exactly like a muted session. Nothing is
-  marked read.
+  unread identity, questions and approvals are unchanged. Nothing is marked
+  read. Unlike a muted session, a quiet child leaves the Needs attention filter,
+  and Active unless it is working, in Background, Scheduled or has a draft; only
+  the person's own Review later mark keeps it in both. Each status filter
+  lists exactly what its tab counts, through one predicate, and nesting never
+  adds a row that fails it (owner report, 2026-11-11, zerus-sa9qn.18).
 * **Human** behaves as for any session: badges, counts and notifications.
 
 Status captions do not change. A child still reads Ready, Needs input or
@@ -364,6 +379,22 @@ amber badge and edge.
   `hgs parent SESSION --json` with `clear` does it.
 * **Open parent**: the from-PARENT chip opens it; a menu entry is part of the desktop follow-up.
 * Mute and Unmute stay independent of supervision.
+* **Terminate** and **Move to archive** of a session with live child sessions on
+  its computer list them and offer **Also end N child sessions** (Archive:
+  **Also archive N child sessions**), off by default (zerus-sa9qn.17). Children
+  the action does not apply to now are listed as staying. The count and the
+  list cover every level, not only the direct children; Terminate marks and
+  counts children without an HGS archive (they are killed, as by their own
+  Terminate) and notes that a stopped or paused child it keeps is archived by
+  `hgs terminate --with-children`. Only that choice ends
+  children: each one runs after the parent's own outcome is done, through its
+  own guarded action and never with the parent's Remove working folder choice,
+  one at a time, rechecked as the same instance and never retried; one notice
+  counts done, failed or changed, and unknown outcomes. A parent that failed or
+  whose outcome is unknown keeps every child. Move to archive asks only for such
+  a session; any other archives at once, as before. The command-line form is
+  `hgs terminate|archive SESSION --with-children`. Nothing propagates
+  implicitly: the link names the children, the person's choice is the authority.
 
 ### 3.6 Keyboard and screen readers
 

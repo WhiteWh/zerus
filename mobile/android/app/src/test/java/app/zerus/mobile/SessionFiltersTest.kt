@@ -85,6 +85,9 @@ class SessionFiltersTest {
             val matches = SessionFilter.entries.filter { SessionFilters.matches(item, it, example.getBoolean("online"), example.getBoolean("draft")) }.map { it.id }
             val expected = example.getJSONArray("matches").let { array -> (0 until array.length()).map(array::getString) }
             assertEquals(example.getString("name"), expected, matches)
+            // The quiet-child and mute rules read the same classification as the desktop core (zerus-sa9qn.19).
+            if (example.has("quiet")) assertEquals(example.getString("name") + " quiet", example.getBoolean("quiet"), ChildSessions.quiet(item.raw))
+            if (example.has("muted")) assertEquals(example.getString("name") + " muted", example.getBoolean("muted"), SessionNotificationPreferences.muted(item))
         }
     }
     @Test fun machineChooserCountsKeepWorkspaceIdentityStateProjectAndZeroMachines() {

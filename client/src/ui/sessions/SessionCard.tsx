@@ -10,7 +10,7 @@ import { settings } from "../../store/settings";
 import { machineAppearance } from "../../store/machineAppearance";
 import { sessionMark, type AccountMark } from "../../store/accountMarks";
 import type { AgentKind, Session, Status, Subagent } from "./types";
-import type { Team } from "./group-rows";
+import type { Container, Team } from "./group-rows";
 import type { LogoPath } from "../lib/agent-logos";
 import { currentChildren, workingChildren } from "./subagents";
 
@@ -567,6 +567,39 @@ function CompactTeam(props: { team: Team; onToggle?: () => void }) {
  */
 export function compactDescription(s: Session): string {
   return [s.title, s.name !== s.title ? s.name : "", statusCaption(s, false), AGENT_LABEL[s.agent]].filter(Boolean).join("\n");
+}
+
+/** The ended parent container's tooltip (zerus-sa9qn.17): what it is and what it is not. */
+export function containerDescription(c: Container): string {
+  const what = c.state === "archived"
+    ? tr("%1 is archived. It stays here while its child sessions are live.", c.name)
+    : c.key ? tr("%1 has ended. It stays here while its child sessions are live.", c.name)
+    : tr("%1 has ended and is no longer listed. It stays here while its child sessions are live.", c.name);
+  return `${what}\n${tr("It is shown for its child sessions only and has no live actions.")}`;
+}
+
+/**
+ * An ended parent kept as its live children's container (zerus-sa9qn.17): a
+ * dimmed compact row with the parent's tile, title and Ended or Archived
+ * state, its machine and its children's line. Presentational: no status,
+ * attention, account or unread marks of a running session.
+ */
+export function ContainerCard(props: { container: Container; selected: boolean; team?: Team; onToggleTeam?: () => void }) {
+  const c = () => props.container;
+  const described = steadyTitle(() => containerDescription(c()));
+  return (
+    <div class="scard compact ended-parent" classList={{ selected: props.selected, two: !!props.team }}
+      aria-description={containerDescription(c())}>
+      <div class="cc-line">
+        <span class="cc-tile"><AgentTile agent={c().agent} size={22} /></span>
+        <span class="sc-title ell" style={titleReserve(c().title, 60)} title={described.title()} onPointerEnter={described.enter} onPointerLeave={described.leave}>{c().title}</span>
+        <StatusBadge kind="neutral" caption={c().state === "archived" ? tr("Archived") : tr("Ended")} />
+        <span class="grow" />
+        <MachineBadge alias={c().machine} computer={c().computer} offline={computerOffline(c().computer)} />
+      </div>
+      <Show when={props.team}>{(team) => <CompactTeam team={team()} onToggle={props.onToggleTeam} />}</Show>
+    </div>
+  );
 }
 
 export function CompactCard(props: { session: Session; selected: boolean; onExpand: () => void; team?: Team; onToggleTeam?: () => void }) {

@@ -41,6 +41,9 @@ final class SessionFiltersTests: XCTestCase {
             let item = session(example.object("raw")!.compactJSON)
             let matches = SessionFilter.allCases.filter { SessionFilters.matches(item, $0, example.bool("online"), hasDraft: example.bool("draft")) }.map(\.id)
             XCTAssertEqual(matches, example.strings("matches"), example.string("name"))
+            // The quiet-child and mute rules read the same classification as the desktop core (zerus-sa9qn.19).
+            if example["quiet"] != nil { XCTAssertEqual(ChildSessions.quiet(item.raw), example.bool("quiet"), example.string("name") + " quiet") }
+            if example["muted"] != nil { XCTAssertEqual(SessionNotificationPreferences.muted(item), example.bool("muted"), example.string("name") + " muted") }
         }
     }
 

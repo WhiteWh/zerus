@@ -204,6 +204,25 @@ export interface ListScope {
 export const inScope = (s: Pick<Session, "machine">, scope: Pick<ListScope, "machines">) =>
   !scope.machines.length || scope.machines.includes(s.machine);
 
+/**
+ * Whether the Archive filter lists an archived row: the one rule its list and
+ * its count share (zerus-sa9qn.18), the loaded date window, machine, project,
+ * account and folder scopes.
+ */
+export const archiveListed = (s: ArchivedSession, scope: ListScope) =>
+  scope.includes(s.archivedAt) && inScope(s, scope) && (!scope.projects?.length || scope.projects.includes(s.group))
+    && (scope.accepts?.(s) ?? true);
+
+/**
+ * The Archive date window [from, until) in seconds, as Android and iOS read
+ * ArchiveRange (session-filter-contract.json `archive_window`, zerus-sa9qn.19).
+ */
+export const archiveWindow = (from: number, until: number) => (at: number) => at >= from && at < until;
+
+/** The Archive filter's count: the rows archiveListRows lists. */
+export const archiveCountOf = (rows: readonly ArchivedSession[], scope: ListScope) =>
+  rows.reduce((n, s) => n + (archiveListed(s, scope) ? 1 : 0), 0);
+
 /** Qt's archived grouping uses the archive identity, never the tag's project (SessionsWindowRows.cpp:266-300). */
 export function archiveListRows(rows: readonly ArchivedSession[], scope: ListScope, organization: GroupingOut = emptyGrouping()): Row[] {
   const members = new Map<string, Session[]>();
@@ -214,7 +233,7 @@ export function archiveListRows(rows: readonly ArchivedSession[], scope: ListSco
   }
   return groupRows({
     grouping: organization, members, projects: scope.projects ?? [],
-    visible: (s) => scope.includes((s as ArchivedSession).archivedAt) && inScope(s, scope) && (scope.accepts?.(s) ?? true), online: () => false,
+    visible: (s) => archiveListed(s as ArchivedSession, scope), online: () => false,
     expanded: () => false, compact: scope.compact, children: false,
   });
 }
@@ -266,7 +285,7 @@ export function createArchive(deps: ArchiveDeps) {
   const held = new Map<ComputerId, Map<string, Pick<GroupOut, "group" | "rank">>>();
 
   const bounds = () => rangeBounds(range(), now());
-  const includes = (at: number) => { const [from, until] = bounds(); return at >= from && at < until; };
+  const includes = (at: number) => { const [from, until] = bounds(); return archiveWindow(from, until)(at); };
   const put = (computer: string, page: Page) => setPages((all) => ({ ...all, [computer]: page }));
   /** Drops every page; their answers in flight no longer match. */
   const dropPages = () => { held.clear(); setPages({}); };
@@ -479,16 +498,13 @@ export const { archive, archiveRows, archiveCount, archiveTip } = createRoot(() 
     query: search,
     computers: () => pagingComputers(catalog.computers, catalogRows(), machineFilter(), machineCards),
   });
-  const archiveRows = createMemo(() => archiveListRows(archive.rows(), {
+  // The list and its count read one scope through archiveListed (zerus-sa9qn.18).
+  const listScope = createMemo((): ListScope => ({
     machines: machineFilter(), projects: projectFilter(), includes: archive.includes, compact: (key) => !!compactRows[key],
     accepts: (s) => acceptsAccount(s, accountFilterSet()) && acceptsFolder(s, folderFilter()),
-  }, grouping()));
-  const counted = createMemo(() => {
-    const scope = { machines: machineFilter() };
-    const projects = projectFilter();
-    return archive.rows().filter((s) => inScope(s, scope) && (!projects.length || projects.includes(s.group))
-      && acceptsAccount(s, accountFilterSet()) && acceptsFolder(s, folderFilter())).length;
-  });
+  }));
+  const archiveRows = createMemo(() => archiveListRows(archive.rows(), listScope(), grouping()));
+  const counted = createMemo(() => archiveCountOf(archive.rows(), listScope()));
   return { archive, archiveRows, archiveCount: () => archive.countText(counted()), archiveTip: () => archive.tipText("Archive", counted()) };
 });
 

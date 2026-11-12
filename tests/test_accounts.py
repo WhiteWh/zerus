@@ -527,7 +527,7 @@ for line in sys.stdin:
     def test_explicit_agent_install_is_allowlisted_and_failed_download_never_runs(self):
         # Unix runs npm or the vendors' install.sh; Windows gets install.ps1 (src/accounts/install.rs).
         for provider,package,url in (('codex','@openai/codex',''),('claude','','https://claude.ai/install.sh'),
-                                     ('kimi','','https://code.kimi.com/kimi-code/install.sh'),('dsh','@deepseek-ai/dsh@0.2.1-rc.2','')):
+                                     ('kimi','','https://code.kimi.com/kimi-code/install.sh'),('dsh','@deepseek-ai/dsh@0.2.2-rc.1','')):
             result=json.loads(self.run_hgs('account','install',provider,'--dry-run').stdout)
             self.assertEqual(result,{'provider':provider,'package':package,'installer_url':url,'dry_run':True})
         self.run_hgs('account','install','arbitrary-command',ok=False)

@@ -14,7 +14,7 @@ _focus_spec.loader.exec_module(_focus_projection)
 original_review_fixture = _focus_projection.original_review_fixture
 MAIN = "mobile/android/app/src/main/java/app/zerus/mobile/"
 FIXTURE = "mobile/android/app/src/androidTest/java/app/zerus/mobile/ApprovalChoicesSmokeInstrumentation.kt"
-ORIGINAL_UI = "3687bd4bb2f7243c06fc99865c08120795360b273aa8291b612794a9bfdf57bf"
+ORIGINAL_UI = "0fa146a7ccaa38be221768b901f3d28fe93a95947620f9e43e84127955b5a81a"
 # Fixture pins include the parent-selection and Compose role-child corrections; the approval harness
 # reverses them to exact 96fc.
 ORIGINAL_FIXTURE = "1443287232e93dfeedb401064bc2c2cf022cbe1dccffc01e3ee4ed415cf4d729"

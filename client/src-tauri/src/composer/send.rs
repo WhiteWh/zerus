@@ -2209,6 +2209,14 @@ pub(super) fn pending_mut<'a>(
     pending.filter(|p| p.revision == revision)
 }
 
+/// The start continuation `revision` of `key`, read-only.
+fn pending_of<'a>(hub: &'a Hub, key: &str, revision: u64) -> Option<&'a Pending> {
+    hub.start
+        .as_ref()
+        .map(|(p, _)| p)
+        .filter(|p| p.key == key && p.revision == revision)
+}
+
 /// Takes the continuation `revision` of `key` out of the hub.
 fn take_pending(hub: &mut Hub, key: &str, start: bool, revision: u64) -> Option<Pending> {
     pending_mut(hub, key, start, revision)?;
@@ -2702,6 +2710,16 @@ impl Composers {
     /// `read` is the reading the answer came from (`inspected`): the
     /// compaction after a start and the send at the end name its identity.
     fn step(&self, key: &str, start: bool, revision: u64, step: Step, read: Option<&Arc<Value>>) {
+        if start {
+            let ready = match &step {
+                Step::Send { run_id, .. } => Some(run_id.as_str()),
+                Step::Compact(..) => read.map(|read| text(read, "run_id")),
+                _ => None,
+            };
+            if ready.is_some_and(|run| self.listing_behind(key, revision, run)) {
+                return;
+            }
+        }
         match step {
             Step::Idle => {}
             Step::Cancelled(text) => self.cancel(key, start, revision, &text),
@@ -2723,6 +2741,26 @@ impl Composers {
                 read,
             ),
         }
+    }
+
+    /// zerus-77ljy: a started run can read ready (an inspect, or the
+    /// followed details) before the listing replaces the stopped row. Judged
+    /// against that stale row, which still asks to resume, the waiting
+    /// message would end with CHANGED. Until the listed row shows the ready
+    /// run the start keeps waiting: its next reading or the poll decides
+    /// again, within its limit. A missing row is not waited for, and the
+    /// send's own checks (`still_valid`) stay as they are.
+    fn listing_behind(&self, key: &str, revision: u64, run: &str) -> bool {
+        let hub = self.lock();
+        let session = match (&hub.open, hub.open_key.as_deref()) {
+            (Some(open), Some(open_key)) if open_key == key => open.clone(),
+            _ => match pending_of(&hub, key, revision) {
+                Some(pending) => pending.session.clone(),
+                None => return false,
+            },
+        };
+        (self.0.deps.rows)(&session.computer, &session.key, &session.name)
+            .is_some_and(|(row, _)| row.run_id.as_deref().unwrap_or("") != run)
     }
 
     /// The start or compaction call (Qt's `resumeSession`,
@@ -8177,6 +8215,68 @@ mod continuations {
         assert!(view.text.is_empty() && !view.cancel_send);
     }
 
+    /// zerus-77ljy: the resumed run can read ready (an inspect, or the
+    /// followed details) before the listing replaces the stopped row. The
+    /// waiting message is not judged against that stale row, which still
+    /// asks to resume and would end it with CHANGED: it waits until the
+    /// listing shows the ready run, then goes once, to that run.
+    #[test]
+    fn a_resumed_send_waits_for_the_listing_to_show_the_ready_run() {
+        let root = dir("start-listing-behind");
+        let (c, fake) = send_hub(&root);
+        stopped(&fake);
+        let mut details = ready();
+        details["runtime_state"] = json!("stopped");
+        details["process_state"] = json!("exited");
+        let view = opened(&c, details);
+        let SendReply::Start { token, .. } = c.send_message(
+            view.handle,
+            1,
+            view.text_epoch,
+            "after resume".into(),
+            12,
+            12,
+        ) else {
+            panic!("no question")
+        };
+        let choice = StartChoice::Resume;
+        assert_eq!(
+            c.answer(token, Answer::Start { choice }),
+            SendReply::Sending
+        );
+        until(&c, |v| v.waiting.as_deref() == Some(WAITING_START));
+        until(&c, |_| called(&fake, &Action::Resume));
+        // The new run reads ready while the listing still shows the
+        // stopped run: nothing is sent and the draft keeps waiting.
+        let mut after = ready();
+        after["run_id"] = json!("run-2");
+        c.observe(&state(after.clone()));
+        c.observe(&state(after.clone()));
+        std::thread::sleep(Duration::from_millis(200));
+        let view = c.current().unwrap();
+        assert!(
+            sends(&fake).is_empty(),
+            "sent before the listing showed the new run"
+        );
+        assert_ne!(view.status, CHANGED);
+        assert_eq!(view.waiting.as_deref(), Some(WAITING_START));
+        assert_eq!(view.text, "after resume");
+        // The listing catches up: the next reading sends the exact draft once.
+        {
+            let mut row = lock(&fake.row);
+            row.state = "running".into();
+            row.run_id = Some("run-2".into());
+        }
+        c.observe(&state(after.clone()));
+        c.observe(&state(after));
+        until(&c, |v| v.waiting.is_none() && !v.sending);
+        let sends = sends(&fake);
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].0.run_id, "run-2");
+        let view = c.current().unwrap();
+        assert!(view.text.is_empty() && view.status != CHANGED);
+    }
+
     /// zerus-dhnd: Start fresh opens Codex without a conversation, and Codex
     /// reports no status before the first message creates one. The waiting
     /// message must go through the first-message path, not wait forever.
@@ -9507,6 +9607,61 @@ mod continuations {
         assert_eq!(sends.len(), 1);
         assert_eq!(sends[0].0.run_id, "run-2");
         assert_eq!(sends[0].1.as_deref(), Some("cmp-2"));
+    }
+
+    /// zerus-77ljy: "Resume, compact and send" also waits for the listing to
+    /// show the ready run before it asks for the compaction of that run.
+    #[test]
+    fn resume_compact_waits_for_the_listing_to_show_the_ready_run() {
+        let root = dir("resume-compact-listing-behind");
+        let (c, fake) = send_hub(&root);
+        stopped(&fake);
+        compacts_as(&fake, "cmp-3");
+        let view = opened(&c, ready());
+        let SendReply::Start { token, .. } = c.send_message(
+            view.handle,
+            1,
+            view.text_epoch,
+            "compact after the listing".into(),
+            0,
+            0,
+        ) else {
+            panic!()
+        };
+        c.answer(
+            token,
+            Answer::Start {
+                choice: StartChoice::ResumeCompact,
+            },
+        );
+        until(&c, |v| v.waiting.is_some());
+        until(&c, |_| called(&fake, &Action::Resume));
+        let mut after = ready();
+        after["run_id"] = json!("run-2");
+        c.observe(&state(after.clone()));
+        c.observe(&state(after.clone()));
+        std::thread::sleep(Duration::from_millis(200));
+        let view = c.current().unwrap();
+        assert!(
+            !called(&fake, &Action::CompactContext),
+            "compacted before the listing showed the new run"
+        );
+        assert!(!view.compacting && view.waiting.is_some() && view.status != CHANGED);
+        {
+            let mut row = lock(&fake.row);
+            row.state = "running".into();
+            row.run_id = Some("run-2".into());
+        }
+        c.observe(&state(after.clone()));
+        until(&c, |v| v.compacting);
+        until(&c, |_| called(&fake, &Action::CompactContext));
+        assert_eq!(call_of(&fake, &Action::CompactContext).run_id, "run-2");
+        after["compact_context_request"] = json!({"request_id": "cmp-3", "status": "completed"});
+        c.observe(&state(after));
+        until(&c, |v| !v.sending && !v.compacting && v.waiting.is_none());
+        let sends = sends(&fake);
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].0.run_id, "run-2");
     }
 
     /// zerus-le5s: Compact and resume on Codex, which refuses /compact until

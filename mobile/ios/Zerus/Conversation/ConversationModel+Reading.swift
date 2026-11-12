@@ -109,6 +109,8 @@ extension ConversationModel {
         editRead { ReadAttentionPolicies.mark($0, evidence) }
         refreshReadAttention()
         shareRead(target)
+        // The explicit choice covers what the open conversation's verified inspection names now.
+        if let current = currentRead(target) { shareCurrent(target, current, replyShown: true, attentionShown: true) }
         app.flushPrivateState()
     }
 
@@ -219,10 +221,15 @@ extension ConversationModel {
         let key: String
     }
 
+    /// Whether this target's gateway and computer accept `mark_read` now.
+    func sharedReadAvailable(_ target: Target) -> Bool {
+        !demo && readTrackingReady && app.relayOperations[target.connectionId]?.contains("mark_read") == true
+            && app.machineOperations[target.machineKey]?.contains("mark_read") == true
+    }
+
     /// The `mark_read` this phone may send now; `acknowledge` also covers the current request.
     func sharedReadRequest(_ target: Target, acknowledge: Bool) -> SharedReadRequest? {
-        guard !demo, readTrackingReady, let row = app.sessions.first(where: { $0.target == target }),
-              app.relayOperations[target.connectionId]?.contains("mark_read") == true, app.machineOperations[target.machineKey]?.contains("mark_read") == true,
+        guard sharedReadAvailable(target), let row = app.sessions.first(where: { $0.target == target }),
               let payload = SharedReadPolicies.payload(row, freshHead: readAllEvidence(target)?.authoritative == true, localUnread: unreadCount(target),
                                                        acknowledge: acknowledge),
               let connection = app.connections.first(where: { $0.id == target.connectionId }) else { return nil }
@@ -274,10 +281,55 @@ extension ConversationModel {
         }
     }
 
+    /// zerus-a4mub.9: what the open conversation's verified inspection lets this phone acknowledge now.
+    func currentRead(_ target: Target) -> CurrentRead? {
+        guard selected?.target == target, activeFrame?.target == target else { return nil }
+        return SharedReadPolicies.current(activity, target: target, verified: activityVerified)
+    }
+
+    /// Changes with the current reply and attention values, so a visibility dwell restarts for new ones.
+    func currentReadKey(_ target: Target) -> String { currentRead(target).map(currentReadKey) ?? "" }
+
+    private func currentReadKey(_ current: CurrentRead) -> String {
+        JSON.array([current.reply.map(JSON.string) ?? .null, current.attention.map(JSON.string) ?? .null,
+                    .bool(current.attentionComplete)]).compact
+    }
+
+    /// The newest row the open conversation displays, while it shows the latest messages.
+    func newestDisplayedEventId(_ target: Target) -> String {
+        guard selected?.target == target, activeFrame?.target == target, !hasNewer else { return "" }
+        return events.last?.id ?? ""
+    }
+
+    /// After the settled visibility dwell, acknowledges what the open conversation showed of its current inspection:
+    /// the reply once its tail or newest row was visible, the attention once its questions were (without questions,
+    /// once the same tail or newest row was). `key` is `currentReadKey` as the dwell saw it.
+    func visibleCurrent(_ target: Target, key: String, flags: CurrentReadFlags) {
+        guard let current = currentRead(target), key == currentReadKey(current) else { return }
+        let shown = SharedReadPolicies.currentShown(latest: !hasNewer, questionsListed: !questions.isEmpty, flags: flags)
+        shareCurrent(target, current, replyShown: shown.reply, attentionShown: shown.attention)
+    }
+
+    private func shareCurrent(_ target: Target, _ current: CurrentRead, replyShown: Bool, attentionShown: Bool) {
+        guard sharedReadAvailable(target),
+              let payload = SharedReadPolicies.currentPayload(app.sessions.first(where: { $0.target == target }), target: target,
+                                                              current: current, replyShown: replyShown, attentionShown: attentionShown),
+              let connection = app.connections.first(where: { $0.id == target.connectionId }) else { return }
+        launchSharedRead(SharedReadRequest(connection: connection, target: target, payload: payload,
+                                           key: target.key + "\n" + JSON.object(payload).compact))
+    }
+
+    /// Sends one prepared mark once. The canonical and current acknowledgements share this path, so their delivery,
+    /// retries and observed status stay one.
+    private func launchSharedRead(_ request: SharedReadRequest) {
+        guard sharedReadsSent.insert(request.key).inserted else { return }
+        Task { await sendSharedRead(request) }
+    }
+
     /// Tells the session's computer that this phone showed its current reply.
     func shareRead(_ target: Target) {
-        guard let request = sharedReadRequest(target, acknowledge: true), sharedReadsSent.insert(request.key).inserted else { return }
-        Task { await sendSharedRead(request) }
+        guard let request = sharedReadRequest(target, acknowledge: true) else { return }
+        launchSharedRead(request)
     }
 
     /// A reply read on another device advances this phone's watermark, using only a fresh exact head.

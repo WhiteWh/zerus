@@ -46,7 +46,7 @@ pub(crate) fn adopt_custody() -> Result<(), String> {
 
 /// How the original child ended. Its exit never settles the send.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum Ended {
+pub(in crate::desktop) enum Ended {
     /// It read all of its stdin and exited with `code`, and both output pipes
     /// ended, within the deadline.
     Exited { code: i32 },

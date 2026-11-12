@@ -127,6 +127,18 @@ describe("placement", () => {
     expect(placement(rows, offsets, heights, A, 120, session)).toMatchObject({ group: "alpha", before: C });
   });
 
+  it("moves a session dropped on an ended parent's container into its project, never before it (zerus-sa9qn.17)", () => {
+    const box: Row = { type: "container", id: "container:ended:\nm\ns1", project: "alpha",
+      container: { name: "kimi/p/s1", title: "s1", agent: "kimi", computer: "", machine: "workstation", state: "archived" } };
+    const boxed = layout([header("alpha"), box, card(C)]);
+    for (const y of [45, 120]) {
+      const drop = placement(boxed.rows, boxed.offsets, boxed.heights, box.id, y, session);
+      expect(drop).toMatchObject({ group: "alpha" });
+      expect(drop.before).toBeUndefined();
+      expect(drop.nest).toBeUndefined();
+    }
+  });
+
   it("sends a drop on the blank area to the Inbox's end, not the default project", () => {
     const blank = placement(rows, offsets, heights, undefined, 900, session);
     expect(blank).toMatchObject({ group: "ungrouped" });

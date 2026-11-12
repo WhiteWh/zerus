@@ -103,6 +103,18 @@ describe("the session list's keys", () => {
     expect(selected(), "after Deselect all").toEqual(["a0", "a1"]);
   });
 
+  it("arrows, Home and End step over an ended parent's container: it is never a selection (zerus-sa9qn.17)", () => {
+    const box: Row = { type: "container", id: "container:ended:\nm\ns9", project: "alpha", depth: 0,
+      container: { name: "codex/fixture/s9", title: "s9", agent: "codex", computer: "", machine: "workstation", state: "archived" } };
+    fixture.rows = () => [header("alpha"), box, card("a0"), card("a1"), header("beta"), box, card("b0")];
+    setSelectedKey(key("a1"));
+    press("ArrowUp"); expect(selectedKey()).toBe(key("a0"));
+    press("ArrowUp"); expect(selectedKey()).toBe(key("a0"));
+    press("Home"); expect(selectedKey()).toBe(key("a0"));
+    press("End"); expect(selectedKey()).toBe(key("b0"));
+    press("ArrowUp"); expect(selectedKey()).toBe(key("a1"));
+  });
+
   it("Home and End go to the first and last row", () => {
     press("End");
     expect(selectedKey()).toBe(key("b0"));

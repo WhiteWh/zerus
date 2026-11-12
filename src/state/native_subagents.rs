@@ -1,7 +1,9 @@
 //! Provider-specific child identity and turn evidence. Native catalogs establish
 //! membership; only exact typed turn boundaries reconcile missing hooks.
 use super::*;
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rusqlite::OptionalExtension;
+#[cfg(test)]
+use rusqlite::Connection;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
@@ -106,42 +108,108 @@ fn codex_turn(path: &Path, home: &Path, id: &str, parent: &str, external: bool) 
 
 fn codex(record: &mut Value) -> bool {
     let mut changed = false;
-    let parent = string(record,"conversation_id").to_owned();
-    let own = string(record,"agent") == "codex";
-    let children: Vec<_> = record["subagents"].as_object().into_iter().flatten()
-        .filter(|(_, c)| ["working", "finished"].contains(&string(c,"state")) &&
-            ((own && c["external"] != true) || (c["external"] == true && c["provider"] == "codex")))
-        .map(|(id,c)| (id.clone(),c.clone())).collect();
-    if children.is_empty() { return false; }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if own && effort::picker_entered() {
-        // SQLite's read-only open can still create native WAL/SHM files.
-        // This keeper has no source-side write authority. Keep the original
-        // child evidence and latch the same owner's refusal before any open;
-        // returning unchanged metadata must never authorize later input.
-        let _ = effort::picker_refuse::<()>(
-            "ID Effort cannot verify this Codex child catalog; use Terminal".into(),
-        );
+    let parent = string(record, "conversation_id").to_owned();
+    let own = string(record, "agent") == "codex";
+    let children: Vec<_> = record["subagents"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(_, c)| {
+            ["working", "finished"].contains(&string(c, "state"))
+                && ((own && c["external"] != true)
+                    || (c["external"] == true && c["provider"] == "codex"))
+        })
+        .map(|(id, c)| (id.clone(), c.clone()))
+        .collect();
+    if children.is_empty() {
         return false;
     }
-    let home = if string(record,"agent_home").is_empty() { home().join(".codex") } else { PathBuf::from(string(record,"agent_home")) };
-    let database = if own {
-        Connection::open_with_flags(home.join("state_5.sqlite"), OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()
-    } else { None };
-    if let Some(db) = &database { let _ = db.busy_timeout(std::time::Duration::from_millis(20)); }
+    let home = if string(record, "agent_home").is_empty() {
+        home().join(".codex")
+    } else {
+        PathBuf::from(string(record, "agent_home"))
+    };
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let picker = own && effort::picker_entered();
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let picker = false;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let snapshot = if picker {
+        let until = match effort::picker_deadline(
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+        ) {
+            Ok(until) => until,
+            Err(_) => {
+                let _ = effort::picker_refuse::<()>(
+                    "ID Effort cannot verify this Codex child catalog; use Terminal".into(),
+                );
+                return false;
+            }
+        };
+        let ids: Vec<String> = children
+            .iter()
+            .filter(|(_, child)| child["external"] != true)
+            .map(|(id, _)| id.clone())
+            .collect();
+        match codex_sqlite::rollout_paths(&home, &ids, until) {
+            Ok(paths) => Some(paths),
+            Err(_) => {
+                let _ = effort::picker_refuse::<()>(
+                    "ID Effort cannot verify this Codex child catalog; use Terminal".into(),
+                );
+                return false;
+            }
+        }
+    } else {
+        None
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let snapshot: Option<std::collections::BTreeMap<String, String>> = None;
+    let database = if own && !picker {
+        codex_sqlite::NativeConnection::open(home.join("state_5.sqlite")).ok()
+    } else {
+        None
+    };
+    if let Some(db) = &database {
+        let _ = db.busy_timeout(std::time::Duration::from_millis(20));
+    }
     for (id, child) in children {
         let external = child["external"] == true;
-        let native_id = if external { string(&child,"conversation_id") } else { &id };
-        if uuid::Uuid::parse_str(native_id).is_err() { continue; }
-        let (path, native_home) = if external {
-            (PathBuf::from(string(&child,"transcript")), PathBuf::from(string(&child,"agent_home")))
+        let native_id = if external {
+            string(&child, "conversation_id")
         } else {
-            let Some(db) = &database else { continue; };
-            let Ok(Some(path)) = db.query_row("SELECT rollout_path FROM threads WHERE id=?1", [native_id], |row| row.get::<_,String>(0)).optional() else { continue; };
+            &id
+        };
+        if uuid::Uuid::parse_str(native_id).is_err() {
+            continue;
+        }
+        let (path, native_home) = if external {
+            (
+                PathBuf::from(string(&child, "transcript")),
+                PathBuf::from(string(&child, "agent_home")),
+            )
+        } else if let Some(paths) = &snapshot {
+            let Some(path) = paths.get(native_id) else {
+                continue;
+            };
+            (PathBuf::from(path), home.clone())
+        } else {
+            let Some(db) = &database else {
+                continue;
+            };
+            let Ok(Some(path)) = db.query_row(
+                "SELECT rollout_path FROM threads WHERE id=?1",
+                [native_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            else {
+                continue;
+            };
             (PathBuf::from(path), home.clone())
         };
         if let Some(evidence) = codex_turn(&path, &native_home, native_id, &parent, external) {
-            changed |= apply(record,&id,&evidence,"codex_native_rollout");
+            changed |= apply(record, &id, &evidence, "codex_native_rollout");
         }
     }
     changed

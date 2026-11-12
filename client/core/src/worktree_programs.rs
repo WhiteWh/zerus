@@ -269,4 +269,20 @@ pub(crate) mod tests {
         assert_ne!(digest, changed.binding());
         assert!(m.contains_originals(&changed.programs));
     }
+
+    #[test]
+    fn pid_one_or_zero_manifest_members_are_refused_for_terminate_remove() {
+        let mut m = manifest();
+        m.programs.insert(
+            0,
+            Program {
+                pid: 1,
+                birth: "init-birth".into(),
+                label: "init".into(),
+            },
+        );
+        assert!(!m.valid(1000));
+        m.programs[0].pid = 0;
+        assert!(!m.valid(1000));
+    }
 }

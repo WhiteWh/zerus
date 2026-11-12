@@ -48,7 +48,7 @@ AGENTS = {
         suites=['test_clear_context_native.NativeCodexClear', 'test_codex_update.NativeCodexUpdate',
                 'test_codex_rate_limit.NativeCodexRateLimit',
                 'test_external_agents_native.NativeExternalAgents', 'test_codex_async_questions_native',
-                'test_codex_input_native', 'test_busy_input_native.NativeBusyCodex',
+                'test_codex_input_native', 'test_busy_input_native.NativeBusyCodex', 'test_clear_input_native.NativeClearInputCodex',
                 'test_task_context_native.NativeCodexTaskContext', 'test_terminate_native.NativeCodexTermination'],
         windows=dict(suites=['test_windows_native_agents.NativeWindowsCodex'], timeout=900, coverage=HOST_COVERAGE)),
     'claude': dict(
@@ -59,7 +59,7 @@ AGENTS = {
         coverage='input, dim prompt suggestions and draft preservation, questions, approvals, trust, resume, usage-limit and auto-mode choices, clear, compaction, session-only model settings and '
                  'status line context capacity and the session-start task instructions',
         timeout=900,
-        suites=['test_claude_input_native', 'test_claude_suggestions_native', 'test_busy_input_native.NativeBusyClaude', 'test_claude_questions_native', 'test_claude_approval_native', 'test_claude_safety_native',
+        suites=['test_claude_input_native', 'test_claude_suggestions_native', 'test_busy_input_native.NativeBusyClaude', 'test_busy_input_native.NativeHookedImagesClaude', 'test_clear_input_native.NativeClearInputClaude', 'test_claude_questions_native', 'test_claude_approval_native', 'test_claude_safety_native',
                 'test_claude_trust_native', 'test_claude_resume_native', 'test_claude_usage_limit_native', 'test_clear_context_native.NativeClearContext',
                 'test_compact_context_native', 'test_claude_settings_native', 'test_claude_statusline_native',
                 'test_claude_permission_native', 'test_task_context_native.NativeClaudeTaskContext',
@@ -84,9 +84,10 @@ AGENTS = {
         private_xdg=True,
         coverage='private service start and port, own session IDs, lost launch and message responses, queue, Stop, '
                  'history, question forms, permissions, model and effort, provider errors, OpenCode 1 bindings and '
-                 'incompatible or unresponsive services',
+                 'incompatible or unresponsive services; history-free existing-turn context hints, restart, compaction, '
+                 'off, subagents, bounded stale/busy lookups, preserved user config/plugins and all-table persistence scan',
         timeout=600,
-        suites=['test_opencode_native']),
+        suites=['test_opencode_native', 'test_opencode_hint_native']),
 }
 # Suite inputs taken from the caller; every other HGS_ variable is dropped.
 FORWARDED = ('HGS_TEST_CONPTY_DIR',)
@@ -487,12 +488,13 @@ def run_suites(suites, env, timeout, scratch, log, absolute_end=None):
     return run.returncode, out.read_bytes().decode('utf-8', 'replace')
 
 
-def run_macos_claude_suites(suites, env, timeout, scratch, log):
-    """Only this fully private matrix uses two processes under its original end."""
+def run_partitioned_suites(suites, env, timeout, scratch, log, *, native_variable):
+    """Private Codex and macOS Claude partitions share their original row end."""
     spec = importlib.util.spec_from_file_location('native_suite_workers', ROOT / 'scripts/ci/native_suite_workers.py')
     workers = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(workers)
-    return workers.run_suites(suites, env, timeout, scratch, log)
+    return workers.run_suites(suites, env, timeout, scratch, log, native_variable=native_variable,
+                             worker_count=3 if native_variable == 'HGS_CODEX_TEST_BIN' else 2)
 
 
 def method_names(value):
@@ -623,12 +625,16 @@ def qualify(agent, package, work, results, hgs, hint_inputs=None, package_cache=
                 test_env.update(ZERUS_HINT_INPUTS=json.dumps(hint_inputs),
                                 ZERUS_HINT_RESULTS=str(directory / 'hook-output'),
                                 ZERUS_NATIVE_EXPECTED_IDS=json.dumps(suites), ZERUS_NATIVE_FAILFAST='1')
-            runner = run_macos_claude_suites if hint_inputs is None and (agent, target) == ('claude', 'darwin-arm64') else run_suites
             arguments = (suites, test_env, timeout, work / agent / version, directory / (case + '.log'))
-            if hint_inputs is None:
-                status, stdout = runner(*arguments)
+            if hint_inputs is None and (agent, target) in (('claude', 'darwin-arm64'), ('codex', 'linux-x64')):
+                # The 57 Codex cases outgrew a serial 180 s row in CI
+                # 43228147234/43238924877. Preserve that end and every occurrence;
+                # use the same checked, private partitioner as macOS Claude.
+                status, stdout = run_partitioned_suites(*arguments, native_variable=spec['variable'])
+            elif hint_inputs is None:
+                status, stdout = run_suites(*arguments)
             else:
-                status, stdout = runner(*arguments, absolute_end=hint_end)
+                status, stdout = run_suites(*arguments, absolute_end=hint_end)
             marker = next((line.removeprefix('ZERUS_NATIVE_RESULT=') for line in stdout.splitlines()
                            if line.startswith('ZERUS_NATIVE_RESULT=')), None)
             if marker is not None:

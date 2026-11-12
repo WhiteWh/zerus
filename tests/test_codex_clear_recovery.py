@@ -65,7 +65,14 @@ static void emit_hook(int nested) {
     }
     if (!waited) { kill(child, SIGKILL); waitpid(child, &status, 0); }
     char result[32]; int size = snprintf(result, sizeof result, "%d", waited && WIFEXITED(status) ? WEXITSTATUS(status) : 125);
-    if (!nested) append("hook-result", result, size);
+    if (!nested) {
+        /* Expose the open/write window deterministically in the reader control. */
+        if (!access("delay-hook-result", F_OK)) {
+            close(open("hook-result", O_CREAT | O_WRONLY, 0600));
+            usleep(100000);
+        }
+        append("hook-result", result, size);
+    }
 }
 '''.replace('ENVIRONMENT', assignments).replace('EXECUTABLE', json.dumps(str(test_input.HGS)))
         emitter = emitter.replace('NATIVE', json.dumps(str(self.bin / 'codex')))
@@ -104,7 +111,9 @@ int main(int argc, char **argv) {
         (self.root / 'recovery-event.json').write_text(json.dumps(event or self.event))
         self.tmux('send-keys', '-t', self.pane, '-l', 'fixture-hook')
         self.tmux('send-keys', '-t', self.pane, 'Enter')
-        self.wait_for(lambda: (self.root / 'hook-result').exists())
+        result = self.root / 'hook-result'
+        # open(O_CREAT) publishes the name before the native fixture writes its status.
+        self.wait_for(lambda: result.exists() and result.read_text())
         self.assertEqual((self.root / 'hook-result').read_text(), str(expected))
         return json.loads(self.record_path.read_text())
 
@@ -266,6 +275,19 @@ int main(int argc, char **argv) {
         current = self.emit(dict(self.event, hook_event_name='Stop', last_assistant_message='Fixture finished'))
         self.assertEqual((current['activity'], current['phase']), ('idle', 'idle'))
         self.assertEqual(sum(e['type'] == 'SessionCleared' for e in self.inspect()['events']), 1)
+
+    @unittest.skipUnless(sys.platform in ('linux', 'darwin'), 'Unix Terminate fence')
+    def test_hook_result_waits_for_bytes_and_preserves_a_nonzero_exit(self):
+        self.poisoned()
+        (self.root / 'delay-hook-result').touch()
+        # Both success and refusal are published after the empty file exists.
+        self.record = self.emit()
+        self.assertEqual(self.record['conversation_id'], self.successor)
+        self.record['terminating'] = None
+        self.write_record()
+        before = self.record_path.read_bytes()
+        self.emit(expected=2)
+        self.assertEqual(self.record_path.read_bytes(), before)
 
     @unittest.skipUnless(sys.platform in ('linux', 'darwin'), 'Unix Terminate fence')
     def test_pending_terminate_blocks_successor_recovery_but_keeps_original_completion(self):

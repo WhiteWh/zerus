@@ -1,0 +1,29 @@
+diff --git a/mobile/android/app/src/main/java/app/zerus/mobile/ZerusViewModel.kt b/mobile/android/app/src/main/java/app/zerus/mobile/ZerusViewModel.kt
+index 28c1ece9f..02be14b01 100644
+--- a/mobile/android/app/src/main/java/app/zerus/mobile/ZerusViewModel.kt
++++ b/mobile/android/app/src/main/java/app/zerus/mobile/ZerusViewModel.kt
+@@ -866,6 +866,8 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
+     var conversationQuestions by mutableStateOf<List<Question>>(emptyList()); private set
+     var conversationOutgoing by mutableStateOf<List<OutgoingMessage>>(emptyList()); private set
+     var activityVerified by mutableStateOf(false); private set
++    /** When the verified question projection was last installed; `0` means never. */
++    var questionCheckedAt by mutableStateOf(0L); private set
+     var historyCached by mutableStateOf(false); private set
+     /** When the shown conversation's messages were observed (wall clock), null for a saved copy without a time (zerus-a4mub.10). */
+     var conversationObservedAt by mutableStateOf<Long?>(null); private set
+@@ -1110,6 +1112,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
+                 conversationEvents = prepared.events; conversationOutgoing = prepared.messages; conversationQuestions = prepared.questions
+                 activity = frame.raw; activityVerified = verified /* BEGIN QUESTION_AVAILABILITY_PROBE writer-install-presentation */; questionVerificationProbe(QuestionUiProbe.VerificationWriter.INSTALL_PRESENTATION) /* END QUESTION_AVAILABILITY_PROBE writer-install-presentation */; historyCached = !verified; conversationHistoryTruncated = frame.truncated
+                 conversationObservedAt = frame.observedAt.takeIf { it > 0 }
++                if (verified) questionCheckedAt = android.os.SystemClock.elapsedRealtime()
+                 publishPagingMetadata(frame)
+                 captureUnreadBoundary(frame.target,prepared.events)
+             }
+@@ -1154,6 +1157,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
+                 if (conversationOutgoing != messages) conversationOutgoing = messages
+                 activity = frame.raw; activityVerified = activeFrameVerified /* BEGIN QUESTION_AVAILABILITY_PROBE writer-prepare-presentation */; questionVerificationProbe(QuestionUiProbe.VerificationWriter.PREPARE_PRESENTATION) /* END QUESTION_AVAILABILITY_PROBE writer-prepare-presentation */; historyCached = !activeFrameVerified; conversationHistoryTruncated = frame.truncated
+                 conversationObservedAt = frame.observedAt.takeIf { it > 0 }
++                if (activeFrameVerified) questionCheckedAt = android.os.SystemClock.elapsedRealtime()
+                 publishPagingMetadata(frame)
+                 if(pendingHistoryPosition==frame.target.key) { pendingHistoryPosition="";readPositionReady=true }
+                 captureUnreadBoundary(frame.target,merged.events)

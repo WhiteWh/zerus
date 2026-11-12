@@ -373,3 +373,22 @@ Restoration checks the exact installed callback and is attempted independently o
 These source-bound memory controls are not Kotlin, Android OS dispatch or a fix for the unproven f0c Send failure.
 Both native outcomes retain the final bounded memory trace. A positive result appends it on the original single
 stream line, preserving the unchanged seven-case parser; a failure retains the original error and diagnostic stream.
+
+## iOS read-visibility campaign
+
+`ios-approval-ui.yml` also runs `scripts/ci/ios-read-visibility-ui.py` in a second job, `read-visibility-ui`. It runs
+on its own disposable hosted VM with the same triggers, reviewed inputs, admission, replica build, deadlines and cleanup,
+so it neither shares nor enlarges the approval campaign's limits. The runner and `ios-read-visibility-ui-project.py`
+are the approval ones with only the fixture identity changed; `tests/test_read_visibility_ui_harness.py` pins that
+derivation, the job, the one native case and the generated project.
+
+The fixture (`mobile/ios/ReadVisibilityUIFixture`, zerus-a4mub.31) compiles the unchanged
+`ConversationReadLayout.swift`, which reports each list item's placement from `bounds(of: .scrollView)`, and ZerusKit's
+readable-visibility rule, read state and unread count. Synthetic rows, exact-offset scroll controls and the settled
+350 ms dwell copied from `ConversationView` show the following on screen:
+- a message scrolled fully into view is read after the dwell;
+- a 20-point sliver of it is not;
+- a questions pane taller than twice the viewport counts once its 48-point readable part is visible.
+
+Its bundle identifiers are `dev.zerus.fixture.readvisibility` and `.uitests`, because the iOS 26.0 simulator runtime
+refused to install a `test.example.zerus.*` identifier (zerus-a4mub.34).

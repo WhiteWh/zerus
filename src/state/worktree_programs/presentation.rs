@@ -68,7 +68,7 @@ impl Pair {
         let pid = |v: &Value| {
             v.as_u64()
                 .and_then(|v| u32::try_from(v).ok())
-                .filter(|v| *v > 1)
+                .filter(|v| *v > 0)
         };
         let agent = pid(&record["pid"])?;
         let supervisor = pid(&record["supervisor"]["pid"])?;
@@ -277,5 +277,36 @@ mod tests {
         assert!(status.success());
         assert!(result.is_some());
         assert!(Presentation::visible(result.as_ref(), &manifest).is_empty());
+    }
+
+    #[test]
+    fn pid_one_native_pairs_are_valid_but_pid_zero_is_refused() {
+        let until = Instant::now() + Duration::from_secs(5);
+        let mut supervisor_init = record();
+        supervisor_init["supervisor"] = json!({"pid":1,"start":"saved-supervisor"});
+        let observed_supervisor = |pid, deadline| {
+            let mut sample = observed(pid, deadline)?;
+            if pid == 10 {
+                sample.native.parent = 1;
+            }
+            Some(sample)
+        };
+        assert!(Pair::read(&supervisor_init, until, observed_supervisor).is_some());
+
+        let mut agent_init = record();
+        agent_init["pid"] = json!(1);
+        let observed_agent = |pid, deadline| {
+            let mut sample = observed(pid, deadline)?;
+            if pid == 1 {
+                sample.native.parent = 20;
+                sample.stamp = "saved-agent".into();
+            }
+            Some(sample)
+        };
+        assert!(Pair::read(&agent_init, until, observed_agent).is_some());
+
+        let mut invalid = record();
+        invalid["supervisor"]["pid"] = json!(0);
+        assert!(Pair::read(&invalid, until, observed_supervisor).is_none());
     }
 }

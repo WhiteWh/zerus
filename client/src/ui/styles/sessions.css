@@ -233,6 +233,9 @@
   /* Compact (collapsed) row: 40 px row, 30 px card; status, provider, mute and expand at the right. */
   .scard.compact { display: flex; align-items: center; padding: 2px 3px 0 11px; bottom: 6px; }
   .scard.compact .sc-title { flex: 1 1 auto; line-height: 22px; }
+  /* An ended parent kept for its live child sessions (zerus-sa9qn.17): dimmed, never a session's live marks. */
+  .scard.ended-parent .cc-line, .scard.ended-parent .sc-title { color: var(--z-list-muted); }
+  .scard.ended-parent .cc-tile, .scard.ended-parent .cc-line > .sbadge { opacity: .62; }
   .scard.compact .sbadge { flex-shrink: .001; }
   .scard.compact .sbadge, .scard.compact .agent-badge, .scard.compact .sc-mute { margin-left: 6px; margin-right: 0; }
   /* A muted row: the name keeps its width and the bell after it takes the rest. */

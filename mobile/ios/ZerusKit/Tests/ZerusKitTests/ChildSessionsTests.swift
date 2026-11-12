@@ -127,9 +127,13 @@ final class ChildSessionsTests: XCTestCase {
                                    "child_attention": .object([:])])])
         XCTAssertTrue(SessionNotificationPreferences.muted(mutedError))
         XCTAssertEqual(DesktopSessionPalette.badge(mutedError, true).kind, .error)
-        // It still needs attention, so it stays in Needs attention and Active (spec 2.1).
-        XCTAssertTrue(SessionFilters.matches(rows[2], .attention, true))
-        XCTAssertTrue(SessionFilters.matches(rows[2], .active, true))
+        // Its request waits for the parent, so it leaves Needs attention and Active; an approval only the person can
+        // answer stays in both (spec 2.1, zerus-sa9qn.18/.19).
+        XCTAssertTrue(SessionFilters.needsAttention(rows[2], true))
+        XCTAssertFalse(SessionFilters.matches(rows[2], .attention, true))
+        XCTAssertFalse(SessionFilters.matches(rows[2], .active, true))
+        XCTAssertTrue(SessionFilters.matches(rows[3], .attention, true))
+        XCTAssertTrue(SessionFilters.matches(rows[3], .active, true))
         // Shown subagents join the one counter.
         let subagents = [SessionCardChild(id: "a", name: "a", status: "Working", detail: "", provider: "claude", kind: .working, group: false),
                          SessionCardChild(id: "b", name: "b", status: "Ready", detail: "", provider: "claude", kind: .neutral, group: false)]

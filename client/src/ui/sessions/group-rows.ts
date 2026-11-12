@@ -1,6 +1,6 @@
 import { countedHeaderAttention, isWorking, needsAttention, quietAttention, visibleUnreadReply } from "../../store/attention";
 import type { CreationCard, GroupingOut } from "../../types";
-import type { Session, Subagent } from "./types";
+import type { AgentKind, Session, Subagent } from "./types";
 import { currentChildren } from "./subagents";
 
 export type Row =
@@ -16,7 +16,31 @@ export type Row =
       /** A child whose parent is not shown above it: the parent's name. */
       fromParent?: { name: string; key?: string } }
   | { type: "child"; id: string; parent: Session; child: Subagent; first: boolean; last: boolean }
-  | { type: "creation"; id: string; creation: CreationCard };
+  | { type: "creation"; id: string; creation: CreationCard }
+  /**
+   * An ended parent that still has live child sessions (zerus-sa9qn.17): a
+   * presentational container its children nest under. It is never a
+   * session row: it grants no selection, drag, attention or action of its own.
+   */
+  | { type: "container"; id: string; project: string; container: Container; depth?: number; parentKey?: string; lastChild?: boolean;
+      team?: Team; fromParent?: { name: string; key?: string } };
+
+/**
+ * An ended parent shown only for its live children (zerus-sa9qn.17). `key` is
+ * its listed row when the filters hide a stopped or paused parent; a parent
+ * known only from its children's links (terminated, archived or no longer
+ * listed) has none.
+ */
+export interface Container {
+  key?: string;
+  name: string;
+  title: string;
+  agent: AgentKind;
+  computer: string;
+  machine: string;
+  /** "archived": its computer lists it in Archive; "ended": stopped, paused or no longer listed. */
+  state: "ended" | "archived";
+}
 
 /**
  * A parent's child sessions: all, working, quiet requests its children hold
@@ -50,7 +74,22 @@ export interface ListInput {
   parentKey?: (s: Session) => string | undefined;
   /** A parent whose child sessions are collapsed. */
   teamCollapsed?: (key: string) => boolean;
+  /**
+   * Keep an ended parent as a container of its listed children (zerus-sa9qn.17):
+   * the live list only. Archive rows never use it.
+   */
+  containers?: boolean;
+  /** The machine UUID of a row's computer, to tell a parent gone from this computer from one on another. */
+  machineOf?: (s: Session) => string | undefined;
 }
+
+/** A listed parent that has ended: not running (stopped or paused) or its agent ended, and not archived. */
+export const endedParent = (s: Session) => s.state !== "archived" && (s.state !== "running" || s.status === "ended");
+
+const AGENTS: readonly AgentKind[] = ["claude", "codex", "kimi", "deepseek", "opencode", "sh"];
+
+/** The title of a session name `agent/project/tag`: its tag. */
+const tagOf = (name: string) => name.slice(name.lastIndexOf("/") + 1) || name;
 
 /** Qt's grouped rows (SessionsWindowRows.cpp:289-338, header counts 393-411). */
 /**
@@ -66,6 +105,70 @@ export function withSubagents(team: Team | undefined, kids: readonly Subagent[],
     working: (team?.working ?? 0) + kids.filter((child) => child.state === "working").length,
     collapsed: team?.collapsed ?? collapsed,
   };
+}
+
+/**
+ * One project group's shown rows with the containers of their ended parents
+ * (zerus-sa9qn.17), in rank order. A shown child whose parent is
+ *  - a listed row of this group that the filters hide and that has ended
+ *    (`endedParent`) reveals that row as a container;
+ *  - not listed, and its link says `archived` or `saved`, or `missing` on the
+ *    child's own computer (terminated, archived or forgotten there) gets one
+ *    container per recorded parent, built from the link.
+ * A parent that runs, or is listed in another group, leaves its children at
+ * top level with their **from PARENT** chip, as before. A revealed parent's
+ * own parent is resolved the same way, so ended chains nest. One worklist
+ * over the shown rows and one map per kind: no extra read per row.
+ */
+export function withContainers(listed: readonly Session[], all: readonly Session[], input: Pick<ListInput, "parentKey" | "machineOf">) {
+  const containers = new Map<string, Container>();
+  const ghostOf = new Map<string, string>();
+  if (!input.parentKey) return { ordered: listed, containers, ghostOf };
+  const shown = new Set<string>();
+  for (const s of listed) shown.add(s.key);
+  let byKey: Map<string, Session> | undefined;
+  const member = (key: string) => (byKey ??= new Map(all.map((s) => [s.key, s]))).get(key);
+  const revealed = new Set<string>();
+  const ghosts = new Map<string, Session>();
+  const pending = [...listed];
+  while (pending.length) {
+    const s = pending.pop()!;
+    const parent = input.parentKey(s);
+    if (parent) {
+      if (parent === s.key || shown.has(parent) || revealed.has(parent)) continue;
+      const row = member(parent);
+      if (!row || !endedParent(row)) continue;
+      revealed.add(parent);
+      containers.set(parent, { key: row.key, name: row.name, title: row.title, agent: row.agent, computer: row.computer, machine: row.machine, state: "ended" });
+      pending.push(row);
+      continue;
+    }
+    const link = s.parent;
+    if (!link?.machine || !(link.session_id || link.conversation_id)) continue;
+    const gone = link.state === "archived" || link.state === "saved" || (link.state === "missing" && input.machineOf?.(s) === link.machine);
+    if (!gone) continue;
+    const key = `ended:${s.computer}\n${link.machine}\n${link.session_id || `c:${link.conversation_id}`}`;
+    if (!containers.has(key)) {
+      const prefix = link.name.slice(0, Math.max(0, link.name.indexOf("/")));
+      const agent: AgentKind = prefix === "dsh" ? "deepseek" : (AGENTS as readonly string[]).includes(prefix) ? prefix as AgentKind : s.agent;
+      containers.set(key, { name: link.name, title: tagOf(link.name), agent, computer: s.computer, machine: s.machine,
+                            state: link.state === "archived" ? "archived" : "ended" });
+      ghosts.set(key, { key } as Session);
+    }
+    ghostOf.set(s.key, key);
+  }
+  if (!containers.size) return { ordered: listed, containers, ghostOf };
+  // In rank order: a revealed parent at its own position, a recorded one just
+  // before the first row that names it.
+  const ordered: Session[] = [];
+  const placed = new Set<string>();
+  const place = (s: Session) => {
+    const ghost = ghostOf.get(s.key);
+    if (ghost && !placed.has(ghost)) { placed.add(ghost); ordered.push(ghosts.get(ghost)!); }
+    ordered.push(s);
+  };
+  for (const s of all) if (shown.has(s.key) || revealed.has(s.key)) place(s);
+  return { ordered, containers, ghostOf };
 }
 
 export function groupRows(input: ListInput): Row[] {
@@ -92,12 +195,15 @@ export function groupRows(input: ListInput): Row[] {
   // One project group's visible cards in rank order, child sessions nested
   // under a parent shown in the same list. Nesting never hides a row: a loop
   // or a parent elsewhere leaves the card at top level.
-  const cards = (list: readonly Session[]) => {
+  const cards = (listed: readonly Session[], project = "", all: readonly Session[] = listed) => {
+    const resolved = input.containers ? withContainers(listed, all, input) : undefined;
+    const list = resolved?.ordered ?? listed;
+    const containers = resolved?.containers;
     const parentOf = new Map<string, string>();
     if (input.parentKey) {
       const shown = new Set(list.map((s) => s.key));
       for (const s of list) {
-        const parent = input.parentKey(s);
+        const parent = resolved?.ghostOf.get(s.key) ?? input.parentKey(s);
         if (parent && parent !== s.key && shown.has(parent)) parentOf.set(s.key, parent);
       }
     }
@@ -173,6 +279,12 @@ export function groupRows(input: ListInput): Row[] {
       const collapsed = !!counts && !!input.teamCollapsed?.(s.key);
       if (collapsed) hidden.add(s.key);
       const from = !parent && s.parent ? { fromParent: { name: s.parent.name, key: input.parentKey?.(s) } } : {};
+      const container = containers?.get(s.key);
+      if (container) {
+        out.push({ type: "container", id: `container:${s.key}`, project, container, depth, parentKey: parent,
+                   lastChild: parent ? last : undefined, team: counts && { ...counts, collapsed }, ...from });
+        continue;
+      }
       card(s, { depth, parentKey: parent, lastChild: parent ? last : undefined, team: counts && { ...counts, collapsed }, ...from });
     }
   };
@@ -180,7 +292,7 @@ export function groupRows(input: ListInput): Row[] {
   const headers = input.grouping.loaded ? input.grouping.headers : [];
   if (headers.length <= 1) {
     // One project, or none presented yet: no header, and nothing collapses (293, 324, 326).
-    for (const [id, list] of input.members) if (wanted(id)) cards(list.filter(input.visible));
+    for (const [id, list] of input.members) if (wanted(id)) cards(list.filter(input.visible), id, list);
     return out;
   }
   for (const h of headers) {
@@ -201,7 +313,7 @@ export function groupRows(input: ListInput): Row[] {
     }
     out.push({ type: "header", id: `h:${h.id}`, project: h.id, name: h.name, color: h.color, palette: h.palette,
                collapsed: h.collapsed, total: list.length, attention, unread, working });
-    if (!h.collapsed) cards(list);
+    if (!h.collapsed) cards(list, h.id, all);
   }
   return out;
 }

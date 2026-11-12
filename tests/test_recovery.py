@@ -19,6 +19,7 @@ class Recovery(unittest.TestCase):
     write_record=fixtures.InputTransport.write_record
     screen=fixtures.InputTransport.screen
     received=fixtures.InputTransport.received
+    claude_composer=fixtures.InputTransport.claude_composer
 
     def command(self,*args,payload=None,ok=True):
         result=subprocess.run([str(fixtures.HGS),*args],env=self.env,text=True,capture_output=True,
@@ -31,7 +32,9 @@ class Recovery(unittest.TestCase):
         self.record.update(agent=agent,phase='error',activity='attention',recovery_user_at=1,
             provider_error=dict(type='StopFailure',source='provider_hook',message_id='failure',at=time.time(),detail='503 Service unavailable',error_kind='provider'))
         self.write_record()
-        if agent=='claude':self.screen('\x1b[2J\x1b[H❯ ','2:0')
+        # Claude shows a paste in its composer and records the submitted row; hgs
+        # counts a Claude delivery only on that native proof (zerus-iitw8).
+        if agent=='claude':self.claude_composer();self.screen('\x1b[2J\x1b[H❯ ','2:0')
         if agent=='kimi':self.screen('\x1b[2J\x1b[H ╭──────────────╮\r\n │ >          │\r\n ╰──────────────╯\x1b[2;6H','5:1')
         directory=self.state/'recovery';directory.mkdir(exist_ok=True)
         self.policy=directory/'policy.json'

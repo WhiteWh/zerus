@@ -47,7 +47,9 @@ pub fn confirmed(exit: &Exit) -> bool {
 }
 
 /// The explicit actions that select their session by ID as well. Reads, read
-/// marks, staged files, process stops and archived conversations never do.
+/// marks, staged files, process stops and archived conversations never do, nor
+/// do end actions: those run only from a capture whose scoped envelope names
+/// the run and conversation (`end_action::needs_capture`).
 pub fn selects(action: &Action) -> bool {
     match action {
         Action::Send { .. }
@@ -60,11 +62,7 @@ pub fn selects(action: &Action) -> bool {
         | Action::Settings { .. }
         | Action::Pause
         | Action::Resume
-        | Action::StartFresh
-        | Action::Archive
-        | Action::Terminate
-        | Action::Kill
-        | Action::Forget => true,
+        | Action::StartFresh => true,
         Action::Rename { archive_id, .. } | Action::Fork { archive_id, .. } => {
             archive_id.as_deref().unwrap_or_default().is_empty()
         }
@@ -276,10 +274,6 @@ mod tests {
             Action::Pause,
             Action::Resume,
             Action::StartFresh,
-            Action::Archive,
-            Action::Terminate,
-            Action::Kill,
-            Action::Forget,
             Action::Rename {
                 new_name: "claude/sample-project/renamed".into(),
                 archive_id: None,
@@ -369,6 +363,11 @@ mod tests {
             },
             Action::PauseAll { count: 2 },
             Action::ResumeAll { count: 2 },
+            // End actions run only from a capture (zerus-sa9qn.25).
+            Action::Archive,
+            Action::Terminate,
+            Action::Kill,
+            Action::Forget,
         ] {
             assert!(!selects(&action), "{action:?}");
             for computer in ["", "mac"] {

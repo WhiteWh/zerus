@@ -1034,7 +1034,9 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
         snapshotFlow { listState.isScrollInProgress && !programmatic && listState.firstVisibleItemIndex <= 3 }
             .distinctUntilChanged().collect { nearTop -> if(nearTop) model.loadOlder(target) }
     }
-    LaunchedEffect(target.key, listState, readable) {
+    // The shared readable-visibility rule (zerus-a4mub.31) in this screen's pixels.
+    val readableHeight = with(LocalDensity.current) { ConversationViewport.READABLE_HEIGHT_DP.dp.roundToPx() }
+    LaunchedEffect(target.key, listState, readable, readableHeight) {
         if (!readable) return@LaunchedEffect
         snapshotFlow {
             val layout = listState.layoutInfo
@@ -1042,17 +1044,21 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
                 it.key.toString().startsWith("event:") && it.offset < layout.viewportEndOffset &&
                     it.offset + it.size > layout.viewportStartOffset
             }.let { rows ->
-                val ids=rows.mapNotNull { displayedEventId(it.key.toString()) }.toSet()
-                Triple(ids,rows.firstOrNull()?.let { row -> displayedEventId(row.key.toString())?.let { it to (-row.offset).coerceAtLeast(0) } },
-                    model.visibleReadEvidence(target,ids))
+                val items=layout.visibleItemsInfo.map { ConversationViewport.Item(it.key.toString(),it.offset,it.size) }
+                val start=layout.viewportStartOffset;val end=layout.viewportEndOffset
+                val ids=ConversationViewport.visibleEventIds(items,start,end,readableHeight,::displayedEventId)
+                ReadViewport(ids,rows.firstOrNull()?.let { row -> displayedEventId(row.key.toString())?.let { it to (-row.offset).coerceAtLeast(0) } },
+                    model.visibleReadEvidence(target,ids),model.currentReadKey(target),
+                    ConversationViewport.currentFlags(items,start,end,readableHeight,model.newestDisplayedEventId(target),::displayedEventId))
             }
         }.distinctUntilChanged().collectLatest { viewport ->
             if (viewport == null) return@collectLatest
             // A transient row during initial positioning or a fling is not a deliberate read.
             delay(350)
             if (currentHistoryTarget == target.key && foreground && window.isWindowFocused && !programmatic) {
-                model.visibleMessages(target, viewport.first)
-                viewport.second?.let { (id, offset) -> model.saveConversationViewport(target,id,offset,follow.following && !model.hasNewer) }
+                model.visibleMessages(target, viewport.ids)
+                model.visibleCurrent(target,viewport.current,viewport.flags)
+                viewport.first?.let { (id, offset) -> model.saveConversationViewport(target,id,offset,follow.following && !model.hasNewer) }
             }
         }
     }
@@ -1202,6 +1208,14 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
     ExpandedQuestionHost(model, target, questions, online && model.activityVerified && !model.contextBlocked(target),
         questionDisplay, ::updateQuestionDisplay, onReview)
 }
+
+/**
+ * One settled reading viewport: the visible event rows, the first row and its offset, the private read
+ * evidence, and for the shared current acknowledgement the open inspection's values ([ZerusViewModel.currentReadKey])
+ * and what the viewport showed of it ([ConversationViewport.currentFlags]).
+ */
+private data class ReadViewport(val ids:Set<String>,val first:Pair<String,Int>?,val evidence:List<Triple<String,String,Long?>>,
+    val current:String,val flags:ConversationViewport.CurrentFlags)
 
 @Composable internal fun ConversationMessage(target: Target, event: Event, agent: String, outgoing: OutgoingMessage?,
     model: ZerusViewModel, onReview: (OutgoingMessage) -> Unit) {

@@ -1101,6 +1101,10 @@ class WorkflowSecurityTests(unittest.TestCase):
         packages = lock["packages"]
         self.assertEqual(packages[""]["dependencies"], manifest["dependencies"])
         self.assertEqual(packages["node_modules/@deepseek-ai/dsh"]["version"], version)
+        self.assertEqual(manifest["overrides"], {'@modelcontextprotocol/client': '2.3.0', 'fflate': '0.8.3'})
+        self.assertEqual(packages["node_modules/@modelcontextprotocol/client"]["version"], '2.3.0')
+        self.assertFalse(any(path.endswith('node_modules/fflate') and entry['version'] == '0.8.2'
+                             for path, entry in packages.items()))
         # Every transitive package is a registry tarball checked by SHA-512.
         for path, entry in packages.items():
             if not path:

@@ -77,7 +77,8 @@ class ShellBootstrap(test_pause.Harness):
         launch = str(uuid.uuid4())
         self.hgs('codex', 'p', '--new', '-n', 'failed', '--launch-id', launch, '-d')
         def ended():
-            rows = json.loads(self.hgs('ls', '--local', '--json', '--no-archives'))['ended_launches']
+            # The listing omits this optional field until an exit is observed.
+            rows = json.loads(self.hgs('ls', '--local', '--json', '--no-archives')).get('ended_launches', [])
             return next((row for row in rows if row['launch_id'] == launch), None)
         self.wait(ended)
         row = ended()

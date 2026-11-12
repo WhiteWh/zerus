@@ -99,6 +99,17 @@ class LatestFixture(unittest.TestCase):
         with self.assertRaises(ValueError):
             F.validate_lock(b' ' * (F.MAX_LOCK + 1), self.chosen)
 
+    def test_security_overrides_are_required_and_vulnerable_pins_are_rejected(self):
+        for package, fixed in F.SECURITY_OVERRIDES.items():
+            path = 'node_modules/' + package
+            self.lock['packages'][path] = dict(version=fixed, resolved='https://example.invalid/x.tgz', integrity=self.seal)
+        F.validate_security_pins(json.dumps(self.lock).encode())
+        for package, vulnerable in [('@modelcontextprotocol/client', '2.2.0'), ('fflate', '0.8.2')]:
+            lock = copy.deepcopy(self.lock)
+            lock['packages']['node_modules/' + package]['version'] = vulnerable
+            with self.subTest(package=package), self.assertRaisesRegex(ValueError, 'security'):
+                F.validate_security_pins(json.dumps(lock).encode())
+
     def fake_npm(self, command, **kwargs):
         prefix = Path(command[command.index('--prefix') + 1])
         evidence = self.evidence
@@ -155,6 +166,8 @@ class LatestFixture(unittest.TestCase):
         with private_root() as root:
             receipt = self.fixture(root)
             self.assertEqual([c[1] for c in self.commands], ['--version', 'config', 'config', 'install', 'ci'])
+            manifest = json.loads((self.prefix / 'package.json').read_text())
+            self.assertEqual(manifest['overrides'], F.SECURITY_OVERRIDES)
             executable = self.prefix / 'node_modules/.bin/dsh'
             self.assertEqual(F.verify_install(receipt, executable), self.version)
             self.assertEqual(F.package_root(executable, {F.RECEIPT_ENV: str(receipt)}), self.prefix / 'node_modules' / F.PACKAGE)

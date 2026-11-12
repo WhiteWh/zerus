@@ -68,11 +68,9 @@ public struct SessionListPresentation: Sendable {
         let scoped = SessionFilters.scoped(sessions, machines, selectedMachines, query, project: project)
         let drafted = SessionFilters.draftedSessions(sessions, drafts)
         let online = Set(machines.filter(\.online).map(\.key))
+        // The list, the tab counts and the machine chooser read one rule (SessionFilters.listed, zerus-sa9qn.19).
         let visible = scoped.filter { row in
-            guard SessionFilters.matches(row, filter, online.contains(row.target.machineKey), hasDraft: drafted.contains(row.target.key)) else { return false }
-            guard filter == .archive else { return true }
-            let at = row.raw.double("archived_at", default: 0)
-            return at >= Double(archiveRange.from) && at < Double(archiveRange.until)
+            SessionFilters.listed(row, filter, online.contains(row.target.machineKey), hasDraft: drafted.contains(row.target.key), archiveRange: archiveRange)
         }
         var result = SessionListPresentation()
         // Child sessions nest under a parent listed in the same project group (zerus-sa9qn.5).
@@ -84,8 +82,8 @@ public struct SessionListPresentation: Sendable {
                          cards: ChildSessions.nest(group.sessions, parentKey: parentKey, online: { online.contains($0.target.machineKey) },
                                                    collapsed: { teams.collapsed($0, machine: uuid($0)) }))
         }
-        result.counts = SessionFilters.counts(scoped, machines, drafts: drafted)
-        result.machineCounts = SessionFilters.machineCounts(sessions, machines, filter, drafts: drafted, project: project)
+        result.counts = SessionFilters.counts(scoped, machines, drafts: drafted, archiveRange: archiveRange)
+        result.machineCounts = SessionFilters.machineCounts(sessions, machines, filter, drafts: drafted, project: project, archiveRange: archiveRange)
         result.readAllTargets = filter == .archive ? [] : scoped.filter { readAllCandidate($0, online.contains($0.target.machineKey)) }.map(\.target)
         result.visibleCount = visible.count
         return result

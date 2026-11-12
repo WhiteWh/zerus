@@ -43,9 +43,9 @@ class OriginalHelperRendezvous(unittest.TestCase):
             child.kill()
             child.communicate(timeout=3)
 
-    def start(self, *args):
+    def start(self, *args, stdout=subprocess.PIPE):
         child = subprocess.Popen([str(HGS), *args], stdin=subprocess.PIPE,
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env)
+                                 stdout=stdout, stderr=subprocess.PIPE, env=self.env)
         self.addCleanup(self.reap, child)
         return child
 
@@ -59,9 +59,14 @@ class OriginalHelperRendezvous(unittest.TestCase):
         self.assertFalse(child.stdin.closed)
 
     def test_real_fast_help_exits_ungated_but_waits_through_original_observation(self):
-        old = self.start('--help')
-        self.assertEqual(old.wait(timeout=5), 0, 'real original --help is fast without stdin')
-        plain, error = old.communicate(timeout=2)
+        # Keep stdin open through exit, without requiring help to fit in an
+        # unread pipe (Linux can give a loaded user's pipes only 8 KiB).
+        with tempfile.TemporaryFile() as capture:
+            old = self.start('--help', stdout=capture)
+            self.assertEqual(old.wait(timeout=5), 0, 'real original --help is fast without stdin')
+            _, error = old.communicate(timeout=2)
+            capture.seek(0)
+            plain = capture.read()
         self.assertIn(b'Desktop termination outcome ABI: desktop-termination-outcome-v1', plain)
         self.assertEqual(error, b'')
         child = self.start(ARG, '--help')

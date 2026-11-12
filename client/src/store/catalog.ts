@@ -203,8 +203,17 @@ export function toSession(computer: ComputerId, key: string, v: ViewRow, marks: 
     sharedNotifications: !!v.shared_notifications,
     notificationRevision: typeof v.notification_revision === "number" ? v.notification_revision : undefined,
     keepWarm: keepWarmOf(v.keep_warm),
+    questionRouting: questionRoutingOf(v.question_routing),
   };
   return Object.assign(base, marks.overlay(base));
+}
+
+/** The host's per-child question route switch, when it reports a valid one. */
+export function questionRoutingOf(value: unknown): { sendToParent: boolean; revision: number } | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const v = value as Record<string, unknown>;
+  if (typeof v.send_to_parent !== "boolean" || typeof v.revision !== "number" || !Number.isInteger(v.revision) || v.revision < 0) return undefined;
+  return { sendToParent: v.send_to_parent, revision: v.revision };
 }
 
 /** How long a `replaced` removal waits for the new run of the same name. */

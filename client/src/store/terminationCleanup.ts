@@ -12,7 +12,7 @@ export interface CleanupView { revision: number; rows: CleanupRow[]; busy: boole
 export interface Inspection {
   path: string; common_dir: string; files?: { path: string; status: string }[]; files_partial?: boolean;
   changes?: { text?: string; error?: string }; comparison?: { text?: string; error?: string }; commits?: { text?: string; error?: string };
-  review?: { sessions?: string[]; processes?: {pid: number; command?: string; label?: string}[]; reasons?: {code: string; message: string}[] }; file?: { path: string; entries?: { path: string; directory: boolean; symlink: boolean }[]; next_offset?: number; binary?: boolean; text?: string; truncated?: boolean };
+  review?: { sessions?: string[]; processes?: {pid: number; command?: string; label?: string}[]; reasons?: {code: string; message: string}[]; process_count?: number; unreadable_processes?: unknown[]; untracked?: number; changes?: number }; file?: { path: string; entries?: { path: string; directory: boolean; symlink: boolean }[]; next_offset?: number; binary?: boolean; text?: string; truncated?: boolean };
 }
 export const emptyConsents = (): Consents => ({ local_files: false, discard_changes: false, unchecked_processes: false, merged_branches: false });
 export const emptyCleanup = (): CleanupView => ({ revision: 0, rows: [], busy: false, removed: 0, kept: 0, unknown: 0, required: emptyConsents(), text: "", title: "" });

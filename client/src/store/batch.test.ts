@@ -27,6 +27,7 @@ import { createActions } from "./actions";
 import { createBatch, type BatchDeps, type ArchiveCalls } from "./batch";
 import { needsAttention } from "./ui";
 import { snapshotOf } from "../ui/sessions/actions-ui";
+import { selectionSnapshot } from "../ui/sessions/selection";
 import type { BatchConfirmation, MuteOutcome, SelectionRow } from "../ui/sessions/selection";
 import type { Session } from "../ui/sessions/types";
 import { emptyBatch, type Batch, type Outcome, type RowOut, type ViewRow } from "../types";
@@ -716,6 +717,87 @@ describe("Mute or Unmute for the selection (zerus-qhtxf)", () => {
       await a.run("mute", a.listed("a"));
       expect(a.setMute).not.toHaveBeenCalled();
       expect(a.texts()).toEqual([]);
+      dispose();
+    });
+  });
+});
+
+describe("a parent's chosen child sessions (zerus-sa9qn.17)", () => {
+  it("end only after the parent is done, without a second question, one at a time and never retried", async () => {
+    await createRoot(async (dispose) => {
+      const a = setup([rowOut("lead"), rowOut("a"), rowOut("b"), rowOut("c")]);
+      const [parent] = a.listed("lead");
+      const calls = deferredCalls();
+      const ending = a.endAfter("terminate", parent, done(), a.listed("a", "b", "c"));
+      await flush();
+      expect(a.confirm).not.toHaveBeenCalled();
+      expect(mocked.runAction).toHaveBeenCalledExactlyOnceWith({ computer: "", name: "claude/p/a", run_id: "run-a", conversation_id: "conv-a" }, { kind: "terminate" });
+      await calls.answer(failed("refused"));
+      expect(mocked.runAction).toHaveBeenLastCalledWith(expect.objectContaining({ name: "claude/p/b" }), { kind: "terminate" });
+      await calls.answer({ outcome: "uncertain", detail: "lost" });
+      await calls.answer(done());
+      await ending;
+      expect(mocked.runAction).toHaveBeenCalledTimes(3);
+      expect(a.texts()).toEqual(["Child sessions of claude/p/lead\nTerminate: 1 of 3 completed. 1 failed or changed, 1 unknown; refresh before retrying.\nterminate claude/p/a: refused\nterminate claude/p/b: lost"]);
+      vi.advanceTimersByTime(60_000); await flush();
+      expect(mocked.runAction).toHaveBeenCalledTimes(3);
+      dispose();
+    });
+  });
+
+  it("are kept when the parent did not end or its outcome is unknown", async () => {
+    await createRoot(async (dispose) => {
+      const a = setup([rowOut("lead"), rowOut("a")]);
+      const [parent] = a.listed("lead");
+      await a.endAfter("terminate", parent, failed("refused"), a.listed("a"));
+      await a.endAfter("archive", parent, { outcome: "uncertain", detail: "lost" }, a.listed("a"));
+      await a.endAfter("terminate", parent, undefined, a.listed("a"));
+      expect(mocked.runAction).not.toHaveBeenCalled();
+      expect(a.texts()).toEqual([
+        "The child sessions of claude/p/lead were kept because it did not end.",
+        "The child sessions of claude/p/lead were kept: its own outcome is unknown.",
+        "The child sessions of claude/p/lead were kept because it did not end.",
+      ]);
+      // None chosen: nothing to say.
+      await a.endAfter("terminate", parent, done(), []);
+      expect(a.texts()).toHaveLength(3);
+      dispose();
+    });
+  });
+
+  it("count a child that changed or no longer takes the action as changed, without a call", async () => {
+    await createRoot(async (dispose) => {
+      let peer = true;
+      const a = setup([rowOut("lead"), rowOut("a", { state: "stopped" }), rowOut("b", { state: "stopped" }), rowOut("c", { state: "stopped" }),
+        rowOut("d", { state: "stopped" }, "peer")], { online: (computer) => computer !== "peer" || peer });
+      const [parent] = a.listed("lead");
+      // Snapshots, as the confirmation took them when it opened (store/endChildren.ts).
+      const chosen = [...a.listed("a", "b", "c"), a.catalog.rows["peer\nrun:d"]!].map(selectionSnapshot);
+      // Meanwhile b was resumed (Archive no longer applies), c is a new run and d's computer went offline.
+      a.applyBatch(batchOf({ upserts: [rowOut("b", { state: "running" }), rowOut("c", { state: "stopped", run_id: "run-c2" })] }));
+      peer = false;
+      mocked.runAction.mockResolvedValue(done());
+      await a.endAfter("archive", parent, done(), chosen);
+      expect(mocked.runAction.mock.calls).toEqual([[expect.objectContaining({ name: "claude/p/a" }), { kind: "archive" }]]);
+      // Each chosen child is counted, none dropped silently.
+      expect(a.texts()).toEqual(["Child sessions of claude/p/lead\nMove to archive: 1 of 4 completed. 3 failed or changed; refresh before retrying."
+        + "\nbox / claude/p/b: session changed or is unavailable\nbox / claude/p/c: session changed or is unavailable\nbox / claude/p/d: session changed or is unavailable"]);
+      dispose();
+    });
+  });
+
+  it("are kept while another selection action runs", async () => {
+    await createRoot(async (dispose) => {
+      const a = setup([rowOut("lead"), rowOut("a"), rowOut("x")]);
+      const [parent] = a.listed("lead");
+      const calls = deferredCalls();
+      const other = a.run("pause", a.listed("x"));
+      await flush();
+      await a.endAfter("terminate", parent, done(), a.listed("a"));
+      expect(mocked.runAction).toHaveBeenCalledTimes(1);
+      expect(a.texts()).toContain("The child sessions of claude/p/lead were kept: another selection action is running. Nothing was retried.");
+      await calls.answer(done()); await other;
+      expect(mocked.runAction).toHaveBeenCalledTimes(1);
       dispose();
     });
   });

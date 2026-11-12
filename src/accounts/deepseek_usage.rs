@@ -380,6 +380,19 @@ pub(super) fn refresh(config: &Config, id: &str, home: &Path) -> Option<Value> {
 }
 
 fn refresh_within(config: &Config, id: &str, home: &Path, bytes: u64) -> Option<Value> {
+    refresh_on(config, id, home, bytes, Local::now().date_naive(), false)
+}
+
+// A fixed day and UTC reader keep compressed-frame fixtures independent of
+// the machine's date and timezone. Production keeps the local calendar.
+fn refresh_on(
+    config: &Config,
+    id: &str,
+    home: &Path,
+    bytes: u64,
+    today: NaiveDate,
+    utc: bool,
+) -> Option<Value> {
     let mut budget = Budget {
         bytes,
         deadline: Instant::now() + Duration::from_millis(READ_MS),
@@ -390,13 +403,19 @@ fn refresh_within(config: &Config, id: &str, home: &Path, bytes: u64) -> Option<
     }
     let path = super::deepseek::state_path(config, "account-usage", id, home);
     platform::private_dir(path.parent()?).ok()?;
-    let today = Local::now().date_naive();
     let since_date = today - chrono::Duration::days(WINDOW_DAYS - 1);
     let since = since_date.format("%Y-%m-%d").to_string();
-    let window_start = since_date
-        .and_hms_opt(0, 0, 0)
-        .and_then(|t| t.and_local_timezone(Local).earliest())
-        .map(|t| UNIX_EPOCH + Duration::from_secs(t.timestamp().max(0) as u64))
+    let midnight = since_date.and_hms_opt(0, 0, 0)?;
+    let seconds = if utc {
+        Some(midnight.and_utc().timestamp())
+    } else {
+        midnight
+            .and_local_timezone(Local)
+            .earliest()
+            .map(|t| t.timestamp())
+    };
+    let window_start = seconds
+        .map(|t| UNIX_EPOCH + Duration::from_secs(t.max(0) as u64))
         .unwrap_or(UNIX_EPOCH);
     let read = |path: &Path| -> Index {
         super::deepseek::read_private::<Index>(path, INDEX_BYTES)
@@ -427,7 +446,7 @@ fn refresh_within(config: &Config, id: &str, home: &Path, bytes: u64) -> Option<
             .collect();
         apply(
             &mut index,
-            &read_logs(&work, &offsets, &since, budget.bytes, millis),
+            &read_logs(&work, &offsets, &since, budget.bytes, millis, utc),
         );
     }
     for entry in index.files.values_mut() {
@@ -450,12 +469,16 @@ fn read_logs(
     since: &str,
     bytes: u64,
     millis: u64,
+    utc: bool,
 ) -> Value {
     let files: Vec<Value> = work
         .iter()
         .map(|(key, path)| json!({"key":key,"path":path,"offset":offsets.get(key.as_str()).copied().unwrap_or(0)}))
         .collect();
     let mut command = Command::new("node");
+    if utc {
+        command.env("TZ", "UTC");
+    }
     command.args([
         "--input-type=module",
         "-e",
@@ -552,26 +575,68 @@ mod tests {
         first
     }
 
-    /// Two message frames of the same compressed length with different counts
-    /// (1000 and the first of 1001..1200 that compresses to the same length),
-    /// stamped at today's noon so the search is deterministic.
-    fn same_length_messages() -> (Vec<u8>, Vec<u8>, u64) {
-        let noon = Local::now()
-            .date_naive()
+    fn fixed_day() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 1, 15).unwrap()
+    }
+
+    fn fixed_noon() -> i64 {
+        fixed_day()
             .and_hms_opt(12, 0, 0)
             .unwrap()
-            .and_local_timezone(Local)
-            .earliest()
-            .unwrap()
-            .timestamp_millis();
+            .and_utc()
+            .timestamp_millis()
+    }
+
+    /// Pick two genuinely different equal-length frames, rather than requiring
+    /// the first frame's length to repeat (which depends on timestamp digits).
+    fn same_length_messages_at(noon: i64) -> (Vec<u8>, Vec<u8>, u64, u64) {
         let texts: Vec<String> = (1000..1200u64)
             .map(|n| message(noon, "deepseek-flash", n, n, n))
             .collect();
         let all = frames(&texts);
-        let index = (1..all.len())
-            .find(|i| all[*i].len() == all[0].len())
-            .expect("a same-length frame");
-        (all[0].clone(), all[index].clone(), 1000 + index as u64)
+        let mut lengths = BTreeMap::new();
+        for (index, frame) in all.iter().enumerate() {
+            if let Some(previous) = lengths.insert(frame.len(), index) {
+                return (
+                    all[previous].clone(),
+                    frame.clone(),
+                    1000 + previous as u64,
+                    1000 + index as u64,
+                );
+            }
+        }
+        panic!("a same-length frame");
+    }
+
+    fn same_length_messages() -> (Vec<u8>, Vec<u8>, u64, u64) {
+        same_length_messages_at(fixed_noon())
+    }
+
+    #[test]
+    fn same_length_frames_cover_a_calendar_year() {
+        let mut day = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(2027, 1, 1).unwrap();
+        let mut checked = 0;
+        while day < end {
+            let noon = day
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_local_timezone(Local)
+                .earliest()
+                .unwrap()
+                .timestamp_millis();
+            let (before, after, a, b) = same_length_messages_at(noon);
+            assert_eq!(before.len(), after.len(), "{day}");
+            assert_ne!(before, after, "{day}");
+            assert_ne!(a, b);
+            checked += 1;
+            day = day.succ_opt().unwrap();
+        }
+        eprintln!(
+            "FRAME_CALENDAR days={checked} TZ={}",
+            std::env::var("TZ").unwrap_or_else(|_| "system".into())
+        );
+        assert_eq!(checked, 365);
     }
 
     fn header(seeded: bool) -> String {
@@ -590,6 +655,7 @@ mod tests {
         _root: tempfile::TempDir,
         config: Config,
         home: PathBuf,
+        fixed: bool,
     }
 
     fn fixture() -> Fixture {
@@ -613,6 +679,7 @@ mod tests {
             _root: root,
             config,
             home,
+            fixed: false,
         }
     }
 
@@ -623,7 +690,19 @@ mod tests {
             dir.join(name)
         }
         fn refresh(&self) -> Value {
-            refresh(&self.config, "native-dsh", &self.home).unwrap()
+            if self.fixed {
+                refresh_on(
+                    &self.config,
+                    "native-dsh",
+                    &self.home,
+                    READ_BYTES,
+                    fixed_day(),
+                    true,
+                )
+                .unwrap()
+            } else {
+                refresh(&self.config, "native-dsh", &self.home).unwrap()
+            }
         }
     }
 
@@ -1024,15 +1103,17 @@ mod tests {
     #[test]
     fn an_in_place_rewrite_with_the_same_size_and_head_is_read_again() {
         use std::io::{Seek, SeekFrom};
-        let f = fixture();
+        let mut f = fixture();
+        f.fixed = true;
         let log = f.log("p", "s", "session.v4.jsonl.zstd");
         let first = long_first_frame();
-        let (before, after, n) = same_length_messages();
+        let (before, after, old, n) = same_length_messages();
+        assert_eq!(before.len(), after.len());
         append(&log, &first);
         append(&log, &before);
         assert_eq!(
-            counts(&f.refresh(), &today(), "deepseek-flash"),
-            Some((1, 1000, 1000, 1000))
+            counts(&f.refresh(), &fixed_day().to_string(), "deepseek-flash"),
+            Some((1, old, old, old))
         );
         let mut file = fs::OpenOptions::new().write(true).open(&log).unwrap();
         file.seek(SeekFrom::Start(first.len() as u64)).unwrap();
@@ -1041,7 +1122,7 @@ mod tests {
             .unwrap();
         drop(file);
         assert_eq!(
-            counts(&f.refresh(), &today(), "deepseek-flash"),
+            counts(&f.refresh(), &fixed_day().to_string(), "deepseek-flash"),
             Some((1, n, n, n))
         );
     }
@@ -1049,23 +1130,28 @@ mod tests {
     #[test]
     fn a_rewrite_before_the_committed_offset_is_read_again_even_when_the_log_grows() {
         use std::io::{Seek, SeekFrom};
-        let f = fixture();
+        let mut f = fixture();
+        f.fixed = true;
         let log = f.log("p", "s", "session.v4.jsonl.zstd");
         let first = long_first_frame();
-        let (before, after, n) = same_length_messages();
+        let (before, after, old, n) = same_length_messages();
+        assert_eq!(before.len(), after.len());
         append(&log, &first);
         append(&log, &before);
         assert_eq!(
-            counts(&f.refresh(), &today(), "deepseek-flash"),
-            Some((1, 1000, 1000, 1000))
+            counts(&f.refresh(), &fixed_day().to_string(), "deepseek-flash"),
+            Some((1, old, old, old))
         );
         let mut file = fs::OpenOptions::new().write(true).open(&log).unwrap();
         file.seek(SeekFrom::Start(first.len() as u64)).unwrap();
         file.write_all(&after).unwrap();
         drop(file);
-        append(&log, &frame(&message(now_ms(), "deepseek-flash", 1, 1, 1)));
+        append(
+            &log,
+            &frame(&message(fixed_noon(), "deepseek-flash", 1, 1, 1)),
+        );
         assert_eq!(
-            counts(&f.refresh(), &today(), "deepseek-flash"),
+            counts(&f.refresh(), &fixed_day().to_string(), "deepseek-flash"),
             Some((2, n + 1, n + 1, n + 1))
         );
     }

@@ -45,13 +45,15 @@ describe("Terminate dialog removal availability", () => {
     const programs = [{ pid: 7, label: "Editor" }, { pid: 9, label: "Terminal" }];
     expect(completeProgramList(programs)).toBe(true);
     expect(completeProgramList([])).toBe(true);
+    expect(completeProgramList([{ pid: 1, label: "Namespace init" }])).toBe(false);
+    expect(completeProgramList([{ pid: 0, label: "Invalid process" }])).toBe(false);
     const source = { id: "original-manifest-offer", checked: true, programs };
     let state: CleanupOfferState = {};
     await readCleanupOffer(target, { offer: async () => source, cancel: vi.fn(async () => {}) }, () => true, (next) => { state = next; });
     expect(state.offer?.programs).toEqual(programs);
     const bad = [
       [programs[0], programs[0]], [...programs].reverse(),
-      [{ pid: 1, label: "replaced" }], [{ pid: 7.5, label: "partial" }],
+      [{ pid: 0, label: "replaced" }], [{ pid: 7.5, label: "partial" }],
       [{ pid: 7, label: "" }], [{ pid: 7, label: "unsafe\u0085name" }],
       [{ pid: 7, label: "é".repeat(257) }],
       Array.from({ length: 65 }, (_, i) => ({ pid: i + 2, label: "Editor" })),

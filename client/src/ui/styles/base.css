@@ -333,7 +333,8 @@
       .shortcut-help-list, .mach-page, .mach-log, .acct-scroll, .acct-main-scroll, .acct-more-list, .atm-list, .atm-results,
       .ns-accounts, .wt-tree, .ocm-list, .wtp-tree, .parent-choices, .su-page, .proj-list, .su-tablewrap, .ip-summary, .ip-body, .ip-diff,
       .bc-details, .sp-scroll, .strip-scroll, .set-nav, .set-table-wrap, .voice-list, .an-detail, .an-json, .sw-clist,
-      .sw-review, .tasks-list, .tasks-detail, .tk-scroll, .tk-damaged-review, .tv-scroll, .tk-assign-list, .wtl-panel, .wto-tree, .xterm-viewport):not(
+      .sw-review, .tasks-list, .tasks-detail, .tk-scroll, .tk-damaged-review, .tv-scroll, .tk-assign-list, .wtl-panel, .wto-tree, .xterm-viewport,
+      .clear-input-text):not(
       :is(.menu, .att-pop, .archive-pop, .acct-more, .ns-choice-list, .tk-tip, .goto-scrim, dialog.ns-model-pop[open], :popover-open) *) {
     scrollbar-width: none;
   }

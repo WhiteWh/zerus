@@ -13,12 +13,13 @@ class HookHealth(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory(prefix='hgs-hook-health-');self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.directory=self.root/'.claude';self.directory.mkdir()
         self.config=self.directory/'settings.json';self.state=self.root/'state';self.state.mkdir()
-        self.bin=self.root/'bin';self.bin.mkdir();self.program=self.bin/'claude'
+        # hgs prepends HOME/.local/bin and Homebrew before the inherited PATH.
+        self.bin=self.root/'.local/bin';self.bin.mkdir(parents=True);self.program=self.bin/'claude'
         self.program.write_text('#!/bin/sh\nprintf invoked > "'+str(self.root/'invoked')+'"\nexit 99\n');self.program.chmod(0o755)
         for provider in ['codex','kimi','opencode','dsh']:
             path=self.bin/provider;path.write_bytes(self.program.read_bytes());path.chmod(0o755)
         self.env=dict(os.environ,HOME=str(self.root),HGS_CONFIG_DIR=str(self.root/'hgs-config'),HGS_STATE_DIR=str(self.state),HGS_SELF='fixture',HGS_PEERS='',PATH=str(self.bin)+':'+os.environ['PATH'])
-        for key in ['CLAUDE_CONFIG_DIR','CODEX_HOME','KIMI_CODE_HOME','DSH_HOME','OPENCODE_HOME','TMUX','TMUX_PANE','HGS_RUN_ID','HGS_SESSION','HGS_ACCOUNT_ID']:self.env.pop(key,None)
+        for key in ['CLAUDE_CONFIG_DIR','CODEX_HOME','KIMI_CODE_HOME','DSH_HOME','OPENCODE_HOME','TMUX','TMUX_PANE','HGS_RUN_ID','HGS_SESSION','HGS_ACCOUNT_ID','HGS_EXECUTABLE']:self.env.pop(key,None)
     def run_hgs(self,args,body=None,ok=True):
         r=subprocess.run([str(HGS),'hooks',*args],env=self.env,input=json.dumps(body) if body is not None else '',text=True,capture_output=True,timeout=8)
         if ok:self.assertEqual(r.returncode,0,r.stderr);return json.loads(r.stdout)
@@ -206,7 +207,7 @@ class HookHealth(unittest.TestCase):
         self.config.write_bytes(b'x'*(1024*1024+1));self.assertEqual(self.inspect()['configuration']['state'],'unreadable')
         self.assertFalse((self.root/'invoked').exists())
     def test_old_remote_peer_is_not_launched_and_new_peer_keeps_exact_json_stdin(self):
-        remote_bin=self.root/'.local/bin';remote_bin.mkdir(parents=True)
+        remote_bin=self.root/'.local/bin';remote_bin.mkdir(parents=True,exist_ok=True)
         remote=remote_bin/'hgs'
         remote.write_text('#!/bin/sh\nif [ "$1" = --help ]; then cat "$HOME/remote-help"; exit 0; fi\ncat > "$HOME/remote-input"\nprintf \'{"read":true}\'\n');remote.chmod(0o755)
         ssh=self.bin/'ssh';ssh.write_text('#!/bin/sh\nfor argument do last="$argument"; done\nexec /bin/sh -c "$last"\n');ssh.chmod(0o755)

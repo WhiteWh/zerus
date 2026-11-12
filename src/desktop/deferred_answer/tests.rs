@@ -167,7 +167,8 @@ fn exact_previous_store_upgrade_adds_only_the_independent_answer_leaf() {
     );
     // Its own two tables, then the compact-to-send and session resume
     // leaves' two each.
-    assert_eq!(tables(&store.db), before + 2 + 2 + 2);
+    // ... and the question route leaves' tables (zerus-sa9qn.8 and .32).
+    assert_eq!(tables(&store.db), before + 2 + 2 + 2 + 1 + 2);
     assert_eq!(ledger::undrained(&store.db).unwrap(), 0);
     assert_eq!(
         store.operation_status()["kinds"]["deferred_answer"]["undrained"],

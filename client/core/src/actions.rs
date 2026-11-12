@@ -498,22 +498,16 @@ pub fn invocation(
             }
             (args, None, 5, 15, None)
         }
-        Action::Archive => (vec!["archive".to_owned(), name], None, 30, 45, None),
-        Action::Terminate => {
-            let mut args = vec!["terminate".to_owned(), name];
-            if !target.run_id.is_empty() {
-                args.extend(["--expected-run-id".to_owned(), target.run_id.clone()]);
-            }
-            (args, None, 45, 60, None)
+        // zerus-sa9qn.25: these run only from a capture, as the undo window's
+        // scoped `hgs session-action` envelope (`end_action::Captured`) or a
+        // confirmed cleanup's; never as a name-only or run-only call. An
+        // untracked shell keeps its own proof-bound envelope below.
+        Action::Archive | Action::Terminate | Action::Kill | Action::Forget => {
+            return Err(crate::end_action::UNDELAYED.into())
         }
         Action::TerminateShell { identity } => {
             return shell_termination_invocation(target, identity, request_id)
         }
-        // A local kill is a tmux kill-session; a peer's goes through SSH.
-        Action::Kill if target.run_id.is_empty() => {
-            return Err(crate::untracked_shell::UNVERIFIED.into())
-        }
-        Action::Kill | Action::Forget => (vec!["kill".to_owned(), name], None, 5, 15, None),
         Action::Send {
             text,
             attachments,
@@ -2489,6 +2483,45 @@ mod tests {
     }
 
     #[test]
+    fn pending_send_post_offer_refusals_never_become_definite_failures() {
+        let target = target("");
+        let action = send("ordinary message", vec![]);
+        let invocation = invocation(&target, &action, "request").unwrap();
+        for reason in [
+            "DRAFT",
+            "terminal has a draft, dialog, or unrecognized prompt",
+            "idle-to-busy drift",
+            "Original Root acquisition timed out",
+            "Original picker endpoint closed",
+            "Original picker deadline expired or invalid",
+            "Original Send outcome is truncated",
+            "a request ID was already used with different content",
+            "Claude is waiting for tool or safety approval. Review the request in Activity or Terminal before sending a message.",
+            "Claude is waiting for a conversation resume choice. Choose an option in Activity or Terminal before sending a message.",
+            "Claude is waiting for a usage-limit choice. Choose an option in Activity or Terminal before sending a message.",
+            "Claude is waiting for a permission mode choice. Choose an option in Activity or Terminal before sending a message.",
+            "Claude is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.",
+            "Codex is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.",
+            "Codex is waiting for hook trust review. Choose an option in Activity or Terminal before sending a message.",
+            "Codex is waiting for an update choice. Choose an option in Activity or Terminal before sending a message.",
+            "Codex is waiting for your rate-limit model choice. Choose an option in Activity or open Terminal before sending a message.",
+            "Codex is waiting for your paused goal choice. Choose an option in Activity or Terminal before sending a message.",
+            "Kimi is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.",
+            "Kimi is waiting for your context choice. Choose an option in Activity or Terminal before sending another message.",
+        ] {
+            let message = format!("delivery uncertain: {reason}");
+            assert_eq!(
+                classify(&target, &action, &invocation, exit(1, b"", &message)),
+                uncertain(&message)
+            );
+            assert_eq!(
+                classify(&target, &action, &invocation, exit(1, b"", reason)),
+                failed(reason)
+            );
+        }
+    }
+
+    #[test]
     fn staged_files_are_checked_like_qt() {
         let dir = std::env::temp_dir().join(format!("zerus-stage-unit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2992,10 +3025,6 @@ mod tests {
             invocation(&t, &Action::Resume, "u").unwrap().args,
             ["resume", "claude/sample-project/review", "-d"]
         );
-        assert_eq!(
-            invocation(&t, &Action::Archive, "u").unwrap().args,
-            ["archive", "claude/sample-project/review"]
-        );
         let rename = invocation(
             &t,
             &Action::Rename {
@@ -3015,24 +3044,63 @@ mod tests {
                 "a1"
             ]
         );
-        let term = invocation(&target("mac"), &Action::Terminate, "u").unwrap();
-        assert_eq!(
-            term.args,
-            [
-                "@mac",
-                "terminate",
-                "claude/sample-project/review",
-                "--expected-run-id",
-                "run-1"
-            ]
-        );
-        assert_eq!(term.timeout, std::time::Duration::from_secs(60));
-        let mut no_run = target("");
-        no_run.run_id.clear();
-        assert_eq!(
-            invocation(&no_run, &Action::Terminate, "u").unwrap().args,
-            ["terminate", "claude/sample-project/review"]
-        );
+    }
+
+    /// zerus-sa9qn.25: Archive, Terminate, Kill and Forget never build an
+    /// undelayed call, here or on a peer, with or without a run: they run only
+    /// from a capture (`end_action::Captured::invocation`, the cleanup's).
+    /// Restore, archived Forget, a binding's Forget and an untracked shell keep
+    /// their own identity-bound calls.
+    #[test]
+    fn end_actions_never_build_an_undelayed_call() {
+        for computer in ["", "mac"] {
+            let mut no_run = target(computer);
+            no_run.run_id.clear();
+            for t in [target(computer), no_run] {
+                for action in [
+                    Action::Archive,
+                    Action::Terminate,
+                    Action::Kill,
+                    Action::Forget,
+                ] {
+                    assert!(crate::end_action::needs_capture(&action), "{action:?}");
+                    assert_eq!(
+                        invocation(&t, &action, "u").unwrap_err(),
+                        crate::end_action::UNDELAYED,
+                        "{action:?} {computer:?}"
+                    );
+                }
+            }
+            let t = target(computer);
+            for action in [
+                Action::Restore {
+                    archive_id: "a1".into(),
+                },
+                Action::ForgetArchive {
+                    archive_id: "a1".into(),
+                },
+                Action::ForgetBinding,
+                Action::Pause,
+            ] {
+                assert!(!crate::end_action::needs_capture(&action), "{action:?}");
+                assert!(invocation(&t, &action, "u").is_ok(), "{action:?}");
+            }
+            assert_eq!(
+                invocation(
+                    &t,
+                    &Action::ForgetArchive {
+                        archive_id: "a1".into()
+                    },
+                    "u"
+                )
+                .unwrap()
+                .args
+                .last()
+                .map(String::as_str),
+                Some("a1"),
+                "an archived Forget stays bound to its archive ID"
+            );
+        }
     }
 
     #[test]
@@ -3117,33 +3185,6 @@ mod tests {
             (30, 30)
         );
         assert_eq!((secs("", rename()), secs("p", rename())), (5, 15));
-        assert_eq!(
-            (secs("", Action::Archive), secs("p", Action::Archive)),
-            (30, 45)
-        );
-        assert_eq!(
-            (secs("", Action::Terminate), secs("p", Action::Terminate)),
-            (45, 60)
-        );
-        assert_eq!((secs("", Action::Kill), secs("p", Action::Kill)), (5, 15));
-    }
-
-    #[test]
-    fn kill_names_the_session_and_reports_no_worktree() {
-        let inv = invocation(&target("mac"), &Action::Kill, "u").unwrap();
-        assert_eq!(inv.args, ["@mac", "kill", "claude/sample-project/review"]);
-        assert_eq!(inv.stdin, None);
-        let line = "ZERUS_WORKTREE_CLEANUP {\"status\":\"removed\",\"path\":\"/home/example/wt\",\"common_dir\":\"/home/example/.git\"}\n";
-        assert!(matches!(
-            classify(&target(""), &Action::Kill, &inv, exit0(b"", line)),
-            Outcome::Done { cleanup: None, .. }
-        ));
-        assert_eq!(
-            classify(&target(""), &Action::Kill, &inv, Exit::TimedOut),
-            Outcome::Failed {
-                detail: "timed out".into()
-            }
-        );
     }
 
     #[test]
@@ -3257,18 +3298,7 @@ mod tests {
     }
 
     #[test]
-    fn forget_kills_like_kill_but_is_its_own_kind() {
-        let inv = invocation(&target("mac"), &Action::Forget, "u").unwrap();
-        assert_eq!(inv.args, ["@mac", "kill", "claude/sample-project/review"]);
-        assert_eq!(inv.stdin, None);
-        assert_eq!(inv.timeout.as_secs(), 15);
-        assert_eq!(
-            invocation(&target(""), &Action::Forget, "u")
-                .unwrap()
-                .timeout
-                .as_secs(),
-            5
-        );
+    fn forget_is_its_own_kind() {
         assert_ne!(Action::Forget, Action::Kill);
         assert_eq!(
             serde_json::to_value(Action::Forget).unwrap(),
@@ -3281,16 +3311,6 @@ mod tests {
         assert_eq!(
             serde_json::to_value(Action::ForgetBinding).unwrap(),
             json!({"kind": "forget_binding"})
-        );
-        assert!(matches!(
-            classify(&target(""), &Action::Forget, &inv, exit0(b"", "")),
-            Outcome::Done { cleanup: None, .. }
-        ));
-        assert_eq!(
-            classify(&target(""), &Action::Forget, &inv, Exit::WriteFailed),
-            Outcome::Failed {
-                detail: "could not send the request".into()
-            }
         );
     }
 
@@ -3571,7 +3591,9 @@ mod tests {
     #[test]
     fn archive_and_terminate_carry_exactly_one_cleanup_line() {
         let t = target("");
-        let inv = invocation(&t, &Action::Archive, "u").unwrap();
+        // Classifying reads only the exit; an Archive call itself is built
+        // only from its capture (zerus-sa9qn.25).
+        let inv = invocation(&t, &Action::Pause, "u").unwrap();
         let line = "ZERUS_WORKTREE_CLEANUP {\"status\":\"kept\",\"path\":\"/home/example/sample-project-wt\",\"common_dir\":\"/home/example/sample-project/.git\",\"reason\":\"unsaved work\"}\n";
         match classify(&t, &Action::Archive, &inv, exit0(b"", line)) {
             Outcome::Done {

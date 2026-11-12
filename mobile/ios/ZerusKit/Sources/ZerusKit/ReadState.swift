@@ -461,7 +461,139 @@ public final class HistoryHeadScheduler {
 
 /// Read marks shared through the session's computer (`mark_read`). The computer applies a
 /// field only while it is current, so marks never hide newer work.
+/// An open conversation's `current_read` (`hgs inspect --current-read`): the reply and attention its computer would
+/// accept now, from the same inspection this phone displays (zerus-a4mub.9).
+public struct CurrentRead: Equatable, Sendable {
+    public let reply: String?
+    public let attention: String?
+    public let attentionComplete: Bool
+    public init(reply: String?, attention: String?, attentionComplete: Bool) {
+        self.reply = reply
+        self.attention = attention
+        self.attentionComplete = attentionComplete
+    }
+}
+
+/// What one settled viewport showed for the shared current acknowledgement (zerus-a4mub.9): the tail sentinel, the
+/// newest displayed event row and the questions item.
+public struct CurrentReadFlags: Equatable, Sendable {
+    public let tail: Bool
+    public let newest: Bool
+    public let questions: Bool
+    public init(tail: Bool = false, newest: Bool = false, questions: Bool = false) {
+        self.tail = tail
+        self.newest = newest
+        self.questions = questions
+    }
+}
+
+/// The conversation list's visible item ids mapped to reading inputs.
+public enum ConversationReadViewport {
+    /// One listed item of a settled viewport: its key, top offset and height in the viewport's coordinates (points).
+    public struct Item: Equatable, Sendable {
+        public let key: String
+        public let offset: Double
+        public let size: Double
+        public init(key: String, offset: Double, size: Double) {
+            self.key = key
+            self.offset = offset
+            self.size = size
+        }
+    }
+
+    /// The readable part of an item (points; dp on Android): about one line of body text with its padding.
+    public static let readableHeight: Double = 48
+    /// Layout rounding every comparison tolerates.
+    private static let rounding = 0.5
+
+    /// Whether `item` counts as shown in the viewport from `start` to `end`, after the settled dwell, for both the
+    /// canonical read and the current flags (zerus-a4mub.31). Android applies the same rule to the same shared layouts
+    /// (mobile/fixtures/current-read.json): the part inside the viewport is at least min(its height, `readable`, the
+    /// viewport height). A short item must be wholly visible; a taller one, however tall, needs its readable part.
+    /// The 1-point tail sentinel counts when it starts inside the viewport and ends at most 2 points past it.
+    public static func shows(_ item: Item, start: Double, end: Double, readable: Double = readableHeight) -> Bool {
+        if item.key == "history:tail" {
+            return item.offset + rounding >= start && item.offset + item.size <= end + 2 + rounding
+        }
+        let visible = min(item.offset + item.size, end) - max(item.offset, start)
+        return visible > 0 && visible + rounding >= min(item.size, readable, end - start)
+    }
+
+    /// The keys of the items `shows` counts, top to bottom.
+    public static func visible(_ items: [Item], start: Double, end: Double, readable: Double = readableHeight) -> [String] {
+        items.filter { shows($0, start: start, end: end, readable: readable) }.sorted { $0.offset < $1.offset }.map(\.key)
+    }
+
+    /// The event ids among the visible item ids (`event:` keys).
+    public static func eventIds(_ visible: [String]) -> Set<String> {
+        Set(visible.filter { $0.hasPrefix("event:") }.map { String($0.dropFirst(6)) })
+    }
+
+    /// The current acknowledgement flags of one settled viewport: the tail sentinel, the newest displayed event row
+    /// (`newestId`, empty when the latest messages are not shown) and the questions item among the visible ids.
+    public static func flags(visible: [String], newestId: String) -> CurrentReadFlags {
+        CurrentReadFlags(tail: visible.contains("history:tail"), newest: !newestId.isEmpty && eventIds(visible).contains(newestId),
+                         questions: visible.contains("history:questions"))
+    }
+}
+
 public enum SharedReadPolicies {
+    private static let currentKeys: Set<String> = ["schema", "run_id", "conversation_id", "reply_id", "attention_signature", "attention_complete"]
+
+    private static func signature(_ value: String) -> Bool {
+        value.count == 64 && value.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) }
+    }
+
+    /// The verified open inspection's `current_read` when it names exactly `target`: schema 1, exactly the native
+    /// fields, and the target's and the inspection's own run and conversation. Nil for archives, subagents, cached
+    /// frames, older computers or anything malformed; nothing is repaired.
+    public static func current(_ raw: JSONObject?, target: Target, verified: Bool) -> CurrentRead? {
+        guard verified, let raw, target.archiveId.isEmpty, target.agentId.isEmpty, !target.run.isEmpty, !target.conversation.isEmpty,
+              raw["run_id"] == .string(target.run), raw["conversation_id"] == .string(target.conversation),
+              let value = raw.object("current_read"), Set(value.keys) == currentKeys, value["schema"] == .int(1),
+              value["run_id"] == .string(target.run), value["conversation_id"] == .string(target.conversation),
+              case .bool(let complete)? = value["attention_complete"] else { return nil }
+        let reply: String?
+        switch value["reply_id"] {
+        case .null?: reply = nil
+        case .string(let text)? where !text.isEmpty && text.utf16.count <= 256 && !text.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }):
+            reply = text
+        default: return nil
+        }
+        let attention: String?
+        switch value["attention_signature"] {
+        case .null?: attention = nil
+        case .string(let text)? where signature(text): attention = text
+        default: return nil
+        }
+        return CurrentRead(reply: reply, attention: attention, attentionComplete: complete)
+    }
+
+    /// What one settled viewport of the open conversation showed of its current inspection: the reply when it shows
+    /// the latest messages and the tail or the newest displayed row was visible; the attention when the listed
+    /// questions were visible or, without questions, when the reply was shown.
+    public static func currentShown(latest: Bool, questionsListed: Bool, flags: CurrentReadFlags) -> (reply: Bool, attention: Bool) {
+        let reply = latest && (flags.tail || flags.newest)
+        return (reply, latest && (questionsListed ? flags.questions : reply))
+    }
+
+    /// The `mark_read` the open conversation may send for `current`: its reply once the conversation's tail or newest
+    /// row stayed visible, its attention once complete and its presentation stayed visible. Values the computer already
+    /// has are left out; nil when nothing is new. This never moves the phone's private read position, which only
+    /// canonical history can advance.
+    public static func currentPayload(_ row: Session?, target: Target, current: CurrentRead, replyShown: Bool,
+                                      attentionShown: Bool) -> JSONObject? {
+        if let row, SessionFilters.archived(row) { return nil }
+        let read = row.flatMap(mark)
+        let reply = current.reply.flatMap { replyShown && read?.string("reply_id") != $0 ? $0 : nil }
+        let attention = current.attention.flatMap {
+            attentionShown && current.attentionComplete && read?.string("attention_signature") != $0 ? $0 : nil
+        }
+        if reply == nil && attention == nil { return nil }
+        return ["run_id": .string(target.run), "conversation_id": .string(target.conversation),
+                "reply_id": reply.map(JSON.string) ?? .null, "attention_signature": attention.map(JSON.string) ?? .null]
+    }
+
     public static func mark(_ row: Session) -> JSONObject? {
         guard let read = row.raw.object("read"), !row.target.conversation.isEmpty, read.string("conversation_id") == row.target.conversation else { return nil }
         return read

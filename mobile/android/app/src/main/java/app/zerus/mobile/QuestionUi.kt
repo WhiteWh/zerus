@@ -84,22 +84,41 @@ import org.json.JSONObject
     available: Boolean, display: QuestionDisplayState, onDisplay: ((QuestionDisplayState) -> QuestionDisplayState) -> Unit,
     onReview: (Draft) -> Unit) {
     if (!display.expanded) return
+    val presence = QuestionPresencePolicies.resolve(display, questions, model.activityVerified, available,
+        model.detailBusy, model.questionCheckedAt, SystemClock.elapsedRealtime(),
+        complete = model.questionProjectionComplete) ?: return
     val question = display.resolve(questions)
     if (question != null) NativeQuestionCard(model, target, question, available, true, null, 120.dp,
         display.page(question), { page -> onDisplay { it.withPage(question, page) } },
         display.offset(question, display.page(question)), { offset -> onDisplay { it.withOffset(question, display.page(question), offset) } },
-        true, {}, { onDisplay { it.close() } }, onReview)
-    else {
-        ObscureConversation()
-        ZerusAlertDialog(onDismissRequest = { onDisplay { it.close() } }, title = { Text("Question unavailable") },
-            text = { Text("This exact request is not in the loaded activity. Refresh the conversation to verify it. Your saved answer is kept.") },
-            confirmButton = { TextButton(onClick = { onDisplay { it.close() } }) { Text("Close") } })
+        true, {}, { onDisplay { it.close() } }, onReview, presence)
+    else QuestionPresenceNotice(presence, onClose = { onDisplay { it.close() } },
+        onRefresh = { model.refreshActivity(explicit = true) },
+        onReplacement = { replacement -> onDisplay { it.open(replacement) } })
+}
+
+/** An obsolete expansion becomes an inline notice: it never obscures the conversation or a delivery review. */
+@Composable private fun QuestionPresenceNotice(view: QuestionPresenceView, onClose: () -> Unit, onRefresh: () -> Unit,
+    onReplacement: (Question) -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = MaterialTheme.shapes.medium) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(view.title, style = MaterialTheme.typography.titleSmall)
+            Text(view.detail, style = MaterialTheme.typography.bodySmall)
+            if (view.age.isNotBlank()) Text(view.age, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.labelSmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (view.refresh) TextButton(onClick = onRefresh) { Text("Refresh") }
+                view.replacement?.let { replacement -> TextButton(onClick = { onReplacement(replacement) }) { Text("Open new request") } }
+                TextButton(onClick = onClose) { Text("Close") }
+            }
+        }
     }
 }
 
 @Composable private fun NativeQuestionCard(model: ZerusViewModel, target: Target, question: Question, frameAvailable: Boolean,
     visible: Boolean, viewport: Rect?, maxHeight: Dp, page: Int, onPage: (Int) -> Unit, scrollOffset: Int, onScroll: (Int) -> Unit,
-    expanded: Boolean, onExpand: () -> Unit, onCollapse: () -> Unit, onReview: (Draft) -> Unit) {
+    expanded: Boolean, onExpand: () -> Unit, onCollapse: () -> Unit, onReview: (Draft) -> Unit,
+    presence: QuestionPresenceView? = null) {
     val bound = QuestionSendPolicies.bound(question, target)
     val available = frameAvailable && bound
     val draft = model.draft(target, question)
@@ -353,7 +372,10 @@ import org.json.JSONObject
             if (choices && question.canAnswer && available) Text(if (remaining > 0) "Review the request, then choose one of the agent's options ($remaining)."
                 else "Choose one of the agent's options.", style = MaterialTheme.typography.bodySmall)
             if (!available) Text("Refresh to verify this request. Your answer is kept.", style = MaterialTheme.typography.bodySmall)
-            else if (!question.canAnswer) SelectionContainer { Text(QuestionPolicies.unavailableNotice(question), style = MaterialTheme.typography.bodySmall) }
+            else if (!question.canAnswer) SelectionContainer { Text(presence?.detail?.takeIf { it.isNotBlank() }
+                ?: QuestionPolicies.unavailableNotice(question), style = MaterialTheme.typography.bodySmall) }
+            presence?.age?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant) }
             if (question.approval && !approvalSupported && !permission && !choices) Text("This approval cannot be answered here. Continue on your machine.", style = MaterialTheme.typography.bodySmall)
         }
     }

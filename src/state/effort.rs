@@ -16,6 +16,9 @@ use std::time::{Duration, Instant, SystemTime};
 mod picker_scope;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::state) use picker_scope::front_send as front_pending_send;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn picker_custodian_entry() -> Result<i32> {
     picker_scope::custodian_entry()
 }
@@ -27,9 +30,12 @@ pub(super) fn remember_picker_caller_machine(config: &crate::config::Config, exp
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) use picker_scope::{
-    entered as picker_entered, helper_read as picker_helper_read, own_marker as picker_own_marker,
-    refuse as picker_refuse, ReadCall as PickerRead,
+    deadline as picker_deadline, entered as picker_entered, helper_read as picker_helper_read,
+    own_marker as picker_own_marker, refuse as picker_refuse, ReadCall as PickerRead,
 };
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) use picker_scope::owned_send as picker_owned_send;
 
 const MAX_TAIL: u64 = 8 * 1024 * 1024;
 const LEVELS: &[&str] = &[
@@ -756,6 +762,12 @@ fn catalog(record: &Value) -> Vec<ModelOption> {
     result
 }
 
+/// Read-only admission probe; it grants no Settings or input capability.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn pending_catalog_available(record: &Value) -> bool {
+    !catalog(record).is_empty()
+}
+
 pub(super) fn account_models(provider: &str, home: &Path) -> Value {
     let models = catalog(&json!({"agent":provider,"agent_home":home}));
     json!({"models":models.iter().take(64).map(|m| json!({"id":m.id,"label":m.label,
@@ -784,8 +796,15 @@ fn settings_reason(record: &Value, models: &[ModelOption]) -> &'static str {
         return "Waiting for the agent to confirm this conversation";
     }
     if string(record, "conversation_id").is_empty()
-        && input::checked_settings(string(record,"name"),string(record,"run_id"),"")
-            .and_then(|r| input::checked_terminal(&r,true)).is_err()
+        && {
+            let ordinary = || input::checked_settings(string(record,"name"),string(record,"run_id"),"")
+                .and_then(|r| input::checked_terminal(&r,true));
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let check = picker_scope::send_settings_ready(record).unwrap_or_else(ordinary);
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            let check = ordinary();
+            check.is_err()
+        }
     {
         return "Wait for the agent's empty prompt before changing model settings";
     }

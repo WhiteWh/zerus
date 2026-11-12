@@ -25,7 +25,7 @@ fn installer(provider: &str, windows: bool) -> Option<Installer> {
         |unix, windows_script| Installer::Script(if windows { windows_script } else { unix });
     Some(match provider {
         "codex" => Installer::Npm("@openai/codex"),
-        "dsh" => Installer::Npm("@deepseek-ai/dsh@0.2.1-rc.2"),
+        "dsh" => Installer::Npm("@deepseek-ai/dsh@0.2.2-rc.1"),
         "claude" => script(
             "https://claude.ai/install.sh",
             "https://claude.ai/install.ps1",
@@ -50,6 +50,64 @@ fn npm_program(windows: bool, found: Option<PathBuf>) -> Option<OsString> {
     } else {
         "npm".into()
     })
+}
+
+const DSH_OVERRIDES: [&str; 2] = [
+    "overrides.@modelcontextprotocol/client=2.3.0",
+    "overrides.fflate=0.8.3",
+];
+
+fn parse_npm_root(bytes: &[u8]) -> Result<PathBuf> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| Error::new(1, "npm returned a non-UTF-8 global package root"))?;
+    let path = text.trim_end_matches(['\r', '\n']);
+    if path.is_empty() || path.chars().any(char::is_control) {
+        return Err(Error::new(1, "npm returned an invalid global package root"));
+    }
+    let path = PathBuf::from(path);
+    if !path.is_absolute() {
+        return Err(Error::new(1, "npm returned a relative global package root"));
+    }
+    Ok(path.join("@deepseek-ai/dsh"))
+}
+
+fn dsh_root(npm: &OsString) -> Result<PathBuf> {
+    let mut command = Command::new(npm);
+    command.args(["root", "-g"]);
+    let output = inspection::capture(command, &[], 30).map_err(|error| {
+        Error::new(1, format!("Could not locate the DeepSeek package: {error}"))
+    })?;
+    let root = parse_npm_root(&output)?;
+    if !root.is_dir() {
+        return Err(Error::new(1, "The installed DeepSeek package is missing"));
+    }
+    Ok(root)
+}
+
+fn dsh_override_arguments(root: &Path) -> [Vec<OsString>; 2] {
+    [
+        ["pkg", "set", "--prefix"]
+            .into_iter()
+            .map(OsString::from)
+            .chain([root.as_os_str().into()])
+            .chain(DSH_OVERRIDES.map(OsString::from))
+            .collect(),
+        ["install", "--omit=dev", "--prefix"]
+            .into_iter()
+            .map(OsString::from)
+            .chain([root.as_os_str().into()])
+            .collect(),
+    ]
+}
+
+fn apply_dsh_overrides(npm: &OsString, root: &Path) -> Result<i32> {
+    for arguments in dsh_override_arguments(root) {
+        let code = platform::wait_interactive(Command::new(npm).args(arguments))?;
+        if code != 0 {
+            return Ok(code);
+        }
+    }
+    Ok(0)
 }
 
 /// The command line that runs the downloaded installer `script`: bash on Unix;
@@ -107,7 +165,12 @@ pub(super) fn run(provider: &str, dry: bool) -> Result<i32> {
                 "Install Node.js and npm on this machine, then retry Install agent.",
             )
         })?;
-        return platform::wait_interactive(Command::new(npm).args(["install", "-g", package]));
+        let code = platform::wait_interactive(Command::new(&npm).args(["install", "-g", package]))?;
+        if code != 0 || provider != "dsh" {
+            return Ok(code);
+        }
+        let root = dsh_root(&npm)?;
+        return apply_dsh_overrides(&npm, &root);
     }
     #[cfg(windows)]
     let powershell = Some(platform::powershell().map_err(|e| {
@@ -179,7 +242,7 @@ mod tests {
             );
             assert_eq!(
                 installer("dsh", windows),
-                Some(Installer::Npm("@deepseek-ai/dsh@0.2.1-rc.2"))
+                Some(Installer::Npm("@deepseek-ai/dsh@0.2.2-rc.1"))
             );
             for unknown in ["opencode", "sh", "arbitrary-command", ""] {
                 assert_eq!(installer(unknown, windows), None);
@@ -221,6 +284,41 @@ mod tests {
         );
         assert_eq!(npm_program(true, None), None);
         assert_eq!(npm_program(false, None), None);
+    }
+
+    #[test]
+    fn deepseek_security_overrides_stay_inside_its_package_and_omit_development_dependencies() {
+        let native_root = if cfg!(windows) {
+            r"C:\fixture\lib\node_modules"
+        } else {
+            "/fixture/lib/node_modules"
+        };
+        let root = parse_npm_root(format!("{native_root}\n").as_bytes()).unwrap();
+        assert_eq!(root, Path::new(native_root).join("@deepseek-ai/dsh"));
+        let commands = dsh_override_arguments(&root);
+        assert_eq!(
+            commands[0],
+            [
+                "pkg".into(),
+                "set".into(),
+                "--prefix".into(),
+                root.clone().into_os_string(),
+                DSH_OVERRIDES[0].into(),
+                DSH_OVERRIDES[1].into()
+            ]
+        );
+        assert_eq!(
+            commands[1],
+            [
+                "install".into(),
+                "--omit=dev".into(),
+                "--prefix".into(),
+                root.into_os_string()
+            ]
+        );
+        for bytes in [b"".as_slice(), b"relative\n", b"/one\n/two\n", b"/one\0"] {
+            assert!(parse_npm_root(bytes).is_err());
+        }
     }
 
     #[test]

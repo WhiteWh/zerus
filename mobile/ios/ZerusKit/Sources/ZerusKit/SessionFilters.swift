@@ -202,15 +202,24 @@ public enum SessionFilters {
         return result
     }
 
+    /// Needs attention as the status filters list and count it (desktop filterAttention, zerus-sa9qn.18): a quiet
+    /// supervised child's unread reply, retry or provider limit waits for its parent, so only the person's own Review
+    /// later mark lists it. Every other row keeps needsAttention: a child with a request only the person can answer is
+    /// never quiet, and a muted session stays listed.
+    public static func filterAttention(_ session: Session, _ online: Bool) -> Bool {
+        guard ChildSessions.quiet(session.raw) else { return needsAttention(session, online) }
+        return !archived(session) && (session.raw.bool("review_later") || session.raw.bool("mobile_review_later"))
+    }
+
     public static func active(_ session: Session, _ online: Bool, hasDraft: Bool = false) -> Bool {
-        !archived(session) && (hasDraft || needsAttention(session, online) || working(session, online) || scheduled(session, online) ||
+        !archived(session) && (hasDraft || filterAttention(session, online) || working(session, online) || scheduled(session, online) ||
             replyInProgress(session, online) && session.raw.string("activity") == "idle" && session.raw.string("phase") == "idle")
     }
 
     public static func matches(_ session: Session, _ filter: SessionFilter, _ online: Bool, hasDraft: Bool = false) -> Bool {
         switch filter {
         case .all: !archived(session)
-        case .attention: needsAttention(session, online)
+        case .attention: filterAttention(session, online)
         case .active: active(session, online, hasDraft: hasDraft)
         case .saved: !archived(session) && state(session) != "running"
         case .archive: archived(session)
@@ -307,25 +316,37 @@ public enum SessionFilters {
         return result
     }
 
-    public static func counts(_ sessions: [Session], _ machines: [Machine], drafts: Set<String> = []) -> [SessionFilter: Int] {
+    /// The one rule a status tab's list, its count and the machine chooser share (zerus-sa9qn.19): the filter, and for
+    /// Archive the loaded date window [from, until) (desktop archiveListed).
+    public static func listed(_ session: Session, _ filter: SessionFilter, _ online: Bool, hasDraft: Bool = false,
+                              archiveRange: ArchiveRange = ArchiveRange()) -> Bool {
+        guard matches(session, filter, online, hasDraft: hasDraft) else { return false }
+        guard filter == .archive else { return true }
+        let at = session.raw.double("archived_at", default: 0)
+        return at >= Double(archiveRange.from) && at < Double(archiveRange.until)
+    }
+
+    public static func counts(_ sessions: [Session], _ machines: [Machine], drafts: Set<String> = [],
+                              archiveRange: ArchiveRange = ArchiveRange()) -> [SessionFilter: Int] {
         let online = Set(machines.filter(\.online).map(\.key))
         var counts = Dictionary(uniqueKeysWithValues: SessionFilter.allCases.map { ($0, 0) })
         for row in sessions {
             let isOnline = online.contains(row.target.machineKey)
             let hasDraft = drafts.contains(row.target.key)
-            for filter in SessionFilter.allCases where matches(row, filter, isOnline, hasDraft: hasDraft) { counts[filter]! += 1 }
+            for filter in SessionFilter.allCases where listed(row, filter, isOnline, hasDraft: hasDraft, archiveRange: archiveRange) { counts[filter]! += 1 }
         }
         return counts
     }
 
     /// Chooser counts precede machine selection and text search, retaining project/state scope.
     public static func machineCounts(_ sessions: [Session], _ machines: [Machine], _ filter: SessionFilter,
-                                     drafts: Set<String> = [], project: ProjectKey? = nil) -> [MachineKey: Int] {
+                                     drafts: Set<String> = [], project: ProjectKey? = nil,
+                                     archiveRange: ArchiveRange = ArchiveRange()) -> [MachineKey: Int] {
         var result: [MachineKey: Int] = [:]
         for machine in machines { result[machine.key] = 0 }
         let online = Set(machines.filter(\.online).map(\.key))
         for session in sessions where (project == nil || session.projectKey == project) &&
-            matches(session, filter, online.contains(session.target.machineKey), hasDraft: drafts.contains(session.target.key)) {
+            listed(session, filter, online.contains(session.target.machineKey), hasDraft: drafts.contains(session.target.key), archiveRange: archiveRange) {
             result[session.target.machineKey, default: 0] += 1
         }
         return result

@@ -9,12 +9,18 @@ mod owner;
 mod publication;
 pub(super) mod read;
 mod settings;
+mod send;
+mod send_helpers;
 #[cfg(test)]
 mod tests;
 pub(super) mod transaction;
 
 pub(super) fn entered() -> bool {
     context::entered()
+}
+pub(super) fn owned_send() -> bool {
+    context::owner().is_ok_and(|owner|owner.is_some_and(|owner|
+        owner.control.frame().operation==host::frame::Operation::Send))
 }
 pub(super) fn helper_read(
     call: read::Call,
@@ -48,14 +54,33 @@ pub(super) fn deadline(until: Instant) -> Result<Instant> {
 pub(super) fn checked(name: &str, request: &Request, empty: bool) -> Result<Value> {
     let observation =
         context::Observation::begin()?.ok_or("Original Effort observation context missing")?;
-    let record = input::checked_settings(
+    let record = if let Some(owner) = context::owner()? {
+        if owner.control.frame().operation == host::frame::Operation::Send {
+            send::checked_settings(&owner, name, request)?
+        } else { input::checked_settings(name,&request.expected_run_id,&request.expected_conversation_id)? }
+    } else { input::checked_settings(
         name,
         &request.expected_run_id,
         &request.expected_conversation_id,
-    )?;
+    )? };
     input::checked_terminal(&record, empty)?;
     observation.complete(&record)?;
     Ok(record)
+}
+
+pub(super) fn send_settings_ready(record: &Value) -> Option<Result<()>> {
+    let owner = match context::owner() {
+        Ok(Some(owner)) if owner.control.frame().operation==host::frame::Operation::Send => owner,
+        Ok(_) => return None,
+        Err(error) => return Some(Err(error)),
+    };
+    Some((|| {
+        let (raw,_)=owner.snapshot()?;
+        if !same_target(&raw,record) {return Err("Pending Settings target changed".into());}
+        let h=owner.control.frame().send.as_ref().ok_or("Send header missing")?;
+        let record=input::checked_bound_record(raw,&h.run,&h.conversation,true)?;
+        input::checked_terminal(&record,true)
+    })())
 }
 
 pub(super) fn front(name: &str, raw: &[u8]) -> Option<Result<i32>> {
@@ -129,8 +154,8 @@ pub(super) fn run(writer: Guard, control: Arc<host::Control>) -> Result<Vec<u8>>
         crate::state::rename::sync_legacy_guarded(&effects)?;
         crate::state::worktree_lock::recover_guarded(&effects)?;
         owner.check()?;
-        if string(&frame.binding, "session_id").is_empty() {
-            let request = request_guard(frame.operation, &frame.raw)?;
+        if string(&frame.binding, "session_id").is_empty() || frame.resolve_send_label() {
+            let request = frame.request_guard()?;
             crate::state::resolve_effort_label(
                 string(&frame.binding, "name"),
                 crate::state::LabelGuard::Given {
@@ -142,6 +167,10 @@ pub(super) fn run(writer: Guard, control: Arc<host::Control>) -> Result<Vec<u8>>
                 Some(value) => crate::state::session_id::refuse((error.text, value)),
                 None => error.text,
             })?;
+            if frame.resolve_send_label() && crate::state::session_id::selected().is_none_or(|selected|
+                selected.session_id!=string(&frame.binding,"session_id")) {
+                return Err("Original guarded Send label changed before Root admission".into());
+            }
         }
         let record = host::original_record(frame)?;
         let receipt_path = root()
@@ -149,6 +178,11 @@ pub(super) fn run(writer: Guard, control: Arc<host::Control>) -> Result<Vec<u8>>
             .join(format!("{}.json", frame.request_id));
         let absent = crate::state::guarded_recovery::Original::read_absent(&receipt_path)?;
         effects::parent(&owner, &receipt_path, &[&absent])?;
+        if frame.operation == host::frame::Operation::Send {
+            for directory in ["settings_receipts","attachments"] {
+                effects::parent(&owner,&root().join(directory).join(".send-parent"),&[&absent])?;
+            }
+        }
         crate::state::session_id::select_guarded_route(
             string(&record, "name"),
             string(&record, "session_id"),
@@ -160,6 +194,7 @@ pub(super) fn run(writer: Guard, control: Arc<host::Control>) -> Result<Vec<u8>>
         match frame.operation {
             host::frame::Operation::Effort => transaction::execute(&owner),
             host::frame::Operation::Settings => settings::execute(&owner),
+            host::frame::Operation::Send => send::execute(&owner),
         }
         .or_else(|error| owner.refuse(error))
     }));
@@ -194,5 +229,6 @@ pub(super) fn request_guard(operation: host::frame::Operation, raw: &[u8]) -> Re
                 effort: request.effort.unwrap_or_default(),
             })
         }
+        host::frame::Operation::Send => Err("Send request guard must use its verified envelope".into()),
     }
 }

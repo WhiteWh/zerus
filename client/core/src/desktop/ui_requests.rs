@@ -91,6 +91,14 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         categories: Option<Vec<String>>,
     },
+    /// The global switch of the owner-approved question route
+    /// (zerus-sa9qn.32): the person's own choice, through the native UI
+    /// permit only. Off stops new route reservations at once; it never
+    /// cancels or replays a reserved, sent or unknown route.
+    QuestionRoutes {
+        request_id: String,
+        enabled: bool,
+    },
     CacheMaintenance {
         request_id: String,
         command: Box<super::cache_maintenance::Command>,
@@ -140,6 +148,7 @@ impl Request {
             | Self::DesktopOwnership { request_id, .. }
             | Self::ImportPendingReads { request_id, .. }
             | Self::AutomaticApprovals { request_id, .. }
+            | Self::QuestionRoutes { request_id, .. }
             | Self::CacheMaintenance { request_id, .. }
             | Self::MaintenanceConfigure { request_id, .. } => request_id,
         }
@@ -165,6 +174,7 @@ impl Request {
             Self::ImportPendingReads { .. } => "import_pending_reads",
             Self::ActivationWait { .. } => "activation_wait",
             Self::AutomaticApprovals { .. } => "automatic_approvals",
+            Self::QuestionRoutes { .. } => "question_routes",
             Self::CacheMaintenance { .. } => "cache_maintenance",
             Self::MaintenanceConfigure { .. } => "maintenance_configure",
         }
@@ -198,6 +208,7 @@ impl Request {
             Self::AutomaticApprovals { categories, .. } => categories
                 .as_deref()
                 .is_none_or(|ids| crate::approvals::automatic::Set::from_ids(ids).is_some()),
+            Self::QuestionRoutes { .. } => true,
             Self::CacheMaintenance {
                 request_id,
                 command,

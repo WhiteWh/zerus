@@ -1,7 +1,7 @@
 //! Read-only child Activity. The parent roster is the authority for membership;
 //! an arbitrary thread ID or filesystem path is never an inspection target.
 use super::*;
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
@@ -140,11 +140,8 @@ fn native_messages(record: &Value, id: &str) -> Result<Option<(Vec<Value>, Strin
             if uuid::Uuid::parse_str(id).is_err() {
                 return Ok(None);
             }
-            let db = Connection::open_with_flags(
-                native_home.join("state_5.sqlite"),
-                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-            )
-            .map_err(|e| e.to_string())?;
+            let db = codex_sqlite::NativeConnection::open(native_home.join("state_5.sqlite"))
+                .map_err(|e| e.to_string())?;
             db.busy_timeout(std::time::Duration::from_millis(20))
                 .map_err(|e| e.to_string())?;
             let row = db

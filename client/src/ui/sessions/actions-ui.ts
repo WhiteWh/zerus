@@ -436,7 +436,7 @@ export type DialogKind = "rename" | "terminate" | "fresh" | "forget" | "batch" |
 export interface ForgetScope { binding: boolean; run: string; conversation: string }
 export type DialogOpen =
   | { kind: "fork"; row: ActionRow; details: Details }
-  | { kind: "rename" | "terminate" | "fresh"; row: ActionRow }
+  | { kind: "rename" | "terminate" | "fresh" | "archive"; row: ActionRow }
   | { kind: "forget"; row: ActionRow; bound: ForgetScope }
   /** A selection's Forget or Terminate: `answer` gets true for the confirm button, false otherwise. */
   | { kind: "batch"; copy: BatchConfirmation; answer: (confirmed: boolean) => void }

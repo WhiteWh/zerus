@@ -1087,6 +1087,10 @@ export function PerfHost() {
       const { nativeUiSmoke } = await import("../perf/nativeUiSmoke");
       void nativeUiSmoke(!!config().replay && !!config().actions_smoke, config().smoke_file ?? undefined);
     }
+    if (new URLSearchParams(location.search).has("attention-filter-smoke") && inTauri()) {
+      const { attentionFilterSmoke } = await import("../perf/attentionFilterSmoke");
+      void attentionFilterSmoke(!!config().replay && !!config().actions_smoke);
+    }
     if (new URLSearchParams(location.search).has("scope-filter-smoke") && inTauri()) {
       const { scopeFilterSmoke } = await import("../perf/scopeFilterSmoke");
       void scopeFilterSmoke(!!config().replay && !!config().actions_smoke);

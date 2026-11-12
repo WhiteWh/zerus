@@ -396,6 +396,15 @@ device submitted the voice message. See [the contract](../../../docs/voice-messa
   a completed row 5 seconds after the phone has read its terminal receipt
   (`result_read`) or 60 seconds after completion, so file bytes are carried,
   not kept. Submission requires the computer to advertise the operation.
+  `send_receipt` is an additive Rust-only READ for exact ordinary-send outcome
+  recovery. Its frozen intent and distinct intent/native digests are specified
+  in the [connector contract](../connector/README.md). It requires the selected
+  computer to advertise `send_receipt`, uses the shared read quota and a new
+  partial `send_receipt_reads_v1` retention index, and expires terminal results
+  after one hour. Existing read-index predicates and mutation tombstones stay
+  unchanged. v1 validates the exact intent; v2 carries it under authenticated
+  encryption with the signed Read class. Neither transport submits the original
+  send again. Phone recovery remains a separate integration.
   `remove_queued` (OpenCode) is a session mutation with a durable request
   identity, like `forget`: exact `expected_run_id`, nonempty
   `expected_conversation_id` and one `message_id`, `msg_` followed by 1–124

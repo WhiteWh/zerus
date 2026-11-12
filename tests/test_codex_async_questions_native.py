@@ -136,6 +136,7 @@ class NativeCodexAsyncQuestions(unittest.TestCase):
     fail = native.NativeCodexClear.fail
     wait_for = test_codex_update.NativeCodexUpdate.wait_for
     inspect = synthetic.CodexAsync.inspect
+    inspect_once = synthetic.CodexAsync.inspect_once
     native_features = 'send_message_to_user_async=true\nmulti_agent_v2=true\n'
     native_model = 'gpt-6-astra'
     questions = QUESTIONS
@@ -342,6 +343,7 @@ class NativeCodexTallQuestion(unittest.TestCase):
     fail = NativeCodexAsyncQuestions.fail
     wait_for = NativeCodexAsyncQuestions.wait_for
     inspect = NativeCodexAsyncQuestions.inspect
+    inspect_once = NativeCodexAsyncQuestions.inspect_once
     native_features = NativeCodexAsyncQuestions.native_features
     setUp = NativeCodexAsyncQuestions.setUp
     screen = NativeCodexAsyncQuestions.screen

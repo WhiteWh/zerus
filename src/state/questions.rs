@@ -282,16 +282,27 @@ fn recover_wire(record: &Value, events: &[Value]) -> BTreeMap<String, Value> {
 
 /// Current normalized identities without availability checks (adapter guard API).
 pub(super) fn current(record: &Value) -> Result<Vec<Value>> {
-    Ok(collect(record, None)?.unwrap_or_default())
+    Ok(collect(record, None, false, true)?.unwrap_or_default().0)
 }
 
 /// Like `current`, but None when the Codex question index cannot be brought up
 /// to date by `deadline`; its progress is kept for the next call.
 pub(super) fn current_until(record: &Value, deadline: std::time::Instant) -> Result<Option<Vec<Value>>> {
-    collect(record, Some(deadline))
+    Ok(collect(record, Some(deadline), false, false)?.map(|(cards, _)| cards))
 }
 
-fn collect(record: &Value, deadline: Option<std::time::Instant>) -> Result<Option<Vec<Value>>> {
+/// The cards, and whether the Codex question index was complete by
+/// `deadline`. An incomplete index is None, unless `partial` keeps the other
+/// cards: then it adds no Codex question and nothing inferred from their
+/// absence (zerus-a4mub.8). `listing` marks a question listing (`current`
+/// and `inspection`): only a listing may fit a clipped Claude approval into
+/// its unviewed pane. A deadline alone never decides that.
+fn collect(
+    record: &Value,
+    deadline: Option<std::time::Instant>,
+    partial: bool,
+    listing: bool,
+) -> Result<Option<(Vec<Value>, bool)>> {
     let mut by_tool = BTreeMap::new();
     if let Some(pending) = record["pending_questions"].as_object() {
         for card in pending.values() {
@@ -320,15 +331,17 @@ fn collect(record: &Value, deadline: Option<std::time::Instant>) -> Result<Optio
     let mut cards: Vec<_> = by_tool.into_values().collect();
     cards.extend(kimi_plan::recover(record, &events));
     cards.extend(kimi_approval::recover(record, &events));
+    let mut complete = true;
     match deadline {
         None => cards.extend(codex_questions::current(record)?),
         Some(deadline) => match codex_questions::current_until(record, deadline)? {
             Some(codex) => cards.extend(codex),
+            None if partial => complete = false,
             None => return Ok(None),
         },
     }
     // Only a listing may fit a clipped approval into its unviewed pane.
-    let approval=if deadline.is_none() {claude_approval::listed(record)} else {claude_approval::current(record)};
+    let approval=if listing {claude_approval::listed(record)} else {claude_approval::current(record)};
     if let Some(approval)=approval{cards.push(approval);}
     if let Some(mode) = claude_permission::current(record) {
         cards.push(mode);
@@ -352,7 +365,7 @@ fn collect(record: &Value, deadline: Option<std::time::Instant>) -> Result<Optio
     if let Some(terminal) = claude_approval::terminal_card(record, &cards) {
         cards.push(terminal);
     }
-    if cards.is_empty() {
+    if cards.is_empty() && complete {
         cards.extend(startup_choice::current(record));
     }
     cards.sort_by(|a, b| {
@@ -361,7 +374,7 @@ fn collect(record: &Value, deadline: Option<std::time::Instant>) -> Result<Optio
             .unwrap_or(0.0)
             .total_cmp(&b["created_at"].as_f64().unwrap_or(0.0))
     });
-    Ok(Some(cards))
+    Ok(Some((cards, complete)))
 }
 
 /// The current cards of the deferred answer kind's sources
@@ -511,18 +524,32 @@ pub(super) fn response(record: &Value, card: &Value) -> Result<Option<Value>> {
     }
 }
 
-pub(super) fn inspection(record: &Value, live_pane: bool) -> Result<Value> {
+/// The pending questions of an inspection, and whether they are complete.
+/// The Codex question index works only until `deadline` and keeps its
+/// progress; until it is complete, no Codex question is listed or offered
+/// and the list is not complete (zerus-a4mub.8).
+pub(super) fn inspection(
+    record: &Value,
+    live_pane: bool,
+    deadline: std::time::Instant,
+) -> Result<(Value, bool)> {
     if !live_pane || !process_alive(record) {
-        return Ok(json!([]));
+        return Ok((json!([]), true));
     }
     kimi_trust::fit(record);
-    match current(record) {
-        Ok(mut pending) => {
+    match collect(record, Some(deadline), true, true).map(Option::unwrap_or_default) {
+        Ok((mut pending, complete)) => {
+            // The same complete index decides whether a Codex question is unique.
+            let codex: Vec<Value> = pending
+                .iter()
+                .filter(|c| string(c, "source") == "codex_async")
+                .cloned()
+                .collect();
             for card in &mut pending {
                 if string(card,"source")=="codex_async" {
                     card["can_skip"]=json!(card["answer_delivery"]["status"] != "submitted");
                     codex_questions::fit(record,card);
-                    match codex_questions::available(record,card) {
+                    match codex_questions::available_among(record,card,&codex) {
                         Ok(())=>{card["can_answer"]=json!(true);card["answer_transport"]=json!("codex_tui");card["answer_unavailable_reason"]=json!("");}
                         Err(error)=>card["answer_unavailable_reason"]=json!(error),
                     }
@@ -576,7 +603,7 @@ pub(super) fn inspection(record: &Value, live_pane: bool) -> Result<Value> {
                     }
                 }
             }
-            Ok(json!(pending))
+            Ok((json!(pending), complete))
         }
         Err(error) => Err(error),
     }
@@ -897,7 +924,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
             "run_id":request.expected_run_id,"conversation_id":request.expected_conversation_id,
             "question_id":request.question_id,"question_hash":request.expected_question_hash,"digest":digest,
             "submitted_at":now(),"answers":answers});
-        atomic(&receipt_path, &receipt.to_string())?;
+        receipt_index::persist(&receipt_path, &receipt)?;
         (record, question, answers, receipt)
     };
     let tui_choice =
@@ -906,13 +933,13 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         let status = match codex_questions::answer(&record,&question,&answers,&request_id) {
             Ok(status) => status,
             Err(error) => {
-                if !error.contains("delivery uncertain") {receipt["status"]=json!("rejected");receipt["error"]=json!(error);let _=atomic(&receipt_path,&receipt.to_string());}
+                if !error.contains("delivery uncertain") {receipt["status"]=json!("rejected");receipt["error"]=json!(error);let _=receipt_index::persist(&receipt_path,&receipt);}
                 return Err(error);
             }
         };
         receipt["status"]=json!(status);receipt["skipped"]=json!(answers[0]["skip"]==true);
         if status == "answered" { receipt["answered_at"]=json!(now()); }
-        atomic(&receipt_path,&receipt.to_string()).map_err(|e|format!("delivery uncertain: {e}"))?;
+        receipt_index::persist(&receipt_path,&receipt).map_err(|e|format!("delivery uncertain: {e}"))?;
         println!("{receipt}");return Ok(0);
     }
     // Update now says whether Codex still runs its installer.
@@ -971,7 +998,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
             receipt["error"] = json!(error);
             // No terminal input was sent, so even a failed receipt update
             // cannot turn this definite rejection into a possible delivery.
-            let _ = atomic(&receipt_path, &receipt.to_string());
+            let _ = receipt_index::persist(&receipt_path, &receipt);
         }
         return Err(error);
     }
@@ -1011,7 +1038,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
             .map_err(|e| format!("delivery uncertain: {e}"))?;
         receipt["status"] = json!("answered");
         receipt["answered_at"] = json!(now());
-        atomic(&receipt_path, &receipt.to_string())
+        receipt_index::persist(&receipt_path, &receipt)
             .map_err(|e| format!("delivery uncertain: {e}"))?;
         println!("{receipt}");
         return Ok(0);
@@ -1038,7 +1065,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
             })?;
             receipt["status"] = json!("answered");
             receipt["answered_at"] = json!(now());
-            atomic(&receipt_path, &receipt.to_string())
+            receipt_index::persist(&receipt_path, &receipt)
                 .map_err(|error| format!("delivery uncertain: {error}"))?;
             println!("{receipt}");
             return Ok(0);
@@ -1070,6 +1097,40 @@ mod tests {
         let event = json!({"type":"interaction.resolved","response":{"answers":{
             "Which checks?":answer_text(&items[0], &answers[0]),"Anything else?":answer_text(&items[1], &answers[1])}}});
         assert!(response_matches(&card, &answers, &event));
+    }
+    /// Only a question listing may grow an unviewed pane to fit a clipped
+    /// Claude approval (`claude_approval::listed`); guards read the screen as
+    /// it is. A deadline or a partial Codex index must never turn a listing
+    /// into a guard: batch 5 once dropped pane fitting from inspection() so.
+    #[test]
+    fn listings_fit_clipped_claude_approvals_and_guards_do_not() {
+        use super::super::claude_approval::LAST_FIT;
+        let pid = std::process::id();
+        // Idle and without a supervisor: every reader stays off the terminal
+        // and the state root, and the approval read still records its fit.
+        let record = json!({"agent":"claude","run_id":"run","conversation_id":"conversation","phase":"idle",
+            "pid":pid,"process_start":super::super::storage::process_start(pid)});
+        let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let fit = |read: &dyn Fn()| {
+            LAST_FIT.with(|last| last.set(None));
+            read();
+            LAST_FIT.with(std::cell::Cell::get)
+        };
+        assert_eq!(
+            fit(&|| drop(inspection(&record, true, deadline()).unwrap())),
+            Some(true),
+            "inspection() is a listing"
+        );
+        assert_eq!(
+            fit(&|| drop(current(&record).unwrap())),
+            Some(true),
+            "current() is a listing"
+        );
+        assert_eq!(
+            fit(&|| drop(current_until(&record, deadline()).unwrap())),
+            Some(false),
+            "current_until() is a guard"
+        );
     }
     fn record() -> Value {
         json!({"agent":"kimi","run_id":"run","conversation_id":"session_test","active_tools":{"tool_test":{"name":"AskUserQuestion"}}})

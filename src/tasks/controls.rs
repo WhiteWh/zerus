@@ -66,12 +66,16 @@ fn command(config: &Config, args: &[String]) -> std::result::Result<Value, (&'st
         .map_err(|e| ("task_control_service_unavailable", e.to_string()))
 }
 
+/// The plain start sentence of the task instructions, which managed work
+/// replaces; it names the start command each dispatched prompt pins.
+pub(super) const PLAIN_START: &str = "Acknowledge a dispatched task with the `hgs task start` command its prompt pins before working; this does not send it again.";
+
 pub(super) fn session_instructions(original: &str) -> Cow<'_, str> {
     if !TASK_CONTROLS {
         return Cow::Borrowed(original);
     }
     original.replace(
-        "Acknowledge a dispatched task with `hgs task start <ref>` before working; this does not send it again.",
+        PLAIN_START,
         "Acknowledge managed work exactly once with its original pinned `hgs task begin-attempt <ref> --attempt UUID` command. It replaces start; do not run both. Plain start is only the legacy acknowledgement and never binds a managed native turn."
     ).into()
 }
@@ -88,6 +92,6 @@ pub(super) fn pin_dispatch(prompt: &mut String, project: &str, task: &str, attem
 /// Only fresh send/handoff/reopen uses this instruction. Ordinary feedback
 /// keeps its report origin and never requests a second acknowledgement.
 pub(super) fn pin_begin(prompt: &mut String, project: &str, task: &str, attempt: &str) {
-    let reference = crate::platform::quote(&format!("{project}/{task}"));
+    let reference = zerus_replica::command_reference(project, task);
     prompt.push_str(&format!("\n\n[Zerus acknowledgement origin: {attempt}]\nAcknowledge this execution exactly once with `hgs task begin-attempt {reference} --attempt {attempt}`. This replaces any plain task start instruction above; do not run both. Keep this original attempt UUID. A start acknowledgement cannot substitute a newer attempt."));
 }

@@ -20,7 +20,9 @@ pub use attachment::{
 };
 pub use error::{Error, ErrorKind, Result};
 pub use project::{CutoverHold, ProjectDoc, Settings};
-pub use render::{cancel_message, task_dispatch_content, task_prompt, Tools};
+pub use render::{
+    cancel_message, command_reference, command_word, task_dispatch_content, task_prompt, Tools,
+};
 pub use schema::{
     Actor, LogEntry, SessionKey, Stage, Target, TaskDelivery, TaskView, TaskWorker, MAX_DOCUMENT,
     MAX_TEXT, SCHEMA,

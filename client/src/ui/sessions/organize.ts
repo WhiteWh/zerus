@@ -95,7 +95,7 @@ export function placement(rows: Row[], offsets: number[], heights: number[], ove
   // A subagent row is not a target of its own: the whole family is one session.
   while (i > 0 && rows[i].type === "child") i--;
   const over = rows[i];
-  const group = over.type === "header" ? over.project : over.type === "card" ? groupOf(over.session.key)
+  const group = over.type === "header" || over.type === "container" ? over.project : over.type === "card" ? groupOf(over.session.key)
     : over.type === "creation" ? projectOf(over.creation, grouping()) : groupOf(over.parent.key);
   const top = offsets[i];
   let bottom = top + heights[i];
@@ -116,6 +116,8 @@ export function placement(rows: Row[], offsets: number[], heights: number[], ove
     const height = heights[i];
     if (y > top + height * 0.3 && y < top + height * 0.7) return { group, nest: over.session.key, box: { top: top + 4, height: height - 10 } };
   }
+  // An ended parent's container (zerus-sa9qn.17) is no rank position: the session moves into its project.
+  if (over.type === "container") return { group, line: y <= (top + bottom) / 2 ? top : bottom, inset: 12 };
   if (y <= (top + bottom) / 2) return { group, before: over.id, line: top, inset: 12 };
   let n = i + 1;
   while (n < rows.length && rows[n].type === "child") n++;

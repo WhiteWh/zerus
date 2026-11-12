@@ -2,7 +2,7 @@ import { batch, createMemo, createSignal, untrack } from "solid-js";
 import { createStore } from "solid-js/store";
 import { catalog, computerFresh, orderedRows } from "./catalog";
 import { documentVisibility } from "./visibility";
-import { countedAttention, isActive, isWorking, needsAttention } from "./attention";
+import { countedAttention, filterActive, filterAttention, isActive, isWorking, needsAttention } from "./attention";
 import { settings, settingsReady, setSetting, num } from "./settings";
 import { createRowDensity, ROW_DENSITY_KEY } from "./rowDensity";
 import type { Session, Status } from "../ui/sessions/types";
@@ -183,11 +183,18 @@ export const selected = createMemo<Session | undefined>(() => {
 /** The window's online state of a row: its computer's rows are current (Qt's `entry.online`). */
 const online = (s: Session) => computerFresh(s.computer);
 
+/**
+ * A state filter's membership (zerus-sa9qn.18). A quiet supervised child's unread
+ * reply, retry or limit waits for its parent, so Needs attention and Active
+ * neither count nor list it, while its Review later mark, or a child's request
+ * only the person can answer, is both (filterAttention). The list and the tab
+ * counts read it through listedByFilter.
+ */
 export function matchesFilter(s: Session, f: StateFilter): boolean {
   switch (f) {
     case "all": return true;
-    case "attention": return needsAttention(s, online(s));
-    case "active": return isActive(s, online(s));
+    case "attention": return filterAttention(s, online(s));
+    case "active": return filterActive(s, online(s));
     case "paused": return s.status === "paused";
     case "archived": return s.state === "archived";
   }

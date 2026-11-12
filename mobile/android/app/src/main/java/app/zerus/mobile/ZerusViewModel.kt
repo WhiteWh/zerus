@@ -728,7 +728,10 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun markRead(target:Target,evidence:ReadAttentionEvidence) {
         if(evidence.target!=target || !readTrackingReady || captureReadAttention(target)!=evidence) { error="The displayed reply evidence changed. Review it before marking read.";return }
-        readWriter?.let { readState=it.edit { state -> ReadAttentionPolicies.mark(state,evidence) } };refreshReadAttention();shareRead(target);flushDrafts()
+        readWriter?.let { readState=it.edit { state -> ReadAttentionPolicies.mark(state,evidence) } };refreshReadAttention();shareRead(target)
+        // The explicit choice covers what the open conversation's verified inspection names now.
+        currentRead(target)?.let { shareCurrent(target,it,replyShown=true,attentionShown=true) }
+        flushDrafts()
     }
     private fun readAllEvidence(target:Target):ReadAttentionEvidence? {
         if(!readTrackingReady || readWriter==null || demo || target.run.isBlank() || target.conversation.isBlank() ||
@@ -807,12 +810,14 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         selected?.target?.let { loaded[it]=conversationEvents }
     }
     private class SharedReadRequest(val connection:Connection,val target:Target,val payload:JSONObject,val key:String)
+    /** Whether this target's gateway and computer accept `mark_read` now. */
+    private fun sharedReadAvailable(target:Target)=!demo && readTrackingReady &&
+        "mark_read" in relayOperations[target.connectionId].orEmpty() &&
+        "mark_read" in machineOperations[MachineKey(target.connectionId,target.computerId)].orEmpty()
     /** The C4 `mark_read` this phone may send now; [acknowledge] also covers the current request. */
     private fun sharedReadRequest(target:Target,acknowledge:Boolean):SharedReadRequest? {
-        if(demo || !readTrackingReady) return null
+        if(!sharedReadAvailable(target)) return null
         val row=sessions.find { it.target==target } ?: return null
-        if("mark_read" !in relayOperations[target.connectionId].orEmpty() ||
-            "mark_read" !in machineOperations[MachineKey(target.connectionId,target.computerId)].orEmpty()) return null
         val payload=SharedReadPolicies.payload(row,readAllEvidence(target)?.authoritative==true,unreadCount(target),acknowledge) ?: return null
         val connection=connections.find { it.id==target.connectionId } ?: return null
         return SharedReadRequest(connection,target,payload,target.key+"\n"+payload)
@@ -841,12 +846,45 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         sharedReadRetryTimer?.cancel()
         sharedReadRetryTimer=viewModelScope.launch { sharedReadRetries.releaseWhenDue(android.os.SystemClock::elapsedRealtime) { sharedReadsSent.remove(it) } }
     }
-    /** Tell the session's computer that this phone showed its current reply (C4 `mark_read`). */
-    private fun shareRead(target:Target) {
-        val request=sharedReadRequest(target,true) ?: return
+    /** zerus-a4mub.9: what the open conversation's verified inspection lets this phone acknowledge now. */
+    private fun currentRead(target:Target):CurrentRead? =
+        if(selected?.target!=target || activeFrame?.target!=target) null else SharedReadPolicies.current(activity,target,activityVerified)
+    /** Changes with the current reply and attention values, so a visibility dwell restarts for new ones. */
+    fun currentReadKey(target:Target):String=currentRead(target)?.let(::currentReadKey).orEmpty()
+    private fun currentReadKey(current:CurrentRead)=JSONArray(listOf(current.reply,current.attention,current.attentionComplete)).toString()
+    /** The newest row the open conversation displays, while it shows the latest messages. */
+    fun newestDisplayedEventId(target:Target):String=
+        if(selected?.target!=target || activeFrame?.target!=target || hasNewer) "" else conversationEvents.lastOrNull()?.id.orEmpty()
+    /**
+     * After the settled visibility dwell, acknowledges what the open conversation showed of its current
+     * inspection: the reply once its tail or newest row was visible, the attention once its questions were
+     * (without questions, once the same tail or newest row was). [key] is [currentReadKey] as the dwell saw it.
+     */
+    fun visibleCurrent(target:Target,key:String,flags:ConversationViewport.CurrentFlags) {
+        val current=currentRead(target) ?: return
+        if(key!=currentReadKey(current)) return
+        val (replyShown,attentionShown)=SharedReadPolicies.currentShown(latest=!hasNewer,
+            questionsListed=conversationQuestions.isNotEmpty(),flags=flags)
+        shareCurrent(target,current,replyShown,attentionShown)
+    }
+    private fun shareCurrent(target:Target,current:CurrentRead,replyShown:Boolean,attentionShown:Boolean) {
+        if(!sharedReadAvailable(target)) return
+        val payload=SharedReadPolicies.currentPayload(sessions.find { it.target==target },target,current,replyShown,attentionShown) ?: return
+        val connection=connections.find { it.id==target.connectionId } ?: return
+        launchSharedRead(SharedReadRequest(connection,target,payload,target.key+"\n"+payload))
+    }
+    /**
+     * Sends one prepared mark once. The canonical and current acknowledgements share this path, so their
+     * delivery, retries and observed status (zerus-a4mub.10) stay one.
+     */
+    private fun launchSharedRead(request:SharedReadRequest) {
         if(!sharedReadsSent.add(request.key)) return
         noteSharedRead(request.target,SharedReadStatus.Pending(System.currentTimeMillis()))
         viewModelScope.launch { sendSharedRead(request) }
+    }
+    /** Tell the session's computer that this phone showed its current reply (C4 `mark_read`). */
+    private fun shareRead(target:Target) {
+        sharedReadRequest(target,true)?.let(::launchSharedRead)
     }
     /** A reply read on another device advances this phone's watermark, using only a fresh exact head. */
     private fun adoptSharedReads() {
@@ -866,6 +904,10 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
     var conversationQuestions by mutableStateOf<List<Question>>(emptyList()); private set
     var conversationOutgoing by mutableStateOf<List<OutgoingMessage>>(emptyList()); private set
     var activityVerified by mutableStateOf(false); private set
+    /** When the verified question projection was last installed; `0` means never. */
+    var questionCheckedAt by mutableStateOf(0L); private set
+    /** The projection's own completeness; an older CLI omits the field and stays complete. */
+    var questionProjectionComplete by mutableStateOf(true); private set
     var historyCached by mutableStateOf(false); private set
     /** When the shown conversation's messages were observed (wall clock), null for a saved copy without a time (zerus-a4mub.10). */
     var conversationObservedAt by mutableStateOf<Long?>(null); private set
@@ -1016,15 +1058,21 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (changed) syncOutgoing()
     }
+    private fun retainOutbox() {
+        messageRepository.retainOutbox(deliveryFlights, receiptFlights, conversationEvents)
+    }
     private fun syncOutgoing() {
+        retainOutbox()
         normalizedOutgoing = messageState.outgoing.map { if (it.status == "sending" && it.requestId !in deliveryFlights) it.recover() else it }
         preparePresentation()
     }
     private fun editState(reduce: (MessageState) -> MessageState) {
+        retainOutbox()
         updateMessageState(checkNotNull(persistence) { "Private storage is not ready." }.edit(reduce))
     }
     private suspend fun durable(reduce: (MessageState) -> MessageState,
         acknowledge: (MessageState, MessageState) -> MessageState = { current, _ -> reduce(current) }): MessageState {
+        retainOutbox()
         val writer = checkNotNull(persistence) { "Private storage is not ready." }
         val written = writer.durable(reduce, acknowledge)
         updateMessageState(writer.state.value)
@@ -1110,6 +1158,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
                 conversationEvents = prepared.events; conversationOutgoing = prepared.messages; conversationQuestions = prepared.questions
                 activity = frame.raw; activityVerified = verified /* BEGIN QUESTION_AVAILABILITY_PROBE writer-install-presentation */; questionVerificationProbe(QuestionUiProbe.VerificationWriter.INSTALL_PRESENTATION) /* END QUESTION_AVAILABILITY_PROBE writer-install-presentation */; historyCached = !verified; conversationHistoryTruncated = frame.truncated
                 conversationObservedAt = frame.observedAt.takeIf { it > 0 }
+                if (verified) { questionCheckedAt = android.os.SystemClock.elapsedRealtime(); questionProjectionComplete = frame.raw.optBoolean("pending_questions_complete", true) }
                 publishPagingMetadata(frame)
                 captureUnreadBoundary(frame.target,prepared.events)
             }
@@ -1154,6 +1203,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
                 if (conversationOutgoing != messages) conversationOutgoing = messages
                 activity = frame.raw; activityVerified = activeFrameVerified /* BEGIN QUESTION_AVAILABILITY_PROBE writer-prepare-presentation */; questionVerificationProbe(QuestionUiProbe.VerificationWriter.PREPARE_PRESENTATION) /* END QUESTION_AVAILABILITY_PROBE writer-prepare-presentation */; historyCached = !activeFrameVerified; conversationHistoryTruncated = frame.truncated
                 conversationObservedAt = frame.observedAt.takeIf { it > 0 }
+                if (activeFrameVerified) { questionCheckedAt = android.os.SystemClock.elapsedRealtime(); questionProjectionComplete = frame.raw.optBoolean("pending_questions_complete", true) }
                 publishPagingMetadata(frame)
                 if(pendingHistoryPosition==frame.target.key) { pendingHistoryPosition="";readPositionReady=true }
                 captureUnreadBoundary(frame.target,merged.events)
@@ -1175,8 +1225,8 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
                         HistoryRequests.refreshAtHead(window)?.let { (direction,cursor) -> loadHistory(frame.target,direction,cursor) }
                 }
             }
-            if (activityVerified && messages.any { it.requestId in merged.recordedRequestIds && it.status != "recorded" }) {
-                editState { state -> state.copy(outgoing = state.outgoing.map { if (it.requestId in merged.recordedRequestIds && it.status != "reviewed") it.copy(status = "recorded", error = "") else it }) }
+            if (activityVerified && messages.any { it.requestId in merged.recordedRequestIds && (it.status != "recorded" || merged.exactRepresentations[it.requestId]?.let { proof -> proof != it.coverage } == true) }) {
+                editState { state -> OutboxRetention.recorded(state, merged.recordedRequestIds, merged.exactRepresentations) }
             }
             if (activityVerified) messages.lastOrNull { it.status == "uncertain" && it.requestId !in merged.recordedRequestIds }?.let { message ->
                 if (outgoingReceiptProbe.claim(target, navigationId, message,
@@ -2341,7 +2391,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
             if (selected?.target?.let { ContextPolicies.sameSessionRun(it, operation.target) } == true) refreshActivity()
         } catch (failure: CancellationException) { throw failure }
         catch (_: Exception) { contextNotice = "The original receipt is unavailable. Its saved identity has been preserved." }
-        finally { receiptFlights -= flight }
+        finally { receiptFlights -= flight; retainOutbox() }
     }
     fun reviewContextOperation(operation: ContextOperation) {
         if ("context:${operation.requestId}" in receiptFlights) return
@@ -3296,7 +3346,8 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         if (intent != null) continuationEnqueuing = intent.requestId
         val id = UUID.randomUUID().toString(); val at = System.currentTimeMillis() / 1000.0
         preparingTargets += target.key; deliveryFlights += id
-        val written = try { durable({ state -> state.enqueue(original, id, at) }, { state, committed -> MessageChanges.enqueueAcknowledged(state, original, committed, id) }) }
+        val frozen=if(original.attachments.isEmpty()) captureSendIntent(target,id,original.text,expectedCompactionId.takeIf { it.isNotBlank() }) else null
+        val written = try { durable({ state -> state.enqueue(original, id, at, frozen) }, { state, committed -> MessageChanges.enqueueAcknowledged(state, original, committed, id) }) }
         catch (e: Exception) { error = "Could not save the outgoing message. It was not sent. Your composition is preserved."; deliveryFlights -= id; syncOutgoing(); preparingTargets -= target.key; continuationEnqueuing = ""; cancelCompactContinuation(); return@launch }
         preparingTargets -= target.key
         val message = written.outgoing.first { it.requestId == id }
@@ -3310,8 +3361,10 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
                     check(continuation?.requestId == intent.requestId && intent.permitsTransport(selected?.target, navigationId, android.os.SystemClock.elapsedRealtime(), cleared, draft(target)) &&
                         ContextPolicies.compactStatus(messageState.contextOperations.first { it.requestId == intent.requestId }, activity!!) == "completed") { "Compact continuation was canceled. The captured message was not sent and remains recoverable." }
                 }
-                val payload = target.json().put("request_id", id).put("text", message.text).put("attachments", files)
-                if (expectedCompactionId.isNotBlank()) payload.put("expected_compaction_id", expectedCompactionId)
+                val payload = message.sendIntent?.let { saved -> saved.value()?.getJSONObject("payload") ?: throw IllegalStateException("The saved message details are unavailable. Review this message.") }
+                    ?: target.json().put("request_id", id).put("text", message.text).put("attachments", files).also {
+                        if (expectedCompactionId.isNotBlank()) it.put("expected_compaction_id", expectedCompactionId)
+                    }
                 submitOutgoing(api, connection, target, payload, id, evidence)
             },
             await = { initial -> api.await(connection, initial) },
@@ -3323,12 +3376,23 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
             release = { api.releaseReservedOutgoing(connection, id) })
         try { send.run() } finally { if (intent != null) { continuationEnqueuing = ""; continuation = null }; deliveryFlights -= id; syncOutgoing() }
     }
-    private suspend fun settleOutgoing(message: OutgoingMessage, receipt: JSONObject) {
+    private fun captureSendIntent(target:Target,id:String,text:String,compactionId:String?=null):SendIntent? {
+        val connection=connections.singleOrNull { it.id==target.connectionId } ?: return null
+        val machine=SendReceiptRecovery.machine(machines,target) ?: return null
+        val source=sessions.singleOrNull { it.target.connectionId==target.connectionId && it.target.computerId==target.computerId && it.target.run==target.run && it.target.agentId.isEmpty() && it.target.archiveId.isEmpty() } ?: return null
+        val encoding=SendReceiptRecovery.encoding(connection.protocolVersion,machine.route) ?: return null
+        return SendReceiptRecovery.freeze(target,id,text,source.agent,machine.machineId,source.raw.string("session_id"),encoding,compactionId)
+    }
+    private suspend fun settleOutgoing(message: OutgoingMessage, receipt: JSONObject, deadlineMs:Long?=null) {
         val result = receipt.optJSONObject("result"); val state = receipt.string("state")
-        val confirmed = receipt.string("request_id") == message.requestId && state == "completed" && result?.string("status") in listOf("submitted", "queued")
+        val proof=if(result!=null) message.originalSendIntent()?.let { SendReceiptRecovery.acknowledgement(it,result) } else null
+        val strict=message.hasOriginalSendIdentity && SendReceiptRecovery.supported(relayOperations[message.target.connectionId],machineOperations[MachineKey(message.target.connectionId,message.target.computerId)])
+        val confirmed = receipt.string("request_id") == message.requestId && state == "completed" && result?.string("status") in listOf("submitted", "queued") && (!strict || proof!=null) && (!message.hasOriginalSendIdentity || message.originalSendIntent()!=null)
         val rejected = state == "failed" && receipt.string("request_id") == message.requestId
-        try { durable({ current -> MessageChanges.result(current, message.requestId) { existing ->
-            if (confirmed) existing.copy(status = "submitted", submittedAt = result!!.optDouble("submitted_at", existing.createdAt), submittedText = result.string("submitted_text").ifBlank { existing.text.trim() }, error = "")
+        try { durable({ current -> if(current.outgoing.count { it.requestId==message.requestId }!=1) current else MessageChanges.result(current, message.requestId) { existing ->
+            if(existing.target!=message.target || existing.text!=message.text || existing.attachments!=message.attachments || existing.createdAt!=message.createdAt || existing.originalSendIntent()!=message.originalSendIntent() ||
+                deadlineMs!=null && SendReceiptRecovery.nowMs()>=deadlineMs || existing.sendReceiptProof!=null && existing.status in setOf("submitted","recorded")) existing
+            else if (confirmed) existing.copy(status = "submitted", submittedAt = result!!.optDouble("submitted_at", existing.createdAt), submittedText = result.string("submitted_text").ifBlank { existing.text.trim() }, error = "",sendReceiptProof=proof)
             else existing.copy(status = if (rejected) "failed" else "uncertain", error = if (rejected) "The computer rejected this message. Review it before trying again." else "Delivery is unconfirmed. Check its receipt before sending again.")
         } }) } catch (_: Exception) { error = "Could not save the delivery result. Check its receipt; the outgoing message remains recoverable."; return }
         if (selected?.target?.let(message::belongsTo) == true) refreshActivity()
@@ -3339,13 +3403,21 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         if (flight in receiptFlights || message.status == "sending") return@launch
         receiptFlights += flight
         try {
-            val receipt = withTimeout(45_000) { api.await(connection, api.receipt(connection, message.requestId)) }
-            settleOutgoing(message, receipt)
+            val supported=SendReceiptRecovery.supported(relayOperations[message.target.connectionId],machineOperations[MachineKey(message.target.connectionId,message.target.computerId)])
+            val intent=if(!supported) null else if(message.hasOriginalSendIdentity) message.originalSendIntent() else captureSendIntent(message.target,message.requestId,message.text)
+            when(val checked=api.checkDelivery(connection,message,intent)) {
+                is SendReceiptCheck.Original -> settleOutgoing(message,checked.receipt,checked.deadlineMs)
+                is SendReceiptCheck.Native -> {
+                    durable({ current -> SendReceiptRecovery.settle(current,message,checked.intent,checked.proof,checked.deadlineMs,SendReceiptRecovery.nowMs()) })
+                    if(selected?.target?.let(message::belongsTo)==true) refreshActivity()
+                }
+                SendReceiptCheck.Unconfirmed -> if(!automatic) error="Delivery is still unconfirmed. The original message remains saved."
+            }
         }
         catch (_: kotlinx.coroutines.TimeoutCancellationException) { if (!automatic) error = "Receipt check timed out. You can dismiss the warning and continue; the original message remains saved." }
         catch (e: CancellationException) { throw e }
         catch (_: Exception) { if (!automatic) error = "Receipt unavailable. The outgoing message remains saved." }
-        finally { receiptFlights -= flight }
+        finally { receiptFlights -= flight; retainOutbox() }
     }
     fun dismissOutgoing(message: OutgoingMessage) = viewModelScope.launch {
         val flight = "dismiss:${message.requestId}"
@@ -3353,7 +3425,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         receiptFlights += flight
         try { durable({ state -> MessageChanges.dismissOutgoing(state, message, recoverInterruptedSending = true) }) }
         catch (_: Exception) { error = "Could not save the dismissal. Your message and current composition are preserved." }
-        finally { receiptFlights -= flight }
+        finally { receiptFlights -= flight; retainOutbox() }
     }
     fun prepareOutgoing(message: OutgoingMessage) {
         if (message.status != "failed" || "outgoing:${message.requestId}" in receiptFlights) return
@@ -3365,7 +3437,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
                 val editor = state.drafts.find { it.target == message.target && it.questionId.isBlank() && it.detachedId.isBlank() }
                 val parked = editor?.takeIf { it.text.isNotBlank() || it.attachments.isNotEmpty() }?.copy(detachedId = parkedId)
                 state.copy(drafts = state.drafts.filterNot { it.key == restored.key } + listOfNotNull(parked) + restored,
-                    outgoing = state.outgoing.map { if (it.requestId == message.requestId) it.copy(status = "reviewed") else it })
+                    outgoing = state.outgoing.map { if (it.requestId == message.requestId) it.copy(status = "reviewed", coverage = OutgoingCoverage.draft(it, restored)) else it })
             }
         }; flushDrafts() } catch (e: Exception) { error = e.message.orEmpty() }
     }

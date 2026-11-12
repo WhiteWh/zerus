@@ -8,6 +8,10 @@ on:
       - 'mobile/ios/ApprovalUIFixture/**'
       - 'scripts/ci/ios-approval-ui*.py'
       - 'tests/test_approval_ui_harness.py'
+      - 'mobile/ios/ReadVisibilityUIFixture/**'
+      - 'scripts/ci/ios-read-visibility-ui*.py'
+      - 'tests/test_read_visibility_ui_harness.py'
+      - 'mobile/ios/Zerus/Conversation/ConversationReadLayout.swift'
       - 'mobile/ios/Zerus/Conversation/QuestionCard.swift'
       - 'mobile/ios/Zerus/App/Theme.swift'
       - 'mobile/ios/Zerus/Common/MarkdownView.swift'
@@ -107,5 +111,65 @@ jobs:
             ${{ runner.temp }}/ios-approval-ui-evidence/result.xcresult
             ${{ runner.temp }}/ios-approval-ui-evidence/derived/Build/Products/Debug-iphonesimulator/ApprovalUIFixture.app
             ${{ runner.temp }}/ios-approval-ui-evidence/derived/Build/Products/Debug-iphonesimulator/ApprovalUIFixtureTests-Runner.app
+          if-no-files-found: error
+          retention-days: 3
+
+  # zerus-a4mub.31: the read-visibility fixture on its own disposable VM, so it neither shares nor enlarges the
+  # approval campaign's limits. Same reviewed inputs, admission, replica build and cleanup rules.
+  read-visibility-ui:
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      EXPECTED_SOURCE: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.source_sha }}
+      EXPECTED_XCODE_APPLICATION: ${{ github.event_name == 'pull_request' && 'Xcode_26.3.app' || inputs.xcode_application }}
+      EXPECTED_XCODE_BUILD: ${{ github.event_name == 'pull_request' && '17C529' || inputs.xcode_build }}
+      EXPECTED_RUNTIME: ${{ github.event_name == 'pull_request' && 'com.apple.CoreSimulator.SimRuntime.iOS-26-2' || inputs.runtime_identifier }}
+      EXPECTED_DEVICE_TYPE: ${{ github.event_name == 'pull_request' && 'com.apple.CoreSimulator.SimDeviceType.iPhone-16' || inputs.device_type_identifier }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.EXPECTED_SOURCE }}
+          persist-credentials: false
+      - name: Validate reviewed input and disposable hosted scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          test -z "$(git status --porcelain)"
+          python3 -I -B - <<'PY'
+          import os, re
+          assert re.fullmatch('[0-9a-f]{40}', os.environ['EXPECTED_SOURCE'])
+          assert re.fullmatch(r'Xcode_[0-9]+(?:\.[0-9]+)*\.app', os.environ['EXPECTED_XCODE_APPLICATION'])
+          assert re.fullmatch('[0-9A-Za-z]{3,32}', os.environ['EXPECTED_XCODE_BUILD'])
+          PY
+          echo "DEVELOPER_DIR=/Applications/$EXPECTED_XCODE_APPLICATION/Contents/Developer" >> "$GITHUB_ENV"
+      - name: Check SDK-free read-visibility admission and inventory controls
+        run: python3 -I -B tests/test_read_visibility_ui_harness.py
+      - name: Rust for the project task replica
+        timeout-minutes: 3
+        run: rustup toolchain install 1.99.1 --profile minimal --target aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Project task replica library
+        timeout-minutes: 10
+        env:
+          CARGO_BUILD_JOBS: "2"
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        run: RUSTUP_TOOLCHAIN=1.99.1 bash mobile/ios/scripts/build-replica.sh
+      - name: One unsigned native simulator read-visibility campaign
+        run: python3 -I -B scripts/ci/ios-read-visibility-ui.py
+      - name: Retain raw tests, source identity and exact simulator cleanup
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-read-visibility-ui-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/ios-read-visibility-ui-evidence/*.json
+            ${{ runner.temp }}/ios-read-visibility-ui-evidence/*.stdout
+            ${{ runner.temp }}/ios-read-visibility-ui-evidence/*.stderr
+            ${{ runner.temp }}/ios-read-visibility-ui-evidence/project
+            ${{ runner.temp }}/ios-read-visibility-ui-evidence/result.xcresult
+            ${{ runner.temp }}/ios-read-visibility-ui-evidence/derived/Build/Products/Debug-iphonesimulator/ReadVisibilityUIFixture.app
+            ${{ runner.temp }}/ios-read-visibility-ui-evidence/derived/Build/Products/Debug-iphonesimulator/ReadVisibilityUIFixtureTests-Runner.app
           if-no-files-found: error
           retention-days: 3

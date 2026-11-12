@@ -31,27 +31,36 @@ export async function archiveCleanupSmoke(allowed: boolean) {
   async function close() { closeCleanup(); await until(() => !document.querySelector("dialog.worktree-cleanup[open]"), "review did not close"); }
   try {
     await until(() => Object.values(catalog.rows).length === 66, "synthetic catalog incomplete");
-    await archive("kept"); await log("NOTICE"); await sleep(600);
+    // Archived toasts expire after a few seconds; act on them at once and reopen later reviews from the status bar chip.
+    await archive("kept"); await log("NOTICE");
     const origin = button(toast("kept")!, "Review…"); origin.focus(); origin.click();
     await until(() => !!document.querySelector("dialog.worktree-cleanup[open]"), "recorded review did not open");
     require(document.querySelector(".bc-table tr.on")?.getAttribute("title")?.endsWith("/kept"), "Review did not select its recorded row");
     require(!document.querySelector(".worktree-cleanup .solid-danger"), "opening review offered removal without a check");
     require(document.querySelector(".worktree-cleanup .section-title")?.textContent === "Review 1 selected worktree", "single-row review lost singular copy");
     if (legacy) require(!button(document.querySelector("dialog.worktree-cleanup")!, "Restore session"), "legacy review offered guarded Restore");
-    await log("REVIEW"); await sleep(500); await log("ESCAPE_REVIEW");
+    await log("REVIEW"); await log("ESCAPE_REVIEW");
     await until(() => !cleanupDialog(), "Escape did not close recorded review");
     require(document.activeElement === origin, "Escape did not return focus to Review");
     if (legacy) {
       await log("LEGACY_PASS"); await invoke("exit_app", { code: 0 }); return;
     }
-    origin.click(); await until(() => !!document.querySelector("dialog.worktree-cleanup[open]"), "recorded review did not reopen");
+    // Let the closed dialog settle (its late close event) before reopening from the chip.
+    await until(() => !document.querySelector("dialog.worktree-cleanup"), "closed review stayed mounted"); await sleep(150);
+    document.querySelector<HTMLButtonElement>(".statusbar button.warn-chip")!.click();
+    await until(() => !!document.querySelector("dialog.worktree-cleanup[open]") && button(document.querySelector("dialog.worktree-cleanup")!, "Restore session"), "recorded review did not reopen from the chip");
     button(document.querySelector("dialog.worktree-cleanup")!, "Restore session").click();
     await until(() => cleanup().busy, "restore did not disable cleanup controls");
     require(!cleanup().cleaning && cleanup().text !== "Cleaning working folders…", "restore pretended to clean the folder");
-    require(button(toast("kept")!, "Review…").disabled && button(toast("kept")!, "Restore session").disabled, "restore left an action enabled");
+    // The busy row's progress notice replaces the archived toast (same key); nothing may stay enabled.
+    const archived = toast("kept"), review = document.querySelector("dialog.worktree-cleanup[open]");
+    require(!archived || (button(archived, "Review…").disabled && button(archived, "Restore session").disabled), "restore left a notice action enabled");
+    require(!review || button(review, "Restore session")?.disabled !== false, "restore left the review action enabled");
+    await until(() => notices().some((n) => n.key === sessionNoticeKey(session("kept").computer, session("kept").name) && n.busy && n.dismissible === false), "restore progress notice absent");
     await log("RESTORING");
     await until(() => notices().some((n) => n.key === sessionNoticeKey(session("kept").computer, session("kept").name) && n.title === "Session restored"), "restore success notice missing");
-    require(!cleanup().rows.length, "restored folder stayed in cleanup review");
+    // Notices publish before the asynchronous cleanup refresh lands; wait for the rows, never assume them.
+    await until(() => !cleanup().rows.length, "restored folder stayed in cleanup review");
     await log("RESTORED"); await sleep(500);
 
     await archive("unowned");
@@ -76,17 +85,20 @@ export async function archiveCleanupSmoke(allowed: boolean) {
     require(!!warning("changed"), "identity refusal hid its recovery notice");
 
     for (let n = 0; n < 60; ++n) await archive(`extra-${n}`);
-    require(cleanup().rows.length === 64, "retained row bound changed");
+    await until(() => cleanup().rows.length === 64, "retained row bound changed");
     const overflow = await archive("extra-60"); require(!overflow.id && overflow.restore, "overflow lost its independent restore identity");
-    require(cleanup().rows.length === 64 && cleanup().unknown === 2, "overflow was lost or grew retained rows");
+    await until(() => cleanup().rows.length === 64 && cleanup().unknown === 2, "overflow was lost or grew retained rows");
     require(cleanup().title.includes("1 additional folders need review in Projects > Worktrees."), "overflow review sentence absent");
     button(toast("extra-60")!, "Review…").click();
     await until(() => !!worktreeReview() && !!document.querySelector("dialog.worktree-review[open]"), "overflow did not open the maintained Worktrees route");
     require(worktreeReview()!.focus.endsWith("/extra-60"), "overflow review lost the exact folder");
-    await log("OVERFLOW"); await sleep(500); closeWorktreeReview(); await until(() => !worktreeReviewDialog(), "overflow review did not close");
+    await log("OVERFLOW"); await sleep(150); closeWorktreeReview(); await until(() => !worktreeReviewDialog(), "overflow review did not close");
     button(toast("extra-60")!, "Restore session").click();
     await until(() => cleanup().unknown === 1, "overflow restore did not remove its chip count");
     require(cleanup().rows.length === 64, "overflow restore changed unrelated retained rows");
     await log("PASS"); await sleep(200); await invoke("exit_app", { code: 0 });
-  } catch (error) { await log("FAIL " + String(error) + (error instanceof Error ? "\n" + error.stack : "")); await log("STATE " + JSON.stringify({ cleanup: cleanup(), notices: notices() })); await invoke("exit_app", { code: 1 }); }
+  } catch (error) { await log("FAIL " + String(error) + (error instanceof Error ? "\n" + error.stack : ""));
+    await log("DIALOGS " + JSON.stringify([...document.querySelectorAll("dialog")].map((d) => `${d.className}${d.open ? " open" : ""}: ${[...d.querySelectorAll("button")].map((b) => b.textContent?.trim()).join("|")}`)));
+    await log("COUNTS " + JSON.stringify({ rows: cleanup().rows.length, kept: cleanup().kept, unknown: cleanup().unknown, removed: cleanup().removed, labels: cleanup().rows.map((r) => `${r.label}:${r.status}`).slice(0, 12) }));
+    await log("STATE " + JSON.stringify({ cleanup: cleanup(), notices: notices() })); await invoke("exit_app", { code: 1 }); }
 }

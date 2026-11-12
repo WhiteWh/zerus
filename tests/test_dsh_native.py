@@ -139,7 +139,7 @@ class NativeHarness(unittest.TestCase):
         sid = 'session-' + str(uuid.uuid4())
         name = 'dsh/test/' + str(uuid.uuid4())[:8]
         self.rpc('create', {'sessionId': sid, 'cwd': str(self.workspace), 'title': name, **native})
-        binding = {'backend': 'dsh', 'name': name, 'session_id': str(uuid.uuid4()), 'conversation_id': sid, 'run_id': str(uuid.uuid4()),
+        binding = {'backend': 'dsh', 'agent': 'dsh', 'name': name, 'session_id': str(uuid.uuid4()), 'conversation_id': sid, 'run_id': str(uuid.uuid4()),
                    'agent_home': str(self.home), 'cwd': str(self.workspace), 'created': time.time()}
         directory = self.state / 'dsh/bindings'; directory.mkdir(exist_ok=True)
         (directory / (hashlib.sha256(name.encode()).hexdigest() + '.json')).write_text(json.dumps(binding))
@@ -239,6 +239,8 @@ class NativeHarness(unittest.TestCase):
         request = self.payload(b, text=text, attachments=[])
         receipt = self.cli('send', b, request)
         self.assertEqual(receipt['status'], 'submitted')
+        from delivery_receipt_checks import check_delivery_lookup
+        check_delivery_lookup(self, HGS, self.env, b, receipt, 'dsh')
         data = self.wait(lambda: (d if d.get('reply_id') and any(e['type'] == 'AgentMessage' for e in d['events']) else None)
                          if (d := self.cli('inspect', b)) else None)
         self.assertEqual([e['detail'] for e in data['events'] if e['type'] == 'UserPromptSubmit'], [text])
@@ -861,6 +863,11 @@ class NativeHarness(unittest.TestCase):
                 # A cold restart reuses the native profile rather than trying
                 # to create it a second time with --from-default-profile.
                 pidfile=next((root/'state/dsh/hosts').glob('*/host.pid'))
+                overlay=json.loads((pidfile.parent/'hgs.patch.json').read_text())
+                bridge=next(entry for patch in overlay for entry in patch.get('insert',[])
+                            if entry.get('id')=='hgs-native-dsh')
+                self.assertEqual(bridge['config'].get('agentHint'),
+                    'This agent runs in a Zerus session: the hgs CLI reads, messages, launches and stops other agent sessions on this and other computers. Run hgs guide before using it.')
                 pid=int(pidfile.read_text())
                 original=host_process(pid)
                 self.assertIsNotNone(original)
@@ -1095,6 +1102,54 @@ class NativeHarness(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.rpc('answer', {'sessionId':b['conversation_id'],'id':question['question_id'],
                                 'generation':data['host_generation'],'answers':[]})
+
+    def test_inspect_refuses_an_archive_instead_of_the_live_session(self):
+        """zerus-a4mub.33: DeepSeek has no archive inspection, with or without --current-read."""
+        b = self.create()
+        archive = str(uuid.uuid4())
+        for extra in ([], ['--current-read']):
+            proc = self.hgs('inspect', b['name'], '--archive', archive, *extra)
+            self.assertNotEqual(proc.returncode, 0, proc.stdout)
+            self.assertIn('DeepSeek archives are unavailable', proc.stderr)
+            self.assertNotIn('current_read', proc.stdout)
+        self.assertEqual(self.cli('inspect', b)['conversation_id'], b['conversation_id'])
+
+    def test_current_read_names_what_read_accepts_from_the_list_read_before_the_page(self):
+        """zerus-a4mub.24: `inspect --current-read` names exactly what `hgs read` accepts,
+        from the host list read before the page, and inspecting acknowledges nothing."""
+        b = self.create()
+        def inspect():
+            proc = self.hgs('inspect', b['name'], '--current-read')
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            return json.loads(proc.stdout)
+        def mark(current):
+            proc = self.hgs('read', b['name'], '--json', request={key: current[key] for key in
+                            ('run_id', 'conversation_id', 'reply_id', 'attention_signature')})
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            return json.loads(proc.stdout)['applied']
+        self.cli('send', b, self.payload(b, text='QUESTION', attachments=[]))
+        data = self.wait(lambda: d if (d := inspect())['pending_questions'] and d['current_read']['attention_signature'] else None)
+        asked = data['current_read']
+        self.assertEqual(set(asked), {'schema', 'run_id', 'conversation_id', 'reply_id', 'attention_signature',
+                                      'attention_complete'})
+        self.assertEqual((asked['schema'], asked['run_id'], asked['conversation_id'], asked['attention_complete']),
+                         (1, b['run_id'], b['conversation_id'], True))
+        self.assertRegex(asked['attention_signature'], r'^[0-9a-f]{64}$')
+        self.assertNotIn('current_read', self.cli('inspect', b))
+        self.assertFalse((self.state / 'read-marks.json').exists())
+        self.assertTrue(mark(asked)['attention_signature'])
+        question = data['pending_questions'][0]
+        self.assertEqual(self.cli('answer', b, self.payload(
+            b, question_id=question['question_id'], expected_question_hash=question['question_hash'],
+            answers=[{'question_id': 'choice', 'selected_option_ids': ['1'], 'text': ''}]))['status'], 'answered')
+        final = self.wait(lambda: d if not (d := inspect())['pending_questions'] and d['current_read']['reply_id']
+                          and d['phase'] == 'idle' else None)
+        replied = final['current_read']
+        # The named turn's final message is in the page shown, under the same identity.
+        self.assertTrue(any(e['type'] == 'AgentMessage' and e.get('reply_id') == replied['reply_id']
+                            for e in final['events']), final['events'])
+        self.assertEqual(mark(asked), {'reply_id': False, 'attention_signature': False})
+        self.assertEqual(mark(replied), {'reply_id': True, 'attention_signature': False})
 
     def hgs(self, *args, request=None):
         return subprocess.run([str(HGS), *args], input=json.dumps(request) if request is not None else None,

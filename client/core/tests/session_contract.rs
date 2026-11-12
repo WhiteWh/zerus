@@ -49,6 +49,9 @@ fn projected(row: &ViewRow) -> Value {
         "read_attention_signature",
         "unread_candidate",
         "optional_question_count",
+        // The status filters' quiet-child and mute rules (zerus-sa9qn.19).
+        "quiet",
+        "muted",
     ];
     Value::Object(
         fields

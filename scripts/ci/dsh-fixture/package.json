@@ -3,6 +3,10 @@
   "private": true,
   "description": "Reviewed install of the keyless DeepSeek contract fixture; see docs/ci-and-aur.md.",
   "dependencies": {
-    "@deepseek-ai/dsh": "0.2.1-rc.2"
+    "@deepseek-ai/dsh": "0.2.2-rc.1"
+  },
+  "overrides": {
+    "@modelcontextprotocol/client": "2.3.0",
+    "fflate": "0.8.3"
   }
 }

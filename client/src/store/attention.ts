@@ -10,7 +10,10 @@ type Quiet = Partial<Pick<Session, "muted" | "quiet" | "reviewLater" | "state">>
 /**
  * Attention that draws nobody: a muted session, or a supervised child whose
  * requests are its parent's (zerus-sa9qn.3, the core's `quiet`). Its state,
- * unread identity and questions are unchanged and it stays in the filters.
+ * unread identity and questions are unchanged. The counters never count it,
+ * except a quiet child's Review later mark; the status filters read it through
+ * filterAttention (zerus-sa9qn.18). A child with a request only the person can
+ * answer is never quiet (core view.rs).
  */
 export const quietAttention = (s: Pick<Session, "muted" | "quiet">) => !!s.muted || !!s.quiet;
 /** A quiet supervised child still counts the person's own Review later mark. */
@@ -37,7 +40,7 @@ export const visibleUnreadReply = (s: Pick<Session, "state" | "unread" | "unread
  * Needs attention in the window's lists and counts: Qt's
  * SessionPresentation::needsAttention (SessionPresentation.h:279-293), that is
  * Review later, or, while the row's computer is `online`, attentionNeeded or
- * a subagent that asks (muted rows are listed, not counted). A computer that
+ * a subagent that asks. A computer that
  * is not online shows its last rows, which count only their Review later.
  */
 export const needsAttention = (s: AttentionFacts, online: boolean) =>
@@ -75,6 +78,23 @@ export const countedHeaderAttention = (s: AttentionFacts & Quiet, online: boolea
  */
 export const isWorking = (s: Pick<Session, "status">, online: boolean) =>
   online && (s.status === "working" || s.status === "background");
+
+/**
+ * Needs attention as the status filters list and count it (zerus-sa9qn.18): a
+ * quiet supervised child's unread reply, retry or limit waits for its parent,
+ * so only the person's own Review later mark puts it there. Every other row
+ * keeps needsAttention: mute silences notifications and the counters, and a
+ * muted session stays listed, and counted, in the Needs attention filter.
+ */
+export const filterAttention = (s: AttentionFacts & Quiet, online: boolean) =>
+  s.quiet ? !!s.reviewLater && s.state !== "archived" : needsAttention(s, online);
+
+/**
+ * The Active filter: current work OR Scheduled OR its attention OR a local
+ * draft, as isActive, with the filters' attention (filterAttention).
+ */
+export const filterActive = (s: Session, online: boolean) =>
+  isWorking(s, online) || (online && (s.status === "scheduled" || s.status === "waiting")) || filterAttention(s, online) || s.draft;
 
 /**
  * Active = current work OR Scheduled OR Needs attention OR a local draft

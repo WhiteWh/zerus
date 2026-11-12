@@ -1,6 +1,10 @@
 """Busy native queue contracts: private homes, own tools and localhost providers."""
+import base64
+import datetime
 import http.server
 import json
+import struct
+import zlib
 import os
 import re
 from pathlib import Path
@@ -36,9 +40,43 @@ def terminal_send(case, text):
     case.tmux('send-keys', '-t', case.pane, 'Enter')
 
 
+def screenshot_png(seed, width, height):
+    """A flat UI-like screenshot at a size Claude must downscale after the paste."""
+    def chunk(kind, data):
+        return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data) & 0xffffffff)
+    rows = []
+    for y in range(height):
+        shade = 30 + seed * 20 + ((y // 90) % 2) * 40
+        rows.append(b'\x00' + bytes([shade, shade, shade + 10]) * width)
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(b''.join(rows), 6)) + chunk(b'IEND', b''))
+
+
+IMAGES = {}
+
+
+def image_message(root):
+    """zerus-iitw8: the owner's shape. The text names screenshots on lines of their own,
+    which Claude attaches asynchronously, plus two hgs attachments."""
+    if not IMAGES:
+        IMAGES.update(big=[screenshot_png(n, 6000, 4000) for n in range(2)], small=[screenshot_png(n, 64, 48) for n in range(2)])
+    target = root / 'peer-target'
+    target.mkdir(exist_ok=True)
+    paths = [target / 'confirmation-dark.png', target / 'confirmation-light.png']
+    for path, data in zip(paths, IMAGES['big']):
+        path.write_bytes(data)
+    body = '\n'.join(f'- Item {n}: the peer report explains one change of the fixture in a full sentence.' for n in range(1, 31))
+    text = (f'<zerus-message from="codex/fixture/peer" host="arch">\nSettings preview delta is ready.\n{body}\n'
+            f'Screenshots:\n{paths[0]}\n{paths[1]}\n</zerus-message>')
+    attachments = [dict(name=f'row-{n}.png', mime='image/png', data_base64=base64.b64encode(data).decode())
+                   for n, data in enumerate(IMAGES['small'])]
+    return text, attachments
+
+
 class BusyProvider(responses.Provider):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
+        self.server.raw_requests.append(body)
         self.server.requests.append(body)
         main = any(i.get('role') == 'user' and any(p.get('text') == PROMPT for p in i.get('content', []) if isinstance(p, dict)) for i in body.get('input', []))
         if main and not self.server.called:
@@ -81,6 +119,7 @@ class NativeBusyCodex(codex.NativeCodexInput):
 
     def setUp(self):
         self.server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), BusyProvider)
+        self.server.raw_requests = []
         self.server.requests, self.server.called = [], False
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
@@ -120,6 +159,33 @@ class NativeBusyCodex(codex.NativeCodexInput):
             self.wait_for(lambda: LAST in messages())
             self.assertEqual(messages(), ['Previous fixture request', PROMPT, FIRST, SECOND, LAST])
             self.wait_for(lambda: 'Busy fixture completed.' in self.screen())
+        finally:
+            release.touch()
+
+
+    def test_busy_attachment_send_is_queued_and_delivered_once(self):
+        # zerus-iitw8: Codex shows a pasted image path or a long paste at once
+        # (no asynchronous attachment as in Claude), so its single Enter and
+        # submitted receipt stay; the message waits in its native queue.
+        release = self.root / 'tool-release'
+        try:
+            terminal_send(self, PROMPT)
+            self.wait_for((self.root / 'tool-started').exists)
+            self.record.update(activity='busy', phase='tool', active_tools={'call_busy': {'tool_name': 'Bash'}})
+            self.write_record()
+            text, attachments = image_message(self.root)
+            payload = self.payload(text=text, attachments=attachments)
+            receipt = self.send(payload)
+            self.assertEqual(receipt['status'], 'submitted')
+            self.assertEqual(self.send(payload), receipt)
+            self.wait_for(lambda: 'Messages to be submitted' in self.screen())
+            release.touch()
+            def messages():
+                return [r['payload']['message'] for r in map(json.loads, Path(self.record['transcript']).read_text().splitlines())
+                        if r.get('type') == 'event_msg' and r.get('payload', {}).get('type') == 'user_message']
+            self.wait_for(lambda: receipt['submitted_text'] in messages())
+            self.wait_for(lambda: 'Busy fixture completed.' in self.screen())
+            self.assertEqual(messages().count(receipt['submitted_text']), 1)
         finally:
             release.touch()
 
@@ -189,3 +255,131 @@ class NativeBusyClaude(claude.NativeClaudeInput):
 
     def test_busy_tool_queue_80x24(self):
         self.test_busy_tool_queue_preserves_drafts_and_accepts_exactly_once()
+
+    def enqueued(self, content):
+        return [r for r in self.rows() if r.get('type') == 'queue-operation'
+                and r.get('operation') == 'enqueue' and r.get('content') == content]
+
+    def test_an_identical_earlier_queued_prompt_never_proves_a_new_send(self):
+        # zerus-iitw8.4: an identical prompt already waits in Claude's queue.
+        # Only this send's own new enqueue may prove it, and both arrive.
+        release = self.root / 'tool-release'
+        self.busy_ready = True
+        try:
+            terminal_send(self, PROMPT)
+            self.wait_for((self.root / 'tool-started').exists)
+            self.record.update(activity='busy', phase='tool', active_tools={'toolu_busy': {'tool_name': 'Bash'}})
+            self.write_record()
+            terminal_send(self, 'continue')
+            self.wait_for(lambda: 'Press up to edit queued messages' in self.screen())
+            # Claude writes rows late: the earlier enqueue may land after the
+            # banner, even after this send's start. The stamps tell them apart.
+            sent_at = time.time()
+            receipt = self.send(self.payload(text='continue'))
+            self.assertEqual((receipt['status'], receipt['native']), ('submitted', 'queue'), self.screen())
+            def stamped(row):
+                return datetime.datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00')).timestamp()
+            self.wait_for(lambda: len(self.enqueued('continue')) == 2)
+            earlier, own = self.enqueued('continue')
+            self.assertLess(stamped(earlier), sent_at)
+            self.assertGreaterEqual(stamped(own), sent_at, 'the proof is this send\'s own enqueue')
+            release.touch()
+            self.wait_for(lambda: self.queued_messages().count('continue') == 2)
+            self.assertEqual(self.queued_messages(), ['continue', 'continue'])
+        finally:
+            release.touch()
+
+    def rows(self):
+        return [json.loads(line) for line in Path(self.record['transcript']).read_text().splitlines()]
+
+    def carrying(self, rows, marker='Settings preview delta is ready.'):
+        def text(row):
+            content = row.get('message', {}).get('content')
+            if isinstance(content, list):
+                return '\n'.join(b.get('text', '') for b in content if b.get('type') == 'text')
+            return content if isinstance(content, str) else ''
+        return [r for r in rows if r.get('type') == 'user' and marker in text(r)]
+
+    def composer(self):
+        lines = self.screen().splitlines()
+        prompt = max(i for i, line in enumerate(lines) if line.startswith('❯'))
+        return lines[prompt].strip()
+
+    def test_pasted_images_settle_before_the_one_enter_when_idle(self):
+        # zerus-iitw8: Claude converts the bare image paths after the paste and
+        # swallows an Enter while it shows Pasting…; hgs must wait, then prove.
+        text, attachments = image_message(self.root)
+        payload = self.payload(text=text, attachments=attachments)
+        receipt = self.send(payload)
+        self.assertEqual((receipt['status'], receipt['native']), ('submitted', 'transcript'), self.screen())
+        rows = self.carrying(self.rows())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(sum(b.get('type') == 'image' for b in rows[0]['message']['content']), 2)
+        self.wait_for(lambda: self.composer() in ('❯', '❯\xa0'))
+        self.assertEqual(self.send(payload), receipt)
+        self.assertEqual(len(self.carrying(self.rows())), 1)
+
+    def test_busy_pasted_images_are_queued_with_native_proof_and_delivered_once(self):
+        release = self.root / 'tool-release'
+        self.busy_ready = True
+        try:
+            terminal_send(self, PROMPT)
+            self.wait_for((self.root / 'tool-started').exists)
+            self.record.update(activity='busy', phase='tool', active_tools={'toolu_busy': {'tool_name': 'Bash'}})
+            self.write_record()
+            text, attachments = image_message(self.root)
+            payload = self.payload(text=text, attachments=attachments)
+            receipt = self.send(payload)
+            self.assertEqual((receipt['status'], receipt['native']), ('submitted', 'queue'), self.screen())
+            self.assertEqual(self.send(payload), receipt)
+            release.touch()
+            def delivered():
+                rows = self.rows()
+                queued = [r for r in rows if r.get('type') == 'attachment' and r.get('attachment', {}).get('type') == 'queued_command'
+                          and 'Settings preview delta is ready.' in str(r['attachment'].get('prompt'))]
+                return len(self.carrying(rows)) + len(queued)
+            self.wait_for(delivered)
+            enqueued = [r for r in self.rows() if r.get('type') == 'queue-operation' and r.get('operation') == 'enqueue'
+                        and 'Settings preview delta is ready.' in r.get('content', '')]
+            self.assertEqual(len(enqueued), 1)
+            self.wait_for(lambda: 'Press up to edit queued messages' not in self.screen())
+            self.assertEqual(delivered(), 1)
+        finally:
+            release.touch()
+
+
+@unittest.skipUnless(claude.native.CLAUDE, 'Set HGS_CLAUDE_TEST_BIN for the private hooked Claude contract')
+class NativeHookedImagesClaude(NativeBusyClaude):
+    """The idle image send with hgs's own UserPromptSubmit hook, which takes the state lock:
+    Claude runs it before recording the message, so the proof wait must not hold that lock."""
+    test_busy_tool_queue_preserves_drafts_and_accepts_exactly_once = None
+    test_busy_tool_queue_80x24 = None
+    test_busy_pasted_images_are_queued_with_native_proof_and_delivered_once = None
+    test_an_identical_earlier_queued_prompt_never_proves_a_new_send = None
+
+    @property
+    def native_env(self):
+        # The parent prepares its catalog before the native run IDs exist.
+        environment = getattr(self, '_native_settings_env', super().native_env)
+        if not hasattr(self, 'name'):
+            return environment
+        return (*environment, 'HGS_SESSION=' + self.name, 'HGS_RUN_ID=' + self.run_id,
+                'HGS_STATE_DIR=' + str(self.state), 'HGS_CONFIG_DIR=' + str(self.root / 'config'))
+
+    @native_env.setter
+    def native_env(self, environment):
+        self._native_settings_env = environment
+
+    def native_settings(self, work):
+        settings = super().native_settings(work)
+        hook = shlex.quote(str(claude.fixtures.HGS)) + ' __state hook'
+        settings.setdefault('hooks', {})['UserPromptSubmit'] = [
+            {'hooks': [{'type': 'command', 'command': hook, 'timeout': 60}]}]
+        return settings
+
+    def test_pasted_images_settle_before_the_one_enter_when_idle(self):
+        started = time.monotonic()
+        super().test_pasted_images_settle_before_the_one_enter_when_idle()
+        record = json.loads(self.record_path.read_text())
+        self.assertGreater(record['input_seen_at'], record['input_pending_at'], 'the hook recorded the acceptance')
+        self.assertLess(time.monotonic() - started, 20)

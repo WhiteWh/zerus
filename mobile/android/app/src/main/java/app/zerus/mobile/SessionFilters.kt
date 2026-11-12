@@ -122,12 +122,22 @@ object SessionFilters {
                 }
         }.mapTo(mutableSetOf()) { it.target.key }
     }
+    /**
+     * Needs attention as the status filters list and count it (desktop filterAttention, zerus-sa9qn.18): a quiet
+     * supervised child's unread reply, retry or provider limit waits for its parent, so only the person's own Review
+     * later mark lists it. Every other row keeps needsAttention: a child with a request only the person can answer is
+     * never quiet, and a muted session stays listed.
+     */
+    fun filterAttention(session: Session, online: Boolean): Boolean =
+        if (ChildSessions.quiet(session.raw)) !archived(session) &&
+            (session.raw.optBoolean("review_later") || session.raw.optBoolean("mobile_review_later"))
+        else needsAttention(session, online)
     fun active(session: Session, online: Boolean, hasDraft: Boolean = false) =
-        !archived(session) && (hasDraft || needsAttention(session, online) || working(session, online) || scheduled(session, online) ||
+        !archived(session) && (hasDraft || filterAttention(session, online) || working(session, online) || scheduled(session, online) ||
             replyInProgress(session, online) && session.raw.string("activity") == "idle" && session.raw.string("phase") == "idle")
     fun matches(session: Session, filter: SessionFilter, online: Boolean, hasDraft: Boolean = false): Boolean = when (filter) {
         SessionFilter.All -> !archived(session)
-        SessionFilter.Attention -> needsAttention(session, online)
+        SessionFilter.Attention -> filterAttention(session, online)
         SessionFilter.Active -> active(session, online, hasDraft)
         SessionFilter.Saved -> !archived(session) && state(session) != "running"
         SessionFilter.Archive -> archived(session)
@@ -190,23 +200,31 @@ object SessionFilters {
         return roster?.keys()?.asSequence()?.flatMap { id -> sequenceOf(id, roster.optJSONObject(id)?.string("conversation_id").orEmpty()) }?.toList().orEmpty() +
             previews.flatMap { listOf(it.string("id", "agent_id"), it.string("conversation_id")) }
     }
-    fun counts(sessions: List<Session>, machines: List<Machine>, drafts: Set<String> = emptySet()): Map<SessionFilter, Int> {
+    /**
+     * The one rule a status tab's list, its count and the machine chooser share (zerus-sa9qn.19): the filter, and for
+     * Archive the loaded date window [from, until) (desktop archiveListed).
+     */
+    fun listed(session: Session, filter: SessionFilter, online: Boolean, hasDraft: Boolean = false, archiveRange: ArchiveRange = ArchiveRange()) =
+        matches(session, filter, online, hasDraft) &&
+            (filter != SessionFilter.Archive || session.raw.optDouble("archived_at", 0.0).let { at -> at >= archiveRange.from && at < archiveRange.until })
+    fun counts(sessions: List<Session>, machines: List<Machine>, drafts: Set<String> = emptySet(),
+        archiveRange: ArchiveRange = ArchiveRange()): Map<SessionFilter, Int> {
         val online = machines.filter { it.online }.mapTo(hashSetOf()) { MachineKey(it.connectionId, it.id) }
         val counts = SessionFilter.entries.associateWith { 0 }.toMutableMap()
         sessions.forEach { row ->
             val isOnline = machineKey(row.target) in online
             val hasDraft = row.target.key in drafts
-            SessionFilter.entries.forEach { filter -> if (matches(row, filter, isOnline, hasDraft)) counts[filter] = counts.getValue(filter) + 1 }
+            SessionFilter.entries.forEach { filter -> if (listed(row, filter, isOnline, hasDraft, archiveRange)) counts[filter] = counts.getValue(filter) + 1 }
         }
         return counts
     }
     /** Chooser counts precede machine selection and text search, retaining project/state scope. */
     fun machineCounts(sessions: List<Session>, machines: List<Machine>, filter: SessionFilter,
-        drafts: Set<String> = emptySet(), project: ProjectKey? = null): Map<MachineKey, Int> {
+        drafts: Set<String> = emptySet(), project: ProjectKey? = null, archiveRange: ArchiveRange = ArchiveRange()): Map<MachineKey, Int> {
         val result = machines.associate { MachineKey(it.connectionId, it.id) to 0 }.toMutableMap()
         val online = machines.filter { it.online }.mapTo(hashSetOf()) { MachineKey(it.connectionId, it.id) }
         for(session in sessions) if((project == null || session.projectKey == project) &&
-            matches(session, filter, machineKey(session.target) in online, session.target.key in drafts)) {
+            listed(session, filter, machineKey(session.target) in online, session.target.key in drafts, archiveRange)) {
             val key = machineKey(session.target)
             result[key] = result.getOrDefault(key, 0) + 1
         }

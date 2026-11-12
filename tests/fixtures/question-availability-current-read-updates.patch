@@ -1,0 +1,130 @@
+diff --git a/mobile/android/app/src/main/java/app/zerus/mobile/MainActivity.kt b/mobile/android/app/src/main/java/app/zerus/mobile/MainActivity.kt
+index 5655bdada..51a648a8c 100644
+--- a/mobile/android/app/src/main/java/app/zerus/mobile/MainActivity.kt
++++ b/mobile/android/app/src/main/java/app/zerus/mobile/MainActivity.kt
+@@ -1043,16 +1043,22 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
+                     it.offset + it.size > layout.viewportStartOffset
+             }.let { rows ->
+                 val ids=rows.mapNotNull { displayedEventId(it.key.toString()) }.toSet()
+-                Triple(ids,rows.firstOrNull()?.let { row -> displayedEventId(row.key.toString())?.let { it to (-row.offset).coerceAtLeast(0) } },
+-                    model.visibleReadEvidence(target,ids))
++                val items=layout.visibleItemsInfo
++                val newest=model.newestDisplayedEventId(target)
++                ReadViewport(ids,rows.firstOrNull()?.let { row -> displayedEventId(row.key.toString())?.let { it to (-row.offset).coerceAtLeast(0) } },
++                    model.visibleReadEvidence(target,ids),model.currentReadKey(target),
++                    items.any { it.key == "history:tail" && it.offset + it.size <= layout.viewportEndOffset + 2 },
++                    newest.isNotEmpty() && newest in ids,
++                    items.any { it.key == "history:questions" && it.offset < layout.viewportEndOffset && it.offset + it.size > layout.viewportStartOffset })
+             }
+         }.distinctUntilChanged().collectLatest { viewport ->
+             if (viewport == null) return@collectLatest
+             // A transient row during initial positioning or a fling is not a deliberate read.
+             delay(350)
+             if (currentHistoryTarget == target.key && foreground && window.isWindowFocused && !programmatic) {
+-                model.visibleMessages(target, viewport.first)
+-                viewport.second?.let { (id, offset) -> model.saveConversationViewport(target,id,offset,follow.following && !model.hasNewer) }
++                model.visibleMessages(target, viewport.ids)
++                model.visibleCurrent(target,viewport.current,viewport.tail,viewport.newest,viewport.questions)
++                viewport.first?.let { (id, offset) -> model.saveConversationViewport(target,id,offset,follow.following && !model.hasNewer) }
+             }
+         }
+     }
+@@ -1203,6 +1209,14 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
+         questionDisplay, ::updateQuestionDisplay, onReview)
+ }
+ 
++/**
++ * One settled reading viewport: the visible event rows, the first row and its offset, the private read
++ * evidence, and for the shared current acknowledgement the open inspection's values ([ZerusViewModel.currentReadKey])
++ * and whether the tail, the newest displayed row and the questions were visible.
++ */
++private data class ReadViewport(val ids:Set<String>,val first:Pair<String,Int>?,val evidence:List<Triple<String,String,Long?>>,
++    val current:String,val tail:Boolean,val newest:Boolean,val questions:Boolean)
++
+ @Composable internal fun ConversationMessage(target: Target, event: Event, agent: String, outgoing: OutgoingMessage?,
+     model: ZerusViewModel, onReview: (OutgoingMessage) -> Unit) {
+     if (event.role == ActivityNotices.ROLE) return ActivityNotice(target, event, model)
+diff --git a/mobile/android/app/src/main/java/app/zerus/mobile/ZerusViewModel.kt b/mobile/android/app/src/main/java/app/zerus/mobile/ZerusViewModel.kt
+index 28c1ece9f..6069bfb25 100644
+--- a/mobile/android/app/src/main/java/app/zerus/mobile/ZerusViewModel.kt
++++ b/mobile/android/app/src/main/java/app/zerus/mobile/ZerusViewModel.kt
+@@ -728,7 +728,10 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
+     }
+     fun markRead(target:Target,evidence:ReadAttentionEvidence) {
+         if(evidence.target!=target || !readTrackingReady || captureReadAttention(target)!=evidence) { error="The displayed reply evidence changed. Review it before marking read.";return }
+-        readWriter?.let { readState=it.edit { state -> ReadAttentionPolicies.mark(state,evidence) } };refreshReadAttention();shareRead(target);flushDrafts()
++        readWriter?.let { readState=it.edit { state -> ReadAttentionPolicies.mark(state,evidence) } };refreshReadAttention();shareRead(target)
++        // The explicit choice covers what the open conversation's verified inspection names now.
++        currentRead(target)?.let { shareCurrent(target,it,replyShown=true,attentionShown=true) }
++        flushDrafts()
+     }
+     private fun readAllEvidence(target:Target):ReadAttentionEvidence? {
+         if(!readTrackingReady || readWriter==null || demo || target.run.isBlank() || target.conversation.isBlank() ||
+@@ -807,12 +810,14 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
+         selected?.target?.let { loaded[it]=conversationEvents }
+     }
+     private class SharedReadRequest(val connection:Connection,val target:Target,val payload:JSONObject,val key:String)
++    /** Whether this target's gateway and computer accept `mark_read` now. */
++    private fun sharedReadAvailable(target:Target)=!demo && readTrackingReady &&
++        "mark_read" in relayOperations[target.connectionId].orEmpty() &&
++        "mark_read" in machineOperations[MachineKey(target.connectionId,target.computerId)].orEmpty()
+     /** The C4 `mark_read` this phone may send now; [acknowledge] also covers the current request. */
+     private fun sharedReadRequest(target:Target,acknowledge:Boolean):SharedReadRequest? {
+-        if(demo || !readTrackingReady) return null
++        if(!sharedReadAvailable(target)) return null
+         val row=sessions.find { it.target==target } ?: return null
+-        if("mark_read" !in relayOperations[target.connectionId].orEmpty() ||
+-            "mark_read" !in machineOperations[MachineKey(target.connectionId,target.computerId)].orEmpty()) return null
+         val payload=SharedReadPolicies.payload(row,readAllEvidence(target)?.authoritative==true,unreadCount(target),acknowledge) ?: return null
+         val connection=connections.find { it.id==target.connectionId } ?: return null
+         return SharedReadRequest(connection,target,payload,target.key+"\n"+payload)
+@@ -841,13 +846,46 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
+         sharedReadRetryTimer?.cancel()
+         sharedReadRetryTimer=viewModelScope.launch { sharedReadRetries.releaseWhenDue(android.os.SystemClock::elapsedRealtime) { sharedReadsSent.remove(it) } }
+     }
+-    /** Tell the session's computer that this phone showed its current reply (C4 `mark_read`). */
+-    private fun shareRead(target:Target) {
+-        val request=sharedReadRequest(target,true) ?: return
++    /** zerus-a4mub.9: what the open conversation's verified inspection lets this phone acknowledge now. */
++    private fun currentRead(target:Target):CurrentRead? =
++        if(selected?.target!=target || activeFrame?.target!=target) null else SharedReadPolicies.current(activity,target,activityVerified)
++    /** Changes with the current reply and attention values, so a visibility dwell restarts for new ones. */
++    fun currentReadKey(target:Target):String=currentRead(target)?.let(::currentReadKey).orEmpty()
++    private fun currentReadKey(current:CurrentRead)=JSONArray(listOf(current.reply,current.attention,current.attentionComplete)).toString()
++    /** The newest row the open conversation displays, while it shows the latest messages. */
++    fun newestDisplayedEventId(target:Target):String=
++        if(selected?.target!=target || activeFrame?.target!=target || hasNewer) "" else conversationEvents.lastOrNull()?.id.orEmpty()
++    /**
++     * After the settled visibility dwell, acknowledges what the open conversation showed of its current
++     * inspection: the reply once its tail or newest row was visible, the attention once its questions were
++     * (without questions, once the same tail or newest row was). [key] is [currentReadKey] as the dwell saw it.
++     */
++    fun visibleCurrent(target:Target,key:String,tailVisible:Boolean,newestVisible:Boolean,questionsVisible:Boolean) {
++        val current=currentRead(target) ?: return
++        if(key!=currentReadKey(current)) return
++        val (replyShown,attentionShown)=SharedReadPolicies.currentShown(!hasNewer,tailVisible,newestVisible,
++            conversationQuestions.isNotEmpty(),questionsVisible)
++        shareCurrent(target,current,replyShown,attentionShown)
++    }
++    private fun shareCurrent(target:Target,current:CurrentRead,replyShown:Boolean,attentionShown:Boolean) {
++        if(!sharedReadAvailable(target)) return
++        val payload=SharedReadPolicies.currentPayload(sessions.find { it.target==target },target,current,replyShown,attentionShown) ?: return
++        val connection=connections.find { it.id==target.connectionId } ?: return
++        launchSharedRead(SharedReadRequest(connection,target,payload,target.key+"\n"+payload))
++    }
++    /**
++     * Sends one prepared mark once. The canonical and current acknowledgements share this path, so their
++     * delivery, retries and observed status (zerus-a4mub.10) stay one.
++     */
++    private fun launchSharedRead(request:SharedReadRequest) {
+         if(!sharedReadsSent.add(request.key)) return
+         noteSharedRead(request.target,SharedReadStatus.Pending(System.currentTimeMillis()))
+         viewModelScope.launch { sendSharedRead(request) }
+     }
++    /** Tell the session's computer that this phone showed its current reply (C4 `mark_read`). */
++    private fun shareRead(target:Target) {
++        sharedReadRequest(target,true)?.let(::launchSharedRead)
++    }
+     /** A reply read on another device advances this phone's watermark, using only a fresh exact head. */
+     private fun adoptSharedReads() {
+         val writer=readWriter ?: return

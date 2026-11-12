@@ -83,6 +83,16 @@
 //!   or `resume` when the agent arguments resume a conversation), `prompt`,
 //!   `reason` (`--end-reason TEXT`, default `other`) and, with
 //!   `--transcript-dir DIR`, a `transcript_path` that holds the session ID line.
+//!   With Claude's hooks, each submitted prompt is then appended to it as a
+//!   `{"type":"user"}` row after UserPromptSubmit, as Claude Code records it.
+//! - Ctrl+U deletes the composer's current line, echoed as a cleared row; on an
+//!   empty line it does nothing, as Claude Code, Codex and Kimi do.
+//! - `--swallow-enter 1` ignores Enter: the composer keeps its text and no
+//!   prompt is submitted, as a native agent that swallowed the key leaves it.
+//! - `--claude-frame 1` (with `--echo 1`) draws Claude Code's composer frame from
+//!   the top of the screen on every change: a full-width rule, `❯ ` and the
+//!   composer's lines (continuations indented two spaces), and a rule below,
+//!   with the cursor after the text.
 //!   `--session-id ID` fixes the ID; otherwise agent arguments `--resume ID`,
 //!   `-r ID`, `--session ID`, `resume ID` (resumed) or `--session-id ID` choose
 //!   it, else a random UUID.
@@ -198,6 +208,8 @@ const OPTIONS: &[&str] = &[
     "end-reason",
     "control",
     "reset-modes",
+    "swallow-enter",
+    "claude-frame",
     "probe-text",
 ];
 
@@ -265,6 +277,8 @@ struct Config {
     end_reason: String,
     control: Option<PathBuf>,
     reset_modes: bool,
+    swallow_enter: bool,
+    claude_frame: bool,
     probe_text: Option<String>,
 }
 
@@ -301,6 +315,8 @@ impl Config {
             end_reason: "other".into(),
             control: None,
             reset_modes: true,
+            swallow_enter: false,
+            claude_frame: false,
             probe_text: None,
         }
     }
@@ -381,6 +397,8 @@ impl Config {
             "end-reason" => self.end_reason = value.to_owned(),
             "control" => self.control = Some(value.into()),
             "reset-modes" => self.reset_modes = flag(value)?,
+            "swallow-enter" => self.swallow_enter = flag(value)?,
+            "claude-frame" => self.claude_frame = flag(value)?,
             "probe-text" => self.probe_text = Some(value.to_owned()),
             _ => return Err(format!("unknown option --{option}")),
         }
@@ -1644,6 +1662,9 @@ struct Agent {
     session_id: String,
     resumed: bool,
     transcript: Option<PathBuf>,
+    /// Record each submitted prompt in the transcript as Claude Code does
+    /// (zerus-iitw8): set when the hooks are Claude's and a transcript exists.
+    claude_rows: bool,
     stop_at: Option<Instant>,
     exit_at: Option<(Instant, i32, String)>,
     exit_now: Option<(i32, String)>,
@@ -1840,21 +1861,53 @@ impl Agent {
         match kind {
             "text" => {
                 self.composer.push_str(&lossy(content));
-                if self.config.echo {
+                if self.framed() {
+                    self.frame();
+                } else if self.config.echo {
                     out(content);
                 }
             }
             "paste" => {
                 self.composer.push_str(&lossy(content));
-                if self.config.echo {
+                if self.framed() {
+                    let text = self.composer.replace("\r\n", "\n").replace('\r', "\n");
+                    self.composer = text;
+                    self.frame();
+                } else if self.config.echo {
                     let text = lossy(content).replace("\r\n", "\n").replace('\r', "\n");
                     out(text.replace('\n', "\r\n").as_bytes());
                 }
             }
+            "enter" if self.config.swallow_enter => {}
             "enter" => self.submit(),
-            "ctrl-c" => self.composer.clear(),
+            "ctrl-c" => {
+                self.composer.clear();
+                if self.framed() {
+                    self.frame();
+                }
+            }
+            // Ctrl+U deletes the current line's text, as the native composers
+            // do; on an empty line it does nothing (zerus-wkj9l).
+            "control" if token.bytes[0] == 0x15 => {
+                let start = self.composer.rfind('\n').map_or(0, |index| index + 1);
+                if start < self.composer.len() {
+                    self.composer.truncate(start);
+                    if self.framed() {
+                        self.frame();
+                    } else if self.config.echo {
+                        out(b"\r\x1b[K");
+                        if start == 0 {
+                            out(&self.config.prompt);
+                        }
+                    }
+                }
+            }
             "control" if matches!(token.bytes[0], 0x7f | 0x08) && self.composer.pop().is_some() && self.config.echo => {
-                out(b"\x08 \x08");
+                if self.framed() {
+                    self.frame();
+                } else {
+                    out(b"\x08 \x08");
+                }
             }
             _ => {}
         }
@@ -1871,8 +1924,34 @@ impl Agent {
         }
     }
 
+    /// Whether the composer is drawn as Claude Code's frame (`--claude-frame`).
+    fn framed(&self) -> bool {
+        self.config.claude_frame && self.config.echo
+    }
+
+    /// Claude Code's composer frame from the top of the screen: a rule, `❯ `
+    /// and the composer's lines, a rule below, the cursor after the text.
+    fn frame(&self) {
+        let rule = "─".repeat(40);
+        let lines: Vec<&str> = self.composer.split('\n').collect();
+        let mut screen = format!("\x1b[H\x1b[J{rule}\r\n");
+        for (n, line) in lines.iter().enumerate() {
+            screen.push_str(if n == 0 { "❯ " } else { "  " });
+            screen.push_str(line);
+            screen.push_str("\r\n");
+        }
+        screen.push_str(&rule);
+        let column = 3 + lines.last().map_or(0, |line| line.chars().count());
+        screen.push_str(&format!("\x1b[{};{column}H", lines.len() + 1));
+        out(screen.as_bytes());
+    }
+
     fn submit(&mut self) {
-        if self.config.echo {
+        if self.framed() {
+            let prompt = std::mem::take(&mut self.composer);
+            self.frame();
+            self.composer = prompt;
+        } else if self.config.echo {
             out(b"\r\n");
             out(&self.config.prompt);
         }
@@ -1881,6 +1960,20 @@ impl Agent {
             return;
         }
         self.hook("submit", Some(&prompt));
+        // Claude Code writes the user row after its UserPromptSubmit hook.
+        if self.claude_rows {
+            if let Some(path) = &self.transcript {
+                // Typed, and stamped like Claude's rows: hgs counts only a typed
+                // row stamped after its paste (zerus-iitw8.4).
+                let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                let row = json!({"type": "user", "promptSource": "typed", "timestamp": at, "message": {"role": "user", "content": prompt}});
+                if let Err(error) = fs::OpenOptions::new().append(true).open(path).and_then(|mut file| {
+                    std::io::Write::write_all(&mut file, format!("{row}\n").as_bytes())
+                }) {
+                    record(json!({"kind": "error", "transcript": path.to_string_lossy(), "error": error.to_string()}));
+                }
+            }
+        }
         match self.config.turn {
             Some(turn) if turn.is_zero() => self.hook("stop", None),
             Some(turn) => self.stop_at = self.stop_at.or(Some(Instant::now() + turn)),
@@ -2198,11 +2291,13 @@ fn main() {
         }
         path
     });
-    let (hooks, info) = match config.hooks.clone().unwrap_or_else(|| {
+    let style = config.hooks.clone().unwrap_or_else(|| {
         ["claude", "codex", "kimi"]
             .contains(&config.name.as_str())
             .then(|| config.name.clone())
-    }) {
+    });
+    let claude_rows = style.as_deref() == Some("claude") && transcript.is_some();
+    let (hooks, info) = match style {
         Some(agent) => {
             let (hooks, info) = load_hooks(&agent);
             (hooks, Some(info))
@@ -2245,6 +2340,7 @@ fn main() {
         session_id,
         resumed,
         transcript,
+        claude_rows,
         stop_at: None,
         exit_at: None,
         exit_now: None,
@@ -2260,7 +2356,11 @@ fn main() {
     if let Some(path) = agent.config.render.clone() {
         agent.render(&path);
     }
-    out(&agent.config.prompt);
+    if agent.framed() {
+        agent.frame();
+    } else {
+        out(&agent.config.prompt);
+    }
     let queries = agent.config.queries.clone();
     agent.send_queries(&queries);
     if !queries.is_empty() && !agent.config.query_wait.is_zero() {

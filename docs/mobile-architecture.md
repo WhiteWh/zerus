@@ -650,7 +650,14 @@ gateway's filesystem.
 Questions share one answer and page owner between the inline card and expanded
 form. Actions distinguish sending, submitted, known non-delivery and unknown
 delivery. An answer is saved before transport, with a bounded aggregate receipt
-wait and HTTP cancellation. A successful question receipt retains exact
+wait and HTTP cancellation. An expanded question keeps its exact id and hash: a
+verified projection that no longer resolves it shows an inline closed or
+replaced notice, while an unverified one is checking during a refresh and
+unavailable otherwise. Pending but unanswerable requests replace the native
+veto with a clear reason and the projection's check age. These notices keep the
+saved answer and submitted lock, never obscure an unrelated delivery review and
+never enable an answer; only a verified projection that still carries the exact
+question does. A successful question receipt retains exact
 target/question/hash/request/answer evidence before any inspection refresh; stale
 or failed reads cannot reopen it. Draft review and discard cannot bypass that
 submitted lock. Successful interrupts retain their separate cleanup behavior.
@@ -712,7 +719,36 @@ keeps the field only when its run and conversation are the inspection's own and
 its values are ones a `mark_read` may carry. When the relay bound drops any of
 the newest rows, it removes the field, because a phone binds it to the newest
 row it displays. Older `hgs` versions and the legacy Python connector send no
-such field, so their phones keep the canonical-head requirement.
+such field, so their phones keep the canonical-head requirement. DeepSeek and
+OpenCode inspections carry the same field under the same gate. A peer's
+inspections, and those routed to this computer by machine, pass the mobile-peer
+entry, which admits `--current-read` only for a main inspection.
+
+Android and iOS acknowledge those current values from the open conversation's
+verified inspection. This is separate from the canonical history that moves
+their private read position.
+- **Visible.** Both phones apply one rule to the canonical read and to these
+  values. After the settled dwell, an item counts as visible when its part
+  inside the viewport is at least the smallest of its height, its readable part
+  (48 dp on Android, 48 pt on iOS) and the viewport height. A short row must be
+  wholly visible; a taller row, or a questions pane of any height, needs its
+  readable part. The 1-unit tail sentinel counts when it starts inside the
+  viewport and ends at most 2 units past it (pixels on Android, points on iOS),
+  allowing for layout rounding.
+- **Reply.** It is sent after the same settled visibility dwell, with overlays
+  excluded, once the conversation shows its latest messages and either its tail
+  or its newest displayed row is visible.
+- **Attention signature.** It is sent only when `attention_complete` is true and
+  the listed questions were visible. Without questions, the same tail rule
+  applies, so a conversation that only asks a question is covered too.
+- **Source of values.** Values come only from that inspection, never from a
+  catalog row. An inspection with other values restarts the dwell.
+- **Mark read.** An explicit Mark read shares both values.
+- **What stays the same.** This never advances the private read position, the
+  unread divider or the counts. Read all still shares replies only. Both phones
+  share these rules, including partly visible layouts that pin the visibility
+  rule, through `mobile/fixtures/current-read.json`, and every
+  shared mark goes through one delivery path with the existing retries.
 
 Android Sessions publishes catalog rows with local read decoration in one
 background-prepared update and retains unchanged card identities. Its reply
@@ -923,7 +959,8 @@ every stale conversation has been tried, rather than waiting for later refreshes
 Read positions are private to the phone and follow the canonical conversation
 across a verified resume. Incoming agent messages count; tool events and the
 user's own messages do not. Automatic read progress advances only after
-content is actually visible in the active conversation, with overlays excluded.
+content is actually visible in the active conversation, with overlays excluded;
+a row is visible under the shared rule described for current values above.
 For authenticated canonical rows, the visible message position acknowledges
 incoming replies before it in the window's server order. A tall own message or
 compaction summary can therefore advance that incoming prefix without counting
@@ -973,6 +1010,34 @@ Android bounds ordinary send preparation and receipt acquisition to 45 seconds.
 Saving an acquired result finishes outside that transport deadline, so a slow
 accepted write cannot turn a confirmed delivery back into an unknown outcome.
 A timed-out manual receipt check reports that the original remains recoverable.
+
+Android and iOS retain a new text-only send's exact native payload and options
+inside its encrypted outbox row before transport, bounded by the existing 64 KiB
+text limit. The frozen intent records the original computer, physical machine,
+durable session, literal name, run/conversation, provider and transport encoding.
+Its canonical ASCII JSON `intent_sha256` and the producer's `native_digest` name
+different byte encodings; neither normalizes Unicode, line endings or whitespace.
+They are never compared as interchangeable hashes.
+
+Check delivery first reads the original connector journal UUID. When both gateway
+and selected computer advertise `send_receipt`, it may then submit a fresh READ
+UUID for that frozen original. Both stages share one 45-second campaign; a
+fallback or poll never renews it. Only exact positive original-receipt admission
+settles that original outbox row, preserving its dismissal choice, newer composer
+and other lanes. Read failures, missing/corrupt records and identity/digest
+mismatches leave delivery unknown. They never become Not sent or a resend.
+Legacy rows may reconstruct only the ordinary payload whose exact native digest
+matches the original; lost continuation/options remain unknown, with no text or
+time search. The original mutation journal and UUID stay unchanged.
+
+An uncertain send remains visible and unknown beside an ordinary provider echo.
+Delivery evidence comes from a receipt read or the existing exact receipt-backed
+native request/message IDs; text and time never settle uncertainty. Already submitted or recorded rows keep the existing presentation
+deduplication: exact receipt/native IDs come first, followed by the unique text
+and time match. This presentation match never proves delivery. A recovery proof
+whose durable update starts after its campaign deadline remains unknown, even
+if it arrived in time; the ordinary-send save rule above is unchanged.
+Confirmed admission does not mean the agent finished processing it.
 
 The multiline composer keeps one editor state for text, selection and IME
 composition across polling, expansion and sending. Sending brings the new local

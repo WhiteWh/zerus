@@ -24,6 +24,7 @@ import test_codex_hooks_trust
 import test_codex_rate_limit
 import test_codex_trust
 import test_codex_update
+import receipt_locator
 import test_input as fixtures
 import test_kimi_cache_hint
 import test_kimi_trust
@@ -81,6 +82,9 @@ def check(case, source):
     cards = [card for card in case.inspect()['pending_questions'] if card.get('source') == source]
     case.assertEqual(len(cards), 1, f'{source}: {cards}')
     card = cards[0]
+    # The inspection may start the receipt locator's background worker, which
+    # writes after it returns; only the observation itself is measured.
+    receipt_locator.settle(HGS, case.env)
     before, height = tree(case.root), window_height(case)
     seen = observe(case, card['question_id'])
     case.assertEqual(tree(case.root), before, f'{source}: the observation changed the fixture tree')

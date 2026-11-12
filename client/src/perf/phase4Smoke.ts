@@ -1014,6 +1014,41 @@ async function startStep() {
   if (!sent[2].stdin.includes("resume smoke")) throw new Error("the resumed send has the wrong payload");
 }
 
+// zerus-77ljy: the resumed run can read ready before the listing replaces the
+// stopped row. The replay listing is held back until the waiting send's own
+// poll has inspected the ready run and had time to act on it: the message must
+// keep waiting rather than end against the stale row, then go once to the
+// resumed run when the listing catches up. Run instead of "start", never after it.
+async function startLateListingStep() {
+  const row = await select(REVIEW);
+  const before = (await calls("send")).length;
+  const reviewInspects = async () => (await calls("inspect")).filter((entry) => entry.argv.includes(REVIEW)).length;
+  type("resume before the listing");
+  await composer.send();
+  await until(() => document.querySelector("#composer-dlg-title")?.textContent === "Start the session to send?", 5000, "the start question did not open");
+  button("Resume", document.querySelector("dialog[open]")!).click();
+  await waitCall("resume", 1);
+  // The fake answers the resume after 0.3 s; only an inspect begun after that reads the ready run.
+  await sleep(500);
+  const inspected = await reviewInspects();
+  await untilAsync(async () => (await reviewInspects()) > inspected, 10_000, "the waiting send did not inspect the resumed run");
+  await sleep(600);
+  const held = composer.view();
+  if ((await calls("send")).length !== before || held?.status === "The session changed. Your draft was kept without sending." || !held?.waiting)
+    throw new Error(`the waiting send did not wait for the listing; ${JSON.stringify({ status: held?.status, waiting: held?.waiting,
+      local: held?.local.map((entry) => entry.status), sends: (await calls("send")).length - before })}`);
+  await invoke("smoke_resume", { key: row.catalogKey });
+  const sent = await waitCall("send", before + 1, 20_000).catch((error) => {
+    const view = composer.view();
+    throw new Error(`${error.message}; ${JSON.stringify({ status: view?.status, waiting: view?.waiting, local: view?.local.map((entry) => entry.status) })}`);
+  });
+  const request = JSON.parse(sent[before].stdin) as { text?: string; expected_run_id?: string };
+  if (request.text !== "resume before the listing" || !request.expected_run_id?.endsWith("-resumed"))
+    throw new Error(`the resumed send has the wrong payload: ${sent[before].stdin}`);
+  await sleep(500);
+  if ((await calls("send")).length !== before + 1) throw new Error("the waiting message was sent more than once");
+}
+
 async function resumeHistoryStep() {
   const row = await select(REVIEW);
   const historical = () => [...document.querySelectorAll<HTMLElement>(".act-virtual-row [id^=item-]")]
@@ -1400,6 +1435,7 @@ export async function phase4Smoke(allowed: boolean, smokeFile?: string) {
     ["send", () => sendStep(smokeFile!)],
     ["cold", coldStep],
     ["start", startStep],
+    ["start-late-listing", startLateListingStep],
     ["start-poll", startPollStep],
     ["resume-history", resumeHistoryStep],
     ["resume-status", resumeStatusStep],
@@ -1432,7 +1468,7 @@ export async function phase4Smoke(allowed: boolean, smokeFile?: string) {
     const only = new URLSearchParams(location.search).get("phase4-only")?.split(",").filter(Boolean);
     if (only?.some((wanted) => !steps.some(([name]) => name === wanted))) throw new Error("Unknown phase4 step");
     // These steps need separate fixture setups and run individually.
-    for (const [name, run] of steps.filter(([name]) => only ? only.includes(name) : !["start-poll", "resume-history", "resume-status"].includes(name))) {
+    for (const [name, run] of steps.filter(([name]) => only ? only.includes(name) : !["start-late-listing", "start-poll", "resume-history", "resume-status"].includes(name))) {
       current = name;
       await run();
       log(`phase4-smoke ${name}: done`);
