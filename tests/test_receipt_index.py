@@ -171,6 +171,44 @@ class ReceiptIndex(unittest.TestCase):
         self.assertTrue(restored["receipt_projection"]["migration_complete"])
         self.assertEqual(restored["receipt_projection"]["gaps"], [])
 
+    def test_external_first_prompt_pin_is_a_gap_before_reconciliation(self):
+        path = self.original(1, conversation_id="", first_message=True)
+        self.migrate()
+        original = path.read_bytes(), path.stat().st_mtime_ns
+        with closing(sqlite3.connect(self.database)) as db, db:
+            before = db.execute("SELECT value FROM receipt_meta WHERE key='epoch'").fetchone()[0]
+            db.execute("UPDATE receipt_rows SET conversation='foreign-conversation' WHERE request=?", [path.stem])
+        with closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(db.execute("SELECT complete,errors FROM receipt_sources WHERE source='terminal'").fetchone(), (0, 1))
+            self.assertEqual(db.execute("SELECT reason FROM receipt_errors WHERE source='terminal'").fetchone(), ('binding_changed',))
+            self.assertNotEqual(db.execute("SELECT value FROM receipt_meta WHERE key='epoch'").fetchone()[0], before)
+        projection = self.inspect()["receipt_projection"]
+        self.assertFalse(projection["catalog_complete_at_snapshot"])
+        self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), original)
+
+    def test_validated_original_pin_keeps_an_existing_page_chain(self):
+        path = self.original(1, conversation_id="", first_message=True)
+        self.original(2)
+        self.original(3)
+        self.migrate()
+        page = self.page(limit=2)
+        self.assertTrue(page['receipt_projection']['catalog_complete_at_snapshot'])
+        cursor = page['receipt_projection']['next_cursor']
+        self.assertTrue(cursor)
+        with closing(sqlite3.connect(self.database)) as db:
+            epoch = db.execute("SELECT value FROM receipt_meta WHERE key='epoch'").fetchone()[0]
+        record = json.loads(path.read_text())
+        record['resolved_conversation_id'] = self.fixture.conversation_id
+        path.write_text(json.dumps(record))
+        original = path.read_bytes(), path.stat().st_mtime_ns
+        self.migrate()
+        with closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(db.execute("SELECT value FROM receipt_meta WHERE key='epoch'").fetchone()[0], epoch)
+            self.assertEqual(db.execute("SELECT complete,errors FROM receipt_sources WHERE source='terminal'").fetchone(), (1, 0))
+        resumed = self.page(cursor=cursor, limit=3)
+        self.assertEqual(self.ids(resumed), [path.stem])
+        self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), original)
+
     def test_snapshot_pages_survive_backdated_arrivals_and_reject_other_scopes(self):
         originals = [self.original(n) for n in range(1, 13)]
         self.migrate()
