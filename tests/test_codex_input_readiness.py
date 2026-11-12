@@ -12,7 +12,7 @@ import test_codex_input_native as native
 CASE = 'test_resumed_and_restored_hook_review_blocks_input_until_the_person_answers'
 
 
-def fixture(deliver=True, copies=1):
+def fixture(deliver=True, copies=1, composer_ready=True):
     class Fixture(native.NativeCodexStartup):
         def setUp(self):
             self.temp = tempfile.TemporaryDirectory()
@@ -31,6 +31,7 @@ def fixture(deliver=True, copies=1):
             self.generation = 0
             self.sends = []
             self.polls_after_send = []
+            self.waits = []
 
         def tearDown(self):
             self.temp.cleanup()
@@ -48,7 +49,10 @@ def fixture(deliver=True, copies=1):
                         conversation_id=self.record['conversation_id'])
 
         def inspect(self):
-            return dict(pending_questions=[self.card] if self.card else [])
+            # The maintained case requires native readiness even when the
+            # composer glyph is visible. Model that separately from delivery.
+            return dict(pending_questions=[self.card] if self.card else [],
+                        resume_message_can_send=composer_ready and self.card is None)
 
         def screen(self):
             return '› 1. Review hooks' if self.card else '› Native composer'
@@ -95,6 +99,7 @@ def fixture(deliver=True, copies=1):
             return subprocess.CompletedProcess(argv, 0, '{"status":"submitted"}', '')
 
         def until(self, label, predicate):
+            self.waits.append(label)
             # The hook record stays idle while the original request is in
             # transit. Advance only this fixture scheduler, with no sleeps or
             # input; the real fixture keeps its existing 20-second deadline.
@@ -135,12 +140,25 @@ class HookReviewReadiness(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, 'Fixture deadline: The original resumed conversation'):
             self.exercise(case)
         self.assertEqual(len(case.sends), 2)
+        self.assertEqual(case.waits[-1], 'The original resumed conversation must complete its turn')
+        self.assertEqual(case.pending, ['Synthetic after resume hook review.', 20])
+
+    def test_an_unready_composer_still_blocks_before_any_send(self):
+        case = fixture(composer_ready=False)
+        with self.assertRaisesRegex(AssertionError, 'Fixture deadline: The unchanged resume must reach its native composer'):
+            self.exercise(case)
+        self.assertEqual(case.sends, [])
+        self.assertIsNone(case.pending)
+        self.assertEqual(case.waits[-1], 'The unchanged resume must reach its native composer')
 
     def test_two_deliveries_still_fail_the_original_exactly_once_assertion(self):
         case = fixture(copies=2)
         with self.assertRaisesRegex(AssertionError, '2 != 1'):
             self.exercise(case)
         self.assertEqual(len(case.sends), 2)
+        self.assertEqual(case.waits[-1], 'The original resumed conversation must complete its turn')
+        self.assertEqual(sum(row['texts'] == ['Synthetic after resume hook review.']
+                             for row in case.server.requests), 2)
 
 
 if __name__ == '__main__':
