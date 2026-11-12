@@ -205,6 +205,14 @@ pub struct FileLock {
     owner_pid: u32,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Every unlock_owner call that reached the actual unlock (owner matched).
+    pub(crate) static UNLOCK_ATTEMPTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Tests only: make the next unlock_owner attempts fail without unlocking.
+    pub(crate) static FAIL_UNLOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 impl FileLock {
     pub fn exclusive(file: File) -> io::Result<Self> {
         fs2::FileExt::lock_exclusive(&file)?;
@@ -229,6 +237,13 @@ impl FileLock {
 
     fn unlock_owner(&self) -> io::Result<()> {
         if self.owner_pid == std::process::id() {
+            #[cfg(test)]
+            {
+                UNLOCK_ATTEMPTS.with(|attempts| attempts.set(attempts.get() + 1));
+                if FAIL_UNLOCK.with(std::cell::Cell::get) {
+                    return Err(io::Error::other("injected unlock failure"));
+                }
+            }
             fs2::FileExt::unlock(&self.file)
         } else {
             Ok(())

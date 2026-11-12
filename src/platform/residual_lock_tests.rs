@@ -286,3 +286,48 @@ fn fixture() {
         assert!(File::open(path).unwrap().try_lock_exclusive().is_ok());
     }
 }
+
+fn reset_unlock_seam() {
+    UNLOCK_ATTEMPTS.with(|attempts| attempts.set(0));
+    FAIL_UNLOCK.with(|fail| fail.set(false));
+}
+fn unlock_attempts() -> u32 {
+    UNLOCK_ATTEMPTS.with(std::cell::Cell::get)
+}
+
+#[test]
+fn release_unlocks_once_and_drop_does_not_retry() {
+    reset_unlock_seam();
+    let lock = FileLock::exclusive(tempfile::tempfile().unwrap()).unwrap();
+    assert!(lock.release().is_ok());
+    assert_eq!(unlock_attempts(), 1);
+}
+
+#[test]
+fn a_failed_release_is_not_retried_by_drop() {
+    reset_unlock_seam();
+    FAIL_UNLOCK.with(|fail| fail.set(true));
+    let lock = FileLock::exclusive(tempfile::tempfile().unwrap()).unwrap();
+    let error = lock.release().unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Other);
+    assert_eq!(error.to_string(), "injected unlock failure");
+    assert_eq!(unlock_attempts(), 1);
+    FAIL_UNLOCK.with(|fail| fail.set(false));
+    assert_eq!(unlock_attempts(), 1);
+}
+
+#[test]
+fn a_plain_drop_unlocks_once() {
+    reset_unlock_seam();
+    drop(FileLock::exclusive(tempfile::tempfile().unwrap()).unwrap());
+    assert_eq!(unlock_attempts(), 1);
+}
+
+#[test]
+fn a_foreign_owner_never_unlocks_on_drop() {
+    reset_unlock_seam();
+    let mut lock = FileLock::held(tempfile::tempfile().unwrap());
+    lock.owner_pid = std::process::id().wrapping_add(1);
+    drop(lock);
+    assert_eq!(unlock_attempts(), 0);
+}
