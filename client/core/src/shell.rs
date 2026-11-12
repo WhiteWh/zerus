@@ -151,12 +151,14 @@ pub fn power_shell_quote(value: &str) -> String {
 /// PowerShell 7.3 and later pass such arguments correctly, so no quoting suits
 /// both (`powerShellPassesUnchanged`). A space is any character its
 /// `NeedQuotes` check finds with `char.IsWhiteSpace`: every Unicode
-/// White_Space character, as `char::is_whitespace` (zerus-sa9qn.46).
+/// White_Space character, as `char::is_whitespace` (zerus-sa9qn.46), and
+/// U+180E, which was one before Unicode 6.3 and may still be in the .NET
+/// Framework tables 5.1 runs on. Counting it only refuses a rare word.
 pub(crate) fn power_shell_passes_unchanged(value: &str) -> bool {
     if value.is_empty() || value.contains('"') {
         return false;
     }
-    let spaced = value.chars().any(char::is_whitespace);
+    let spaced = value.chars().any(|c| c.is_whitespace() || c == '\u{180e}');
     !(spaced && value.ends_with('\\'))
 }
 
@@ -442,6 +444,27 @@ mod tests {
             );
             assert!(
                 power_shell_passes_unchanged(&format!("ws{space}x\\y")),
+                "U+{code:04X}"
+            );
+        }
+    }
+
+    /// Spaces PowerShell 5.1 may count on top of today's White_Space: U+180E
+    /// was a space separator (Zs) before Unicode 6.3, and the .NET Framework
+    /// tables behind its `char.IsWhiteSpace` may predate that.
+    const EARLIER_POWER_SHELL_SPACES: &[char] = &['\u{180e}'];
+
+    #[test]
+    fn power_shell_5_1_spacing_also_counts_spaces_of_earlier_unicode() {
+        for &space in EARLIER_POWER_SHELL_SPACES {
+            let code = space as u32;
+            assert!(!space.is_whitespace(), "U+{code:04X}");
+            assert!(
+                !power_shell_passes_unchanged(&format!("ws{space}x\\")),
+                "U+{code:04X}"
+            );
+            assert!(
+                power_shell_passes_unchanged(&format!("ws{space}x")),
                 "U+{code:04X}"
             );
         }

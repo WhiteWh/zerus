@@ -331,6 +331,8 @@ fn pair_and_revoke_name_the_pinned_commands_qt_runs() {
         "a\u{a0}b\\",
         "a\u{3000}b\\",
         "a\u{2028}b\\",
+        // A space separator before Unicode 6.3, which 5.1 may still count.
+        "a\u{180e}b\\",
     ] {
         assert_eq!(powershell_word(unsafe_word), None, "{unsafe_word:?}");
     }
