@@ -197,5 +197,112 @@ await assert.rejects(manageSchedule({ update() {}, view() {}, edit() {} }, { ...
 """)
 
 
+@unittest.skipUnless(shutil.which('node'), 'Node.js required')
+class ShellIdentity(unittest.TestCase):
+    """zerus-ppd26: each tool call's processes carry HGS_AGENT=dsh and exactly
+    the calling session's own markers, or none of them."""
+
+    def run_js(self, body):
+        script = """
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
+const { callEnvironment, parseIdentity, identitySession, readIdentity, wrapSpawns } = await import(process.argv[2]);
+const conversation = 'session-91250d76-ca68-48b6-87f8-3a0e4400c314';
+const file = { version: 1, conversation, session: 'dsh/project/a', run: 'run-1',
+               session_id: '6a4c5887-557a-4f31-b1c8-ad0a94c3c705', account: 'native-dsh' };
+const markers = ['HGS_SESSION', 'HGS_RUN_ID', 'HGS_SESSION_ID', 'HGS_ACCOUNT_ID'];
+""" + body
+        result = subprocess.run(['node', '--input-type=module', '-', BRIDGE.as_uri()],
+                                input=script, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_call_carries_its_own_markers_or_removes_all_of_them(self):
+        self.run_js("""
+const none = callEnvironment(undefined);
+assert.equal(none.HGS_AGENT, 'dsh');
+// Explicit undefined entries are the subprocess service's tombstones.
+for (const key of markers) { assert.ok(Object.hasOwn(none, key), key); assert.equal(none[key], undefined); }
+assert.ok(Object.isFrozen(none));
+assert.deepEqual({ ...callEnvironment(parseIdentity(JSON.stringify(file), conversation)) }, {
+  HGS_AGENT: 'dsh', HGS_SESSION: 'dsh/project/a', HGS_RUN_ID: 'run-1',
+  HGS_SESSION_ID: '6a4c5887-557a-4f31-b1c8-ad0a94c3c705', HGS_ACCOUNT_ID: 'native-dsh' });
+""")
+
+    def test_only_a_complete_identity_of_the_exact_conversation_is_accepted(self):
+        self.run_js("""
+assert.deepEqual(parseIdentity(JSON.stringify(file), conversation),
+  { session: 'dsh/project/a', run: 'run-1', session_id: file.session_id, account: 'native-dsh' });
+const other = 'session-00000000-0000-4000-8000-000000000001';
+for (const text of ['', 'not json', 'null', JSON.stringify({ ...file, version: 2 }),
+    JSON.stringify({ ...file, conversation: other }), JSON.stringify({ ...file, session: '' }),
+    JSON.stringify({ ...file, run: 7 }), JSON.stringify({ ...file, session_id: undefined }),
+    JSON.stringify({ ...file, account: 'a'.repeat(2049) }), JSON.stringify({ ...file, session: 'a' + String.fromCharCode(10) + 'b' }),
+    JSON.stringify({ ...file, session: 'a' + String.fromCharCode(0x85) })])
+  assert.equal(parseIdentity(text, conversation), undefined, text);
+""")
+
+    def test_a_child_call_carries_its_top_level_sessions_identity(self):
+        self.run_js("""
+const parent = conversation, child = 'session-00000000-0000-4000-8000-000000000002';
+assert.equal(identitySession({ session: { id: parent, header: { id: parent, origin: 'user' } } }), parent);
+assert.equal(identitySession({ session: { id: child, header: { id: child, origin: 'subagent', parentSession: parent } } }), parent);
+for (const agent of [undefined, {}, { session: { id: '../escape', header: {} } },
+    { session: { id: child, header: { origin: 'subagent', parentSession: 'webhook-x' } } }])
+  assert.equal(identitySession(agent), undefined);
+""")
+
+    def test_the_identity_is_read_bounded_without_following_a_link(self):
+        self.run_js("""
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hgs-identity-'));
+try {
+  const target = path.join(dir, conversation + '.json');
+  fs.writeFileSync(target, JSON.stringify(file));
+  assert.equal(readIdentity(dir, conversation).run, 'run-1');
+  assert.equal(readIdentity(null, conversation), undefined);
+  assert.equal(readIdentity(dir, undefined), undefined);
+  fs.writeFileSync(target, JSON.stringify({ ...file, run: 'r'.repeat(5000) }));
+  assert.equal(readIdentity(dir, conversation), undefined);
+  fs.rmSync(target);
+  assert.equal(readIdentity(dir, conversation), undefined);
+  fs.writeFileSync(path.join(dir, 'real.json'), JSON.stringify(file));
+  fs.symlinkSync(path.join(dir, 'real.json'), target);
+  assert.equal(readIdentity(dir, conversation), undefined);
+} finally { fs.rmSync(dir, { recursive: true, force: true }); }
+""")
+
+    def test_processes_started_during_a_call_carry_its_environment(self):
+        self.run_js("""
+const store = new AsyncLocalStorage(), seen = [];
+const service = { spawn(spec) { seen.push(['spawn', spec]); return spec; },
+                  spawnTerminal(spec) { seen.push(['terminal', spec]); return spec; } };
+const original = service.spawn;
+const wrap = wrapSpawns(service, () => store.getStore());
+assert.equal(wrap.installed, true);
+assert.ok(wrap.current());
+const outside = { argv: ['true'], env: { HGS_SESSION: 'caller' } };
+assert.equal(service.spawn(outside), outside);
+const env = callEnvironment(undefined);
+await store.run(env, async () => {
+  await new Promise(resolve => setTimeout(resolve, 1));
+  const spec = service.spawn({ argv: ['bash'], env: { NO_COLOR: '1', HGS_SESSION: 'inherited', HGS_AGENT: 'claude' } });
+  assert.deepEqual(spec.env, { NO_COLOR: '1', ...env });
+  assert.equal(service.spawnTerminal({ argv: ['bash'] }).env.HGS_AGENT, 'dsh');
+});
+assert.equal(seen.length, 3);
+service.spawn = function replaced() {};
+assert.equal(wrap.current(), false);
+wrap.restore();
+assert.equal(service.spawn.name, 'replaced');
+const fresh = { spawn: original };
+const again = wrapSpawns(fresh, () => env);
+again.restore();
+assert.equal(fresh.spawn, original);
+assert.equal(wrapSpawns({}, () => env).installed, false);
+""")
+
+
 if __name__ == '__main__':
     unittest.main()

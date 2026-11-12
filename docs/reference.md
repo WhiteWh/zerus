@@ -4360,7 +4360,9 @@ Run inside a session (`HGS_SESSION` and
 `HGS_RUN_ID`), `hgs task` acts as that session's agent: `add` files the task
 for that session, and the project settings can keep agents to their own
 session or limit how many tasks they start per hour. `settings --set` reads a
-JSON object and changes only the fields it names.
+JSON object and changes only the fields it names. A DeepSeek host's tool call
+(`HGS_AGENT=dsh`) never acts as the person; while its session cannot be proven,
+`hgs task` refuses it (see Session markers of hosted tool calls).
 
 The desktop cancellation dialog uses `hgs task cancel-execution REF --project P --json`,
 with schema 1 JSON on stdin: `dispatch_id`, `stage_at`, executor `machine` and `session_id`,
@@ -5391,6 +5393,45 @@ not roll it back. Incomplete or older starting records without a boot/launcher
 identity remain unverifiable, rather than being assigned a synthetic identity.
 A healthy resident adapter reconnects without a restart or record rewrite.
 These checks never stop a host or reload its bridge.
+
+### Session markers of hosted tool calls
+
+One native host serves every DeepSeek session of its agent home from one
+process, so whichever session happens to start it is not the session of any
+hosted agent (zerus-ppd26). Zerus starts the host without that session's
+variables: the session markers, its account, launch and parent identities, its
+terminal (`TMUX`, `TMUX_PANE`, `HGS_TERMINAL_NAME`) and `CLAUDECODE`, the same
+list the Windows session host drops. The state and configuration roots stay.
+
+Every tool call's processes then carry `HGS_AGENT=dsh` and exactly the calling
+session's own markers: `HGS_SESSION` (its name), `HGS_RUN_ID`, `HGS_SESSION_ID`
+and `HGS_ACCOUNT_ID=native-dsh`. Zerus writes them after each binding save to a
+private file per native conversation, `shells/<conversation>.json` in the host
+folder, so they always name the current run, and removes it when the session is
+forgotten. The adapter reads that file for each call, foreground, background or
+promoted, and a child agent's calls carry its parent session's markers. Without
+a valid file, for example an agent the native UI opened, a call carries
+`HGS_AGENT=dsh` and none of the four: the adapter removes them explicitly, never
+passing a partial or inherited set. Its `ping` reports `shellIdentity` when it
+sets these per call.
+
+A hosted tool call is never the person. `hgs task` and the desktop's
+agent-descended refusal treat `HGS_AGENT=dsh` without a session they can prove
+as an agent, and refuse person actions plainly. Until a hosted session can be
+proven, its `hgs task` commands are refused and its sends are unattributed.
+
+The limit: one process serves all hosted sessions, so process ancestry proves
+only that a command runs under the host serving a session, not which hosted
+agent ran it. The markers are claims that the host sets per call, which ends
+accidental attribution to another session; an agent that deliberately sets
+another hosted session's markers, or edits the same-user identity file, is not
+detected by them.
+
+A host an older Zerus started keeps the markers it inherited and its adapter
+until it exits on its own; it is never restarted or reloaded for this. Its
+`ping` has no `shellIdentity`, and the existing refusals for those inherited
+markers stay. The adapter version is unchanged, so this Zerus keeps using such a
+host.
 
 Reviewed adoption of `0.2.1-rc.5` (2026-10-29, `zerus-r7d4`): the rc.2-only
 startup gate rejected rc.5 before starting the host. Comparison of the official

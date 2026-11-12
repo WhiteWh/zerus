@@ -319,6 +319,10 @@ impl Machines {
     }
 }
 
+/// The refusal for a resident DeepSeek host's tool call (`HGS_AGENT=dsh`)
+/// whose session cannot be proven.
+const UNPROVEN_HOSTED_AGENT: &str = "a DeepSeek agent's tool call (HGS_AGENT=dsh) never acts as the person, and its session cannot be proven here; run person actions from a terminal outside the DeepSeek host";
+
 /// The agent of the session that runs this command, or the person. A command
 /// whose environment names a session (`HGS_SESSION`, `HGS_RUN_ID`) acts as its
 /// agent only when it proves it as `hgs self` does: the run is live on this
@@ -331,7 +335,9 @@ fn actor(here: &str, args: &[String], forwardable: bool) -> Result<Actor> {
         if !forwardable {
             return Err(fail("only send and cancel take --agent"));
         }
-        if var("HGS_SESSION").is_some() && var("HGS_RUN_ID").is_some() {
+        if var("HGS_SESSION").is_some() && var("HGS_RUN_ID").is_some()
+            || crate::state::session_graph::hosted_agent_call()
+        {
             return Err(fail("--agent is for commands another computer forwards; an agent acts as its own session"));
         }
         let (machine, session) = agent
@@ -344,10 +350,21 @@ fn actor(here: &str, args: &[String], forwardable: bool) -> Result<Actor> {
             session_id: option(args, "--agent-session-id")?.unwrap_or_default().into(),
         }));
     }
+    // A resident DeepSeek host's tool call is an agent's even without markers
+    // it can prove (zerus-ppd26): it never acts as the person.
+    let hosted = crate::state::session_graph::hosted_agent_call();
     let (Some(claimed), Some(_)) = (var("HGS_SESSION"), var("HGS_RUN_ID")) else {
+        if hosted {
+            return Err(fail(UNPROVEN_HOSTED_AGENT));
+        }
         return Ok(Actor::Person);
     };
     let record = crate::state::session_graph::caller_record().ok_or_else(|| {
+        if hosted {
+            return fail(format!(
+                "this command names the DeepSeek session {claimed}, but this computer cannot prove that this tool call belongs to it; {UNPROVEN_HOSTED_AGENT}"
+            ));
+        }
         fail(format!(
             "this command names the agent session {claimed}, but that run is not live on this computer or does not run it; run hgs task from the agent's own shell, or unset HGS_SESSION and HGS_RUN_ID to act as yourself"
         ))
