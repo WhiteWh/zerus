@@ -9,18 +9,29 @@ use std::{
 
 const ENTRY: &str = "state::effort::picker_scope::driver::send::tests::fixture";
 fn run(case: &str) {
+    run_at(case, false);
+}
+fn run_at(case: &str, symlinked_tmpdir: bool) {
     for kind in ["fresh", "moved"] {
         eprintln!("SEND_ORIGINAL_STARTED={kind}/{case}");
         let home = tempfile::tempdir().unwrap();
+        let alias = symlinked_tmpdir.then(|| tempfile::tempdir().unwrap());
+        let home_path = if let Some(alias) = &alias {
+            let path = alias.path().join("home");
+            std::os::unix::fs::symlink(home.path(), &path).unwrap();
+            path
+        } else {
+            home.path().to_owned()
+        };
         let mut output = tempfile::tempfile().unwrap();
         let mut child = Command::new(std::env::current_exe().unwrap())
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("HOME", home.path())
-            .env("HGS_CONFIG_DIR", home.path().join("config"))
-            .env("HGS_STATE_DIR", home.path().join("state"))
-            .env("TMPDIR", home.path())
-            .env("TMUX_TMPDIR", home.path())
+            .env("HOME", &home_path)
+            .env("HGS_CONFIG_DIR", home_path.join("config"))
+            .env("HGS_STATE_DIR", home_path.join("state"))
+            .env("TMPDIR", &home_path)
+            .env("TMUX_TMPDIR", &home_path)
             .env("ZERUS_SEND_CONTROL", case)
             .env("ZERUS_SEND_KIND", kind)
             .args(["--exact", ENTRY, "--ignored", "--test-threads=1"])
@@ -69,6 +80,12 @@ fn submitted_receipt_needs_settled_enter_but_no_native_observation_turn() {
     for case in ["submitted", "no-enter", "expired-enter", "lost-endpoint"] {
         run(case);
     }
+}
+#[test]
+fn submitted_receipt_uses_the_held_namespace_with_a_symlinked_tmpdir() {
+    // macOS's /var -> /private/var spelling must not reach a no-follow
+    // directory pin. Exercise the same alias condition on every Unix runner.
+    run_at("submitted", true);
 }
 #[test]
 fn send_observation_kinds_nonces_and_consumption_are_not_interchangeable() {
@@ -626,13 +643,16 @@ fn fixture() {
                 .store(case != "no-enter", Ordering::Release);
             let mut submitted = value.clone();
             submitted["status"] = json!("submitted");
-            let staged = owner
+            let (staged, directory) = owner
                 .with_scope(|scope| {
-                    publication::Staged::prepare(
+                    let staged = publication::Staged::prepare(
                         &scope.receipts,
                         outer.file_name().unwrap().to_str().unwrap(),
                         submitted.to_string().as_bytes(),
-                    )
+                    )?;
+                    // Use the held canonical namespace, as receipt_write does.
+                    // The fixture's HOME/TMPDIR spelling may contain aliases.
+                    Ok((staged, scope.receipts.path.clone()))
                 })
                 .unwrap();
             if case == "lost-endpoint" {
@@ -647,7 +667,7 @@ fn fixture() {
             let witness = Publication::new(
                 &owner,
                 &staged,
-                outer.parent().unwrap().into(),
+                directory,
                 outer.file_name().unwrap().to_str().unwrap().into(),
                 true,
                 None,
