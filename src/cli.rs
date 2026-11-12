@@ -244,7 +244,8 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        hgs [@host] rename <session> <new-full-name> [--archive <id>]
        hgs [@host] archives --json [--bounded]   date-filtered archive pages (JSON stdin); --bounded caps counts at 10,000 and each scan at 25,000 rows
        archive-bounded-pages-v1
-       hgs [@host] archive <session>          move a stopped conversation to Archive
+       hgs [@host] archive <session> [--with-children]   move a stopped conversation to Archive
+       hgs [@host] terminate <session> [--expected-run-id ID] [--with-children]   stop and keep the conversation in Archive
        hgs [@host] pause <session>|--all       save and gracefully close idle agents
        hgs [@host] resume <session>|--all [-d] [--archive <id>]   restore exact conversations
        hgs [@host] resume <session> --fresh [-d] [--expected-run-id ID]   same settings, new conversation
@@ -284,6 +285,7 @@ Claude/Codex/Kimi install tracking hooks; Codex hooks need trust in /hooks.
 pause refuses untracked/busy sessions. Saved sessions survive reboot; a opens them again.
 Archive holds completed conversations; only explicit resume --archive restores them.
 terminate stops a tracked session and preserves it in Archive; kill explicitly forgets it.
+terminate/archive --with-children then end the session's live child sessions, each by its own rules.
 pause/resume --all covers tracked terminal agents; OpenCode uses exact per-session controls.
 resume --all excludes Archive. kill --archive forgets only that archived entry.
 rename changes the session label while preserving its agent/project, process and conversation.

@@ -789,6 +789,41 @@ make the dragged session its child; the upper and lower parts of a card still
 reorder. Every change is confirmed in a dialog, which names a parent it
 replaces, before the desktop calls `hgs parent`.
 
+Ending a parent never ends its children by itself (zerus-sa9qn.17).
+`hgs [@host] terminate SESSION --with-children` and
+`hgs [@host] archive SESSION --with-children` are the explicit choice to end
+them too. The parent runs first with its own command and rules; only when it
+succeeds does each live (non-archived) descendant on that computer get the same
+command, one at a time, every child before any grandchild and at most eight
+levels deep. Descendants are matched as the listing matches a parent: by
+session ID, or by conversation for a parent listed without one; a link another
+computer forwarded never matches. Each child call is bound to the session ID,
+run and conversation the listing showed, so a session that took the label
+meanwhile is refused, and Terminate also passes `--expected-run-id`. Each child
+keeps its own rules: Archive takes only stopped or paused sessions, a DeepSeek
+or OpenCode child refuses an action it does not support, and no working folder
+removal is implied; the configured worktree maintenance treats an archived
+child as any archived session. A child that is not ended is reported on
+standard error and never retried, and the command exits 1 with how many were
+not ended. With `--dry-run` it validates the parent and lists the children it
+would end. A parent refused or unknown ends no child. An older peer without the
+flag refuses it as a usage error before acting.
+
+On the desktop, the Terminate confirmation of a session with live child
+sessions on its computer, and a Move to archive confirmation shown only for
+such a session, list them and offer **Also end N child sessions** (Archive:
+**Also archive N child sessions**), off by default. Children the action does
+not apply to now (Terminate takes running sessions, Archive stopped or paused
+ones; an offline computer or a write in flight leaves one out too) are listed
+as staying. At most 50 are named; the rest are counted. When chosen, the
+children run after the parent's own outcome is done as one preconfirmed
+selection batch: each through its own guarded action, rechecked as the same
+instance, one at a time and never retried, without the parent's Remove working
+folder choice. A Terminate child without an HGS archive is ended as its own
+Terminate and a selection's Terminate end it. A parent that failed or whose
+outcome is unknown keeps every child. One notice counts the children ended,
+failed or changed, and unknown.
+
 `hgs ls --json` rows carry `parent` with `state` from the same listing: `live`
 (running, its agent not exited), `saved` (paused, stopped or exited),
 `archived`, or `missing` when this computer lists no such session (gone, or on
@@ -919,6 +954,7 @@ is insufficient. Older ambiguous records are not reclassified automatically.
 
 ```sh
 hgs archive codex/my-project/review                 # stopped sessions only
+hgs terminate codex/my-project/lead --with-children # then its live child sessions
 hgs ls --local --json
 hgs inspect codex/my-project/review --archive ID
 hgs resume codex/my-project/review --archive ID -d
