@@ -191,6 +191,8 @@ mod tests {
             "x\ntouch pwned;#",
             "x\u{ff1b}touch pwned",
             "x\u{202e}; touch pwned",
+            "T-zzzzzz\" --project \"victim\" \"x",
+            "My \"cool\" app",
         ] {
             let label = format!("{project}/T-234567");
             let named = if zerus_replica::command_word(&label).is_some() {

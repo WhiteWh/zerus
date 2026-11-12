@@ -14,9 +14,13 @@ pub enum Tools {
 /// all read as exactly `text`: bare when it is plain, else in single quotes,
 /// which none of them expands. None when one of them reads a character of it
 /// inside single quotes (`'`, the quotes U+2018 to U+201B that PowerShell
-/// also closes on, a backslash for fish), a backtick would end the Markdown
-/// code span the command is written in, or it would hide how the command
-/// reads (control and invisible formatting characters) (zerus-sa9qn.38).
+/// also closes on, a backslash for fish), when the program would not receive
+/// it whole (Windows PowerShell 5.1 hands a native program an argument with a
+/// space in `"…"` without escaping the `"` inside, and the program splits it
+/// again, so a `"`, or U+201C to U+201E PowerShell also reads as one, could
+/// add arguments such as `--project`), a backtick would end the Markdown code
+/// span the command is written in, or it would hide how the command reads
+/// (control and invisible formatting characters) (zerus-sa9qn.38).
 pub fn command_word(text: &str) -> Option<String> {
     let hidden = |c: char| {
         c.is_control()
@@ -26,7 +30,7 @@ pub fn command_word(text: &str) -> Option<String> {
     if text.is_empty()
         || text
             .chars()
-            .any(|c| matches!(c, '\'' | '\\' | '`' | '\u{2018}'..='\u{201b}') || hidden(c))
+            .any(|c| matches!(c, '\'' | '"' | '\\' | '`' | '\u{2018}'..='\u{201e}') || hidden(c))
     {
         return None;
     }
@@ -368,7 +372,6 @@ mod tests {
                 Some("'x;touch pwned;#/T-a1b2c3'"),
             ),
             ("$(touch pwned)/T-a1b2c3", Some("'$(touch pwned)/T-a1b2c3'")),
-            ("a\" ; b/T-a1b2c3", Some("'a\" ; b/T-a1b2c3'")),
             ("x\u{ff1b}touch/T-a1b2c3", Some("'x\u{ff1b}touch/T-a1b2c3'")),
             ("~root/T-a1b2c3", Some("'~root/T-a1b2c3'")),
             ("=ls/T-a1b2c3", Some("'=ls/T-a1b2c3'")),
@@ -380,6 +383,12 @@ mod tests {
             ("x\u{2018}", None),
             ("x\u{201a}", None),
             ("x\u{201b}", None),
+            ("a\" ; b/T-a1b2c3", None),
+            ("My \"cool\" app/T-a1b2c3", None),
+            ("T-zzzzzz\" --project \"victim\" \"x/T-a1b2c3", None),
+            ("x\u{201c}y", None),
+            ("x\u{201d}y", None),
+            ("x\u{201e}y", None),
             ("a\\b", None),
             ("`touch pwned`", None),
             ("x\ntouch pwned", None),
@@ -396,6 +405,7 @@ mod tests {
         assert_eq!(command_reference("my app", "T-a1b2c3"), "'my app/T-a1b2c3'");
         for name in [
             "Bob's app",
+            "T-zzzzzz\" --project \"victim\" \"x",
             "x\u{2019};calc",
             "a\\b",
             "`x`",
@@ -445,9 +455,31 @@ mod tests {
         calls
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn task_commands_name_a_hostile_project_as_one_shell_word() {
+    /// Project names that try to leave the command's word.
+    const HOSTILE: &[&str] = &[
+        // The #2127 review: Windows PowerShell 5.1 would hand hgs.exe
+        // `--project victim` from these.
+        "T-zzzzzz\" --project \"victim\" \"x",
+        "T-zzzzzz\" --project \"victim\" \"x z",
+        "My \"cool\" app",
+        "x\u{201c} --project victim \u{201d}y",
+        "orchard",
+        "my app && touch pwned",
+        "x;touch pwned;#",
+        "$(touch pwned)",
+        "`touch pwned`",
+        "a\" ; touch pwned ; \"b",
+        "a|touch pwned",
+        "x'; touch pwned; '",
+        "x\u{2019}; touch pwned; \u{2019}",
+        "x\\'; touch pwned; #",
+        "x\ntouch pwned;#",
+        "x\u{ff1b}touch pwned",
+        "x\u{202e}; touch pwned",
+    ];
+
+    /// A task sent before, so its prompt names both `get` and `report`.
+    fn sent_view() -> TaskView {
         let mut doc = TaskDoc::create(NewTask {
             project: "p1",
             id: "T-a1b2c3",
@@ -465,28 +497,27 @@ mod tests {
             ..Default::default()
         };
         doc.record_send(&key, "r", &Actor::Person, 2).unwrap();
-        let view = doc.view().unwrap();
-        for project in [
-            "orchard",
-            "my app && touch pwned",
-            "x;touch pwned;#",
-            "$(touch pwned)",
-            "`touch pwned`",
-            "a\" ; touch pwned ; \"b",
-            "a|touch pwned",
-            "x'; touch pwned; '",
-            "x\u{2019}; touch pwned; \u{2019}",
-            "x\\'; touch pwned; #",
-            "x\ntouch pwned;#",
-            "x\u{ff1b}touch pwned",
-            "x\u{202e}; touch pwned",
-        ] {
+        doc.view().unwrap()
+    }
+
+    /// The word a command names `project`'s task by: the label, or the bare
+    /// ID when no word carries it.
+    fn named(project: &str) -> String {
+        let label = format!("{project}/T-a1b2c3");
+        if command_word(&label).is_some() {
+            label
+        } else {
+            "T-a1b2c3".to_owned()
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn task_commands_name_a_hostile_project_as_one_shell_word() {
+        let view = sent_view();
+        for project in HOSTILE.iter().copied() {
             let label = format!("{project}/T-a1b2c3");
-            let named = if command_word(&label).is_some() {
-                label.clone()
-            } else {
-                "T-a1b2c3".to_owned()
-            };
+            let named = named(project);
             let text = task_prompt(DEFAULT_TASK_TEMPLATE, &view, project, Tools::Cli).unwrap();
             assert!(
                 text.starts_with(&format!("[Zerus task {label}]\n")),
@@ -511,6 +542,160 @@ mod tests {
                 "{project:?}"
             );
         }
+    }
+
+    /// The words PowerShell reads in `command`: a single-quoted word is its
+    /// literal text (`''` is one quote); any other word ends at a space.
+    fn powershell_words(command: &str) -> Vec<String> {
+        let mut words = Vec::new();
+        let mut chars = command.chars().peekable();
+        while let Some(&first) = chars.peek() {
+            if first == ' ' {
+                chars.next();
+                continue;
+            }
+            let mut word = String::new();
+            if first == '\'' {
+                chars.next();
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\'' if chars.peek() == Some(&'\'') => {
+                            chars.next();
+                            word.push('\'');
+                        }
+                        '\'' => break,
+                        c => word.push(c),
+                    }
+                }
+            } else {
+                while let Some(c) = chars.next_if(|c| *c != ' ') {
+                    word.push(c);
+                }
+            }
+            words.push(word);
+        }
+        words
+    }
+
+    /// One argument as Windows PowerShell 5.1 writes it into a native
+    /// program's command line (legacy passing): in `"…"` when it has
+    /// whitespace outside the quotes it counts (`NeedQuotes`), or, as the
+    /// #2127 review models it, any whitespace; quotes inside stay unescaped.
+    fn legacy_argument(word: &str, any_space: bool) -> String {
+        let (mut quotes, mut after_backslash, mut wrap) = (0, false, false);
+        for c in word.chars() {
+            if c == '"' && !after_backslash {
+                quotes += 1;
+            } else if c.is_whitespace() && (any_space || quotes % 2 == 0) {
+                wrap = true;
+            }
+            after_backslash = c == '\\';
+        }
+        if wrap {
+            format!("\"{word}\"")
+        } else {
+            word.to_owned()
+        }
+    }
+
+    /// A Windows command line split as the C runtime and Rust's std split it.
+    fn windows_argv(line: &str) -> Vec<String> {
+        let chars: Vec<char> = line.chars().collect();
+        let (mut args, mut current) = (Vec::new(), String::new());
+        let (mut quoted, mut started, mut i) = (false, false, 0);
+        while i < chars.len() {
+            match chars[i] {
+                '\\' => {
+                    let run = chars[i..].iter().take_while(|c| **c == '\\').count();
+                    i += run;
+                    if chars.get(i) == Some(&'"') {
+                        current.extend(std::iter::repeat_n('\\', run / 2));
+                        if run % 2 == 1 {
+                            current.push('"');
+                            i += 1;
+                        }
+                    } else {
+                        current.extend(std::iter::repeat_n('\\', run));
+                    }
+                }
+                '"' if quoted && chars.get(i + 1) == Some(&'"') => {
+                    current.push('"');
+                    i += 2;
+                }
+                '"' => {
+                    quoted = !quoted;
+                    i += 1;
+                }
+                ' ' | '\t' if !quoted => {
+                    if started {
+                        args.push(std::mem::take(&mut current));
+                    }
+                    started = false;
+                    i += 1;
+                    continue;
+                }
+                c => {
+                    current.push(c);
+                    i += 1;
+                }
+            }
+            started = true;
+        }
+        if started {
+            args.push(current);
+        }
+        args
+    }
+
+    /// What `hgs.exe` receives for each `hgs task` command written in
+    /// backticks in `text` when Windows PowerShell 5.1 runs it.
+    fn powershell_51_calls(text: &str, any_space: bool) -> Vec<Vec<String>> {
+        let mut calls = Vec::new();
+        let mut rest = text;
+        while let Some(start) = rest.find("`hgs task ") {
+            let command = &rest[start + 1..];
+            let end = command.find('`').expect("a closed command");
+            let line = powershell_words(&command[..end])[1..]
+                .iter()
+                .map(|word| legacy_argument(word, any_space))
+                .collect::<Vec<_>>()
+                .join(" ");
+            calls.push(windows_argv(&line));
+            rest = &command[end + 1..];
+        }
+        calls
+    }
+
+    /// The #2127 review: Codex on Windows runs commands in Windows PowerShell
+    /// 5.1 when PowerShell 7 is missing, and a `"` in a single-quoted word
+    /// then split it into more arguments for `hgs.exe` (`--project victim`).
+    #[test]
+    fn windows_powershell_5_1_hands_hgs_each_task_command_whole() {
+        let view = sent_view();
+        for any_space in [false, true] {
+            for project in HOSTILE.iter().copied() {
+                let named = named(project);
+                let text = task_prompt(DEFAULT_TASK_TEMPLATE, &view, project, Tools::Cli).unwrap();
+                assert_eq!(
+                    powershell_51_calls(&text, any_space),
+                    [["task", "get", &named], ["task", "report", &named]],
+                    "{project:?}: {text}"
+                );
+            }
+        }
+        // The simulation itself: a space-free word passes as written, a
+        // spaced one is quoted once, and an inner quote splits it.
+        assert_eq!(
+            windows_argv(&legacy_argument("my app/T-1", false)),
+            ["my app/T-1"]
+        );
+        assert_eq!(
+            windows_argv(&legacy_argument(
+                "T-z\" --project \"victim\" \"x z/T-1",
+                false
+            )),
+            ["T-z", "--project", "victim", "x z/T-1"]
+        );
     }
 
     #[test]

@@ -73,7 +73,7 @@ pub fn power_shell_quote(value: &str) -> String {
 /// without escaping quotes or a final backslash in it, and drops an empty one;
 /// PowerShell 7.3 and later pass such arguments correctly, so no quoting suits
 /// both (`powerShellPassesUnchanged`).
-fn power_shell_passes_unchanged(value: &str) -> bool {
+pub(crate) fn power_shell_passes_unchanged(value: &str) -> bool {
     if value.is_empty() || value.contains('"') {
         return false;
     }
