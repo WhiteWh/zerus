@@ -219,6 +219,22 @@ impl FileLock {
         }
     }
 
+    /// Preserve a caller's fallible normal release without retrying it in Drop.
+    /// Error exits still use the acquisition-owner guard's ordinary Drop.
+    pub(crate) fn release(mut self) -> io::Result<()> {
+        let result = self.unlock_owner();
+        self.owner_pid = 0;
+        result
+    }
+
+    fn unlock_owner(&self) -> io::Result<()> {
+        if self.owner_pid == std::process::id() {
+            fs2::FileExt::unlock(&self.file)
+        } else {
+            Ok(())
+        }
+    }
+
     /// The identity of the exact file object this lock is held on.
     #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     pub fn identity(&self) -> io::Result<FileIdentity> {
@@ -230,9 +246,7 @@ impl Drop for FileLock {
     fn drop(&mut self) {
         // Rust 1.89+ File::unlock would shadow the trait method; name fs2 explicitly.
         // An inherited copy must not unlock its parent's still-live scope.
-        if self.owner_pid == std::process::id() {
-            let _ = fs2::FileExt::unlock(&self.file);
-        }
+        let _ = self.unlock_owner();
     }
 }
 
@@ -932,3 +946,5 @@ mod console_allocation_tests {
 
 #[cfg(all(test, unix))]
 pub(crate) mod lock_tests;
+#[cfg(all(test, unix))]
+pub(crate) mod residual_lock_tests;

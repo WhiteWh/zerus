@@ -413,6 +413,9 @@ pub(super) fn catalog_until(path: &Path, refresh: bool, deadline: Instant) -> Va
                             Err(e) => return Err(error("metadata_error", e.to_string())),
                         }
                     }
+                    let guard = crate::platform::FileLock::held(guard);
+                    #[cfg(all(test, unix))]
+                    crate::platform::residual_lock_tests::reached("catalog-acquired");
                     if !refresh {
                         snapshot = load(&cache);
                     } else if waited {
@@ -423,7 +426,7 @@ pub(super) fn catalog_until(path: &Path, refresh: bool, deadline: Instant) -> Va
                             coalesced = true;
                         }
                     }
-                    Some(crate::platform::FileLock::held(guard))
+                    Some(guard)
                 }
                 None => None,
             };
@@ -433,6 +436,8 @@ pub(super) fn catalog_until(path: &Path, refresh: bool, deadline: Instant) -> Va
             if (refresh && !coalesced) || !snapshot.as_ref().is_some_and(fresh) {
                 let (trees, partial) = list(&path, &common, deadline)?;
                 let value = json!({"state":"ok","common_dir":common,"worktrees":trees,"partial":partial,"sampled_at":now()});
+                #[cfg(all(test, unix))]
+                crate::platform::residual_lock_tests::reached("catalog-publish");
                 let _ = atomic(&cache, &value.to_string());
                 snapshot = Some(value);
             }
@@ -1397,3 +1402,6 @@ mod branch_taken_tests {
         );
     }
 }
+
+#[cfg(all(test, unix))]
+mod residual_lock_tests;
