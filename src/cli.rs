@@ -1716,6 +1716,85 @@ fn remote(
     remote_via(config, target, command, args, global_dry, None)
 }
 
+/// Commands whose handler takes a caller without session markers for the
+/// person (zerus-ppd26.9): `task` (the actor of every task change), `team`
+/// (its person-only operations) and `question-routing` (the person's switch,
+/// zerus-sa9qn.47). Another computer's hgs, reached over SSH, sees no marker
+/// of the agent that calls it, so an agent's call stops on this computer. A
+/// newer peer may run a command this hgs lacks, so its name is listed too.
+/// Commands that act the same for an agent and the person (answer,
+/// interrupt, terminal input, `wait` with its ticket), or that refuse an
+/// unknown caller there (`parent`, `wait begin`), still forward.
+pub(crate) const PERSON_ONLY_FORWARDED: &[&str] = &["task", "team", "question-routing"];
+
+/// The command a forwarded call runs: past `--expect-machine ID [--client
+/// C]` and the private `__state` entry.
+fn routed_command<'a>(command: &'a str, args: &'a [String]) -> Option<&'a str> {
+    let (first, then) = if command == "--expect-machine" {
+        let at = if args.get(1).is_some_and(|arg| arg == "--client") {
+            3
+        } else {
+            1
+        };
+        (
+            args.get(at).map(String::as_str),
+            args.get(at + 1).map(String::as_str),
+        )
+    } else {
+        (Some(command), args.first().map(String::as_str))
+    };
+    if first == Some("__state") {
+        then
+    } else {
+        first
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A unit test's caller, so a route check is tested without changing this
+    /// process's environment, which other tests share (zerus-ppd26.12).
+    static TEST_AGENT: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether an agent runs this hgs (zerus-ppd26.9): it claims a session's
+/// markers, proven or not (`hgs task` refuses an unproven claim here too), it
+/// is a resident DeepSeek host's tool call (`HGS_AGENT=dsh`), or a live
+/// session proves it as its caller, a Claude background job included. Like
+/// every marker this guards against accidental agent use, not against an
+/// agent that clears its own environment.
+pub(crate) fn agent_caller() -> bool {
+    #[cfg(test)]
+    if let Some(agent) = TEST_AGENT.with(std::cell::Cell::get) {
+        return agent;
+    }
+    let set = |name: &str| env::var_os(name).is_some_and(|value| !value.is_empty());
+    (set("HGS_SESSION") && set("HGS_RUN_ID"))
+        || env::var_os("HGS_AGENT").is_some_and(|agent| agent == "dsh")
+        || state::session_graph::caller_record().is_some()
+}
+
+/// The refusal of a person-only command an agent would run on another
+/// computer, before anything is forwarded (zerus-ppd26.9).
+fn person_only_forwarding(command: &str, args: &[String]) -> Result<()> {
+    let Some(verb) =
+        routed_command(command, args).filter(|verb| PERSON_ONLY_FORWARDED.contains(verb))
+    else {
+        return Ok(());
+    };
+    if !agent_caller() {
+        return Ok(());
+    }
+    Err(Error::new(
+        1,
+        format!(
+            "hgs {verb} on another computer would act as the person there, which cannot see which agent calls it. \
+             An agent runs hgs {verb} on its own computer; a person's shell that inherited an agent's HGS_SESSION \
+             and HGS_RUN_ID can unset them"
+        ),
+    ))
+}
+
 /// The port Codex's browser sign-in waits on, on the signing computer.
 const CALLBACK_PORT: u16 = 1455;
 /// SSH options for a remote sign-in: this computer's loopback port 1455
@@ -1763,6 +1842,8 @@ fn remote_via(
     global_dry: bool,
     machine: Option<&str>,
 ) -> Result<i32> {
+    // Every route to another computer passes here, before any ssh is built.
+    person_only_forwarding(command, args)?;
     if target.starts_with('-') || target.chars().any(char::is_whitespace) {
         return Err(Error::new(1, "invalid SSH host alias"));
     }
@@ -4176,5 +4257,43 @@ mod tests {
                 .unwrap_err();
         assert_eq!(error.code, 1);
         assert_eq!(error.message, state::backend::INVALID_SESSION_ID.text());
+    }
+
+    /// A session reference's verified hop is a route to another computer
+    /// too: a person-only command is refused there for an agent before any
+    /// ssh, and the person's goes on (zerus-ppd26.12).
+    #[test]
+    fn a_reference_hop_checks_person_only_commands_before_ssh() {
+        let config = Config {
+            home: String::new(),
+            dir: PathBuf::new(),
+            state: PathBuf::new(),
+            selves: vec!["local".into()],
+            peers: vec!["peer".into()],
+            base_peers: Vec::new(),
+            peers_from_environment: false,
+            machines: Default::default(),
+            tab: false,
+            tab_colors: String::new(),
+        };
+        let machine = Some("55555555-5555-4555-8555-555555555555");
+        let args = ["zerus://session".to_owned(), "--json".to_owned()];
+        for command in PERSON_ONLY_FORWARDED {
+            TEST_AGENT.with(|agent| agent.set(Some(true)));
+            let refused = remote_via(&config, "peer", command, &args, true, machine).unwrap_err();
+            assert_eq!(refused.code, 1, "{command}");
+            assert!(
+                refused.message.contains("would act as the person"),
+                "{command}: {}",
+                refused.message
+            );
+            TEST_AGENT.with(|agent| agent.set(Some(false)));
+            assert_eq!(
+                remote_via(&config, "peer", command, &args, true, machine).unwrap(),
+                0,
+                "{command}"
+            );
+        }
+        TEST_AGENT.with(|agent| agent.set(None));
     }
 }
