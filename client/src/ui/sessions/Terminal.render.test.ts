@@ -11,7 +11,7 @@ const fixture = vi.hoisted(() => ({
   generation: (): number => 7,
 }));
 vi.mock("../../bridge", async (importOriginal) => ({ ...(await importOriginal<typeof import("../../bridge")>()), copyVerbatim: fixture.copy, pasteText: fixture.clipboard }));
-vi.mock("../../store/composer", () => ({ composer: { canAttach: fixture.canAttach, pasteImage: fixture.image, send: fixture.send } }));
+vi.mock("../../store/composer", () => ({ composer: { canAttach: fixture.canAttach, pasteImage: fixture.image, send: fixture.send, view: () => undefined } }));
 vi.mock("../../store/terminal", () => ({
   screenShowsLatest: () => true,
   terminal: { paste: fixture.paste, input: fixture.input, show: fixture.show, hide: fixture.hide, generation: () => fixture.generation(),

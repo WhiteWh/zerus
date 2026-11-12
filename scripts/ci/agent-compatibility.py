@@ -48,7 +48,7 @@ AGENTS = {
         suites=['test_clear_context_native.NativeCodexClear', 'test_codex_update.NativeCodexUpdate',
                 'test_codex_rate_limit.NativeCodexRateLimit',
                 'test_external_agents_native.NativeExternalAgents', 'test_codex_async_questions_native',
-                'test_codex_input_native', 'test_busy_input_native.NativeBusyCodex',
+                'test_codex_input_native', 'test_busy_input_native.NativeBusyCodex', 'test_clear_input_native.NativeClearInputCodex',
                 'test_task_context_native.NativeCodexTaskContext', 'test_terminate_native.NativeCodexTermination'],
         windows=dict(suites=['test_windows_native_agents.NativeWindowsCodex'], timeout=900, coverage=HOST_COVERAGE)),
     'claude': dict(
@@ -59,7 +59,7 @@ AGENTS = {
         coverage='input, dim prompt suggestions and draft preservation, questions, approvals, trust, resume, usage-limit and auto-mode choices, clear, compaction, session-only model settings and '
                  'status line context capacity and the session-start task instructions',
         timeout=900,
-        suites=['test_claude_input_native', 'test_claude_suggestions_native', 'test_busy_input_native.NativeBusyClaude', 'test_busy_input_native.NativeHookedImagesClaude', 'test_claude_questions_native', 'test_claude_approval_native', 'test_claude_safety_native',
+        suites=['test_claude_input_native', 'test_claude_suggestions_native', 'test_busy_input_native.NativeBusyClaude', 'test_busy_input_native.NativeHookedImagesClaude', 'test_clear_input_native.NativeClearInputClaude', 'test_claude_questions_native', 'test_claude_approval_native', 'test_claude_safety_native',
                 'test_claude_trust_native', 'test_claude_resume_native', 'test_claude_usage_limit_native', 'test_clear_context_native.NativeClearContext',
                 'test_compact_context_native', 'test_claude_settings_native', 'test_claude_statusline_native',
                 'test_claude_permission_native', 'test_task_context_native.NativeClaudeTaskContext',

@@ -44,7 +44,7 @@ fn validate(request: &Request) -> Result<()> {
         return Err("Invalid terminal identity".into());
     }
     match request.action.as_str() {
-        "snapshot"
+        "snapshot" | "composer"
             if request.terminal_binding_id.is_none()
                 && request.text.is_none()
                 && request.enter.is_none()
@@ -92,6 +92,24 @@ fn validate(request: &Request) -> Result<()> {
                 {
                     return Err("Invalid literal terminal text".into());
                 }
+            }
+            Ok(())
+        }
+        // zerus-wkj9l: the exact composer text the person confirmed to discard.
+        "clear-input" => {
+            let binding = request.terminal_binding_id.as_deref().ok_or("Clear input needs a verified binding")?;
+            if binding.len() != 64 || !binding.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
+                return Err("Invalid terminal binding".into());
+            }
+            let expires = request.expires_at.ok_or("Clear input needs a relay deadline")?;
+            if !expires.is_finite() || expires <= 0.0 {
+                return Err("Clear input expired or has an invalid deadline".into());
+            }
+            let text = request.text.as_deref().ok_or("Clear input needs the confirmed text")?;
+            if request.key.is_some() || request.enter.is_some() || text.trim().is_empty()
+                || text.chars().count() > input::settle::RESIDUE_CHARS
+            {
+                return Err("Invalid clear input request".into());
             }
             Ok(())
         }
@@ -240,6 +258,117 @@ fn check_handoff(name: &str, request: &Request) -> Result<Value> {
     }
     Ok(record)
 }
+fn claim(record: &Value) -> backend::InputClaim<'_> {
+    backend::InputClaim {
+        pane: string(record, "pane"),
+        name: terminal_name(record),
+        run_id: string(record, "run_id"),
+        agent: string(record, "agent"),
+        pid: record["pid"].as_u64(),
+    }
+}
+
+/// The composer in one stable frame (the same cursor around the capture).
+fn composer_now(terminal: &dyn backend::TerminalBackend, record: &Value) -> Option<input::composer::Composer> {
+    let (screen, x, y) = input::settle::frame(terminal, &claim(record))?;
+    Some(input::composer::read(record, &screen, x, y))
+}
+
+/// The Terminal tab's read for Clear input (zerus-wkj9l): the composer's text
+/// and whether the person may clear it now, with the reason when not.
+fn composer_state(record: &Value, metadata: &Value) -> Value {
+    use input::composer::Composer;
+    let composer = composer_now(backend::current(), record);
+    let (state, text) = match &composer {
+        Some(Composer::Empty) => ("empty", String::new()),
+        Some(Composer::Text(text)) => ("text", text.clone()),
+        _ => ("unknown", String::new()),
+    };
+    let reason = if !input::composer::supported(string(record, "agent")) {
+        "Clear input is not available for this agent"
+    } else if metadata["input_mode"] != true {
+        "Exit tmux copy mode first"
+    } else if string(record, "activity") == "busy" {
+        "Wait until the agent is idle"
+    } else if state == "unknown" {
+        "The input is not recognized here; clear it in Terminal"
+    } else if state == "empty" {
+        "The input is empty"
+    } else {
+        ""
+    };
+    json!({"state": state, "text": text, "clearable": reason.is_empty(), "reason": reason})
+}
+
+/// Clears exactly the confirmed composer text (zerus-wkj9l): an explicit person
+/// action, never automatic and never used by a delivery retry. End and Ctrl+U
+/// clear a line in Claude Code, Codex and Kimi and do nothing on an empty
+/// composer (Ctrl+C would quit Codex there), and each round is re-read; it
+/// stops as soon as the composer is empty or stops changing.
+fn clear(name: &str, request: &Request, path: &Path, hash: &str) -> Result<Value> {
+    use input::composer::Composer;
+    let _guard = lock(None)?;
+    let record = check_handoff(name, request)?;
+    if string(&record, "activity") == "busy" {
+        return Err("The agent is busy; clear its input once it is idle".into());
+    }
+    let expected = request.text.clone().unwrap_or_default();
+    let terminal = backend::current();
+    match composer_now(terminal, &record) {
+        Some(Composer::Text(text)) if text == expected => {}
+        Some(Composer::Text(_)) => return Err("The input changed; review it again before clearing".into()),
+        Some(Composer::Empty) => return Err("The input is already empty".into()),
+        _ => return Err("The input is not recognized here; clear it in Terminal".into()),
+    }
+    let mut answer = identity(request, name, "claimed");
+    answer["request_hash"] = json!(hash);
+    answer["terminal_binding_id"] = json!(request.terminal_binding_id);
+    atomic(path, &answer.to_string())?;
+    let pane = string(&record, "pane");
+    let rounds = (expected.lines().count() + 2).min(12);
+    let mut shown = expected.clone();
+    let outcome: std::result::Result<usize, (String, Option<String>)> = (|| {
+        for round in 1..=rounds {
+            check_handoff(name, request).map_err(|error| (error, Some(shown.clone())))?;
+            terminal
+                .send(pane, &[backend::Key::Named("End"), backend::Key::Named("C-u")])
+                .map_err(|error| (error, Some(shown.clone())))?;
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            match composer_now(terminal, &record) {
+                Some(Composer::Empty) => return Ok(round),
+                Some(Composer::Text(text)) if text != shown => shown = text,
+                Some(Composer::Text(text)) => return Err(("The input did not change after clearing".into(), Some(text))),
+                _ => return Err(("The input could not be read after clearing".into(), None)),
+            }
+        }
+        Err(("The input still holds text".into(), Some(shown.clone())))
+    })();
+    match outcome {
+        Ok(rounds) => {
+            answer["status"] = json!("cleared");
+            answer["discarded"] = json!(expected);
+            answer["rounds"] = json!(rounds);
+            // The person's action, kept with the session: it also settles an
+            // unconfirmed input whose residue this was (input::input_unconfirmed).
+            if let Ok(mut current) = read(name) {
+                if string(&current, "run_id") == string(&record, "run_id") {
+                    current["input_cleared_at"] = json!(now());
+                    current["input_cleared"] = json!({"request_id": request.request_id, "chars": expected.chars().count(),
+                        "sha256": format!("{:x}", Sha256::digest(expected.as_bytes()))});
+                    let _ = write(&mut current);
+                }
+            }
+        }
+        Err((error, residue)) => {
+            answer["status"] = json!("uncertain");
+            answer["error"] = json!(error);
+            answer["composer"] = json!(residue);
+        }
+    }
+    atomic(path, &answer.to_string())?;
+    Ok(answer)
+}
+
 fn input(name: &str, request: &Request, path: &Path, hash: &str) -> Result<Value> {
     let _guard = lock(None)?;
     let record = check_handoff(name, request)?;
@@ -326,7 +455,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     let request: Request = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     validate(&request)?;
     let name = &args[0];
-    let mut answer = if request.action == "snapshot" {
+    let mut answer = if matches!(request.action.as_str(), "snapshot" | "composer") {
         let _guard = lock(None)?;
         let record = checked(name, &request)?;
         let metadata = frame(&record)?;
@@ -347,6 +476,16 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
             != metadata["terminal_binding_id"]
         {
             return Err("Terminal changed during screen capture".into());
+        }
+        if request.action == "composer" {
+            let mut answer = identity(&request, name, "composer");
+            answer["terminal_binding_id"] = metadata["terminal_binding_id"].clone();
+            answer["composer"] = composer_state(&record, &metadata);
+            if frame(&checked(name, &request)?)?["terminal_binding_id"] != metadata["terminal_binding_id"] {
+                return Err("Terminal changed during the composer read".into());
+            }
+            println!("{answer}");
+            return Ok(0);
         }
         answer["input_supported"] = metadata["input_mode"].clone();
         answer["text_supported"] = metadata["input_mode"].clone();
@@ -383,7 +522,12 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
             }
             receipt
         } else {
-            match input(name, &request, &path, &hash) {
+            let attempt = if request.action == "clear-input" {
+                clear(name, &request, &path, &hash)
+            } else {
+                input(name, &request, &path, &hash)
+            };
+            match attempt {
                 Ok(answer) => answer,
                 Err(error) => {
                     let status = if path.exists() { "uncertain" } else { "failed" };

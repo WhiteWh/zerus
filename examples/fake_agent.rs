@@ -85,6 +85,8 @@
 //!   `--transcript-dir DIR`, a `transcript_path` that holds the session ID line.
 //!   With Claude's hooks, each submitted prompt is then appended to it as a
 //!   `{"type":"user"}` row after UserPromptSubmit, as Claude Code records it.
+//! - Ctrl+U deletes the composer's current line, echoed as a cleared row; on an
+//!   empty line it does nothing, as Claude Code, Codex and Kimi do.
 //!   `--session-id ID` fixes the ID; otherwise agent arguments `--resume ID`,
 //!   `-r ID`, `--session ID`, `resume ID` (resumed) or `--session-id ID` choose
 //!   it, else a random UUID.
@@ -1858,6 +1860,20 @@ impl Agent {
             }
             "enter" => self.submit(),
             "ctrl-c" => self.composer.clear(),
+            // Ctrl+U deletes the current line's text, as the native composers
+            // do; on an empty line it does nothing (zerus-wkj9l).
+            "control" if token.bytes[0] == 0x15 => {
+                let start = self.composer.rfind('\n').map_or(0, |index| index + 1);
+                if start < self.composer.len() {
+                    self.composer.truncate(start);
+                    if self.config.echo {
+                        out(b"\r\x1b[K");
+                        if start == 0 {
+                            out(&self.config.prompt);
+                        }
+                    }
+                }
+            }
             "control" if matches!(token.bytes[0], 0x7f | 0x08) && self.composer.pop().is_some() && self.config.echo => {
                 out(b"\x08 \x08");
             }

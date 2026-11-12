@@ -262,7 +262,7 @@ class KimiNativeCI(unittest.TestCase):
                 ci.target(*pair)
         self.assertEqual(ci.checked_methods(), ci.METHODS)
         self.assertEqual(len(ci.METHODS), len(set(ci.METHODS)))
-        self.assertEqual(len(ci.METHODS),17)
+        self.assertEqual(len(ci.METHODS),18)
         self.assertIn('test_kimi_native.NativeKimi.test_id_settings_before_first_message_preserves_empty_conversation_and_defaults',ci.METHODS)
         self.assertEqual(ci.METHODS[-1],'test_kimi_native.NativeKimi.test_id_effort_preserves_raw_request_identity_and_shared_defaults')
 

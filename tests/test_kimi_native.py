@@ -1044,6 +1044,34 @@ class NativeKimi(lifecycle.Harness):
         self.until(lambda: self.settled(name, receipt), name)
         self.assertEqual(self.held(submitted), 1)
 
+    def test_clear_input_discards_a_residue_and_kimi_keeps_running(self):
+        # zerus-wkj9l: Terminal's Clear input. End and Ctrl+U clear Kimi's boxed
+        # composer; Ctrl+C is never sent.
+        name = self.launch()
+        def terminal(action, **fields):
+            state = self.inspect(name)
+            request = dict(request_id=str(uuid.uuid4()), action=action, expected_run_id=state['run_id'],
+                           expected_conversation_id=state.get('conversation_id') or '', **fields)
+            p = subprocess.run([str(lifecycle.HGS), 'terminal', name, '--json'], env=self.env, input=json.dumps(request),
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(p.returncode, 0, p.stderr + self.screen(name))
+            return json.loads(p.stdout)
+        residue = 'Peer report left behind.\n' + '\n'.join('- Line %d of the report.' % n for n in range(1, 30))
+        self.t('set-buffer', '-b', 'residue', residue)
+        self.t('paste-buffer', '-p', '-r', '-d', '-b', 'residue', '-t', '=' + name + ':')
+        self.until(lambda: terminal('composer')['composer']['state'] == 'text', name)
+        state = terminal('composer')
+        self.assertEqual((state['composer']['clearable'], state['composer']['reason']), (True, ''), state)
+        shown = state['composer']['text']
+        self.assertTrue(shown.startswith('[paste #'), shown)
+        receipt = terminal('clear-input', terminal_binding_id=state['terminal_binding_id'], expires_at=time.time() + 5, text=shown)
+        self.assertEqual((receipt['status'], receipt['discarded']), ('cleared', shown), receipt)
+        self.assertEqual(terminal('composer')['composer']['state'], 'empty')
+        text = 'After the cleared residue.'
+        receipt = self.send(name, self.payload(name, text))
+        self.until(lambda: self.held(text), name)
+        self.until(lambda: self.settled(name, receipt), name)
+
     def test_pause_and_resume_keep_the_conversation(self):
         name = self.launch()
         text = 'Start the fixture conversation'

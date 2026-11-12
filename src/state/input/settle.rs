@@ -27,7 +27,7 @@ const STABLE: Duration = Duration::from_millis(150);
 /// How often the composer or transcript is read again.
 const POLL: Duration = Duration::from_millis(50);
 /// The most composer text a receipt keeps.
-pub(super) const RESIDUE_CHARS: usize = 2_000;
+pub(crate) const RESIDUE_CHARS: usize = 2_000;
 /// The most transcript bytes read after the send's starting offset.
 const TRANSCRIPT_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -105,7 +105,7 @@ pub(super) fn composer_text(agent: &str, screen: &str, cursor_y: usize) -> Optio
 
 /// One composer frame: its styled screen and the cursor, read with the same
 /// cursor before and after the capture.
-fn frame(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim) -> Option<(String, usize, usize)> {
+pub(crate) fn frame(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim) -> Option<(String, usize, usize)> {
     let before = terminal.input_state(claim).ok()?;
     let screen = String::from_utf8_lossy(&terminal.capture(claim.pane, backend::Capture::Styled).ok()?).into_owned();
     let after = terminal.input_state(claim).ok()?;
