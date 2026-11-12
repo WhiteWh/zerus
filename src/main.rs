@@ -137,3 +137,7 @@ fn main() {
     };
     std::process::exit(code);
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/support/executable.rs"]
+mod test_executable;

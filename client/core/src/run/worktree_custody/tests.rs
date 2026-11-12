@@ -1,12 +1,7 @@
 //! Real owned pipes with fake protocol replies. No native caller, genuine
 //! checkout manifest, FD loan, program stop or removal is qualified here.
 use super::*;
-use std::{
-    cell::RefCell,
-    fs,
-    os::unix::fs::{DirBuilderExt, PermissionsExt},
-    path::PathBuf,
-};
+use std::{cell::RefCell, fs, os::unix::fs::DirBuilderExt, path::PathBuf};
 
 const SCRIPT: &str = r#"#!/usr/bin/python3
 import json,os,pathlib,sys,time,uuid
@@ -50,8 +45,7 @@ impl Fixture {
         let root =
             std::env::temp_dir().join(format!("zerus-worktree-owner-{}", uuid::Uuid::new_v4()));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
-        fs::write(root.join("hgs"), SCRIPT).unwrap();
-        fs::set_permissions(root.join("hgs"), fs::Permissions::from_mode(0o700)).unwrap();
+        crate::test_executable::write_executable(&root.join("hgs"), SCRIPT);
         fs::write(
             root.join("manifest"),
             serde_json::to_vec(&crate::worktree_programs::tests::manifest()).unwrap(),
@@ -115,6 +109,8 @@ impl Drop for Fixture {
 }
 #[test]
 fn the_original_duplex_owner_probes_first_keeps_input_and_joins_every_pipe_on_close() {
+    #[cfg(target_os = "linux")]
+    let held = crate::test_executable::HeldWriters::arm();
     let fixture = Fixture::new();
     let (mut owner, released) = fixture.owner();
     let Reply::Ready {
@@ -171,6 +167,8 @@ fn the_original_duplex_owner_probes_first_keeps_input_and_joins_every_pipe_on_cl
     );
     drop(owner);
     assert!(released.upgrade().is_none());
+    #[cfg(target_os = "linux")]
+    held.assert_separate(&[fixture.0.join("hgs")]);
 }
 
 #[test]

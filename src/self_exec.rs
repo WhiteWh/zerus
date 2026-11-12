@@ -35,6 +35,14 @@ pub(crate) fn probe_child(name: &str) {
     );
 }
 
+#[cfg(all(test, target_os = "linux"))]
+fn write_manager(path: &std::path::Path) {
+    crate::test_executable::write_executable(
+        path,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/manager-called\"\nexit 0\n",
+    );
+}
+
 /// Run the distinct ignored test `child` alone in an exact-filter subprocess
 /// with private stores, synthetic service units, a fake service manager and an
 /// independent descendant supervisor, so a regressed guard stays bounded. The
@@ -62,12 +70,7 @@ pub(crate) fn private_probe_with(child: &str, seconds: u32, processes: u32) {
     // Recording-only shims: none of them runs what it is handed.
     for manager in ["systemctl", "launchctl", "tmux"] {
         let path = bin.join(manager);
-        fs::write(
-            &path,
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/manager-called\"\nexit 0\n",
-        )
-        .unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        write_manager(&path);
     }
     let units = root.join(".config/systemd/user");
     fs::create_dir_all(&units).unwrap();
@@ -130,6 +133,39 @@ pub(crate) fn private_probe_with(child: &str, seconds: u32, processes: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn recording_managers_execute_while_parent_writers_are_retained() {
+        let root = tempfile::tempdir().unwrap();
+        let held = crate::test_executable::HeldWriters::arm();
+        let paths: Vec<_> = ["systemctl", "launchctl", "tmux"]
+            .into_iter()
+            .map(|name| {
+                let path = root.path().join(name);
+                write_manager(&path);
+                path
+            })
+            .collect();
+        for path in &paths {
+            let status = std::process::Command::new(path)
+                .arg(path.file_name().unwrap())
+                .env("HOME", root.path())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("manager-called"))
+                .unwrap()
+                .lines()
+                .count(),
+            3
+        );
+        held.assert_separate(&paths);
+    }
 
     #[test]
     fn libtest_never_returns_a_production_helper_image() {
