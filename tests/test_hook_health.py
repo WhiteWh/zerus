@@ -18,7 +18,7 @@ class HookHealth(unittest.TestCase):
         for provider in ['codex','kimi','opencode','dsh']:
             path=self.bin/provider;path.write_bytes(self.program.read_bytes());path.chmod(0o755)
         self.env=dict(os.environ,HOME=str(self.root),HGS_CONFIG_DIR=str(self.root/'hgs-config'),HGS_STATE_DIR=str(self.state),HGS_SELF='fixture',HGS_PEERS='',PATH=str(self.bin)+':'+os.environ['PATH'])
-        for key in ['CLAUDE_CONFIG_DIR','CODEX_HOME','KIMI_CODE_HOME','DSH_HOME','OPENCODE_HOME','TMUX','TMUX_PANE','HGS_RUN_ID','HGS_SESSION','HGS_ACCOUNT_ID']:self.env.pop(key,None)
+        for key in ['CLAUDE_CONFIG_DIR','CODEX_HOME','KIMI_CODE_HOME','DSH_HOME','OPENCODE_HOME','TMUX','TMUX_PANE','HGS_RUN_ID','HGS_SESSION','HGS_ACCOUNT_ID','HGS_EXECUTABLE']:self.env.pop(key,None)
     def run_hgs(self,args,body=None,ok=True):
         r=subprocess.run([str(HGS),'hooks',*args],env=self.env,input=json.dumps(body) if body is not None else '',text=True,capture_output=True,timeout=8)
         if ok:self.assertEqual(r.returncode,0,r.stderr);return json.loads(r.stdout)
