@@ -23,6 +23,13 @@ class OpenCodeHintNative(native.OpenCodeNative):
     def cleanup(cls):
         if hasattr(cls, 'env'):
             cls.stop_service()
+        physical_root = None
+        if hasattr(cls, 'root'):
+            try:
+                physical_root = cls.root.resolve(strict=True)
+            except OSError:
+                cls.temp._finalizer.detach()
+                raise RuntimeError('Private fixture root cannot be verified')
         # Keep an unexpectedly occupied folder for review, rather than remove
         # it. Only this fixture's own private service is stopped above.
         users = []
@@ -32,7 +39,7 @@ class OpenCodeHintNative(native.OpenCodeNative):
                     continue
                 try:
                     cwd = (entry / 'cwd').resolve(strict=True)
-                    if cwd == cls.root or cls.root in cwd.parents:
+                    if cwd == physical_root or physical_root in cwd.parents:
                         users.append(int(entry.name))
                 except OSError:
                     pass
@@ -49,7 +56,7 @@ class OpenCodeHintNative(native.OpenCodeNative):
             for line in result.stdout.splitlines():
                 if line.startswith('p'):
                     pid = line[1:]
-                elif line.startswith('n') and (line[1:] == str(cls.root) or line[1:].startswith(str(cls.root)+'/')):
+                elif line.startswith('n') and (line[1:] == str(physical_root) or line[1:].startswith(str(physical_root)+'/')):
                     users.append(pid)
         if users:
             cls.temp._finalizer.detach()
@@ -57,6 +64,7 @@ class OpenCodeHintNative(native.OpenCodeNative):
         super().cleanup()
 
     def test_existing_turn_context_hint(self):
+        workspace = os.path.realpath(self.workspace)
         config_path = self.root / 'xdg-config/opencode/opencode.json'
         # A person's existing plugin and settings must survive the launch overlay.
         owner = self.root / 'owner-plugin'
@@ -93,11 +101,11 @@ class OpenCodeHintNative(native.OpenCodeNative):
             if actual != expected:
                 marker = json.loads((self.state / 'opencode/context-hint/service.json').read_text())
                 probe = self.hgs(['--opencode-agent-hint', marker['nonce'], str(marker['pid']),
-                                  str(self.workspace), binding['conversation_id']])
+                                  workspace, binding['conversation_id']])
                 detail = {'text': text, 'expected': expected, 'actual': actual, 'helper_after': probe,
                           'record': json.loads(self.binding_path(binding['name']).read_text()), 'marker': marker,
                           'model_requests': self.model.requests}
-                detail['plugins'] = self.api('GET', '/api/plugin?location%5Bdirectory%5D='+native.urllib.parse.quote(str(self.workspace), safe=''))
+                detail['plugins'] = self.api('GET', '/api/plugin?location%5Bdirectory%5D='+native.urllib.parse.quote(workspace, safe=''))
                 procenv = Path('/proc') / str(marker['pid']) / 'environ'
                 if procenv.exists():
                     detail['service_overlay'] = [v.decode() for v in procenv.read_bytes().split(b'\0')
@@ -118,7 +126,7 @@ class OpenCodeHintNative(native.OpenCodeNative):
         def create_used(tag, parent=None):
             conversation = 'ses_' + native.native_suffix()
             body = {'id': conversation, 'title': tag}
-            body.update({'parentID': parent} if parent else {'location': {'directory': str(self.workspace)}})
+            body.update({'parentID': parent} if parent else {'location': {'directory': workspace}})
             status, answer = self.api('POST', '/api/session', body)
             self.assertEqual(status, 200, answer)
             binding = self.save_binding(tag, service='opencode2', conversation_id=conversation)
@@ -152,7 +160,7 @@ class OpenCodeHintNative(native.OpenCodeNative):
         # An older real service can still activate its source after another
         # registration overwrites Zerus's latest marker. Give that service its
         # own HOME/config/state and retain its exact launch-overlay source.
-        marker_path = self.state / 'opencode/context-hint/service.json'
+        marker_path = (self.state / 'opencode/context-hint/service.json').resolve(strict=True)
         first_marker = json.loads(marker_path.read_text())
         first_folder = marker_path.parent / 'plugins' / first_marker['nonce']
         # A start whose service identity was never verified stays unknown.
@@ -213,7 +221,7 @@ class OpenCodeHintNative(native.OpenCodeNative):
             if alt_reg.get('password'):
                 token = native.base64.b64encode(('opencode:' + alt_reg['password']).encode()).decode()
                 headers['Authorization'] = 'Basic ' + token
-            query = native.urllib.parse.urlencode({'location[directory]': str(self.workspace)})
+            query = native.urllib.parse.urlencode({'location[directory]': workspace})
             request = native.urllib.request.Request(alt_reg['url'].rstrip('/') + '/api/plugin?' + query, headers=headers)
             end = time.monotonic() + 5
             while True:
@@ -261,9 +269,9 @@ class OpenCodeHintNative(native.OpenCodeNative):
         target = json.loads(self.binding_path(renamed).read_text())
         turn(target, 'After rename', 1)
 
-        marker_path = self.state / 'opencode/context-hint/service.json'
+        marker_path = (self.state / 'opencode/context-hint/service.json').resolve(strict=True)
         marker = json.loads(marker_path.read_text())
-        args = ['--opencode-agent-hint', marker['nonce'], str(marker['pid']), str(self.workspace), target['conversation_id']]
+        args = ['--opencode-agent-hint', marker['nonce'], str(marker['pid']), workspace, target['conversation_id']]
         self.env['HGS_AGENT_HINT'] = '0'
         self.env['HGS_AGENT_HINT_OFF'] = 'native-opencode'
         self.assertEqual(self.hgs(args)['context'], native.Model.HINT)

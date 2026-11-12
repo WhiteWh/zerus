@@ -571,7 +571,8 @@ wire_api="responses"
         receipt = test_input.InputTransport.send(self, test_input.InputTransport.payload(self, text=message))
         self.assertEqual(receipt['status'], 'submitted')
         fresh = self.settle(lambda: (value if (value := test_clear_context.ClearContext.inspect(self)).get('conversation_id') != self.conversation_id
-                            and value.get('phase') == 'idle' else None), 'The native successor did not finish its first turn')
+                            and value.get('phase') == 'idle' and value.get('prompt') == message else None),
+                            'The native successor did not finish its first turn')
         self.assertEqual(fresh['conversation_state'], 'active')
         self.assertEqual(fresh['run_id'], self.run_id)
         self.assertEqual(fresh['prompt'], message)

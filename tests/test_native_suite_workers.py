@@ -6,9 +6,11 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('native_suite_workers', ROOT / 'scripts/ci/native_suite_workers.py')
@@ -117,8 +119,11 @@ class NativeSuiteWorkers(unittest.TestCase):
             # Only these controls' synthetic direct workers ran; the fixture has
             # neither tmux nor a provider nor any descendant process to drain.
             self.addCleanup(shutil.rmtree, root)
+            for temporary in json.loads(path.read_text()).get('temporary_roots', []):
+                self.addCleanup(shutil.rmtree, temporary)
 
-    def simulate(self, modes=('pass', 'pass'), *, clock=None, timeout=30):
+    def simulate(self, modes=('pass', 'pass'), *, clock=None, timeout=30,
+                 native_variable='HGS_CLAUDE_TEST_BIN', worker_count=2):
         clock = clock or Clock()
         processes = []
         inventory = [['first.case', 'duplicate.clear'], ['second.case'], ['duplicate.clear']]
@@ -136,7 +141,9 @@ class NativeSuiteWorkers(unittest.TestCase):
                     patch.object(workers.time, 'monotonic', side_effect=clock.monotonic), \
                     patch.object(workers.time, 'sleep', side_effect=clock.sleep), \
                     patch('sys.stdout', io.StringIO()):
-                status, stdout = workers.run_suites(['first', 'second', 'third'], self.env, timeout, self.root, self.log)
+                status, stdout = workers.run_suites(['first', 'second', 'third'], self.env, timeout,
+                                                  self.root, self.log, native_variable=native_variable,
+                                                  worker_count=worker_count)
         finally:
             self.remember_worker_root()
         return status, stdout, json.loads(self.log.with_suffix('.workers.json').read_text()), processes
@@ -163,6 +170,9 @@ class NativeSuiteWorkers(unittest.TestCase):
         for invalid in ([], [[]], [['one']], [['one'], []], [[None], ['other']]):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 workers.partition(invalid)
+        for count in (0, 1, 4, True):
+            with self.subTest(count=count), self.assertRaises(ValueError):
+                workers.partition(inventory, count)
 
     def test_private_environment_precedes_imports_and_does_not_redirect_case_claude_config(self):
         # Match run_suites' short root even when macOS supplies a long TMPDIR.
@@ -202,6 +212,15 @@ class NativeSuiteWorkers(unittest.TestCase):
             self.assertEqual(staged.stat().st_mode & 0o777, 0o500)
             self.assertEqual(staged.read_bytes(), Path(row['source']).read_bytes())
 
+    def test_three_workers_keep_one_original_end_and_every_duplicate_occurrence(self):
+        status, stdout, record, processes = self.simulate(('pass', 'pass', 'pass'), worker_count=3)
+        self.assertEqual(status, 0, record['problems'])
+        self.assertEqual(json.loads(stdout.split('=', 1)[1]), dict(tests=4, skipped=0, workers=3, qualified=True))
+        self.assertEqual(len(processes), 3)
+        self.assertEqual([process.argv[6] for process in processes], [str(record['deadline'])] * 3)
+        actual = collections.Counter(name for row in record['workers'] for name in row['result']['completed'])
+        self.assertEqual(actual, collections.Counter(['first.case', 'second.case', 'duplicate.clear', 'duplicate.clear']))
+
     def test_missing_partial_error_skipped_or_undrained_worker_never_qualifies(self):
         for mode in ('early-exit', 'different-discovery', 'wrong-result', 'setup-error', 'skip', 'leftover',
                      'missing-result', 'missing-marker', 'duplicate-marker', 'conflicting-marker'):
@@ -216,6 +235,17 @@ class NativeSuiteWorkers(unittest.TestCase):
                 self.assertIn('UNKNOWN', record['cleanup'])
                 self.assertEqual(len(processes), 2)
                 self.assertTrue(all(len(process.plans) <= 1 for process in processes))
+
+    def test_third_worker_mismatch_partial_result_or_skip_never_qualifies(self):
+        for mode in ('different-discovery', 'wrong-result', 'skip'):
+            with self.subTest(mode=mode):
+                self.log = self.root / ('third-' + mode + '.log')
+                status, stdout, record, processes = self.simulate(('pass', 'pass', mode), worker_count=3)
+                self.assertEqual(status, 1, record)
+                self.assertFalse(json.loads(stdout.split('=', 1)[1])['qualified'])
+                self.assertEqual(len(processes), 3)
+                if mode == 'different-discovery':
+                    self.assertTrue(all(process.plans == [] for process in processes))
 
     def test_parent_cancellation_and_late_final_record_never_return_success(self):
         original_write = workers.write_json
@@ -243,12 +273,13 @@ class NativeSuiteWorkers(unittest.TestCase):
                         self.assertFalse(json.loads(stdout.split('=', 1)[1])['qualified'])
                         self.assertTrue(any('final recording' in problem for problem in record['problems']))
 
-    def test_only_macos_claude_selects_the_two_worker_runner(self):
+    def test_only_linux_codex_and_macos_claude_ui_select_the_partitioned_runner(self):
         compat_spec = importlib.util.spec_from_file_location('compat_scheduler_control', ROOT / 'scripts/ci/agent-compatibility.py')
         compat = importlib.util.module_from_spec(compat_spec)
         compat_spec.loader.exec_module(compat)
         for agent, target in (('claude', 'darwin-arm64'), ('claude', 'linux-x64'),
-                              ('claude', 'win32-x64'), ('codex', 'linux-x64'), ('opencode', 'darwin-arm64')):
+                              ('claude', 'win32-x64'), ('codex', 'linux-x64'), ('codex', 'win32-x64'),
+                              ('opencode', 'darwin-arm64')):
             with self.subTest(agent=agent, target=target):
                 settings = compat.target_spec(agent, target)
                 version = '1.2.3'
@@ -260,15 +291,98 @@ class NativeSuiteWorkers(unittest.TestCase):
                         patch.object(compat, 'probe', return_value=settings['version_output'].format(version)), \
                         patch.object(compat, 'schema_snapshot', return_value={}), \
                         patch.object(compat, 'run_suites', return_value=result) as single, \
-                        patch.object(compat, 'run_macos_claude_suites', return_value=result) as paired, \
+                        patch.object(compat, 'run_partitioned_suites', return_value=result) as paired, \
                         patch('sys.stdout', io.StringIO()):
                     row = compat.qualify(agent, package, self.root, results, self.hgs)
                 self.assertEqual(row['status'], 'passed', row.get('error'))
-                expected = paired if (agent, target) == ('claude', 'darwin-arm64') else single
+                expected = paired if (agent, target) in (('claude', 'darwin-arm64'), ('codex', 'linux-x64')) else single
                 rejected = single if expected is paired else paired
                 self.assertTrue(expected.called)
                 rejected.assert_not_called()
                 self.assertTrue(all(call.args[2] == settings['timeout'] for call in expected.call_args_list))
+                if expected is paired:
+                    self.assertTrue(all(call.kwargs == {'native_variable': settings['variable']}
+                                        for call in expected.call_args_list))
+
+    def test_codex_stages_only_its_selected_private_native_image(self):
+        codex = self.root / 'codex-input'
+        codex.write_bytes(b'standard-library control: selected private Codex')
+        self.env['HGS_CODEX_TEST_BIN'] = str(codex)
+        status, _, record, _ = self.simulate(native_variable='HGS_CODEX_TEST_BIN')
+        self.assertEqual(status, 0, record['problems'])
+        self.assertEqual(set(record['binaries']), {'HGS_TEST_BIN', 'HGS_CODEX_TEST_BIN'})
+        staged = Path(record['binaries']['HGS_CODEX_TEST_BIN']['staged'])
+        self.assertEqual(staged.name, 'codex')
+        self.assertEqual(staged.read_bytes(), codex.read_bytes())
+        self.assertEqual(staged.stat().st_mode & 0o777, 0o500)
+        self.assertEqual(len(record['temporary_roots']), 2)
+        self.assertEqual(len(set(record['temporary_roots'])), 2)
+        for temporary in map(Path, record['temporary_roots']):
+            self.assertEqual(temporary.parent, Path(self.env.get('ZERUS_TEST_SHORT_TMPDIR', '/tmp')).resolve())
+            self.assertEqual(temporary.stat().st_mode & 0o777, 0o700)
+            self.assertFalse(temporary.is_relative_to(record['root']))
+
+    def test_codex_partition_preserves_every_original_native_method(self):
+        compat_spec = importlib.util.spec_from_file_location('compat_inventory_control', ROOT / 'scripts/ci/agent-compatibility.py')
+        compat = importlib.util.module_from_spec(compat_spec)
+        compat_spec.loader.exec_module(compat)
+        # Discovery only: the real fixtures and their opt-in guards never run.
+        with patch.object(sys, 'path', [str(ROOT / 'tests'), *sys.path]):
+            loader = unittest.TestLoader()
+            inventory = [workers.case_ids(group) for group in loader.loadTestsFromNames(compat.AGENTS['codex']['suites'])]
+        self.assertEqual(loader.errors, [])
+        original = collections.Counter(name for group in inventory for name in group)
+        assignments = workers.partition(inventory, 3)
+        actual = collections.Counter(name for indexes in assignments for index in indexes for name in inventory[index])
+        self.assertEqual(actual, original)
+        self.assertEqual(sum(original.values()), 57)
+        self.assertEqual([sum(len(inventory[index]) for index in indexes) for indexes in assignments], [19, 19, 19])
+        for name in ('test_codex_input_native.NativeCodexStartup.test_resumed_and_restored_hook_review_blocks_input_until_the_person_answers',
+                     'test_clear_input_native.NativeClearInputCodex.test_clear_input_discards_a_residue_and_codex_keeps_running'):
+            self.assertEqual(actual[name], 1)
+
+    def test_cli_staging_does_not_widen_the_provider_image_bound(self):
+        with patch.object(workers, 'MAX_HGS_BYTES', len(self.hgs.read_bytes())), \
+                patch.object(workers, 'MAX_BINARY_BYTES', len(self.claude.read_bytes()) - 1):
+            status, _, record, processes = self.simulate()
+        self.assertEqual(status, 1)
+        self.assertEqual(processes, [])
+        self.assertEqual(set(record['binaries']), {'HGS_TEST_BIN'})
+        self.assertTrue(any('binary exceeds its bound' in problem for problem in record['problems']))
+
+    def test_startup_fixture_waits_for_its_own_turn_before_accepting_idle(self):
+        with patch.object(sys, 'path', [str(ROOT / 'tests'), *sys.path]):
+            import test_codex_input_native as native
+        case = native.NativeCodexStartup('test_fresh_native_launch_reaches_its_first_turn_through_the_real_hooks')
+        case.name, case.run_id, case.env = 'codex/fixture/startup', 'fixture-original-run', {}
+        case.server = SimpleNamespace(requests=[])
+        record = dict(conversation_id='fixture-original-conversation', run_id=case.run_id,
+                      activity='idle', transcript='fixture-native-rollout')
+        events = []
+        case.binding = lambda name: record
+        case.inspect = lambda: dict(first_message_can_send=True, events=events)
+        case.screen = lambda: 'Synthetic startup frame'
+
+        def until(label, predicate):
+            if label.startswith('Fresh native composer'):
+                self.assertTrue(predicate())
+                return
+            # SessionStart can publish idle before the submitted request and Stop.
+            for stage in range(3):
+                case.server.requests = [] if stage == 0 else [dict(texts=['Synthetic first native message.'])]
+                record['activity'] = 'busy' if stage == 1 else 'idle'
+                events[:] = [dict(type=kind) for kind in
+                             (('SessionStart',) if stage < 2 else ('SessionStart', 'UserPromptSubmit', 'Stop'))]
+                if predicate():
+                    self.assertEqual(stage, 2, label)
+                    return
+            self.fail('The fixture never admitted its exact completed turn')
+
+        case.until = until
+        result = SimpleNamespace(returncode=0, stdout='{"status":"submitted"}', stderr='')
+        with patch.object(native.subprocess, 'run', return_value=result) as send:
+            case.deliver_first()
+        self.assertEqual(send.call_count, 2)  # Original request and its existing replay check.
 
     def test_partial_spawn_retains_custody_and_attempts_earlier_child_drain(self):
         status, _, record, processes = self.simulate(('stuck', 'spawn-error'))

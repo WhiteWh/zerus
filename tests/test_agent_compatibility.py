@@ -688,6 +688,8 @@ class AgentCompatibility(unittest.TestCase):
         with patch.object(compat, 'install_native', return_value=work / agent / '1.2.3' / 'native'), \
                 patch.object(compat, 'probe', side_effect=probe), \
                 patch.object(compat.subprocess, 'run', side_effect=run), \
+                patch.object(compat, 'run_partitioned_suites',
+                             side_effect=lambda *args, **kwargs: compat.run_suites(*args)), \
                 patch.dict(compat.os.environ, {'HGS_TEST_CONPTY_DIR': 'C:\\fixture\\conpty',
                                                'HGS_SESSION': 'fixture-live-session',
                                                'XDG_STATE_HOME': '/fixture-live-state',

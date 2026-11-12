@@ -72,11 +72,11 @@ class NativeCodexInput(unittest.TestCase):
             self.tmux('send-keys', '-t', self.pane, 'Enter')
             self.wait_for(lambda: 'Type a name and press Enter' in self.screen())
             self.wait_for(lambda: self.server.raw_requests)
-            self.tmux('send-keys', '-t', self.pane, '-l', 'Native pending send fixture')
-            self.wait_for(lambda: 'Native pending send fixture' in self.screen())
+            self.tmux('send-keys', '-t', self.pane, '-l', 'Pending fixture')
+            self.wait_for(lambda: 'Pending fixture' in self.screen())
             time.sleep(.2)  # Let Codex finish its native paste-burst handling.
             self.tmux('send-keys', '-t', self.pane, 'Enter')
-            self.wait_for(lambda: 'Native pending send fixture' in self.screen()
+            self.wait_for(lambda: 'Pending fixture' in self.screen()
                           and 'Name thread' not in self.screen() and 'Rename thread' not in self.screen())
             print('ZERUS_NATIVE_CODEX_RENAMED=' + json.dumps(dict(
                 screen=self.screen(), cursor=self.tmux('display-message', '-p', '-t', self.pane,
@@ -274,7 +274,7 @@ class NativeCodexStartup(test_pause.Harness):
         self.assertEqual(first.returncode, 0, first.stderr + '\n' + self.screen())
         self.until('The real hooks must confirm the first conversation and completed turn',
                    lambda: self.binding(self.name).get('conversation_id')
-                   and self.binding(self.name).get('activity') == 'idle')
+                   and self.turn_completed(text))
         record = self.binding(self.name)
         self.assertEqual(record['run_id'], self.run_id)
         self.assertTrue(record.get('transcript'))
@@ -344,7 +344,8 @@ class NativeCodexStartup(test_pause.Harness):
         self.hgs('resume', self.name, '-d')
         self.until('The unchanged resume must reach its native composer', lambda:
                    self.binding(self.name).get('run_id') != previous and '›' in self.screen()
-                   and 'Hooks need review' not in self.screen())
+                   and 'Hooks need review' not in self.screen()
+                   and self.inspect().get('resume_message_can_send'))
         self.assertEqual((hooks.read_bytes(), hooks.stat().st_mtime_ns), (original, stamp))
         self.assertIsNone(card(), 'An unchanged registration must not request trust again')
         unchanged = 'Synthetic unchanged-hook resume.'
