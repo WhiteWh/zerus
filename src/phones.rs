@@ -255,47 +255,86 @@ fn protected_call(connection:&Connection,action:&str,input:&Value)->Result<Value
     }
     Ok(result)
 }
-/// The person's latch statement of a phone (zerus-sa9qn.50), verified by
-/// this computer's own connector against its verified membership head: the
-/// desktop service runs it itself, so the statement's forwarder grants
-/// nothing. It reads only; at most 5 s.
-pub(crate) fn verify_route_person(config: &Config, input: &Value) -> anyhow::Result<Value> {
-    use std::time::{Duration, Instant};
-    let Some(connection) = connection(config).map_err(|e| anyhow::anyhow!("{e}"))? else {
-        anyhow::bail!("no mobile connection");
-    };
-    let executable = std::env::current_exe()?;
-    let name = if cfg!(windows) { "zerus-mobile-connector.exe" } else { "zerus-mobile-connector" };
-    let program = match std::env::var_os("ZERUS_CLIENT_MOBILE_CONNECTOR_PATH") {
-        Some(selected) => {
-            let path = std::path::PathBuf::from(selected);
-            anyhow::ensure!(path.is_absolute(), "the selected mobile connector path must be absolute");
-            path
-        }
-        None => executable
+/// The verifier's own marker in its reply (zerus-sa9qn.50).
+pub(crate) const ROUTE_PERSON_VERIFIER: &str = "question-route-person-v1";
+
+/// A file's device, inode, size and modification time.
+#[cfg(unix)]
+type FileIdentity = (u64, u64, u64, i64, i64);
+
+/// The connector binary this service runs, pinned (zerus-sa9qn.50): the
+/// desktop's absolute selection or the installed sibling of this `hgs`,
+/// never a PATH lookup; canonical, a regular file owned by this user and
+/// not writable by others. Its identity is checked again after each run.
+#[cfg(unix)]
+fn pinned_connector() -> anyhow::Result<(std::path::PathBuf, FileIdentity)> {
+    use std::os::unix::fs::MetadataExt;
+    let name = "zerus-mobile-connector";
+    let selected = match std::env::var_os("ZERUS_CLIENT_MOBILE_CONNECTOR_PATH") {
+        Some(selected) => std::path::PathBuf::from(selected),
+        None => std::env::current_exe()?
+            .canonicalize()?
             .parent()
-            .map(|p| p.join(name))
-            .filter(|p| p.is_file())
-            .unwrap_or_else(|| name.into()),
+            .ok_or_else(|| anyhow::anyhow!("no installed connector"))?
+            .join(name),
     };
+    anyhow::ensure!(
+        selected.is_absolute(),
+        "the mobile connector path must be absolute"
+    );
+    let path = selected.canonicalize()?;
+    let identity = connector_identity(&path)?;
+    // SAFETY: geteuid has no preconditions.
+    let euid = unsafe { libc::geteuid() };
+    let metadata = std::fs::metadata(&path)?;
+    anyhow::ensure!(
+        metadata.is_file() && metadata.uid() == euid && metadata.mode() & 0o022 == 0,
+        "the mobile connector binary is not this user's own"
+    );
+    Ok((path, identity))
+}
+#[cfg(unix)]
+fn connector_identity(path: &std::path::Path) -> anyhow::Result<FileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(path)?;
+    Ok((m.dev(), m.ino(), m.len(), m.mtime(), m.mtime_nsec()))
+}
+
+/// Runs `program args` with `input` on stdin, at most `limit` seconds and
+/// `bytes` of stdout; anything else is an error.
+#[cfg(unix)]
+fn bounded_run(
+    program: &std::path::Path,
+    args: &[&str],
+    input: &[u8],
+    limit: std::time::Duration,
+    bytes: usize,
+) -> anyhow::Result<Vec<u8>> {
+    use std::time::Instant;
     let mut command = Command::new(program);
     command
-        .args(["--workspace", "verify-question-route-person", "--config"])
-        .arg(&connection.config_path)
+        .args(args)
+        .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    if let Some(home) = std::env::var_os("HOME") {
+        command.env("HOME", home);
+    }
     let mut child = crate::platform::spawn_service_child(&mut command)?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(input.to_string().as_bytes())?;
+        let _ = stdin.write_all(input);
     }
-    let mut stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("no verifier output"))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("no connector output"))?;
     let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = (&mut stdout).take(65_537).read_to_end(&mut bytes);
-        bytes
+        let mut out = Vec::new();
+        let _ = (&mut stdout).take(bytes as u64 + 1).read_to_end(&mut out);
+        out
     });
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + limit;
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
@@ -303,13 +342,91 @@ pub(crate) fn verify_route_person(config: &Config, input: &Value) -> anyhow::Res
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            anyhow::bail!("the question route verifier timed out");
+            anyhow::bail!("the mobile connector timed out");
         }
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(10));
     };
-    let bytes = reader.join().map_err(|_| anyhow::anyhow!("no verifier output"))?;
-    anyhow::ensure!(status.success() && bytes.len() <= 65_536, "the statement was not verified");
-    Ok(serde_json::from_slice(&bytes)?)
+    let out = reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("no connector output"))?;
+    anyhow::ensure!(
+        status.success() && out.len() <= bytes,
+        "the mobile connector refused"
+    );
+    Ok(out)
+}
+
+/// The person's latch statement of a phone (zerus-sa9qn.50), verified by
+/// this computer's own connector against its verified membership head: the
+/// desktop service runs the pinned binary itself, so the statement's
+/// forwarder grants nothing. Any failure, timeout (0.4 s for the version,
+/// 1.2 s for the verification) or output other than the exact verified reply
+/// is an error, which the caller treats as a refusal.
+#[cfg(unix)]
+pub(crate) fn verify_route_person(config: &Config, input: &Value) -> anyhow::Result<Value> {
+    use std::time::Duration;
+    let Some(connection) = connection(config).map_err(|e| anyhow::anyhow!("{e}"))? else {
+        anyhow::bail!("no mobile connection");
+    };
+    anyhow::ensure!(connection.protected, "not an encrypted workspace");
+    let (program, identity) = pinned_connector()?;
+    // The service answers its request lane within the client's 2 s, so both
+    // runs together stay well inside it; a slow verifier is a refusal.
+    let version = bounded_run(
+        &program,
+        &["--version"],
+        b"",
+        Duration::from_millis(400),
+        256,
+    )?;
+    let version = String::from_utf8(version)?;
+    anyhow::ensure!(
+        version
+            .strip_prefix("zerus-mobile-connector ")
+            .and_then(|v| v.strip_suffix('\n'))
+            .is_some_and(|v| {
+                let parts: Vec<&str> = v.split('.').collect();
+                parts.len() == 3
+                    && parts.iter().all(|p| {
+                        !p.is_empty() && p.len() <= 9 && p.bytes().all(|b| b.is_ascii_digit())
+                    })
+            }),
+        "not the mobile connector"
+    );
+    let config_path = connection
+        .config_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("invalid connector configuration path"))?;
+    let out = bounded_run(
+        &program,
+        &[
+            "--workspace",
+            "verify-question-route-person",
+            "--config",
+            config_path,
+        ],
+        input.to_string().as_bytes(),
+        Duration::from_millis(1200),
+        65_536,
+    )?;
+    anyhow::ensure!(
+        connector_identity(&program)? == identity,
+        "the mobile connector binary changed"
+    );
+    let reply: Value = serde_json::from_slice(&out)?;
+    anyhow::ensure!(
+        reply.as_object().is_some_and(|o| o.len() == 3)
+            && reply["ok"] == true
+            && reply["verifier"] == ROUTE_PERSON_VERIFIER
+            && reply["verified"] == input["statement"],
+        "the statement was not verified"
+    );
+    Ok(reply)
+}
+/// Windows gateways do not offer the phone's latch statement.
+#[cfg(not(unix))]
+pub(crate) fn verify_route_person(_: &Config, _: &Value) -> anyhow::Result<Value> {
+    anyhow::bail!("the phone's latch statement is not offered on Windows")
 }
 
 fn protected_action(connection:&Connection,action:Action,pin:Option<&str>)->Result<Value> {

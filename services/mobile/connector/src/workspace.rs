@@ -687,7 +687,7 @@ fn verify_route_person(config_path: &Path, input: Value) -> Result<Value> {
     {
         return Err(refused());
     }
-    Ok(json!({"ok": true, "verified": input.statement}))
+    Ok(json!({"ok": true, "verifier": "question-route-person-v1", "verified": input.statement}))
 }
 
 pub async fn manage(
@@ -1791,7 +1791,10 @@ mod tests {
         let gateway = computer.public().device_id.clone();
         let good = statement(&phone, &gateway, now - 10);
         let verified = verify(&good, &phone).unwrap();
-        assert_eq!(verified, json!({"ok": true, "verified": good}));
+        assert_eq!(
+            verified,
+            json!({"ok": true, "verifier": "question-route-person-v1", "verified": good})
+        );
         // Another computer, an expired statement, a computer's signature
         // and an unknown phone are all refused.
         let stranger = Identity::generate(uuid::Uuid::new_v4().to_string(), Role::Phone).unwrap();
