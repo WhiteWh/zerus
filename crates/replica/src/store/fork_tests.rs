@@ -4,15 +4,15 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 
-struct Forked(libc::pid_t);
+pub(super) struct Forked(libc::pid_t);
 
 impl Forked {
-    fn new(pid: libc::pid_t) -> Self {
+    pub(super) fn new(pid: libc::pid_t) -> Self {
         assert!(pid > 0, "fork failed: {}", std::io::Error::last_os_error());
         Self(pid)
     }
 
-    fn wait(&mut self) {
+    pub(super) fn wait(&mut self) {
         let mut status = 0;
         loop {
             let result = unsafe { libc::waitpid(self.0, &mut status, 0) };
@@ -47,7 +47,7 @@ impl Drop for Forked {
     }
 }
 
-fn pipe() -> (File, File) {
+pub(super) fn pipe() -> (File, File) {
     let mut descriptors = [-1; 2];
     assert_eq!(unsafe { libc::pipe(descriptors.as_mut_ptr()) }, 0);
     unsafe {
