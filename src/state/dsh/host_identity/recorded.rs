@@ -36,17 +36,19 @@
 //! The walk is Agent Teams' ancestry rule without its environment reads: from
 //! the command up through processes of the same effective user, at most
 //! [`ANCESTRY_STEPS`], to the first process of another user, which is the
-//! top and is not inspected further. A parent of zero, a loop, a process that
-//! cannot be read or changes while it is read, a missing birth anywhere on
-//! the chain (the top included) and a chain that reaches the bound without
-//! the top refuse, each as its own cause. A recorded host matches an ancestor
-//! by process ID and birth; a birth that differs is not that host, and a
-//! record without a birth whose ID is an ancestor's cannot be told apart and
-//! refuses. The chain is read
-//! again after the records, so a negative answer holds for the chain as it
-//! is. A command that leaves its host's tree (a double fork, setsid, a
-//! background job whose shell exits) is adopted by the user's service
-//! manager and is outside this check: the reparenting limit.
+//! top and is not inspected further. Each of these refuses as its own cause:
+//! a process of this user whose parent is 0, the first process of a separate
+//! PID namespace (an agent's sandbox, for example), where a host outside
+//! cannot be seen; a loop or a process that cannot be read or changes while
+//! it is read; a missing birth anywhere on the chain (the top included); and
+//! a chain that reaches the bound without the top. A recorded host matches an
+//! ancestor by process ID and birth; a birth that differs is not that host,
+//! and a record without a birth whose ID is an ancestor's cannot be told
+//! apart and refuses. The chain is read again after the records, so a
+//! negative answer holds for the chain as it is. A command that leaves its
+//! host's tree (a double fork, setsid, a background job whose shell exits) is
+//! adopted by the user's service manager and is outside this check: the
+//! reparenting limit.
 use crate::state::repositories::directory::Directory;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -101,8 +103,14 @@ pub(crate) enum Refusal {
     /// This process on the chain has no readable birth.
     UnreadableBirth(u32),
     /// A process on the chain cannot be read or changed while it was read, or
-    /// its parent is zero, itself or already on the chain.
+    /// its parent is itself or already on the chain.
     UnreadableAncestry,
+    /// A process of this user on the chain has parent 0: it is the first
+    /// process of a PID namespace this user owns (an agent's sandbox,
+    /// `unshare --user --pid`, a rootless container), so a host outside it
+    /// cannot be seen. The user's own top (systemd --user, launchd) has a
+    /// parent of another user and ends the walk before.
+    IsolatedPidNamespace,
 }
 
 impl Refusal {
@@ -142,6 +150,7 @@ impl Refusal {
             Refusal::UnreadableAncestry => format!(
                 "Cannot complete the check for a DeepSeek agent host above this command: a process between it and the top of this user's processes cannot be read or changed while it was read; {THIS}."
             ),
+            Refusal::IsolatedPidNamespace => "This command runs inside a separate process namespace (for example an agent's sandbox), so a DeepSeek agent host outside it cannot be seen; hgs commands that need the caller proof must run outside that sandbox, or with the agent's private process namespace turned off.".to_owned(),
         }
     }
 }
@@ -430,7 +439,10 @@ pub(super) fn walk(
             return Err(Refusal::UnreadableAncestry);
         };
         let parent = identity.parent;
-        if chain.iter().any(|row| row.pid == pid) || parent == pid || parent == 0 {
+        if parent == 0 {
+            return Err(Refusal::IsolatedPidNamespace);
+        }
+        if chain.iter().any(|row| row.pid == pid) || parent == pid {
             return Err(Refusal::UnreadableAncestry);
         }
         if identity.birth.is_none() {

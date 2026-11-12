@@ -400,16 +400,10 @@ fn the_walk_ends_at_the_first_foreign_parent() {
     assert_eq!(unchanged(&chain, table(&rows)), Ok(()));
 }
 
-/// A parent of zero, a loop or an unreadable step refuses as an unreadable
-/// ancestry.
+/// A loop or an unreadable step refuses as an unreadable ancestry.
 #[test]
 fn an_unreadable_ancestry_refuses() {
     let unreadable = Err(Refusal::UnreadableAncestry);
-    assert_eq!(
-        walk(10, table(&[(10, own(0, Some("b")))])),
-        unreadable,
-        "parent zero"
-    );
     assert_eq!(
         walk(10, table(&[(10, own(10, Some("b")))])),
         unreadable,
@@ -429,6 +423,49 @@ fn an_unreadable_ancestry_refuses() {
         "an unreadable parent"
     );
     assert_eq!(walk(10, table(&[])), unreadable, "an unreadable command");
+}
+
+/// zerus-ppd26.17: a process of this user whose parent is 0 is the first
+/// process of a PID namespace this user owns, such as an agent's sandbox. It
+/// refuses as its own cause, never as an unreadable ancestry, whether it is
+/// the command itself (PID 1 there) or an ancestor; a loop above such a
+/// chain's start stays an unreadable ancestry.
+#[test]
+fn a_parent_of_zero_is_a_separate_pid_namespace() {
+    let isolated = Err(Refusal::IsolatedPidNamespace);
+    assert_eq!(
+        walk(1, table(&[(1, own(0, Some("b1")))])),
+        isolated,
+        "the command is PID 1"
+    );
+    assert_eq!(
+        walk(
+            30,
+            table(&[
+                (30, own(20, Some("b30"))),
+                (20, own(1, Some("b20"))),
+                (1, own(0, Some("b1")))
+            ])
+        ),
+        isolated,
+        "an ancestor is PID 1"
+    );
+    assert_eq!(
+        walk(
+            30,
+            table(&[(30, own(20, Some("b30"))), (20, own(30, Some("b20")))])
+        ),
+        Err(Refusal::UnreadableAncestry),
+        "a loop is not a namespace"
+    );
+    let sentence = Refusal::IsolatedPidNamespace.sentence();
+    for part in [
+        "inside a separate process namespace (for example an agent's sandbox)",
+        "a DeepSeek agent host outside it cannot be seen",
+        "must run outside that sandbox, or with the agent's private process namespace turned off",
+    ] {
+        assert!(sentence.contains(part), "{sentence}");
+    }
 }
 
 /// Required by Agent Teams: a chain that reaches the bound without the top is
@@ -623,6 +660,7 @@ fn each_refusal_names_its_cause_and_how_to_clear_it() {
         Refusal::AncestryBound,
         Refusal::UnreadableBirth(1),
         Refusal::UnreadableAncestry,
+        Refusal::IsolatedPidNamespace,
     ]
     .map(|refusal| refusal.sentence());
     let distinct: std::collections::BTreeSet<_> = all.iter().collect();

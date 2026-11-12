@@ -5801,7 +5801,13 @@ task reads included, when:
 - a record names an ancestor's process ID without its birth;
 - the walk reaches 64 processes without the top;
 - the birth of a process on the walk cannot be read;
-- a process on the walk cannot be read or changes while it is read.
+- a process on the walk cannot be read or changes while it is read;
+- the walk reaches a process of the user whose parent is 0: the first process
+  of a separate process namespace the user owns, such as an agent's sandbox
+  (bubblewrap with its own PID namespace), `unshare --user --pid` or a rootless
+  container. A host outside it cannot be seen, so commands that need the caller
+  proof must run outside that sandbox, or with its private process namespace
+  turned off.
 Each cause has its own refusal. A record's refusal names the exact path and how
 to clear it: close the DeepSeek sessions of that agent home, then remove the
 record. The desktop shows it. Agent Teams' caller proof uses the same check,

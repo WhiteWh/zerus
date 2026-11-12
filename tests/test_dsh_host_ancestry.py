@@ -165,6 +165,40 @@ class UnderARecordedHost(unittest.TestCase):
         outside = self.call('desktop', 'registration', 'mode-check', '--json', ok=False)
         self.assertNotIn('DeepSeek agent host', outside.stderr)
 
+    def unshared(self, *args, env, input=None):
+        """`hgs args` as PID 1 of a private user and PID namespace, as in an agent's sandbox."""
+        return subprocess.run(['unshare', '--user', '--map-current-user', '--pid', '--mount-proc', '--fork',
+                               str(HGS), *args], input=input, env=env, text=True, capture_output=True, timeout=60,
+                              cwd=self.root / 'ws')
+
+    def test_a_separate_pid_namespace_is_named_for_marked_and_unmarked_commands(self):
+        # zerus-ppd26.17: a host outside a separate PID namespace cannot be seen,
+        # so the check refuses there with its own sentence, for a marked claim
+        # (whose run is not visible inside either) as for the person.
+        if shutil.which('unshare') is None or subprocess.run(
+                ['unshare', '--user', '--map-current-user', '--pid', '--mount-proc', '--fork', 'true'],
+                capture_output=True, timeout=30).returncode != 0:
+            self.skipTest('unprivileged user and PID namespaces are not available here')
+        sentence = "This command runs inside a separate process namespace (for example an agent's sandbox)"
+        claimed = self.unshared('task', 'comment', self.ref, env=self.claim, input='as the lead')
+        self.assertNotEqual(claimed.returncode, 0, claimed.stdout)
+        self.assertIn('claude/example/lead', claimed.stderr)
+        self.assertIn(sentence, claimed.stderr)
+        person = self.unshared('task', 'add', '--project', 'orchard', '--title', 'x', env=self.env,
+                               input='as the person')
+        self.assertNotEqual(person.returncode, 0, person.stdout)
+        self.assertIn(sentence, person.stderr)
+        own = self.unshared('self', '--json', env=self.claim)
+        self.assertEqual(own.returncode, 1, own.stdout)
+        self.assertIn('hgs self: ' + sentence, own.stderr)
+        request = json.dumps(dict(expected_run_id='r', expected_conversation_id='c', expected_revision=0,
+                                  send_to_parent=False))
+        routing = self.unshared('question-routing', 'claude/example/child', '--json', env=self.env, input=request)
+        reply = json.loads(routing.stdout)
+        self.assertEqual((routing.returncode, reply['error']), (1, 'host_unverified'))
+        self.assertTrue(reply['message'].startswith(sentence), reply)
+        self.assertEqual(self.history(), ['created'])
+
     def test_an_unreadable_host_record_refuses_both_directions_and_names_it(self):
         self.record.write_text('{')
         path = str(self.record.resolve())
