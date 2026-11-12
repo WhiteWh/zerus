@@ -45,6 +45,7 @@ fn existing_lock(path: &Path) -> Option<fs::File> {
 /// keeps an upgrade from hot-reloading a plugin inside an already live host.
 pub(super) struct Overlay {
     nonce: String,
+    folder: PathBuf,
     pub content: String,
 }
 pub(super) fn overlay() -> Option<Overlay> {
@@ -53,8 +54,7 @@ pub(super) fn overlay() -> Option<Overlay> {
     }
     let nonce = uuid::Uuid::new_v4().to_string();
     let state = absolute_root().ok()?;
-    // Called under service-start.lock, before preparing another launch. A full
-    // inventory or uncertain census retains assets and bounds further growth.
+    // Called under service-start.lock, before preparing another launch.
     if !prune::before_start(&state) {
         return None;
     }
@@ -71,7 +71,7 @@ pub(super) fn overlay() -> Option<Overlay> {
     let prepared = (|| {
         atomic(
             &folder.join("owner.json"),
-            &json!({"revision":1,"nonce":nonce,
+            &json!({"revision":2,"nonce":nonce,"launch":"prepared",
                 "sha256":format!("{:x}",Sha256::digest(include_bytes!("context_plugin.js")))
             })
             .to_string(),
@@ -83,7 +83,11 @@ pub(super) fn overlay() -> Option<Overlay> {
             "hgs":hgs,"state":state,"nonce":nonce
         }}]})
         .to_string();
-        Some(Overlay { nonce, content })
+        Some(Overlay {
+            nonce,
+            folder: folder.clone(),
+            content,
+        })
     })();
     if prepared.is_none() {
         for name in ["owner.json", "index.js", "package.json"] {
@@ -93,7 +97,60 @@ pub(super) fn overlay() -> Option<Overlay> {
     }
     prepared
 }
+pub(super) fn starting(overlay: &Overlay) -> bool {
+    let path = overlay.folder.join("owner.json");
+    let Some(mut owner) = read(&path, 16384).filter(|v| {
+        v["revision"] == 2
+            && v["nonce"] == overlay.nonce
+            && v["launch"] == "prepared"
+            && v.get("service").is_none()
+    }) else {
+        return false;
+    };
+    owner["launch"] = json!("starting");
+    // Failure omits the overlay; no child may launch while its durable owner
+    // still claims to be unused. An uncertain start remains keep forever.
+    atomic(&path, &owner.to_string()).is_ok()
+}
+pub(super) fn spawn_failed(overlay: &Overlay) {
+    let path = overlay.folder.join("owner.json");
+    if let Some(mut owner) = read(&path, 16384).filter(|v| {
+        v["revision"] == 2
+            && v["nonce"] == overlay.nonce
+            && v["launch"] == "starting"
+            && v.get("service").is_none()
+    }) {
+        // Command::spawn returned an exec/setup error: target code never ran.
+        owner["launch"] = json!("prepared");
+        let _ = atomic(&path, &owner.to_string());
+    }
+}
+fn pin_service(reg: &service::Registration, overlay: &Overlay) {
+    let Some(mut pin) = prune::service_pin(reg.pid, &overlay.content) else {
+        return;
+    };
+    pin["id"] = json!(reg.id);
+    let path = overlay.folder.join("owner.json");
+    if let Some(mut owner) = read(&path, 16384).filter(|v| {
+        v["revision"] == 2
+            && v["nonce"] == overlay.nonce
+            && v["launch"] == "starting"
+            && v.get("service").is_none()
+    }) {
+        owner["service"] = pin;
+        owner["launch"] = json!("bound");
+        let _ = atomic(&path, &owner.to_string());
+    }
+}
+pub(super) fn observe(overlay: &Overlay) {
+    if let service::RegistrationRead::Present(reg) =
+        service::read_registration_at(&service::registration_path())
+    {
+        pin_service(&reg, overlay);
+    }
+}
 pub(super) fn started(service: &service::Service, overlay: &Overlay) {
+    pin_service(&service.reg, overlay);
     if let Some(birth) = birth(service.reg.pid) {
         let _ = atomic(
             &service_path(),

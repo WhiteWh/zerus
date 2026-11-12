@@ -6,12 +6,15 @@ use super::*;
 pub(super) fn before_start(_: &Path) -> bool {
     false
 }
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(super) fn service_pin(_: u32, _: &str) -> Option<Value> {
+    None
+}
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod native {
     use super::*;
     use std::{
-        collections::BTreeSet,
         ffi::CString,
         io,
         os::{
@@ -86,157 +89,82 @@ mod native {
             Err(io::Error::last_os_error())
         }
     }
-    #[cfg(target_os = "linux")]
-    fn pids(until: Instant) -> io::Result<Vec<u32>> {
-        let mut rows = Vec::new();
-        for (count, entry) in fs::read_dir("/proc")?.enumerate() {
-            check(until)?;
-            if count >= 32768 {
-                return Err(uncertain());
-            }
-            let entry = entry?;
-            let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse().ok()) else {
-                continue;
-            };
-            // /proc/PID can become root-owned when a same-user service makes
-            // itself nondumpable. Use kernel UIDs, never that directory owner,
-            // to decide which unreadable processes must protect all assets.
-            let mut status = String::new();
-            fs::File::open(entry.path().join("status"))?
-                .take(65537)
-                .read_to_string(&mut status)?;
-            if status.len() > 65536 {
-                return Err(uncertain());
-            }
-            let uids = status
-                .lines()
-                .find_map(|s| s.strip_prefix("Uid:"))
-                .ok_or_else(uncertain)?
-                .split_whitespace()
-                .map(str::parse::<u32>)
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|_| uncertain())?;
-            if uids.len() != 4 {
-                return Err(uncertain());
-            }
-            if uids.contains(&unsafe { libc::geteuid() }) {
-                rows.push(pid);
-                if rows.len() >= 4096 {
-                    return Err(uncertain());
+    // Only one known service matters to each unique launch-owned folder. No
+    // unrelated host process or environment can make this decision uncertain.
+    fn known_gone(pid: u32, expected: &str, until: Instant) -> bool {
+        if check(until).is_err() {
+            return false;
+        }
+        match crate::platform::presence(pid) {
+            crate::platform::Presence::Gone => true,
+            crate::platform::Presence::Unknown => false,
+            crate::platform::Presence::Present => match birth(pid) {
+                Some(current) => current != expected,
+                None => retired(pid, until),
+            },
+        }
+    }
+    fn valid_birth(value: &str) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            value
+                .parse::<u64>()
+                .ok()
+                .is_some_and(|n| n > 0 && n.to_string() == value)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            value
+                .split_once(':')
+                .and_then(|(s, u)| Some((s.parse::<u64>().ok()?, u.parse::<u32>().ok()?)))
+                .is_some_and(|(s, u)| s > 0 && u < 1_000_000 && format!("{s}:{u}") == value)
+        }
+    }
+    fn reclaimable(owner: &Value, until: Instant) -> bool {
+        if owner["revision"] != 2 {
+            return false;
+        }
+        match owner["launch"].as_str() {
+            // The start intent is persisted BEFORE spawn, under the same start
+            // lock as this sweep. A prepared folder cannot have launched code.
+            Some("prepared") => owner.get("service").is_none(),
+            Some("bound") => {
+                if owner["service"]["id"]
+                    .as_str()
+                    .is_none_or(|s| s.is_empty() || s.len() > 128)
+                {
+                    return false;
                 }
+                let Some(pid) = owner["service"]["pid"]
+                    .as_u64()
+                    .filter(|p| *p > 1 && *p <= i32::MAX as u64)
+                else {
+                    return false;
+                };
+                let Some(birth) = owner["service"]["birth"]
+                    .as_str()
+                    .filter(|b| b.len() <= 128 && valid_birth(b))
+                else {
+                    return false;
+                };
+                known_gone(pid as u32, birth, until)
             }
+            _ => false, // legacy, missing/malformed pin or uncertain start
         }
-        Ok(rows)
     }
-    #[cfg(target_os = "macos")]
-    fn pids(until: Instant) -> io::Result<Vec<u32>> {
-        let mut rows = BTreeSet::new();
-        for kind in [4, 5] {
-            // effective and real UID, like native membership sampling
-            check(until)?;
-            let mut buffer = vec![0i32; 4096];
-            let size = (buffer.len() * size_of::<i32>()) as i32;
-            let used = unsafe {
-                libc::proc_listpids(kind, libc::geteuid(), buffer.as_mut_ptr().cast(), size)
-            };
-            if used <= 0 || used >= size || !(used as usize).is_multiple_of(size_of::<i32>()) {
-                return Err(uncertain());
-            }
-            rows.extend(
-                buffer
-                    .into_iter()
-                    .take(used as usize / size_of::<i32>())
-                    .filter(|p| *p > 0)
-                    .map(|p| p as u32),
-            );
-            if rows.len() >= 4096 {
-                return Err(uncertain());
-            }
-        }
-        Ok(rows.into_iter().collect())
-    }
-    fn paths(environment: &[u8], until: Instant) -> io::Result<BTreeSet<PathBuf>> {
+    pub(super) fn service_pin(pid: u32, expected: &str) -> Option<Value> {
+        let before = birth(pid)?;
+        let environment = checked_environment(pid, &before, |pid| {
+            crate::state::task_reconcile::environment(pid).map_err(|_| uncertain())
+        })
+        .ok()?;
         let mut values = environment
             .split(|b| *b == 0)
             .filter_map(|s| s.strip_prefix(b"OPENCODE_CONFIG_CONTENT="));
-        let Some(value) = values.next() else {
-            return Ok(BTreeSet::new());
-        };
-        if values.next().is_some() {
-            return Err(uncertain());
+        if values.next()? != expected.as_bytes() || values.next().is_some() {
+            return None;
         }
-        let config: Value = serde_json::from_slice(value).map_err(|_| uncertain())?;
-        if !config.is_object() {
-            return Err(uncertain());
-        }
-        let mut paths = BTreeSet::new();
-        if let Some(plugins) = config.get("plugins") {
-            let plugins = plugins.as_array().ok_or_else(uncertain)?;
-            if plugins.len() > 64 {
-                return Err(uncertain());
-            }
-            for plugin in plugins {
-                check(until)?;
-                let package = plugin
-                    .as_str()
-                    .or_else(|| plugin["package"].as_str())
-                    .ok_or_else(uncertain)?;
-                let path = PathBuf::from(package);
-                if !path.is_absolute() {
-                    return Err(uncertain());
-                }
-                // Resolve aliases too. An absent source is not in use; other
-                // resolution errors cannot establish an unused directory.
-                match fs::canonicalize(path) {
-                    Ok(path) => {
-                        paths.insert(path);
-                    }
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e),
-                }
-            }
-        }
-        Ok(paths)
-    }
-    fn live_paths(until: Instant) -> io::Result<BTreeSet<PathBuf>> {
-        let mut paths_in_use = BTreeSet::new();
-        let mut total = 0;
-        let mut roster = pids(until)?;
-        roster.sort_unstable();
-        let mut identities = Vec::new();
-        for &pid in &roster {
-            check(until)?;
-            let before = match birth(pid) {
-                Some(before) => before,
-                None if retired(pid, until) => continue,
-                None => return Err(uncertain()),
-            };
-            let environment = checked_environment(pid, &before, |pid| {
-                crate::state::task_reconcile::environment(pid).map_err(|_| uncertain())
-            })?;
-            identities.push((pid, before.clone()));
-            total += environment.len();
-            if total > 16 << 20 {
-                return Err(uncertain());
-            }
-            paths_in_use.extend(paths(&environment, until)?);
-            if birth(pid).as_ref() != Some(&before) {
-                return Err(uncertain());
-            }
-        }
-        let mut after = pids(until)?;
-        after.sort_unstable();
-        if after != roster {
-            return Err(uncertain());
-        }
-        for (pid, before) in identities {
-            check(until)?;
-            if birth(pid).as_ref() != Some(&before) {
-                return Err(uncertain());
-            }
-        }
-        check(until)?;
-        Ok(paths_in_use)
+        Some(json!({"pid":pid,"birth":before}))
     }
     fn checked_environment(
         pid: u32,
@@ -304,27 +232,36 @@ mod native {
             .map(|e| e.map(|e| e.file_name()))
             .collect::<io::Result<Vec<_>>>()?;
         let owned = names.iter().any(|n| n == "owner.json");
-        if names.len() != if owned { 3 } else { 2 }
+        if !owned
+            || names.is_empty()
+            || names.len() > 3
             || names
                 .iter()
                 .any(|n| n != "index.js" && n != "package.json" && n != "owner.json")
         {
             return Err(uncertain());
         }
-        let script = bytes(&folder, "index.js")?;
-        if bytes(&folder, "package.json")? != PACKAGE.as_bytes() {
+        let owner: Value =
+            serde_json::from_slice(&bytes(&folder, "owner.json")?).map_err(|_| uncertain())?;
+        if owner["nonce"] != name || !reclaimable(&owner, until) {
             return Err(uncertain());
         }
-        if owned {
-            let owner: Value =
-                serde_json::from_slice(&bytes(&folder, "owner.json")?).map_err(|_| uncertain())?;
-            if owner["revision"] != 1
-                || owner["nonce"] != name
-                || owner["sha256"] != format!("{:x}", Sha256::digest(&script))
-            {
-                return Err(uncertain());
-            }
-        } else if script != include_bytes!("../context_plugin.js") {
+        let digest = owner["sha256"]
+            .as_str()
+            .filter(|s| {
+                s.len() == 64
+                    && s.bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+            .ok_or_else(uncertain)?;
+        if names.iter().any(|n| n == "index.js")
+            && digest != format!("{:x}", Sha256::digest(bytes(&folder, "index.js")?))
+        {
+            return Err(uncertain());
+        }
+        if names.iter().any(|n| n == "package.json")
+            && bytes(&folder, "package.json")? != PACKAGE.as_bytes()
+        {
             return Err(uncertain());
         }
         // The pathname may have been replaced during validation. Unlink files
@@ -337,18 +274,16 @@ mod native {
         }
         check(until)?;
         for name in ["index.js", "package.json"] {
-            unlink(&folder, name, false)?;
+            if names.iter().any(|n| n == name) {
+                unlink(&folder, name, false)?;
+            }
         }
         if owned {
             unlink(&folder, "owner.json", false)?;
         }
         unlink(parent, name, true)
     }
-    pub(super) fn sweep(
-        state: &Path,
-        until: Instant,
-        live: impl FnOnce(Instant) -> io::Result<BTreeSet<PathBuf>>,
-    ) -> io::Result<bool> {
+    pub(super) fn sweep(state: &Path, until: Instant) -> io::Result<bool> {
         let state_fd = fs::File::open(state)?;
         let metadata = state_fd.metadata()?;
         if !metadata.is_dir()
@@ -380,11 +315,10 @@ mod native {
         if entries.is_empty() {
             return Ok(true);
         }
-        let live = live(until);
         let marker = read(&state.join("opencode/context-hint/service.json"), 16384);
         let current = marker.as_ref().and_then(|m| m["nonce"].as_str());
         let mut removed = 0;
-        if let Ok(live) = live {
+        {
             for name in &entries {
                 check(until)?;
                 let current_parent = fs::symlink_metadata(&directory)?;
@@ -402,7 +336,7 @@ mod native {
                     continue;
                 };
                 let path = directory.join(name);
-                if current == Some(name) || live.contains(&path) {
+                if current == Some(name) {
                     continue;
                 }
                 if remove(&parent, &path, name, until).is_ok() {
@@ -410,17 +344,12 @@ mod native {
                 }
             }
         }
-        // A cap is allocation policy, never deletion authority. If inspection
-        // fails, retain every asset but do not keep growing beyond this limit.
+        // A cap is allocation policy, never deletion authority. Unknown assets
+        // remain retained without hiding a known dead neighbour.
         Ok(complete && entries.len().saturating_sub(removed) < FOLDERS)
     }
     pub(super) fn before_start(state: &Path) -> bool {
-        sweep(
-            state,
-            Instant::now() + Duration::from_millis(100),
-            live_paths,
-        )
-        .unwrap_or(false)
+        sweep(state, Instant::now() + Duration::from_millis(100)).unwrap_or(false)
     }
 
     #[cfg(test)]
@@ -429,4 +358,8 @@ mod native {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn before_start(state: &Path) -> bool {
     native::before_start(state)
+}
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn service_pin(pid: u32, expected: &str) -> Option<Value> {
+    native::service_pin(pid, expected)
 }
