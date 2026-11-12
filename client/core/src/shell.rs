@@ -149,12 +149,14 @@ pub fn power_shell_quote(value: &str) -> String {
 /// Windows PowerShell 5.1 puts a native argument with a space in double quotes
 /// without escaping quotes or a final backslash in it, and drops an empty one;
 /// PowerShell 7.3 and later pass such arguments correctly, so no quoting suits
-/// both (`powerShellPassesUnchanged`).
+/// both (`powerShellPassesUnchanged`). A space is any character its
+/// `NeedQuotes` check finds with `char.IsWhiteSpace`: every Unicode
+/// White_Space character, as `char::is_whitespace` (zerus-sa9qn.46).
 pub(crate) fn power_shell_passes_unchanged(value: &str) -> bool {
     if value.is_empty() || value.contains('"') {
         return false;
     }
-    let spaced = value.contains([' ', '\t']);
+    let spaced = value.chars().any(char::is_whitespace);
     !(spaced && value.ends_with('\\'))
 }
 
@@ -402,6 +404,58 @@ mod tests {
 
     fn open(hgs: &str, computer: &str, name: &str, archive: Option<&str>, shell: Shell) -> String {
         open_command(hgs, computer, name, archive, shell)
+    }
+
+    /// What Windows PowerShell 5.1's `NeedQuotes` counts as a space
+    /// (`char.IsWhiteSpace`): the Unicode White_Space characters.
+    const POWER_SHELL_SPACES: &[char] = &[
+        '\t', '\n', '\u{b}', '\u{c}', '\r', ' ', '\u{85}', '\u{a0}', '\u{1680}', '\u{2000}',
+        '\u{2001}', '\u{2002}', '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}', '\u{2007}',
+        '\u{2008}', '\u{2009}', '\u{200a}', '\u{2028}', '\u{2029}', '\u{202f}', '\u{205f}',
+        '\u{3000}',
+    ];
+
+    /// zerus-sa9qn.46: PowerShell 5.1 wraps a word with any of these spaces in
+    /// `"…"`, where a final backslash escapes the closing quote and the
+    /// following arguments merge into the word; with no final backslash it
+    /// reaches the program whole.
+    #[test]
+    fn power_shell_5_1_spacing_is_every_unicode_space() {
+        let white_space: Vec<char> = (0..=0x10ffff)
+            .filter_map(char::from_u32)
+            .filter(|c| c.is_whitespace())
+            .collect();
+        assert_eq!(white_space, POWER_SHELL_SPACES);
+        for &space in POWER_SHELL_SPACES {
+            let code = space as u32;
+            assert!(
+                !power_shell_passes_unchanged(&format!("ws{space}x\\")),
+                "U+{code:04X}"
+            );
+            assert!(
+                !power_shell_passes_unchanged(&format!("{space}\\")),
+                "U+{code:04X}"
+            );
+            assert!(
+                power_shell_passes_unchanged(&format!("ws{space}x")),
+                "U+{code:04X}"
+            );
+            assert!(
+                power_shell_passes_unchanged(&format!("ws{space}x\\y")),
+                "U+{code:04X}"
+            );
+        }
+    }
+
+    /// A zero-width character is no space to `char.IsWhiteSpace`, so
+    /// PowerShell 5.1 passes such a word bare, its final backslash included.
+    #[test]
+    fn a_zero_width_character_is_not_power_shell_spacing() {
+        for zero_width in ['\u{200b}', '\u{200c}', '\u{200d}', '\u{2060}', '\u{feff}'] {
+            assert!(!zero_width.is_whitespace());
+            let word = format!("ws{zero_width}x\\");
+            assert!(power_shell_passes_unchanged(&word), "{word:?}");
+        }
     }
 
     #[test]
