@@ -110,6 +110,17 @@ if args[:1]==['delete-buffer']:
 else:result=subprocess.call([REAL_TMUX,'-S',str(root/'socket'),'-f','/dev/null',*args])
 if os.environ.get('SEND_HOLD_NATIVE')=='1' and args[:1]==['list-panes'] and not (root/'hold-fired').exists():
  (root/'hold-fired').touch();peer=socket.socket(socket.AF_UNIX);peer.connect(str(root/'auto-apply.sock'));peer.sendall(b'ready');assert peer.recv(1)==b'';peer.close()
+if os.environ.get('SEND_INDEX_STAGE_LOCK')=='1' and args[:1]==['load-buffer']:
+ (root/'index-stage-enter').touch();until=time.monotonic()+3
+ while not (root/'index-stage-held').exists():
+  assert time.monotonic()<until,'private cache writer did not acquire its transaction'
+  time.sleep(.002)
+if fault=='paste-source' and args[:1]==['paste-buffer']:
+ until=time.monotonic()+3
+ while not (root/'index-stage-released').exists():
+  assert time.monotonic()<until,'private cache writer did not release its transaction'
+  time.sleep(.002)
+ p=pathlib.Path(os.environ['SEND_RECORD']);value=read(p);value['fixture_after_paste']=True;p.write_text(json.dumps(value))
 if fault=='large-payload' and args[:1]==['load-buffer']:(root/'freeze').touch()
 if fault=='stage-absent' and args[:1]==['load-buffer']:
  subprocess.run([REAL_TMUX,'-S',str(root/'socket'),'-f','/dev/null','delete-buffer','-b',args[2]],check=True)
@@ -416,6 +427,61 @@ raise SystemExit(result)
         rows, received = self.rows(), self.case.received()
         self.assertEqual(sum(row['args'][0] == 'paste-buffer' for row in rows), 1)
         self.assert_submitted(self.call(selector='sid'))
+        self.assertEqual(self.rows(), rows)
+        self.assertEqual(self.case.received(), received)
+
+    def test_failed_reply_carries_repair_after_registration_and_invalidation_both_fail(self):
+        import threading
+        self.prepare_receipt_index()
+        self.case.env.update(SEND_INDEX_STAGE_LOCK='1', SEND_FAULT='paste-source')
+        errors = []
+        cancelled = threading.Event()
+        def hold_cache():
+            try:
+                while not (self.case.root / 'index-stage-enter').exists():
+                    if cancelled.wait(.002):
+                        return
+                with closing(sqlite3.connect(self.index_database)) as db:
+                    db.execute('BEGIN IMMEDIATE')
+                    stamp = db.execute("SELECT stamp FROM receipt_sources WHERE source='terminal'").fetchone()[0]
+                    (self.case.root / 'index-stage-held').touch()
+                    # This marker is written only after the second original
+                    # commits and both bounded cache writes have failed.
+                    self.case.wait_for(lambda: 'input_pending_at' in json.loads(self.path.read_bytes()))
+                    _, seconds, nanos, _ = stamp.split(':', 3)
+                    directory = self.receipt_path.parent
+                    os.utime(directory, ns=(directory.stat().st_atime_ns,
+                                           int(seconds) * 1_000_000_000 + int(nanos)))
+                    db.rollback()
+                    (self.case.root / 'index-stage-released').touch()
+            except BaseException as error:
+                errors.append(error)
+        thread = threading.Thread(target=hold_cache)
+        thread.start()
+        try:
+            result = self.call()
+        finally:
+            cancelled.set()
+            thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertTrue((self.case.root / 'index-stage-held').exists())
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(result.stderr.lower().count('delivery uncertain'), 1)
+        self.assertTrue(json.loads(self.path.read_bytes())['fixture_after_paste'])
+        with closing(sqlite3.connect(self.index_database)) as db:
+            self.assertEqual(db.execute("SELECT complete,errors FROM receipt_sources WHERE source='terminal'").fetchone(), (1, 0))
+        self.assertTrue((self.case.state / 'receipt-index-launch.lock').exists(),
+                        'Failed must carry the only cache repair signal after keeper exit')
+        original = self.receipt_path.read_bytes()
+        self.assertEqual(json.loads(original)['status'], 'in_progress')
+        rows, received = self.rows(), self.case.received()
+        paste = next(i for i, row in enumerate(rows) if row['args'][0] == 'paste-buffer')
+        self.assertFalse(any(row['args'][0] == 'send-keys' for row in rows[paste + 1:]),
+                         'a refused paste must never get Enter')
+        replay = self.call(selector='sid')
+        self.assertNotEqual(replay.returncode, 0)
+        self.assertEqual(self.receipt_path.read_bytes(), original)
         self.assertEqual(self.rows(), rows)
         self.assertEqual(self.case.received(), received)
 
