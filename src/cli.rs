@@ -1713,6 +1713,13 @@ fn routed_command<'a>(command: &'a str, args: &'a [String]) -> Option<&'a str> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// A unit test's caller, so a route check is tested without changing this
+    /// process's environment, which other tests share (zerus-ppd26.12).
+    static TEST_AGENT: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
 /// Whether an agent runs this hgs (zerus-ppd26.9): it claims a session's
 /// markers, proven or not (`hgs task` refuses an unproven claim here too), it
 /// is a resident DeepSeek host's tool call (`HGS_AGENT=dsh`), or a live
@@ -1720,6 +1727,10 @@ fn routed_command<'a>(command: &'a str, args: &'a [String]) -> Option<&'a str> {
 /// every marker this guards against accidental agent use, not against an
 /// agent that clears its own environment.
 pub(crate) fn agent_caller() -> bool {
+    #[cfg(test)]
+    if let Some(agent) = TEST_AGENT.with(std::cell::Cell::get) {
+        return agent;
+    }
     let set = |name: &str| env::var_os(name).is_some_and(|value| !value.is_empty());
     (set("HGS_SESSION") && set("HGS_RUN_ID"))
         || env::var_os("HGS_AGENT").is_some_and(|agent| agent == "dsh")
@@ -4126,5 +4137,43 @@ mod tests {
                 .unwrap_err();
         assert_eq!(error.code, 1);
         assert_eq!(error.message, state::backend::INVALID_SESSION_ID.text());
+    }
+
+    /// A session reference's verified hop is a route to another computer
+    /// too: a person-only command is refused there for an agent before any
+    /// ssh, and the person's goes on (zerus-ppd26.12).
+    #[test]
+    fn a_reference_hop_checks_person_only_commands_before_ssh() {
+        let config = Config {
+            home: String::new(),
+            dir: PathBuf::new(),
+            state: PathBuf::new(),
+            selves: vec!["local".into()],
+            peers: vec!["peer".into()],
+            base_peers: Vec::new(),
+            peers_from_environment: false,
+            machines: Default::default(),
+            tab: false,
+            tab_colors: String::new(),
+        };
+        let machine = Some("55555555-5555-4555-8555-555555555555");
+        let args = ["zerus://session".to_owned(), "--json".to_owned()];
+        for command in PERSON_ONLY_FORWARDED {
+            TEST_AGENT.with(|agent| agent.set(Some(true)));
+            let refused = remote_via(&config, "peer", command, &args, true, machine).unwrap_err();
+            assert_eq!(refused.code, 1, "{command}");
+            assert!(
+                refused.message.contains("would act as the person"),
+                "{command}: {}",
+                refused.message
+            );
+            TEST_AGENT.with(|agent| agent.set(Some(false)));
+            assert_eq!(
+                remote_via(&config, "peer", command, &args, true, machine).unwrap(),
+                0,
+                "{command}"
+            );
+        }
+        TEST_AGENT.with(|agent| agent.set(None));
     }
 }
