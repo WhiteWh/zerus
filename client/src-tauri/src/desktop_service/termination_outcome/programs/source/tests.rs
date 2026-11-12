@@ -80,10 +80,112 @@ impl Drop for Release {
         }
     }
 }
+#[cfg(target_os = "linux")]
+thread_local! {
+    static SCRIPT_WRITERS: std::cell::RefCell<Option<Vec<ForkedWriter>>> = const { std::cell::RefCell::new(None) };
+}
+
+// A sibling fork can inherit even a CLOEXEC writer until it execs. Hold that
+// real descriptor reference to make the scheduling window deterministic. The
+// forked child executes only async-signal-safe close/read/_exit, never an effect.
+#[cfg(target_os = "linux")]
+struct ForkedWriter(libc::pid_t, libc::c_int);
+#[cfg(target_os = "linux")]
+impl ForkedWriter {
+    fn new() -> Self {
+        let mut pipe = [-1; 2];
+        assert_eq!(
+            unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        let pid = unsafe { libc::fork() };
+        if pid < 0 {
+            let error = std::io::Error::last_os_error();
+            unsafe {
+                libc::close(pipe[0]);
+                libc::close(pipe[1]);
+            }
+            panic!("fixture sibling fork: {error}");
+        }
+        if pid == 0 {
+            unsafe {
+                libc::close(pipe[1]);
+                let mut byte = 0u8;
+                while libc::read(pipe[0], (&mut byte as *mut u8).cast(), 1) < 0 {
+                    if *libc::__errno_location() != libc::EINTR {
+                        break;
+                    }
+                }
+                libc::_exit(0);
+            }
+        }
+        unsafe { libc::close(pipe[0]) };
+        Self(pid, pipe[1])
+    }
+}
+#[cfg(target_os = "linux")]
+impl Drop for ForkedWriter {
+    fn drop(&mut self) {
+        unsafe { libc::close(self.1) };
+        let mut status = 0;
+        loop {
+            let waited = unsafe { libc::waitpid(self.0, &mut status, 0) };
+            if waited == self.0 {
+                assert_eq!(status, 0);
+                break;
+            }
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EINTR)
+            );
+        }
+    }
+}
+#[cfg(target_os = "linux")]
+struct ScriptWriters;
+#[cfg(target_os = "linux")]
+impl ScriptWriters {
+    fn arm() -> Self {
+        SCRIPT_WRITERS.with_borrow_mut(|writers| {
+            assert!(writers.replace(Vec::new()).is_none());
+        });
+        Self
+    }
+}
+#[cfg(target_os = "linux")]
+impl Drop for ScriptWriters {
+    fn drop(&mut self) {
+        SCRIPT_WRITERS.with_borrow_mut(|writers| drop(writers.take()));
+    }
+}
 fn executable(path: &Path, text: &str) {
-    fs::write(path, text).unwrap();
+    use std::io::Write;
+    let mut file = fs::File::create(path).unwrap();
+    file.write_all(text.as_bytes()).unwrap();
+    #[cfg(target_os = "linux")]
+    if path.file_name().is_some_and(|name| name == "holder") {
+        SCRIPT_WRITERS.with_borrow_mut(|writers| {
+            if let Some(writers) = writers {
+                use std::os::fd::AsRawFd;
+                let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFD) };
+                assert!(flags >= 0);
+                assert_ne!(flags & libc::FD_CLOEXEC, 0);
+                writers.push(ForkedWriter::new());
+            }
+        });
+    }
+    drop(file);
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
 }
+// Publish once before CacheServer/Service can fork. A CLOEXEC writer inherited
+// by an unrelated pre-exec child still makes Linux refuse exec with ETXTBSY.
+fn program_fixture() -> crate::desktop_service::tests::Fixture {
+    let f = fixture(json!({}));
+    executable(&f.0.join("holder"), OWNER);
+    executable(&f.0.join("mutator"), MUTATOR);
+    f
+}
+
 fn manifest() -> Manifest {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -110,13 +212,13 @@ fn manifest() -> Manifest {
 
 #[test]
 fn a_parsed_result_and_holder_ack_cannot_retire_real_readers_or_a_mutator_loan() {
-    if crate::test_context::desktop_fixture() {
+    if crate::test_context::isolated_desktop_fixture() {
         return;
     }
     let _process = crate::PROCESS_TREE.read().unwrap();
     tauri::async_runtime::block_on(async {
         for closed_stdio in [false, true] {
-            let f = fixture(json!({}));
+            let f = program_fixture();
             let (service, _cache) = connected(&f).await;
             let actions = crate::actions::Actions::new(f.0.join("marks"));
             let key = crate::actions::Lane::key(&capture().target, &Action::Terminate);
@@ -173,8 +275,6 @@ fn a_parsed_result_and_holder_ack_cannot_retire_real_readers_or_a_mutator_loan()
             )
             .unwrap();
             fs::write(f.0.join("program-binding"), binding.bytes().unwrap()).unwrap();
-            executable(&f.0.join("holder"), OWNER);
-            executable(&f.0.join("mutator"), MUTATOR);
             let mut owner = Owner::begin(
                 &f.0.join("holder"),
                 Control::Open {
@@ -404,8 +504,6 @@ fn gated_refusal(
     let _ = fs::remove_file(root.join("program-holder-release"));
     // The mutator's forked reader ends at once; only the holder is gated.
     fs::write(root.join("program-release"), b"release").unwrap();
-    executable(&root.join("holder"), OWNER);
-    executable(&root.join("mutator"), MUTATOR);
     let mut owner = Owner::begin(
         &root.join("holder"),
         Control::Open {
@@ -418,7 +516,13 @@ fn gated_refusal(
         manifest.configuration.clone(),
         context.environment.clone(),
         context.clone(),
-        Arc::new(Command::spawn),
+        Arc::new(|command| {
+            let child = command.spawn();
+            if let Err(error) = &child {
+                eprintln!("fixture holder spawn failed: {error}");
+            }
+            child
+        }),
     )
     .unwrap();
     let not_after = not_after.unwrap_or(owner.deadline());
@@ -499,13 +603,15 @@ fn gated_refusal(
 /// delayed, through the production publish, passive watcher and Check.
 #[test]
 fn a_refused_check_waits_for_a_delayed_holder_close_and_reviews_once() {
-    if crate::test_context::desktop_fixture() {
+    if crate::test_context::isolated_desktop_fixture() {
         return;
     }
     let _process = crate::PROCESS_TREE.read().unwrap();
     tauri::async_runtime::block_on(async {
-        let f = fixture(json!({}));
+        let f = program_fixture();
         let (service, _cache) = connected(&f).await;
+        #[cfg(target_os = "linux")]
+        let _writers = ScriptWriters::arm();
         let actions = crate::actions::Actions::new(f.0.join("marks"));
         let key = crate::actions::Lane::key(&capture().target, &Action::Terminate);
         let _release = Release(f.0.clone());
