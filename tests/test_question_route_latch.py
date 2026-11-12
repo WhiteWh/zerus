@@ -14,7 +14,9 @@ import test_desktop as kernel
 # since the service runs it with a cleared environment.
 FAKE = r"""#!/usr/bin/python3
 import json, os, sys, time
-here = os.path.dirname(os.path.abspath(__file__))
+# Run through its descriptor on Linux, it is /dev/fd/N: resolve the file.
+me = os.path.realpath(__file__)
+here = os.path.dirname(me)
 mode = open(os.path.join(here, 'mode')).read().strip()
 if sys.argv[1:] == ['--version']:
     print('zerus-mobile-connector 0.1.0' if mode != 'version' else 'zerus-mobile 0.1.0')
@@ -26,8 +28,8 @@ statement = json.loads(data)['statement']
 if mode == 'slow':
     time.sleep(8)
 if mode == 'mutate':
-    with open(os.path.abspath(__file__), 'a') as me:
-        me.write('# changed\n')
+    with open(me, 'a') as script:
+        script.write('# changed\n')
 reply = {'ok': True, 'verifier': 'question-route-person-v1', 'verified': statement}
 if mode == 'unmarked':
     del reply['verifier']
@@ -136,6 +138,18 @@ class PhoneStatementVerifier(unittest.TestCase):
         _, reply = self.send('good')
         self.assertEqual(reply['code'], 'not_verified')
         self.assertFalse((self.fake_dir / 'calls').exists())
+        # Nor one in a directory group or others can write (zerus-sa9qn.54).
+        self.fake.chmod(0o700)
+        for mode in (0o770, 0o707):
+            with self.subTest(directory=oct(mode)):
+                self.fake_dir.chmod(mode)
+                _, reply = self.send('good')
+                self.fake_dir.chmod(0o700)
+                self.assertEqual(reply['code'], 'not_verified')
+                self.assertFalse((self.fake_dir / 'calls').exists())
+        # A private directory runs it again.
+        _, reply = self.send('good')
+        self.assertEqual(reply['code'], 'not_found')
 
     def test_a_verifier_that_does_not_finish_in_time_is_a_refusal(self):
         started = time.monotonic()

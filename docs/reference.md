@@ -1006,11 +1006,18 @@ The person has two switches, both on by default (zerus-sa9qn.32):
   and request ID, valid at most 5 minutes. The connector forwards it as one
   `hgs desktop request` (`question_route_person`). The service runs this
   computer's connector itself, pinned: the desktop's absolute selection or
-  the installed sibling of `hgs` (never a PATH lookup). The binary must be
-  this user's own regular file, not writable by others, answer
-  `--version` as `zerus-mobile-connector X.Y.Z`, and be unchanged after the
-  run. The run is bounded to 0.4 s and 1.2 s and 64 KiB of output, with a
-  cleared environment:
+  the installed sibling of `hgs` (never a PATH lookup). Its directory must
+  be owned by this user or root and not writable by group or others. The
+  binary, opened relative to that directory without following a final
+  symlink, must be this user's own regular file, not writable by others.
+  It must answer `--version` as `zerus-mobile-connector X.Y.Z`, and the path
+  must still name it after the run. On Linux the service executes the
+  descriptor it checked (`execveat` with `AT_EMPTY_PATH`), so a file put at
+  the path after the check never runs (zerus-sa9qn.54). macOS has no
+  descriptor exec and runs the path. There, only this same user or root
+  could swap the file between the check and the run and back before the
+  recheck; that is outside this threat model. The run is bounded to 0.4 s
+  and 1.2 s and 64 KiB of output, with a cleared environment:
   `zerus-mobile-connector --workspace verify-question-route-person`. The
   verifier checks that a current phone of this workspace signed exactly
   that statement for this gateway, and must reply exactly `{ok, verifier:
