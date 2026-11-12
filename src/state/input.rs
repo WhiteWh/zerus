@@ -1466,6 +1466,7 @@ fn submit_core(
         "conversation_id":string(&record,"conversation_id"),"first_message":string(&record,"conversation_id").is_empty(),"digest":digest,"status":"in_progress",
         "submitted_at":submitted_at,"submitted_text":text,"text":request.text.trim(),"attachments":paths,"transport":"terminal"});
     if let Some(target) = session_graph::target_receipt(&record) {
+        delivery::bind(&mut receipt, &record, &target);
         receipt["graph_target"] = target;
     }
     if let Origin::KeepWarm(id) = origin {

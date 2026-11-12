@@ -139,7 +139,7 @@ class NativeHarness(unittest.TestCase):
         sid = 'session-' + str(uuid.uuid4())
         name = 'dsh/test/' + str(uuid.uuid4())[:8]
         self.rpc('create', {'sessionId': sid, 'cwd': str(self.workspace), 'title': name, **native})
-        binding = {'backend': 'dsh', 'name': name, 'session_id': str(uuid.uuid4()), 'conversation_id': sid, 'run_id': str(uuid.uuid4()),
+        binding = {'backend': 'dsh', 'agent': 'dsh', 'name': name, 'session_id': str(uuid.uuid4()), 'conversation_id': sid, 'run_id': str(uuid.uuid4()),
                    'agent_home': str(self.home), 'cwd': str(self.workspace), 'created': time.time()}
         directory = self.state / 'dsh/bindings'; directory.mkdir(exist_ok=True)
         (directory / (hashlib.sha256(name.encode()).hexdigest() + '.json')).write_text(json.dumps(binding))
@@ -239,6 +239,8 @@ class NativeHarness(unittest.TestCase):
         request = self.payload(b, text=text, attachments=[])
         receipt = self.cli('send', b, request)
         self.assertEqual(receipt['status'], 'submitted')
+        from delivery_receipt_checks import check_delivery_lookup
+        check_delivery_lookup(self, HGS, self.env, b, receipt, 'dsh')
         data = self.wait(lambda: (d if d.get('reply_id') and any(e['type'] == 'AgentMessage' for e in d['events']) else None)
                          if (d := self.cli('inspect', b)) else None)
         self.assertEqual([e['detail'] for e in data['events'] if e['type'] == 'UserPromptSubmit'], [text])

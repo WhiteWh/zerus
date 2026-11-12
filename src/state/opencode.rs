@@ -1555,6 +1555,7 @@ fn deliver(
     let message_id = new_id("msg_");
     let mut receipt = json!({"request_id":request["request_id"],"name":record["name"],"run_id":record["run_id"],"conversation_id":record["conversation_id"],"digest":digest,"native_message_id":message_id,"text":text,"submitted_text":text,"submitted_at":now(),"at":now(),"status":"pending","attachments":[],"transport":"native_opencode"});
     if let Some(target) = graph_target {
+        delivery::bind(&mut receipt, record, &target);
         receipt["graph_target"] = target;
     }
     let queued = session_active(native, record);

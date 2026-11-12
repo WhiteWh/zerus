@@ -1753,6 +1753,39 @@ bounded history window and disappears when it no longer matches, including on
 edit or Allow retry. It changes no draft, checkpoint or uncertainty state: text
 equality is never request-ID receipt evidence and never clears or retries input.
 
+`hgs [@host] delivery receipt ORIGINAL_NAME --json` reads one original send
+receipt, including text-only sends, without sending or checking a native agent.
+Its input is an object containing `request_id` (the read transport UUID),
+`message_request_id` (the original send UUID), `expected_machine_id`,
+`expected_session_id`, `expected_run_id`, `expected_conversation_id`, `provider`,
+`native_digest`, and an optional `agent_id`. Here `provider` is the agent kind:
+`claude`, `codex`, `kimi`, `dsh` or `opencode`. The name is the original recorded
+label, not a route to its current holder; this command never follows a rename.
+The request's machine and durable session binding must match the original.
+The native digest is the unchanged producer digest: SHA-256 of the exact stdin
+bytes for terminal sends, or of the compact JSON `[original_name, request]` for
+DeepSeek and OpenCode. It is distinct from a phone's canonical intent digest.
+OpenCode proof requires the original provider-valid `msg_` message ID; missing,
+malformed or unsupported native IDs remain unknown and are never exposed as delivery evidence.
+
+A verified submitted original returns body-free metadata, its submission time,
+queue flag and an exact native message ID only when the original records one.
+This proves admission to the original input path, not completion of agent work.
+Every other readable outcome is `status: unknown` with a bounded reason. Missing,
+corrupt, oversized, pending, unbound or mismatched evidence never means Not sent
+and never authorizes replay. New sends record their immutable machine/session
+binding before delivery; older receipts without that binding stay unknown even
+when their digest matches. No lookup retrofits or rewrites receipt history.
+
+The lookup reads one UUID-named original of at most 256 KiB through pinned
+directories whose entries only their owner can change. It does not open the
+derived receipt database, enumerate receipts, run migration, resolve a live
+session or contact a provider. Missing
+state stays missing. Its existing computer-identity check is read-only too.
+The `delivery-receipt-v1` capability marker gates remote forwarding to prevent an
+older CLI from treating the command as a launch. This CLI operation is the first
+part of mobile ordinary-send recovery; connector and phone support ship separately.
+
 Recent attachment delivery projection uses the private, rebuildable
 `delivery-receipts-v1.sqlite3` locator in the state directory. A refresh reads
 at most 100 original receipts for the selected provider, conversation and child;
