@@ -312,16 +312,18 @@ fn pinned_connector() -> anyhow::Result<Pinned> {
     pin(&selected.canonicalize()?)
 }
 
-/// Whether a directory may hold the pinned connector (zerus-sa9qn.54): owned
-/// by this user or root, and not writable by group or others.
+/// Whether the pinned connector or its directory may be trusted: owned by
+/// this user or root, and not writable by group or others (zerus-sa9qn.54).
+/// A packaged install is root's, such as the AUR's
+/// /usr/bin/zerus-mobile-connector beside /usr/bin/hgs (zerus-sa9qn.56).
 #[cfg(unix)]
-fn trusted_directory(uid: u32, mode: u32, euid: u32) -> bool {
+fn trusted(uid: u32, mode: u32, euid: u32) -> bool {
     (uid == euid || uid == 0) && mode & 0o022 == 0
 }
 
 /// Opens and checks `path`: its parent directory first, then the file
-/// relative to that directory without following a final symlink. The file
-/// must be a regular file of this user, not writable by group or others.
+/// relative to that directory without following a final symlink. Both must
+/// be [`trusted`], and the file must be a regular file.
 /// The descriptor is close-on-exec, so no other child inherits it.
 #[cfg(unix)]
 fn pin(path: &std::path::Path) -> anyhow::Result<Pinned> {
@@ -345,8 +347,8 @@ fn pin(path: &std::path::Path) -> anyhow::Result<Pinned> {
     let euid = unsafe { libc::geteuid() };
     let metadata = directory.metadata()?;
     anyhow::ensure!(
-        metadata.is_dir() && trusted_directory(metadata.uid(), metadata.mode(), euid),
-        "the mobile connector's directory is not this user's own"
+        metadata.is_dir() && trusted(metadata.uid(), metadata.mode(), euid),
+        "the mobile connector's directory is not this user's or root's own"
     );
     let name = std::ffi::CString::new(name.as_bytes())?;
     // SAFETY: an open directory descriptor and a NUL-terminated name.
@@ -366,8 +368,8 @@ fn pin(path: &std::path::Path) -> anyhow::Result<Pinned> {
     let file = unsafe { std::fs::File::from_raw_fd(fd) };
     let metadata = file.metadata()?;
     anyhow::ensure!(
-        metadata.is_file() && metadata.uid() == euid && metadata.mode() & 0o022 == 0,
-        "the mobile connector binary is not this user's own"
+        metadata.is_file() && trusted(metadata.uid(), metadata.mode(), euid),
+        "the mobile connector binary is not this user's or root's own"
     );
     Ok(Pinned {
         path: path.to_owned(),
@@ -879,13 +881,43 @@ mod tests {
         let flags =
             unsafe { libc::fcntl(std::os::fd::AsRawFd::as_raw_fd(&pinned.file), libc::F_GETFD) };
         assert!(flags >= 0 && flags & libc::FD_CLOEXEC != 0);
-        // Owners this test cannot create.
+        // Owners this test cannot create: this user or root, for a
+        // directory and a file alike (zerus-sa9qn.56).
         let me = 1000;
-        assert!(trusted_directory(me, 0o40700, me));
-        assert!(trusted_directory(0, 0o40755, me));
-        assert!(!trusted_directory(1001, 0o40700, me));
-        assert!(!trusted_directory(me, 0o40720, me));
-        assert!(!trusted_directory(0, 0o40702, me));
+        for kind in [0o40000, 0o100000] {
+            assert!(trusted(me, kind | 0o700, me));
+            assert!(trusted(0, kind | 0o755, me));
+            assert!(!trusted(1001, kind | 0o700, me), "another user's");
+            assert!(!trusted(me, kind | 0o720, me));
+            assert!(!trusted(0, kind | 0o775, me), "group-writable root's");
+            assert!(!trusted(0, kind | 0o702, me), "other-writable root's");
+        }
+    }
+
+    /// A packaged connector is root's in root's directory, like the AUR's
+    /// /usr/bin/zerus-mobile-connector: the system's own echo stands in for
+    /// it, pinned and run where it is (zerus-sa9qn.56).
+    #[cfg(unix)]
+    #[test]
+    fn a_root_owned_packaged_connector_is_pinned_and_runs() {
+        use std::os::unix::fs::MetadataExt;
+        let path = std::fs::canonicalize("/bin/echo").unwrap();
+        let (file, directory) = (
+            std::fs::metadata(&path).unwrap(),
+            std::fs::metadata(path.parent().unwrap()).unwrap(),
+        );
+        assert_eq!((file.uid(), directory.uid()), (0, 0), "a root-owned echo");
+        let pinned = pin(&path).unwrap();
+        let out = bounded_run(
+            &pinned,
+            &["packaged"],
+            b"",
+            std::time::Duration::from_secs(10),
+            256,
+        )
+        .unwrap();
+        assert_eq!(out, b"packaged\n");
+        assert!(pinned.unchanged().unwrap());
     }
 
     /// The checked descriptor runs even when another program takes its path

@@ -1009,7 +1009,9 @@ The person has two switches, both on by default (zerus-sa9qn.32):
   the installed sibling of `hgs` (never a PATH lookup). Its directory must
   be owned by this user or root and not writable by group or others. The
   binary, opened relative to that directory without following a final
-  symlink, must be this user's own regular file, not writable by others.
+  symlink, must be a regular file under the same rule: a packaged one, such
+  as the AUR's root-owned `/usr/bin/zerus-mobile-connector`, qualifies
+  (zerus-sa9qn.56).
   It must answer `--version` as `zerus-mobile-connector X.Y.Z`, and the path
   must still name it after the run. On Linux the service executes the
   descriptor it checked (`execveat` with `AT_EMPTY_PATH`), so a file put at
