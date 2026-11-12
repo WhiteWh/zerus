@@ -120,6 +120,29 @@ def pending_then_message(case, name, record, path, model, effort, text, attempts
     before = attempts()
     started = time.monotonic()
     result = subprocess.run(command, env=case.env, input=raw, text=True, capture_output=True, timeout=30)
+    if result.returncode:
+        diagnostic = dict(request_id=request['request_id'],
+                          seconds=round(time.monotonic() - started, 3))
+        for label, source in [('record', Path(path)), ('settings', scheduled),
+                              ('input', Path(case.env['ZERUS_PENDING_SEND_RECEIPT']))]:
+            try:
+                value = json.loads(bounded_bytes(source, 1 << 20))
+                diagnostic[label] = {key: value.get(key) for key in (
+                    'status', 'request_id', 'digest', 'session_id', 'run_id', 'conversation_id',
+                    'model', 'effort', 'pending_settings', 'settings_unconfirmed_at',
+                    'input_pending_at', 'input_pending_request')}
+            except Exception as error:
+                diagnostic[label] = dict(snapshot_error=str(error)[:500])
+        try:
+            diagnostic['attempts_tail'] = attempts()[-8192:].decode(errors='replace')
+            screen = subprocess.run([str(Path(case.bin) / 'tmux'), 'capture-pane', '-p', '-J',
+                                     '-t', record['pane']], env=case.env,
+                                    stdin=subprocess.DEVNULL, capture_output=True, timeout=5)
+            diagnostic['screen'] = screen.stdout[-8192:].decode(errors='replace')
+            diagnostic['screen_exit'] = screen.returncode
+        except Exception as error:
+            diagnostic['screen_error'] = str(error)[:500]
+        print('ZERUS_NATIVE_PENDING_SEND_FAILURE=' + json.dumps(diagnostic), flush=True)
     case.assertEqual(result.returncode, 0, result.stdout + result.stderr)
     receipt = json.loads(result.stdout)
     case.assertEqual(receipt['status'], 'submitted')
