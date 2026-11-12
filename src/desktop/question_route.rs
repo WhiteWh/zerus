@@ -23,6 +23,10 @@
 // The router runs on Linux only in v1; elsewhere only the schema exists.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod ledger;
+/// The person's global switch (zerus-sa9qn.32).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod policy;
+pub(super) use policy::{decorate, frontend, result_request};
 #[cfg(target_os = "linux")]
 mod runtime;
 #[cfg(target_os = "linux")]
@@ -31,13 +35,28 @@ pub(super) use runtime::Runtime;
 // Merge-order allocation: the next free Store version when this lands. A
 // later schema merge renumbers this one constant, never standalone DDL.
 pub(super) const SCHEMA: i64 = 36;
+/// The global switch's leaf (zerus-sa9qn.32); merge-order allocation as above.
+pub(super) const POLICY_SCHEMA: i64 = 37;
 pub(super) fn migrate(tx: &rusqlite::Transaction<'_>) -> anyhow::Result<()> {
     ledger::migrate(tx)
+}
+pub(super) fn migrate_policy(tx: &rusqlite::Transaction<'_>) -> anyhow::Result<()> {
+    policy::migrate(tx)
+}
+/// Test rewind of the schema-37 switch leaf.
+#[cfg(test)]
+pub(super) fn remove_policy_fixture(db: &rusqlite::Connection) {
+    db.execute_batch(
+        "DROP TABLE desktop_question_route_policy; DROP TABLE desktop_question_route_policy_requests;",
+    )
+    .unwrap();
 }
 /// Test rewind of this leaf for older-version upgrade fixtures; dropping the
 /// table drops its triggers and indexes.
 #[cfg(test)]
 pub(super) fn remove_fixture(db: &rusqlite::Connection) {
+    // Rewind the later schema-37 switch leaf too.
+    remove_policy_fixture(db);
     db.execute_batch(
         "DROP TABLE desktop_question_routes; DROP INDEX desktop_question_route_sessions;",
     )

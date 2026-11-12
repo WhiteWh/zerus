@@ -1814,7 +1814,12 @@ async fn request(
     // This lane never acquires frontend approval-setting authority.
     if matches!(
         value["op"].as_str(),
-        Some("automatic_approvals" | "maintenance_configure" | "cache_maintenance")
+        Some(
+            "automatic_approvals"
+                | "question_routes"
+                | "maintenance_configure"
+                | "cache_maintenance"
+        )
     ) {
         return Err("frontend_route_required");
     }
@@ -2707,6 +2712,22 @@ pub async fn desktop_service_automatic_approvals(
         request_id,
         enabled,
         categories,
+    )
+    .await
+}
+
+/// The person's global switch of the owner-approved question route
+/// (zerus-sa9qn.32), through the native frontend lane only.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn desktop_service_question_routes(
+    source: tauri::State<'_, crate::commands::AppState>,
+    request_id: String,
+    enabled: bool,
+) -> Result<Value, String> {
+    frontend::question_routes_command(
+        source.desktop_service().filter(|_| mode()),
+        request_id,
+        enabled,
     )
     .await
 }

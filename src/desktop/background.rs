@@ -394,6 +394,9 @@ impl Runtime {
         if authority.operation() == "automatic_approvals" {
             return self.delivery.frontend_request(store, authority);
         }
+        if authority.operation() == "question_routes" {
+            return super::question_route::frontend(&mut store.db, authority);
+        }
         if authority.operation() == "cache_maintenance" {
             return self.cache.frontend_request(store, authority);
         }

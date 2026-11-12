@@ -58,6 +58,7 @@ pub mod processes;
 #[cfg(unix)]
 mod pty;
 pub mod qt_lock;
+pub mod question_routing;
 pub mod questions;
 pub mod quit_journal;
 pub mod quit_origin;

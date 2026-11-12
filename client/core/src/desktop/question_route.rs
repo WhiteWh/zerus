@@ -106,7 +106,8 @@ pub struct Edge {
 /// The row must be a running Claude child whose host classified it
 /// supervised and quiet: a parent link whose parent is `live` there and
 /// `human_request` present and `false`. An older host that does not classify
-/// `human_request` never routes, nor does any row with a human signal.
+/// `human_request` never routes, nor does any row with a human signal, nor a
+/// child whose person turned its routing off (`question_routing`).
 pub fn edge(row: &Value) -> Option<Edge> {
     let parent = row.get("parent").filter(|p| p.is_object())?;
     let agent = row["cmd"]
@@ -114,6 +115,9 @@ pub fn edge(row: &Value) -> Option<Edge> {
         .or_else(|| row["agent"].as_str())
         .unwrap_or("");
     let quiet = row.get("human_request") == Some(&Value::Bool(false));
+    // The person's per-child switch (zerus-sa9qn.32): on only when its host
+    // reports it on; unknown or absent never routes.
+    let allowed = row["question_routing"]["send_to_parent"] == true;
     let edge = Edge {
         name: text(row, "name"),
         session_id: text(row, "session_id"),
@@ -126,6 +130,7 @@ pub fn edge(row: &Value) -> Option<Edge> {
         && agent == "claude"
         && row["phase"] == "input"
         && quiet
+        && allowed
         && parent["state"] == "live"
         && parent["source"] != "forwarded"
         && session_name(&edge.name)

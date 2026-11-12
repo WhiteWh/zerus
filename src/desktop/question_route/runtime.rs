@@ -5,7 +5,7 @@
 //! one bounded `hgs inspect` (plus its `hgs reference`) in flight per child
 //! and [`READS`] in all, each with its own timeout, and read again
 //! immediately before the reservation. Message text is never polled.
-use super::ledger;
+use super::{ledger, policy};
 use crate::{
     config::Config,
     desktop::{
@@ -19,6 +19,7 @@ use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
+    path::PathBuf,
     sync::{mpsc, Arc},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -82,10 +83,15 @@ struct Counts {
     refused: u64,
     unavailable: u64,
     dropped: u64,
+    off: u64,
 }
 
 pub(in crate::desktop) struct Runtime {
     epoch: String,
+    /// The CLI state root, where each child's own switch is kept.
+    state: PathBuf,
+    /// The person's global switch was off at the last turn: nothing is read.
+    off: bool,
     reader: Option<Reader>,
     source: Option<Source>,
     candidates: BTreeMap<String, Candidate>,
@@ -168,11 +174,13 @@ fn reference(fetched: &Fetched, edge: &Edge) -> Option<(String, String)> {
 
 impl Runtime {
     pub fn new(config: &Config, epoch: &str) -> Self {
-        Self::with_reader(epoch, reader(config).ok())
+        Self::with_reader(epoch, reader(config).ok(), config.state.clone())
     }
-    fn with_reader(epoch: &str, reader: Option<Reader>) -> Self {
+    fn with_reader(epoch: &str, reader: Option<Reader>, state: PathBuf) -> Self {
         Self {
             epoch: epoch.into(),
+            state,
+            off: false,
             reader,
             source: None,
             candidates: BTreeMap::new(),
@@ -286,10 +294,24 @@ impl Runtime {
         send: &mut deferred_send::Runtime,
         exclusion: Option<Arc<HandoffLock>>,
     ) -> Result<()> {
-        // Settlement continues while stopping; nothing new starts.
+        // Settlement continues while stopping or off; nothing new starts.
         self.settle(store)?;
+        // The person's global switch (zerus-sa9qn.32). Off reads nothing and
+        // forgets the queue; on again reads the catalog from a new baseline,
+        // so a question still pending and supervised then counts once, and
+        // one answered while off is never seen. The reservation reads the
+        // switch again in its own transaction.
+        if !policy::enabled(&store.db)? {
+            if !self.off {
+                self.off = true;
+                self.candidates.clear();
+            }
+        } else if self.off {
+            self.off = false;
+            self.rebaseline(store)?;
+        }
         self.collect(store, send, exclusion)?;
-        if self.stopping {
+        if self.stopping || self.off {
             return Ok(());
         }
         self.fill(store)?;
@@ -307,6 +329,17 @@ impl Runtime {
             if let Some((state, code)) = ledger::settled(receipt.as_ref()) {
                 ledger::settle(&mut store.db, &key, state, &code)?;
             }
+        }
+        Ok(())
+    }
+    /// Reads the local catalog again from a new baseline.
+    fn rebaseline(&mut self, store: &Store) -> Result<()> {
+        if let Some(source) = self.source.as_mut() {
+            let mark = changes::watermark(&store.db, LOCAL)?;
+            source.baselined = false;
+            source.baseline = None;
+            source.delta = None;
+            source.since = mark.revision.context("route rebaseline watermark")?;
         }
         Ok(())
     }
@@ -477,7 +510,8 @@ impl Runtime {
                         }
                     }
                     fresh.truncate(QUESTIONS_PER_READ);
-                    if !fresh.is_empty() {
+                    // Off reads nothing more.
+                    if !fresh.is_empty() && !self.off {
                         self.spawn(key, edge, Step::Confirm(fresh))?;
                     }
                 }
@@ -588,12 +622,14 @@ impl Runtime {
             }
             return Ok(());
         };
+        let state = self.state.clone();
         match send.route(store, intent, exclusion, |tx| {
-            ledger::reserve(tx, &record, at)
+            ledger::reserve(tx, &record, at, &state)
         }) {
             Routed::Admitted => self.counts.routed += 1,
             Routed::Refused => self.counts.refused += 1,
             Routed::Unavailable => self.counts.unavailable += 1,
+            Routed::Off => self.counts.off += 1,
         }
         Ok(())
     }
@@ -609,6 +645,8 @@ impl Runtime {
             "question_route_reader_unavailable"
         } else if self.stopping {
             "stopping"
+        } else if self.off {
+            "off"
         } else if self.source.is_some() {
             "running"
         } else {
@@ -618,16 +656,20 @@ impl Runtime {
             "authority": "owner_approved_route", "pending": self.candidates.len(),
             "reading": self.reads.len(), "routed": self.counts.routed,
             "refused": self.counts.refused, "unavailable": self.counts.unavailable,
-            "dropped": self.counts.dropped})
+            "dropped": self.counts.dropped, "off": self.counts.off})
     }
 
     #[cfg(test)]
-    pub(super) fn fixture(epoch: &str, reader: Reader) -> Self {
-        Self::with_reader(epoch, Some(reader))
+    pub(super) fn fixture(epoch: &str, reader: Reader, state: PathBuf) -> Self {
+        Self::with_reader(epoch, Some(reader), state)
     }
     #[cfg(test)]
     pub(super) fn fixture_clock(&mut self, now: Instant) {
         self.clock = Some(now);
+    }
+    #[cfg(test)]
+    pub(super) fn fixture_off(&self) -> u64 {
+        self.counts.off
     }
     #[cfg(test)]
     pub(super) fn fixture_counts(&self) -> (u64, u64, u64, u64) {

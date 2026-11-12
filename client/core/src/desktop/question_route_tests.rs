@@ -16,6 +16,7 @@ pub(super) fn row() -> Value {
     json!({"name": CHILD, "cmd": "claude", "state": "running", "phase": "input",
         "session_id": CHILD_ID, "run_id": "run-1", "conversation_id": "conversation-1",
         "attention_signature": "a".repeat(64), "human_request": false,
+        "question_routing": {"send_to_parent": true, "revision": 0},
         "parent": {"schema": 1, "machine": MACHINE, "session_id": PARENT_ID,
             "conversation_id": "parent-conversation", "source": "launch", "at": 1, "state": "live"}})
 }
@@ -147,6 +148,20 @@ fn every_row_that_is_not_supervised_and_quiet_never_routes() {
         (
             "its own parent",
             Box::new(|r| r["parent"]["session_id"] = json!(CHILD_ID)),
+        ),
+        (
+            "the person turned routing off",
+            Box::new(|r| r["question_routing"]["send_to_parent"] = json!(false)),
+        ),
+        (
+            "routing storage unknown",
+            Box::new(|r| r["question_routing"] = Value::Null),
+        ),
+        (
+            "an older host without the switch",
+            Box::new(|r| {
+                r.as_object_mut().unwrap().remove("question_routing");
+            }),
         ),
     ];
     for (what, change) in cases {

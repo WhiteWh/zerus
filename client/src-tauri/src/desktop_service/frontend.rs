@@ -56,6 +56,7 @@ pub enum Operation {
     #[serde(skip)] // The ephemeral consumer is separate from durable policy requests.
     ActivationWait,
     AutomaticApprovals,
+    QuestionRoutes,
     MaintenanceConfigure,
 }
 impl Operation {
@@ -81,6 +82,7 @@ impl Operation {
             Request::ImportPendingReads { .. } => Self::ImportPendingReads,
             Request::ActivationWait { .. } => Self::ActivationWait,
             Request::AutomaticApprovals { .. } => Self::AutomaticApprovals,
+            Request::QuestionRoutes { .. } => Self::QuestionRoutes,
             Request::MaintenanceConfigure { .. } => Self::MaintenanceConfigure,
         }
     }
@@ -106,6 +108,7 @@ impl Operation {
             Self::ImportPendingReads => "import_pending_reads",
             Self::ActivationWait => "activation_wait",
             Self::AutomaticApprovals => "automatic_approvals",
+            Self::QuestionRoutes => "question_routes",
             Self::MaintenanceConfigure => "maintenance_configure",
         }
     }
@@ -287,6 +290,9 @@ fn unknown(request: &Request, code: &str) -> Value {
             result["categories"] = json!(categories);
         }
     }
+    if let Request::QuestionRoutes { enabled, .. } = request {
+        result["enabled"] = json!(enabled);
+    }
     recovery_edit(request, &mut result);
     result
 }
@@ -345,6 +351,10 @@ enum Input {
         enabled: bool,
         categories: Option<Vec<String>>,
     },
+    QuestionRoutes {
+        id: String,
+        enabled: bool,
+    },
     Maintenance {
         id: String,
         configuration: Box<maintenance::Configuration>,
@@ -358,6 +368,7 @@ impl Input {
             Self::Cache { .. } => Operation::CacheMaintenance,
             Self::ImportReads { .. } => Operation::ImportPendingReads,
             Self::Approvals { .. } => Operation::AutomaticApprovals,
+            Self::QuestionRoutes { .. } => Operation::QuestionRoutes,
             Self::Maintenance { .. } => Operation::MaintenanceConfigure,
             Self::Result(op) => *op,
         }
@@ -385,6 +396,10 @@ impl Input {
                 request_id: id,
                 enabled,
                 categories,
+            })),
+            Self::QuestionRoutes { id, enabled } => Ok(Some(Request::QuestionRoutes {
+                request_id: id,
+                enabled,
             })),
             Self::Maintenance {
                 id,
@@ -420,6 +435,9 @@ impl Input {
                 },
                 code,
             ),
+            Self::QuestionRoutes { id, enabled } => {
+                json!({"request_id":id,"op":"question_routes","enabled":enabled,"accepted":false,"durable":false,"pending":false,"code":code})
+            }
             Self::Maintenance { id, .. } => {
                 json!({"request_id":id,"op":"maintenance_configure","accepted":false,"durable":false,"pending":false,"code":code})
             }
@@ -465,6 +483,10 @@ impl Service {
             },
         )
         .await)
+    }
+    /// The person's global question route switch (zerus-sa9qn.32).
+    pub async fn question_routes(self: &Arc<Self>, id: String, enabled: bool) -> Value {
+        submit(self.shared.clone(), Input::QuestionRoutes { id, enabled }).await
     }
     pub async fn maintenance_configure(
         self: &Arc<Self>,
@@ -515,6 +537,27 @@ pub(super) async fn approval_command(
                 request_id,
                 enabled,
                 categories,
+            },
+            "frontend_route_unavailable",
+        )),
+    }
+}
+/// The person's global question route switch (zerus-sa9qn.32): only through
+/// this native frontend lane.
+pub(super) async fn question_routes_command(
+    service: Option<Arc<Service>>,
+    request_id: String,
+    enabled: bool,
+) -> Result<Value, String> {
+    if !canonical(&request_id) {
+        return Err("Invalid question route request identity.".into());
+    }
+    match service {
+        Some(service) => Ok(service.question_routes(request_id, enabled).await),
+        None => Ok(refused(
+            &Request::QuestionRoutes {
+                request_id,
+                enabled,
             },
             "frontend_route_unavailable",
         )),
@@ -678,6 +721,11 @@ fn submission_ready(snapshot: &Snapshot, request: &Request) -> bool {
     if matches!(request, Request::CacheMaintenance { .. }) {
         return snapshot.component_ready("cache_maintenance");
     }
+    // The person's question route switch is one Store row; it needs no
+    // background worker, so turning routing off always reaches the service.
+    if matches!(request, Request::QuestionRoutes { .. }) {
+        return true;
+    }
     snapshot.component_ready(if Operation::of(request) == Operation::AutomaticApprovals {
         "approvals"
     } else {
@@ -827,6 +875,8 @@ fn lookup(
     let id = uuid::Uuid::new_v4().to_string();
     let operation = if Operation::of(request) == Operation::AutomaticApprovals {
         "delivery_result"
+    } else if Operation::of(request) == Operation::QuestionRoutes {
+        "question_routes_result"
     } else if Operation::of(request) == Operation::ImportPendingReads {
         "pending_reads_import_result"
     } else if Operation::of(request) == Operation::CacheMaintenance {
@@ -875,12 +925,17 @@ fn lookup_receipt(request: &Request, id: &str, value: Value) -> Result<Receipt, 
     }
     if matches!(
         Operation::of(request),
-        Operation::AutomaticApprovals | Operation::ImportPendingReads | Operation::CacheMaintenance
+        Operation::AutomaticApprovals
+            | Operation::QuestionRoutes
+            | Operation::ImportPendingReads
+            | Operation::CacheMaintenance
     ) {
         let expected = if Operation::of(request) == Operation::CacheMaintenance {
             "cache_maintenance_result"
         } else if Operation::of(request) == Operation::ImportPendingReads {
             "pending_reads_import_result"
+        } else if Operation::of(request) == Operation::QuestionRoutes {
+            "question_routes_result"
         } else {
             "delivery_result"
         };
@@ -1015,6 +1070,16 @@ fn checked(request: &Request, mut value: Value, lookup: bool) -> Option<(Value, 
         | Request::WorktreeProgramStop { .. }
         | Request::WorktreeProgramCleanup { .. }
         | Request::TerminationOutcome { .. } => return None,
+        // The service's own receipt of exactly this switch value.
+        Request::QuestionRoutes { enabled, .. } => {
+            if value["op"] != "question_routes"
+                || value["enabled"] != *enabled
+                || !value["revision"].as_u64().is_some()
+            {
+                return None;
+            }
+            true
+        }
         Request::AutomaticApprovals {
             enabled,
             categories,

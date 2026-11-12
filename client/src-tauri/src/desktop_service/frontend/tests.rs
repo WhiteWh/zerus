@@ -1130,3 +1130,43 @@ fn a_native_ownership_read_is_not_generic_policy_or_a_durable_receipt() {
     )
     .is_none());
 }
+
+/// The person's question route switch (zerus-sa9qn.32): only the service's
+/// exact receipt of this value releases it; anything else stays unknown.
+#[test]
+fn a_question_route_switch_settles_only_on_its_exact_durable_receipt() {
+    let request = Request::QuestionRoutes {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        enabled: false,
+    };
+    assert_eq!(Operation::of(&request), Operation::QuestionRoutes);
+    assert_eq!(Operation::QuestionRoutes.name(), "question_routes");
+    let receipt = json!({"request_id":request.id(),"op":"question_routes","enabled":false,
+        "revision":1,"applied":true,"accepted":true,"durable":true,"code":""});
+    let (settled, complete) = checked(&request, receipt.clone(), false).unwrap();
+    assert!(complete);
+    assert_eq!(settled["enabled"], false);
+    for (field, wrong) in [
+        ("request_id", json!(uuid::Uuid::new_v4().to_string())),
+        ("op", json!("automatic_approvals")),
+        ("enabled", json!(true)),
+        ("durable", json!(false)),
+        ("revision", json!(null)),
+    ] {
+        let mut value = receipt.clone();
+        value[field] = wrong;
+        assert!(checked(&request, value, false).is_none(), "{field}");
+    }
+    // A lost reply looks up its original receipt, read-only.
+    let lookup = json!({"request_id":"11111111-1111-4111-8111-111111111111","op":"question_routes_result",
+        "accepted":true,"durable":false,"original_request_id":request.id(),"found":true,"result":receipt});
+    assert!(matches!(
+        lookup_receipt(&request, "11111111-1111-4111-8111-111111111111", lookup),
+        Ok(Receipt::Present(_))
+    ));
+    // An unknown result names the switch value it carries.
+    assert_eq!(
+        unknown(&request, "frontend_receipt_unconfirmed")["enabled"],
+        false
+    );
+}

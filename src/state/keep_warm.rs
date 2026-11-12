@@ -105,7 +105,7 @@ fn runtime_path(owner: &str) -> Option<PathBuf> {
 
 /// At most `limit` bytes of a regular file, None when it does not exist. A
 /// FIFO, device, directory or symbolic link is refused without blocking.
-fn read_regular(path: &Path, limit: u64) -> Result<Option<Vec<u8>>> {
+pub(super) fn read_regular(path: &Path, limit: u64) -> Result<Option<Vec<u8>>> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]

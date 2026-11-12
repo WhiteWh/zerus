@@ -20,10 +20,10 @@ pub(in crate::desktop) use child::Ended;
 pub(super) use recovery::{Owned, Recovery};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod target;
-#[cfg(target_os = "linux")]
-pub(super) use runtime::Routed;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) use runtime::Runtime;
+#[cfg(target_os = "linux")]
+pub(super) use runtime::{Reservation, Routed};
 #[cfg_attr(windows, allow(dead_code))]
 // Windows keeps bounded receipts; this executor is POSIX-only, like clone.
 mod ledger;

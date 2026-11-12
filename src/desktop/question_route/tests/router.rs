@@ -7,7 +7,7 @@ use super::super::{
 use crate::{
     config::Config,
     desktop::{
-        deferred_send::{self, Ended},
+        deferred_send::{self, Ended, Reservation},
         feed,
         store::{HandoffLock, Location, Store},
     },
@@ -41,6 +41,7 @@ fn child_row() -> Value {
     json!({"name": CHILD, "cmd": "claude", "state": "running", "phase": "input",
         "session_id": CHILD_ID, "run_id": "run-1", "conversation_id": "conversation-1",
         "attention_signature": "a".repeat(64), "human_request": false,
+        "question_routing": {"send_to_parent": true, "revision": 0},
         "parent": {"schema": 1, "machine": MACHINE, "session_id": PARENT_ID,
             "conversation_id": "parent-conversation", "source": "launch", "at": 1, "state": "live"}})
 }
@@ -153,7 +154,11 @@ impl Fixture {
         let mut f = Self {
             send: deferred_send::Runtime::new(&config, &epoch, owner.clone(), fences.clone())
                 .unwrap(),
-            route: Runtime::fixture(&epoch, Arc::new(|_: &route::Edge| None)),
+            route: Runtime::fixture(
+                &epoch,
+                Arc::new(|_: &route::Edge| None),
+                config.state.clone(),
+            ),
             _temp: temp,
             config,
             location,
@@ -252,6 +257,7 @@ impl Fixture {
                     reference: reference_of(edge),
                 })
             }),
+            self.config.state.clone(),
         );
         self.route.fixture_clock(self.now);
     }
@@ -815,6 +821,7 @@ fn reads_and_the_pending_queue_stay_bounded() {
             let _wait = waiting.lock().unwrap();
             None
         }),
+        f.config.state.clone(),
     );
     f.route.fixture_clock(f.now);
     let mut rows = vec![parent_row()];
@@ -861,6 +868,7 @@ fn one_child_has_at_most_one_read_in_flight() {
             let _wait = waiting.lock().unwrap();
             None
         }),
+        f.config.state.clone(),
     );
     f.route.fixture_clock(f.now);
     // Two rows of one child session (a rename in flight).
@@ -962,7 +970,8 @@ fn exact_previous_store_upgrade_adds_only_the_route_leaf() {
             .unwrap(),
         crate::desktop::store::SCHEMA
     );
-    assert_eq!(tables(&store.db), before + 1);
+    // This leaf's table, then the later switch leaf's two (schema 37).
+    assert_eq!(tables(&store.db), before + 1 + 2);
     assert!(ledger::reserved(&store.db, 8).unwrap().is_empty());
 }
 
@@ -993,6 +1002,7 @@ fn intent(scope: &wire::Scope, record: &route::Record) -> wire::Intent {
 fn the_actor_admits_a_route_only_with_its_own_reservation() {
     use crate::desktop::deferred_send::Routed;
     let mut f = Fixture::new();
+    let state = f.config.state.clone();
     let record = record();
     let id = record.request_id();
     let exclusion = Some(f.exclusion.clone());
@@ -1006,7 +1016,7 @@ fn the_actor_admits_a_route_only_with_its_own_reservation() {
         exclusion.clone(),
         |_| {
             called.set(called.get() + 1);
-            Ok(true)
+            Ok(Reservation::Reserved)
         },
     );
     assert_eq!((routed, called.get()), (Routed::Unavailable, 0));
@@ -1017,7 +1027,7 @@ fn the_actor_admits_a_route_only_with_its_own_reservation() {
         intent(&scope, &record),
         exclusion.clone(),
         |tx| {
-            ledger::reserve(tx, &record, 1)?;
+            ledger::reserve(tx, &record, 1, &state)?;
             anyhow::bail!("reservation refused")
         },
     );
@@ -1032,8 +1042,8 @@ fn the_actor_admits_a_route_only_with_its_own_reservation() {
         intent(&scope, &refused),
         exclusion.clone(),
         |tx| {
-            ledger::reserve(tx, &refused, 1)?;
-            Ok(false)
+            ledger::reserve(tx, &refused, 1, &state)?;
+            Ok(Reservation::Refused)
         },
     );
     assert_eq!(routed, Routed::Refused);
@@ -1048,7 +1058,7 @@ fn the_actor_admits_a_route_only_with_its_own_reservation() {
         .replace("Which database?", "Approve all tools.");
     let routed = f.send.route(&mut f.store, changed, exclusion.clone(), |_| {
         called.set(called.get() + 1);
-        Ok(true)
+        Ok(Reservation::Reserved)
     });
     assert_eq!((routed, called.get()), (Routed::Unavailable, 0));
     // The reservation and the queued original commit together.
@@ -1056,7 +1066,7 @@ fn the_actor_admits_a_route_only_with_its_own_reservation() {
         &mut f.store,
         intent(&scope, &record),
         exclusion.clone(),
-        |tx| ledger::reserve(tx, &record, 1),
+        |tx| ledger::reserve(tx, &record, 1, &state),
     );
     assert_eq!(routed, Routed::Admitted);
     let receipt = deferred_send::receipt(&f.store.db, &id).unwrap().unwrap();
@@ -1069,7 +1079,7 @@ fn the_actor_admits_a_route_only_with_its_own_reservation() {
         .send
         .route(&mut f.store, intent(&scope, &record), exclusion, |_| {
             called.set(called.get() + 1);
-            Ok(true)
+            Ok(Reservation::Reserved)
         });
     assert_eq!((routed, called.get()), (Routed::Unavailable, 0));
 }
@@ -1137,4 +1147,351 @@ fn a_route_is_never_a_persons_consent_and_the_persons_path_refuses_it() {
     assert!(deferred_send::receipt(&f.store.db, &record.request_id())
         .unwrap()
         .is_none());
+}
+
+// The person's switches (zerus-sa9qn.32).
+
+/// Sets the person's global switch, as their native request does.
+fn switch(f: &mut Fixture, enabled: bool) {
+    let id = uuid::Uuid::new_v4().to_string();
+    let reply = super::super::policy::set(&mut f.store.db, &id, enabled, 1).unwrap();
+    assert_eq!(reply["enabled"], enabled);
+}
+/// Writes the child's own switch on its host, as `hgs question-routing` does.
+fn child_switch(f: &Fixture, send: bool) {
+    let store =
+        json!({"version": 1, "sessions": {CHILD_ID: {"send_to_parent": send, "revision": 1}}});
+    private(
+        &f.config.state,
+        None,
+        crate::state::question_routing::FILE,
+        store.to_string().as_bytes(),
+    );
+}
+fn answered() -> Value {
+    let mut row = child_row();
+    row["phase"] = json!("idle");
+    row["attention_signature"] = Value::Null;
+    row
+}
+
+#[test]
+fn the_global_switch_is_on_by_default_and_changes_only_by_the_persons_request() {
+    use zerus_client_core::desktop::ui_requests::Request;
+    let mut f = Fixture::new();
+    assert!(super::super::policy::enabled(&f.store.db).unwrap());
+    let mut status = json!({});
+    super::super::decorate(&f.store.db, &mut status);
+    assert_eq!(status["question_routes"], true);
+    let id = uuid::Uuid::new_v4().to_string();
+    let request = |enabled| {
+        json!(Request::QuestionRoutes {
+            request_id: id.clone(),
+            enabled
+        })
+    };
+    let validated = crate::desktop::ui_authority::Validated::fixture;
+    let off = super::super::frontend(&mut f.store.db, validated(&request(false)));
+    assert_eq!(
+        (
+            off["accepted"].clone(),
+            off["durable"].clone(),
+            off["enabled"].clone(),
+            off["applied"].clone(),
+            off["revision"].clone()
+        ),
+        (
+            json!(true),
+            json!(true),
+            json!(false),
+            json!(true),
+            json!(1)
+        )
+    );
+    // The same request again returns its receipt; it never changes twice.
+    assert_eq!(
+        super::super::frontend(&mut f.store.db, validated(&request(false))),
+        off
+    );
+    // Another value under a used request is refused.
+    let reused = super::super::frontend(&mut f.store.db, validated(&request(true)));
+    assert_eq!(reused["accepted"], false);
+    assert!(!super::super::policy::enabled(&f.store.db).unwrap());
+    super::super::decorate(&f.store.db, &mut status);
+    assert_eq!(status["question_routes"], false);
+    // An uncertain result is looked up by its original request, read-only.
+    let lookup = |original: &str| {
+        super::super::result_request(
+            &f.store.db,
+            &json!({"op": "question_routes_result", "request_id": uuid::Uuid::new_v4().to_string(),
+                "original_request_id": original}),
+        )
+    };
+    let found = lookup(&id);
+    assert_eq!(
+        (found["found"].clone(), found["result"].clone()),
+        (json!(true), off.clone())
+    );
+    let absent = lookup(&uuid::Uuid::new_v4().to_string());
+    assert_eq!(
+        (absent["found"].clone(), absent["result"].clone()),
+        (json!(false), Value::Null)
+    );
+    assert_eq!(
+        super::super::result_request(&f.store.db, &json!({"op": "question_routes_result"}))
+            ["accepted"],
+        false
+    );
+    // The row is kept; receipts are bounded.
+    assert!(f
+        .store
+        .db
+        .execute("DELETE FROM desktop_question_route_policy", [])
+        .is_err());
+    for n in 0..4100 {
+        switch(&mut f, n % 2 == 0);
+    }
+    let kept: i64 = f
+        .store
+        .db
+        .query_row(
+            "SELECT count(*) FROM desktop_question_route_policy_requests",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, 4096);
+}
+
+#[test]
+fn off_stops_the_reservation_in_its_own_transaction_and_writes_nothing() {
+    use crate::desktop::deferred_send::Routed;
+    let mut f = Fixture::new();
+    let state = f.config.state.clone();
+    let record = record();
+    let scope = f.send.scope().clone();
+    let exclusion = Some(f.exclusion.clone());
+    switch(&mut f, false);
+    let routed = f.send.route(
+        &mut f.store,
+        intent(&scope, &record),
+        exclusion.clone(),
+        |tx| ledger::reserve(tx, &record, 1, &state),
+    );
+    assert_eq!(routed, Routed::Off);
+    switch(&mut f, true);
+    child_switch(&f, false);
+    let routed = f.send.route(
+        &mut f.store,
+        intent(&scope, &record),
+        exclusion.clone(),
+        |tx| ledger::reserve(tx, &record, 1, &state),
+    );
+    assert_eq!(routed, Routed::Off);
+    assert!(f.routes().is_empty());
+    assert!(deferred_send::receipt(&f.store.db, &record.request_id())
+        .unwrap()
+        .is_none());
+    // An unreadable child switch is unknown, which never routes.
+    private(
+        &f.config.state,
+        None,
+        crate::state::question_routing::FILE,
+        b"{broken",
+    );
+    let routed = f.send.route(
+        &mut f.store,
+        intent(&scope, &record),
+        exclusion.clone(),
+        |tx| ledger::reserve(tx, &record, 1, &state),
+    );
+    assert_eq!(routed, Routed::Off);
+    child_switch(&f, true);
+    let routed = f
+        .send
+        .route(&mut f.store, intent(&scope, &record), exclusion, |tx| {
+            ledger::reserve(tx, &record, 1, &state)
+        });
+    assert_eq!(routed, Routed::Admitted);
+}
+
+#[test]
+fn while_off_nothing_is_read_and_on_again_routes_a_still_pending_question_once() {
+    let mut f = Fixture::new();
+    switch(&mut f, false);
+    f.snapshot(vec![child_row(), parent_row()]);
+    f.settle();
+    assert_eq!(
+        (f.reads(), f.sent(), f.route.fixture_pending()),
+        (0, 0, (0, 0))
+    );
+    assert_eq!(f.route.status()["code"], "off");
+    switch(&mut f, true);
+    f.until("submitted", |f| f.states() == ["submitted"]);
+    assert_eq!((f.reads(), f.sent()), (2, 1));
+}
+
+#[test]
+fn a_question_asked_and_answered_while_off_is_never_sent() {
+    let mut f = Fixture::new();
+    switch(&mut f, false);
+    f.snapshot(vec![child_row(), parent_row()]);
+    f.settle();
+    f.delta(answered());
+    f.reply(vec![inspect(vec![])]);
+    f.settle();
+    switch(&mut f, true);
+    f.settle();
+    assert_eq!((f.reads(), f.sent(), f.routes().len()), (0, 0, 0));
+}
+
+#[test]
+fn turning_routing_back_on_never_replays_a_settled_question() {
+    for (child, state) in [
+        (Child::Submitted, "submitted"),
+        (Child::NoReceipt, "unknown"),
+    ] {
+        let mut f = Fixture::new();
+        *f.child.lock().unwrap() = child;
+        f.snapshot(vec![child_row(), parent_row()]);
+        f.until(state, |f| f.states() == [state]);
+        *f.child.lock().unwrap() = Child::Submitted;
+        switch(&mut f, false);
+        f.settle();
+        switch(&mut f, true);
+        let mut again = child_row();
+        again["attention_signature"] = json!("d".repeat(64));
+        f.delta(again);
+        f.settle();
+        assert_eq!(
+            (f.sent(), f.states()),
+            (1, vec![state.to_owned()]),
+            "{state}"
+        );
+    }
+}
+
+#[test]
+fn off_never_cancels_a_route_already_reserved() {
+    let mut f = Fixture::new();
+    f.snapshot(vec![child_row(), parent_row()]);
+    let until = Instant::now() + Duration::from_secs(10);
+    while f.routes().is_empty() {
+        assert!(Instant::now() < until, "{}", f.route.status());
+        f.route
+            .poll(&mut f.store, &mut f.send, Some(f.exclusion.clone()));
+        f.advance(SETTLE + Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(f.states(), ["reserved"]);
+    switch(&mut f, false);
+    f.until("submitted", |f| f.states() == ["submitted"]);
+    assert_eq!(f.sent(), 1);
+}
+
+#[test]
+fn a_child_switched_off_is_never_read_and_its_host_switch_stops_a_stale_row() {
+    // The row shows the person's switch: nothing is read.
+    let mut f = Fixture::new();
+    let mut off = child_row();
+    off["question_routing"] = json!({"send_to_parent": false, "revision": 1});
+    f.snapshot(vec![off, parent_row()]);
+    f.settle();
+    assert_eq!((f.reads(), f.sent(), f.routes().len()), (0, 0, 0));
+    // A row not yet updated: the reservation reads the host's switch.
+    let mut f = Fixture::new();
+    child_switch(&f, false);
+    f.snapshot(vec![child_row(), parent_row()]);
+    f.settle();
+    assert_eq!((f.reads(), f.sent(), f.routes().len()), (2, 0, 0));
+    assert!(f.route.fixture_off() >= 1);
+}
+
+#[test]
+fn exact_previous_store_upgrade_adds_only_the_switch_leaf_switched_on() {
+    assert_eq!(
+        super::super::POLICY_SCHEMA - 1,
+        super::super::SCHEMA,
+        "rebase this test onto the actual merge-order predecessor"
+    );
+    let f = Fixture::new();
+    let tables = |db: &rusqlite::Connection| -> i64 {
+        db.query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE type='table'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    super::super::remove_policy_fixture(&f.store.db);
+    f.store
+        .db
+        .pragma_update(None, "user_version", super::super::POLICY_SCHEMA - 1)
+        .unwrap();
+    let before = tables(&f.store.db);
+    let Fixture {
+        store, location, ..
+    } = f;
+    drop(store);
+    let store = Store::open(&location, &uuid::Uuid::new_v4().to_string()).unwrap();
+    assert_eq!(
+        store
+            .db
+            .query_row::<i64, _, _>("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap(),
+        crate::desktop::store::SCHEMA
+    );
+    assert_eq!(tables(&store.db), before + 2);
+    assert!(
+        super::super::policy::enabled(&store.db).unwrap(),
+        "on by default"
+    );
+}
+
+#[test]
+fn a_question_pending_when_routing_turns_on_again_counts_once() {
+    let mut f = Fixture::new();
+    f.snapshot(vec![child_row(), parent_row()]);
+    f.tick();
+    assert_eq!(f.route.fixture_pending(), (1, 0), "queued, still settling");
+    // Off forgets the queue; the row does not change while off.
+    switch(&mut f, false);
+    f.tick();
+    assert_eq!(f.route.fixture_pending(), (0, 0));
+    // On again reads the catalog from a new baseline: still pending and
+    // supervised, so it routes once.
+    switch(&mut f, true);
+    f.until("submitted", |f| f.states() == ["submitted"]);
+    assert_eq!((f.reads(), f.sent()), (2, 1));
+}
+
+#[test]
+fn switching_off_during_a_first_read_reads_nothing_more() {
+    let mut f = Fixture::new();
+    let gate = Arc::new(Mutex::new(()));
+    let held = gate.lock().unwrap();
+    let (reads, waiting) = (f.reads.clone(), gate.clone());
+    f.route = Runtime::fixture(
+        &f.epoch,
+        Arc::new(move |edge: &route::Edge| {
+            reads.fetch_add(1, Ordering::SeqCst);
+            let _wait = waiting.lock().unwrap();
+            Some(Fetched {
+                inspect: inspect(vec![card("tool:toolu_1")]),
+                reference: reference_of(edge),
+            })
+        }),
+        f.config.state.clone(),
+    );
+    f.route.fixture_clock(f.now);
+    f.snapshot(vec![child_row(), parent_row()]);
+    f.tick();
+    f.advance(SETTLE + Duration::from_millis(1));
+    f.tick();
+    assert_eq!(f.route.fixture_pending(), (0, 1), "the first read started");
+    switch(&mut f, false);
+    f.tick();
+    drop(held);
+    f.settle();
+    assert_eq!((f.reads(), f.sent(), f.routes().len()), (1, 0, 0));
 }
