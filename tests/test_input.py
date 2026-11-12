@@ -946,6 +946,9 @@ while True: signal.pause()
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
         proc.stdin.write(json.dumps(payload))
         proc.stdin.close()
+        # Python before 3.13 flushes a closed stdin in communicate(); the
+        # payload is already written, so communicate() must not touch it.
+        proc.stdin = None
         return proc
 
     def state_lock_free(self):

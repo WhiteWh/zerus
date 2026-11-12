@@ -246,7 +246,7 @@ class RemoteLoginShells(unittest.TestCase):
         # keep-warm's own (#1686, zerus-on03r).
         executable.write_text(older.replace("'  lifecycle-receipt-status-v1'",
                                             "'  lifecycle-receipt-status-v1' '  session-id-selector-v1' '  session-reference-selector-v1'"
-                                            " '  session-keep-warm-v1'"))
+                                            " '  session-keep-warm-v1' '  session-question-routing-v1'"))
         for call in calls:
             with self.subTest(call=call[1:3], peer='current'):
                 run(call)
