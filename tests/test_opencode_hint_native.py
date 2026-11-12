@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import shutil
 import subprocess
 import sys
 import time
@@ -148,8 +149,87 @@ class OpenCodeHintNative(native.OpenCodeNative):
         turn(other, 'Unrelated conversation', 0)
         target = resume(target)
         turn(target, 'Repeated resume', 1)
-        self.stop_service()
-        target = resume(target)
+        # An older real service can still activate its source after another
+        # registration overwrites Zerus's latest marker. Give that service its
+        # own HOME/config/state and retain its exact launch-overlay source.
+        marker_path = self.state / 'opencode/context-hint/service.json'
+        old_marker = json.loads(marker_path.read_text())
+        old_folder = marker_path.parent / 'plugins' / old_marker['nonce']
+        failed_folder = old_folder.parent / str(uuid.uuid4())
+        shutil.copytree(old_folder, failed_folder)
+        ownership = json.loads((failed_folder / 'owner.json').read_text())
+        ownership['nonce'] = failed_folder.name
+        (failed_folder / 'owner.json').write_text(json.dumps(ownership))
+        alternate = self.root / 'older-live-service'
+        alt_env = dict(self.env)
+        for key, folder in [('HOME', 'home'), ('XDG_CONFIG_HOME', 'config'), ('XDG_STATE_HOME', 'state'),
+                            ('XDG_DATA_HOME', 'data'), ('XDG_CACHE_HOME', 'cache')]:
+            path = alternate / folder
+            path.mkdir(parents=True, mode=0o700)
+            alt_env[key] = str(path)
+        (alternate / 'config/opencode').mkdir(mode=0o700)
+        shutil.copyfile(config_path, alternate / 'config/opencode/opencode.json')
+        alt_env['OPENCODE_CONFIG_CONTENT'] = json.dumps({'plugins': [{'package': str(old_folder), 'options': {
+            'hgs': str(native.HGS), 'state': str(self.state), 'nonce': old_marker['nonce']}}]})
+
+        def alt(*args):
+            run = subprocess.run([native.NATIVE, *args], env=alt_env, cwd=self.workspace,
+                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+            self.assertEqual(run.returncode, 0, run.stderr[-1000:])
+            return run
+
+        def stop_primary():
+            pid = self.registration()['pid']
+            self.opencode('service', 'stop')
+            end = time.monotonic() + 10
+            while any(p == pid for p, _ in self.native_processes()) and time.monotonic() < end:
+                time.sleep(.025)
+            self.assertFalse(any(p == pid for p, _ in self.native_processes()))
+
+        alt('service', 'set', 'port', str(native.free_port()))
+        try:
+            alt('service', 'start')
+            registration = alternate / 'state/opencode/service.json'
+            end = time.monotonic() + 10
+            while not registration.exists() and time.monotonic() < end:
+                time.sleep(.025)
+            alt_reg = json.loads(registration.read_text())
+            self.assertNotEqual(alt_reg['pid'], self.registration()['pid'])
+            for attempt in range(3):
+                stop_primary()
+                target = resume(target)
+                self.assertTrue(old_folder.joinpath('index.js').is_file())
+                if not failed_folder.exists():
+                    break
+            # A complete native census must reclaim the failed-start asset,
+            # while the older service's source remains available for lazy load.
+            self.assertFalse(failed_folder.exists())
+            self.assertTrue(old_folder.joinpath('index.js').is_file())
+            self.assertNotEqual(json.loads(marker_path.read_text())['nonce'], old_marker['nonce'])
+            headers = {}
+            if alt_reg.get('password'):
+                token = native.base64.b64encode(('opencode:' + alt_reg['password']).encode()).decode()
+                headers['Authorization'] = 'Basic ' + token
+            query = native.urllib.parse.urlencode({'location[directory]': str(self.workspace)})
+            request = native.urllib.request.Request(alt_reg['url'].rstrip('/') + '/api/plugin?' + query, headers=headers)
+            end = time.monotonic() + 5
+            while True:
+                with native.urllib.request.urlopen(request, timeout=2) as response:
+                    plugins = json.load(response)['data']
+                active = [p for p in plugins if p['id'] == 'zerus.agent-hint.context'
+                          and p['source']['path'] == str(old_folder) and p['state']['status'] == 'active']
+                if active or time.monotonic() >= end:
+                    break
+                time.sleep(.025)
+            self.assertEqual(len(active), 1, plugins)
+        finally:
+            alt('service', 'stop')
+        for attempt in range(3):
+            self.stop_service()
+            target = resume(target)
+            if not old_folder.exists():
+                break
+        self.assertFalse(old_folder.exists())
         turn(target, 'Real service restart', 1)
         start = len(self.model.requests)
         status, answer = self.api('POST', f"/api/session/{target['conversation_id']}/compact", {})
@@ -219,6 +299,18 @@ class OpenCodeHintNative(native.OpenCodeNative):
         competing = self.save_binding('competing', service='opencode2', conversation_id=target['conversation_id'])
         resume(competing)
         turn(target, 'Conflicting decided bindings', 0)
+        # A retired sole binding loses its route. A competing/ambiguous route
+        # must remain blocked instead of making another holder the winner.
+        other_route = self.state / 'opencode/context-hint/bindings' / (hashlib.sha256(other['conversation_id'].encode()).hexdigest()+'.json')
+        other = resume(other)
+        self.assertTrue(other_route.exists())
+        self.action(other, 'forget')
+        self.assertFalse(other_route.exists())
+        self.action(competing, 'forget')
+        self.assertTrue(route.exists())
+        self.assertIsNone(self.hgs(args)['context'])
+        self.action(target, 'forget')
+        self.assertFalse(route.exists())
         self.assertEqual(config_path.read_bytes(), original_config)
         self.assertEqual((owner / 'index.js').read_bytes(), original_plugin)
         self.assertFalse((self.root / 'xdg-config/opencode/plugins').exists())
@@ -226,7 +318,7 @@ class OpenCodeHintNative(native.OpenCodeNative):
         self.stop_service()
         # This suite owns a fresh database, so retained revision-1 fixtures in
         # the ordinary native suite cannot mask persistence in another table.
-        databases = list((self.root / 'xdg-data').rglob('*.db'))
+        databases = list(self.root.rglob('*.db'))
         self.assertTrue(databases)
         table_count = 0
         for db in databases:
@@ -245,6 +337,11 @@ class OpenCodeHintNative(native.OpenCodeNative):
                 'target': target, 'baseline': baseline, 'config_unchanged': True, 'owner_plugin_unchanged': True,
                 'compaction': compacted, 'compacted_active_context': active_context,
                 'hint_in_database': False, 'unmanaged_service_pid_preserved': pid,
+                'cleanup': {'older_live_service_pid': alt_reg['pid'], 'older_source_activated': True,
+                            'older_source_pruned_after_exit': not old_folder.exists(),
+                            'failed_start_folder_pruned': not failed_folder.exists(),
+                            'sole_binding_route_retired': not other_route.exists(),
+                            'ambiguous_route_blocked_until_last_holder_forgotten': True},
             }, indent=2)+'\n')
 
 

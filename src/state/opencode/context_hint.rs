@@ -6,6 +6,9 @@ use super::*;
 const PLUGIN: &str = "zerus.agent-hint.context";
 const VERSION: (u64, u64, u64) = (2, 2, 7);
 const REVISION: u64 = 1;
+const PACKAGE: &str =
+    r#"{"type":"module","name":"zerus-agent-hint-context","exports":{"./server":"./index.js"}}"#;
+mod prune;
 
 fn directory() -> PathBuf {
     root().join("opencode/context-hint")
@@ -50,14 +53,45 @@ pub(super) fn overlay() -> Option<Overlay> {
     }
     let nonce = uuid::Uuid::new_v4().to_string();
     let state = absolute_root().ok()?;
+    // Called under service-start.lock, before preparing another launch. A full
+    // inventory or uncertain census retains assets and bounds further growth.
+    if !prune::before_start(&state) {
+        return None;
+    }
     let folder = state.join("opencode/context-hint/plugins").join(&nonce);
-    atomic(&folder.join("index.js"), include_str!("context_plugin.js")).ok()?;
-    atomic(&folder.join("package.json"), r#"{"type":"module","name":"zerus-agent-hint-context","exports":{"./server":"./index.js"}}"#).ok()?;
-    let content = json!({"plugins":[{"package":folder,"options":{
-        "hgs":std::env::current_exe().ok()?,"state":state,"nonce":nonce
-    }}]})
-    .to_string();
-    Some(Overlay { nonce, content })
+    let hgs = std::env::current_exe().ok()?;
+    private_dir(folder.parent()?).ok()?;
+    // Reserve a new folder, so failed preparation can remove only this call's
+    // files. A failed spawn/connect leaves a complete asset for the next sweep.
+    fs::DirBuilder::new().create(&folder).ok()?;
+    if crate::platform::restrict_dir(&folder).is_err() {
+        let _ = fs::remove_dir(&folder);
+        return None;
+    }
+    let prepared = (|| {
+        atomic(
+            &folder.join("owner.json"),
+            &json!({"revision":1,"nonce":nonce,
+                "sha256":format!("{:x}",Sha256::digest(include_bytes!("context_plugin.js")))
+            })
+            .to_string(),
+        )
+        .ok()?;
+        atomic(&folder.join("index.js"), include_str!("context_plugin.js")).ok()?;
+        atomic(&folder.join("package.json"), PACKAGE).ok()?;
+        let content = json!({"plugins":[{"package":folder,"options":{
+            "hgs":hgs,"state":state,"nonce":nonce
+        }}]})
+        .to_string();
+        Some(Overlay { nonce, content })
+    })();
+    if prepared.is_none() {
+        for name in ["owner.json", "index.js", "package.json"] {
+            let _ = fs::remove_file(folder.join(name));
+        }
+        let _ = fs::remove_dir(folder);
+    }
+    prepared
 }
 pub(super) fn started(service: &service::Service, overlay: &Overlay) {
     if let Some(birth) = birth(service.reg.pid) {
@@ -140,6 +174,57 @@ pub(super) fn note(record: &Value) {
         "id_layout":storage::in_id_layout(record),
         "digest":format!("{:x}",Sha256::digest(record.to_string().as_bytes()))});
     let _ = atomic(&path, &route.to_string());
+}
+
+pub(super) fn forget(record: &Value) {
+    let conversation = string(record, "conversation_id");
+    if !native_id(conversation, "ses_") || !session_id::canonical(string(record, "session_id")) {
+        return;
+    }
+    let path = index_path(conversation);
+    // Called after removal under the provider writer. Conflicts stay blocked
+    // until a complete bounded check proves no holder remains. A bound/error
+    // retains the tombstone, never electing another holder as the winner.
+    if read(&path, 16384).is_some_and(|old| {
+        if old["ambiguous"] == true {
+            no_bindings(conversation) == Some(true)
+        } else {
+            old["session_id"] == record["session_id"]
+        }
+    }) {
+        let _ = archive::remove_synced(&path);
+    }
+}
+
+fn no_bindings(conversation: &str) -> Option<bool> {
+    let until = Instant::now() + Duration::from_millis(25);
+    let mut count = 0;
+    let mut remaining = 1u64 << 20;
+    for name in ["bindings", "sessions"] {
+        let entries = match fs::read_dir(root().join("opencode").join(name)) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(_) => return None,
+        };
+        for entry in entries {
+            count += 1;
+            if count > 64 || Instant::now() >= until {
+                return None;
+            }
+            let path = entry.ok()?.path();
+            if path.extension().is_none_or(|s| s != "json") {
+                continue;
+            }
+            let bytes = labels::read_file(&path, remaining).ok()??;
+            remaining = remaining.checked_sub(bytes.len() as u64)?;
+            let binding: Value = serde_json::from_slice(&bytes).ok()?;
+            let native = binding["conversation_id"].as_str()?;
+            if native == conversation {
+                return Some(false);
+            }
+        }
+    }
+    (Instant::now() < until).then_some(true)
 }
 
 /// Called only after the normal launch/resume verified the exact native

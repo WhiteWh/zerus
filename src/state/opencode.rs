@@ -13,6 +13,7 @@ mod service;
 mod context_hint;
 pub(crate) use context_hint::lookup as hint_context;
 pub(super) fn note_hint(record: &Value) { context_hint::note(record); }
+pub(super) fn forget_hint(record: &Value) { context_hint::forget(record); }
 mod terminal;
 pub(crate) use terminal::attach;
 #[cfg_attr(not(unix), allow(dead_code))]

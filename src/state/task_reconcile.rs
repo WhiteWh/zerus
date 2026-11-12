@@ -329,7 +329,7 @@ impl Original {
     }
 }
 #[cfg(target_os = "linux")]
-fn environment(pid: u32) -> Result<Vec<u8>> {
+pub(super) fn environment(pid: u32) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     File::open(format!("/proc/{pid}/environ"))?
         .take((1 << 20) + 1)
@@ -338,7 +338,7 @@ fn environment(pid: u32) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 #[cfg(target_os = "macos")]
-fn environment(pid: u32) -> Result<Vec<u8>> {
+pub(super) fn environment(pid: u32) -> Result<Vec<u8>> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as i32];
     let mut bytes = vec![0u8; 1 << 20];
     let mut size = bytes.len();
