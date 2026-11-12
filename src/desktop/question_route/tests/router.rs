@@ -717,6 +717,25 @@ fn a_child_renamed_with_shell_text_is_refused_and_never_sent() {
 }
 
 #[test]
+fn a_child_with_a_hostile_conversation_id_is_refused_and_never_sent() {
+    // zerus-sa9qn.40: a hook's session_id is only bounded.
+    let hostile = "x';touch${IFS}pwned;'";
+    let mut f = Fixture::new();
+    let mut row = child_row();
+    row["conversation_id"] = json!(hostile);
+    let mut question = card("tool:toolu_1");
+    question["conversation_id"] = json!(hostile);
+    let mut read = inspect(vec![question]);
+    read["conversation_id"] = json!(hostile);
+    f.reply(vec![read]);
+    f.snapshot(vec![row, parent_row()]);
+    f.until("refused", |f| f.states() == ["refused"]);
+    assert_eq!(f.routes()[0].2, ledger::INVALID);
+    f.settle();
+    assert_eq!((f.sent(), f.states()), (0, vec!["refused".to_owned()]));
+}
+
+#[test]
 fn a_refusal_before_any_child_is_final() {
     let mut f = Fixture::new();
     *f.child.lock().unwrap() = Child::NotStarted;

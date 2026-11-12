@@ -416,6 +416,62 @@ fn named(name: &str) -> Record {
 }
 
 #[test]
+fn an_identity_outside_the_printable_set_never_routes() {
+    // zerus-sa9qn.40: these values are printed in the text's example JSON
+    // line, where JSON escaping keeps a single quote.
+    let set = |record: &mut Record, field: &str, value: &str| match field {
+        "run_id" => record.identity.run_id = value.into(),
+        "conversation_id" => record.identity.conversation_id = value.into(),
+        "question_id" => record.identity.question_id = value.into(),
+        _ => record.identity.question_hash = value.into(),
+    };
+    for (field, value) in [
+        ("conversation_id", "x';touch${IFS}pwned;'"),
+        ("conversation_id", "x'y"),
+        ("conversation_id", "x\"y"),
+        ("conversation_id", "x y"),
+        ("conversation_id", "$(id)"),
+        ("conversation_id", "`id`"),
+        ("conversation_id", "x\\y"),
+        ("conversation_id", "x\u{ff07}y"),
+        ("run_id", "run;1"),
+        ("run_id", "run$1"),
+        ("run_id", "r\u{430}n"),
+        ("question_id", "tool:a'b"),
+        ("question_id", "tool:a b"),
+        ("question_hash", "b b"),
+        ("question_hash", "b'b"),
+    ] {
+        let mut record = record();
+        set(&mut record, field, value);
+        assert!(!record.identity.valid(), "{field} {value:?}");
+        assert!(record.stdin().is_none(), "{field} {value:?}");
+    }
+    // Each printable ASCII character outside the set, on its own.
+    for c in (b' '..=b'~').map(char::from) {
+        if c.is_ascii_alphanumeric() || ":_.-".contains(c) {
+            continue;
+        }
+        for field in ["run_id", "conversation_id", "question_id", "question_hash"] {
+            let mut record = record();
+            set(&mut record, field, &format!("tool:x{c}y"));
+            assert!(record.stdin().is_none(), "{field} {c:?}");
+        }
+    }
+    // UUIDs and the hosts' own run and conversation forms still route.
+    for value in [
+        "8d5b2c1e-3f4a-4b5c-8d6e-7f8091a2b3c4",
+        "launch_id:abc-1",
+        "run_id:1.2_3",
+    ] {
+        let mut record = record();
+        set(&mut record, "conversation_id", value);
+        set(&mut record, "run_id", value);
+        assert!(record.valid(), "{value}");
+    }
+}
+
+#[test]
 fn a_child_name_outside_the_printable_set_never_routes() {
     // zerus-sa9qn.35: a rename can give a child any of these names; the text
     // prints the name inside a command, so each one fails closed.
