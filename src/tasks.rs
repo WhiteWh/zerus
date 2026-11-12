@@ -52,7 +52,7 @@ const USAGE: &str = "usage: hgs task list --project P [--stage S] | list --proje
 const AGENT_INSTRUCTIONS: &str = concat!(
     "Zerus tasks are this project's shared task list. Run `hgs task` in your shell: it acts as your session, on your session's project; `hgs guide tasks` lists the commands. Texts go on stdin, for example hgs task report <ref> <<'EOF' ... EOF.\n\n",
     "Filing. When the person says \"поставь таск\", \"добавь задачу\", \"запиши задачу\", \"в очередь\", \"на потом\", \"file a task\", \"add to the queue\" or \"for later\", file it with `hgs task add`. Never put these into TodoWrite or your own plan. For work you are already doing, use `hgs task add --start` or `hgs task start <ref>`; this records In progress without sending a duplicate message. Plain add only queues later work. New tasks go to the end of To do unless the person names a place (--backlog, --position N).\n\n",
-    "Working. A message starting \"[Zerus task <ref>]\" is a task for you; do it like any request from the person. When the prompt says the task was sent before, read its history with `hgs task get <ref>` before you start. Acknowledge a dispatched task with `hgs task start <ref>` before working; this does not send it again. For a subagent plan, register the native worker first. If you need the person, ask in this conversation as usual. When the work is done, or you find that it cannot be done, report with the command supplied for that execution: pinned `hgs task report-attempt <ref> --attempt UUID` for managed work, or `hgs task report <ref>` for explicitly legacy work. Say what you changed, how you checked it, and what is left undone or why it cannot be done. Add --progress to that same command for an update while work continues; it keeps the task In progress. Keep the original attempt UUID from the task prompt or start acknowledgement; never substitute the latest attempt ID. An explicit legacy start prints the ordinary report command. A history-only report succeeded as a history write and did not move the task; do not retry that duplicate.\n\n",
+    "Working. A message starting \"[Zerus task <ref>]\" is a task for you; do it like any request from the person. When the prompt says the task was sent before, read its history with `hgs task get <ref>` before you start. Acknowledge a dispatched task with the `hgs task start` command its prompt pins before working; this does not send it again. For a subagent plan, register the native worker first. If you need the person, ask in this conversation as usual. When the work is done, or you find that it cannot be done, report with the command supplied for that execution: pinned `hgs task report-attempt <ref> --attempt UUID` for managed work, or `hgs task report <ref>` for explicitly legacy work. Say what you changed, how you checked it, and what is left undone or why it cannot be done. Add --progress to that same command for an update while work continues; it keeps the task In progress. Keep the original attempt UUID from the task prompt or start acknowledgement; never substitute the latest attempt ID. An explicit legacy start prints the ordinary report command. A history-only report succeeded as a history write and did not move the task; do not retry that duplicate.\n\n",
     "Cancelled. \"[Zerus task <ref> cancelled]\" means stop that task now and follow the message.\n\n",
     "Managing. `hgs task list` and `hgs task get` show tasks and their history; move, stage, target, edit, send and cancel change them as the person can. Accept a task (`hgs task stage <ref> done`) only when the person asks you to.\n\n",
     "Comments. `hgs task comment <ref>` adds a note for people and agents; it is never pasted into a session."
@@ -1531,8 +1531,18 @@ fn send(
     Ok(json!({"receipt": receipt}))
 }
 
+/// The start acknowledgement every dispatched prompt pins: one exact
+/// command that names the task as one safe word, like the report-attempt and
+/// begin-attempt pins, so no agent composes it from a hostile project name
+/// (zerus-sa9qn.42). A managed execution's begin-attempt pin replaces it.
+fn pin_start_command(prompt: &mut String, project: &str, task: &str) {
+    let reference = zerus_replica::command_reference(project, task);
+    prompt.push_str(&format!("\n\n[Zerus task start]\nAcknowledge this task with `hgs task start {reference}` before working; this does not send it again."));
+}
+
 fn dispatch_content(settings: &Settings, view: &zerus_replica::TaskView, project_name: &str, subagent: bool) -> Result<(String, Vec<Value>)> {
     let (mut prompt, files) = task_dispatch_content(&settings.task_template, view, project_name, Tools::Cli).map_err(fail)?;
+    pin_start_command(&mut prompt, project_name, &view.id);
     if subagent {
         prompt.push_str(&format!("\n\n[Zerus executor: subagent]\nYou are the coordinator for this task. Create a native subagent only now, after this explicit start request, and give it the implementation work. Keep coordination and task reporting in this session. After the native child appears, read `hgs task get {reference}` and register its exact live ID with `hgs task worker {reference} --subagent CHILD_ID --request-id CURRENT_SENT_REQUEST_ID`. Do not claim that the child has started before this registration succeeds; if creation is unavailable, report that limitation. The child must not impersonate the coordinator's CLI identity.\n", reference = zerus_replica::command_reference(project_name, &view.id)));
     }
