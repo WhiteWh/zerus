@@ -227,7 +227,8 @@ if name == 'cargo' and sys.argv[2:3] == ['build'] and '--bin' in sys.argv:
                 stub.write_text(recorder)
                 stub.chmod(0o700)
             env = dict(os.environ)
-            for key in ("GITHUB_ACTIONS", "RUNNER_ENVIRONMENT", "RUNNER_OS", "GITHUB_JOB", "GITHUB_WORKSPACE"):
+            # Synthetic Cargo must stay inside this fixture's workspace.
+            for key in ("CARGO_TARGET_DIR", "GITHUB_ACTIONS", "RUNNER_ENVIRONMENT", "RUNNER_OS", "GITHUB_JOB", "GITHUB_WORKSPACE"):
                 env.pop(key, None)
             env.update(identity)
             env.update(PATH=str(binaries) + os.pathsep + env.get("PATH", ""),
@@ -236,6 +237,26 @@ if name == 'cargo' and sys.argv[2:3] == ['build'] and '--bin' in sys.argv:
                                     cwd=workspace, env=env, capture_output=True, text=True, timeout=10)
             calls = [json.loads(line) for line in log.read_text().splitlines()]
             return result, calls
+
+    def test_inherited_absolute_target_keeps_the_callers_cli_bytes(self):
+        with tempfile.TemporaryDirectory(prefix="ci-disk-sentinel-") as temporary:
+            target = Path(temporary) / "external target"
+            cli = target / "debug/hgs"
+            cli.parent.mkdir(parents=True)
+            sentinel = b"caller-owned hgs sentinel\x00\xff\n"
+            valid = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
+                     "RUNNER_OS": "Linux", "GITHUB_JOB": "client-native-linux"}
+            for identity in ({}, valid):
+                with self.subTest(identity=identity):
+                    cli.write_bytes(sentinel)
+                    cli.chmod(0o700)
+                    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target)}):
+                        result, calls = self.run_script(identity)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertTrue(any(call["name"] == "cargo" and call["args"][1:2] == ["build"]
+                                        and "--bin" in call["args"] and "hgs" in call["args"]
+                                        for call in calls), "the actual candidate CLI build must run")
+                    self.assertEqual(cli.read_bytes(), sentinel)
 
     def test_only_fixed_hosted_native_identity_reports_and_preserves_build_commands(self):
         valid = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
