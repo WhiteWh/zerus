@@ -289,6 +289,14 @@ fn pair_and_revoke_name_the_pinned_commands_qt_runs() {
     // shell, or PowerShell on Windows, where @ splats and , makes an array.
     assert_eq!(posix_word("it's mine"), "'it'\\''s mine'");
     assert_eq!(posix_word("@mac"), "@mac");
+    // zerus-sa9qn.43: the POSIX word is shell::shell_quote, whole in fish too.
+    for word in ["x\\'; touch pwned; #", "@mac\\'", "a\\b", "it's"] {
+        assert_eq!(posix_word(word), crate::shell::shell_quote(word));
+        assert_eq!(
+            crate::shell::fish_words(&posix_word(word)),
+            Ok(vec![word.to_owned()])
+        );
+    }
     assert_eq!(
         powershell_word("it's mine").as_deref(),
         Some("'it''s mine'")

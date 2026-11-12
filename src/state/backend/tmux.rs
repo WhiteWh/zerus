@@ -810,10 +810,11 @@ impl TerminalBackend for Tmux {
                 platform::quote(&spec.cwd),
                 platform::join(&spec.command)
             ),
+            // `quote`'s words, which fish also reads exactly (zerus-sa9qn.43).
             DryRun::Start(spec) => {
-                let mut display = vec!["tmux".into()];
+                let mut display = vec!["tmux".to_owned()];
                 display.extend(start_args(spec));
-                crate::state::join_command(&display)
+                platform::join(&display)
             }
         }
     }
@@ -835,6 +836,9 @@ mod tests {
             "claude/p/`touch pwned`",
             "claude/p/it's \"q\" | touch pwned",
             "claude/p/x\ntouch pwned",
+            // zerus-sa9qn.43: fish reads \' inside single quotes.
+            "claude/p/x\\'; touch pwned; #",
+            "claude/p/a\\b",
         ];
         for name in names {
             let spec = LaunchSpec {
@@ -845,7 +849,9 @@ mod tests {
                 detached: true,
             };
             let launch = Tmux.describe(&DryRun::Launch(&spec));
+            let start = Tmux.describe(&DryRun::Start(&spec));
             for (line, args) in [
+                (start, vec![start_args(&spec)]),
                 (
                     Tmux.describe(&DryRun::Attach {
                         session: name,
@@ -908,6 +914,12 @@ mod tests {
                     .map(|call| call.split('\0').map(str::to_owned).collect())
                     .collect();
                 assert_eq!(calls, args, "{line}");
+                // fish (modelled) reads each line as the same tmux call.
+                let tmux: Vec<_> = args
+                    .iter()
+                    .map(|call| [vec!["tmux".to_owned()], call.clone()].concat())
+                    .collect();
+                assert_eq!(crate::platform::fish_commands(&line), Ok(tmux), "{line}");
             }
         }
     }
@@ -1063,7 +1075,7 @@ mod tests {
         );
         assert_eq!(
             Tmux.describe(&DryRun::Start(&spec)),
-            "tmux new-session -d -s claude/p/t -c '/tmp/a b' -e 'A=1' -e 'B=two words' -- /usr/bin/env -- /bin/bash -lic 'exec \"$0\" --run \"$@\"' /x/hgs 0 claude"
+            "tmux new-session -d -s claude/p/t -c '/tmp/a b' -e A=1 -e 'B=two words' -- /usr/bin/env -- /bin/bash -lic 'exec \"$0\" --run \"$@\"' /x/hgs 0 claude"
         );
         assert_eq!(
             launch_args(&spec),
