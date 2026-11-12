@@ -670,8 +670,10 @@ impl Catalog {
             // An unchanged original can have corrupted cached projection fields.
             // Restore those too; preserve the immutable fingerprint and the
             // existing one-way first-prompt conversation pin.
+            // An empty cached conversation with an equally empty original is
+            // unchanged: rewriting it would publish a change on every walk.
             let resolved = prior.conversation.is_empty();
-            if resolved || prior.stamp != stamp || !prior.matches(&binding) {
+            if prior.stamp != stamp || !prior.matches(&binding) {
                 let proof = if resolved && !binding.conversation.is_empty() {
                     let original = self.state.join(source.directory()).join(filename);
                     let Some(proof) = pin::ProvenPin::read(source, &original, &binding, &stamp)

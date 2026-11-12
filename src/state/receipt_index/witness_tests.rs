@@ -1,7 +1,7 @@
 //! zerus-z5uax: the row-set witness token. The worker verifies the exact
 //! COUNT(*) at every count publication and on every run; readers check the
 //! token, the schema it was taken under and the rows appended since, in
-//! bounded work.
+//! bounded work. zerus-elev7: an unchanged row publishes no change.
 use super::*;
 
 fn token(catalog: &Catalog, source: Source) -> Option<WitnessEntry> {
@@ -428,3 +428,35 @@ fn the_read_check_stays_bounded_with_a_year_of_sends() {
     assert!(appended <= 20_000, "{appended}");
 }
 const LARGE_HISTORY: i64 = 200_000;
+
+#[test]
+fn an_unchanged_empty_conversation_row_publishes_no_change_on_a_later_walk() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(temp.path(), true).unwrap();
+    put(&catalog, Source::Terminal, &value(1, "", "run", "", 1.0));
+    walk(temp.path());
+    let first = meta(&catalog, "change_seq");
+    let row: i64 = catalog
+        .db
+        .query_row(
+            "SELECT change FROM receipt_rows WHERE source='terminal'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    walk(temp.path());
+    walk(temp.path());
+    assert_eq!(meta(&catalog, "change_seq"), first);
+    assert_eq!(
+        catalog
+            .db
+            .query_row(
+                "SELECT change FROM receipt_rows WHERE source='terminal'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        row
+    );
+    assert_eq!(source_row(&catalog, Source::Terminal), (true, 1));
+}
