@@ -735,6 +735,13 @@ fn normalize(record: &Value, observed: Option<&Observed>) -> Value {
         );
         provider_errors::apply(&mut value, &error);
     }
+    // A permission card is a tool approval, the person's to answer.
+    let approval = value["pending_questions"].as_array().is_some_and(|cards| {
+        cards
+            .iter()
+            .any(|card| card["kind"] == "opencode_permission")
+    });
+    parent_link::mark_human_request(&mut value, None, approval);
     value
 }
 /// A row without a reading of the session: no events, so clients keep the
@@ -4217,6 +4224,37 @@ mod tests {
         let value = normalize(&status_record(id), Some(&seen));
         assert_eq!(value["phase"], "input");
         assert_eq!(value["pending_questions"][0]["kind"], "opencode_permission");
+        assert!(
+            value.get("human_request").is_none(),
+            "only a supervised child carries it"
+        );
+        // zerus-lgr9s: a supervised child's permission request is the
+        // person's; its own question and its reply are its parent's.
+        let link = json!({"schema":1,"machine":"11111111-1111-4111-8111-111111111111","host":"arch",
+            "session_id":"22222222-2222-4222-8222-222222222222","name":"claude/p/lead",
+            "conversation_id":"c","run_id":"r","source":"launch","at":1});
+        let child = |id: &str| {
+            let mut record = status_record(id);
+            record["parent"] = link.clone();
+            record
+        };
+        assert_eq!(normalize(&child(id), Some(&seen))["human_request"], true);
+        let asked = opencode2("forms_question");
+        let mut questioned = observed("messages_question", true, no_inbox());
+        questioned.forms = asked["data"].clone();
+        let form = asked["data"][0]["sessionID"].as_str().unwrap();
+        let value = normalize(&child(form), Some(&questioned));
+        assert_eq!(
+            (&value["phase"], &value["human_request"]),
+            (&json!("input"), &json!(false)),
+            "{value}"
+        );
+        let value = normalize(&child("ses_A"), Some(&seen));
+        assert_eq!(
+            (&value["phase"], &value["human_request"]),
+            (&json!("idle"), &json!(false)),
+            "{value}"
+        );
         // Another session's request never needs this session's attention.
         let value = normalize(&status_record("ses_A"), Some(&seen));
         assert_eq!(value["phase"], "idle");

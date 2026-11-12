@@ -687,6 +687,13 @@ fn snapshot_with(record: &Value, list: &Value, rpc: &mut dyn FnMut(&str, Value) 
     };
     let mut value = normalize(record, row, &json!({"provider_error":failure}));
     child_summaries(record, &mut value, list, &list["generation"]);
+    // The host lists a tool approval as a question; it is the person's.
+    let approval = row["pendingQuestions"].as_array().is_some_and(|questions| {
+        questions
+            .iter()
+            .any(|question| question["approval"] == true)
+    });
+    parent_link::mark_human_request(&mut value, None, approval);
     if !list.is_null() {
         value["host_generation"] = list["generation"].clone();
     }
@@ -2074,9 +2081,23 @@ mod current_read_tests {
     /// runs in a child process with private state and a scripted host.
     #[test]
     fn current_read_is_hgs_reads_view_captured_before_the_page() {
+        run_private("state::dsh::current_read_tests::fixture");
+    }
+
+    /// zerus-lgr9s: a supervised DeepSeek child's listed row says whether it
+    /// waits for the person, by the generic rule. Its unread reply or its own
+    /// question is the parent's, so the row stays quiet; a tool approval or
+    /// signing in is the person's.
+    #[test]
+    fn listed_child_rows_mark_only_person_requests() {
+        run_private("state::dsh::current_read_tests::child_rows");
+    }
+
+    /// Runs the ignored fixture `test` in a child process with private state.
+    fn run_private(test: &str) {
         let state = tempfile::tempdir().unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "state::dsh::current_read_tests::fixture", "--ignored", "--test-threads=1"])
+            .args(["--exact", test, "--ignored", "--test-threads=1"])
             .env("HGS_STATE_DIR", state.path())
             .env("ZERUS_DSH_CURRENT_READ_FIXTURE", "1")
             .env_remove("HGS_SESSION")
@@ -2137,6 +2158,60 @@ mod current_read_tests {
     }
     fn inspect(current_read: bool, agent: Option<&str>, answers: Script) -> (Result<Value>, Vec<String>) {
         inspect_with(current_read, agent, answers, Script::new())
+    }
+
+    #[test]
+    #[ignore = "run by listed_child_rows_mark_only_person_requests"]
+    fn child_rows() {
+        if std::env::var_os("ZERUS_DSH_CURRENT_READ_FIXTURE").is_none() {
+            return;
+        }
+        let unasked =
+            |method: &str, _: Value| -> Result<Value> { Err(format!("{method} was not expected")) };
+        let link = json!({"schema":1,"machine":"11111111-1111-4111-8111-111111111111","host":"arch",
+            "session_id":"22222222-2222-4222-8222-222222222222","name":"claude/p/lead",
+            "conversation_id":"c","run_id":"r","source":"launch","at":1});
+        let mut child = record();
+        child["parent"] = link;
+        let listed = |child: &Value, row: Value| {
+            snapshot_with(child, &list("host-1", vec![row]), &mut |m, p| unasked(m, p))
+        };
+        // Idle with an unread reply: the parent reads it.
+        let mut idle = row(&[3], None);
+        idle["running"] = json!(false);
+        let view = listed(&child, idle.clone());
+        assert_eq!(
+            (&view["reply_id"], &view["human_request"]),
+            (&json!("dsh-turn-3"), &json!(false)),
+            "{view}"
+        );
+        // The child's own question is the parent's to answer.
+        let mut asked = idle.clone();
+        asked["pendingQuestions"] = json!([{"id":"q1","questions":[],"approval":false}]);
+        let view = listed(&child, asked.clone());
+        assert_eq!(
+            (&view["phase"], &view["human_request"]),
+            (&json!("input"), &json!(false)),
+            "{view}"
+        );
+        // A tool approval and signing in are the person's.
+        asked["pendingQuestions"][0]["approval"] = json!(true);
+        let view = listed(&child, asked);
+        assert_eq!(
+            (&view["phase"], &view["human_request"]),
+            (&json!("input"), &json!(true)),
+            "{view}"
+        );
+        let mut sign_in = idle.clone();
+        sign_in["authRequired"] = json!(true);
+        let view = listed(&child, sign_in);
+        assert_eq!(
+            (&view["activity_summary"], &view["human_request"]),
+            (&json!("Sign in required"), &json!(true)),
+            "{view}"
+        );
+        // A row without a parent link carries no field.
+        assert!(listed(&record(), idle).get("human_request").is_none());
     }
 
     #[test]

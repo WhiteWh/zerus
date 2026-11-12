@@ -151,15 +151,85 @@ fn writer_process() {
         rusqlite::params![CHILD_ID, rollout.to_str().unwrap()],
     )
     .unwrap();
+    // A WAL restarted after a complete checkpoint: SQLite's next commit writes
+    // a new header salt and overwrites from the start, leaving earlier frames
+    // with the old salt after its own, which every SQLite reader ignores.
+    if case == "restarted" {
+        db.execute(
+            "INSERT OR REPLACE INTO threads VALUES(?1,?2)",
+            rusqlite::params!["other-before-restart", rollout.to_str().unwrap()],
+        )
+        .unwrap();
+        db.execute_batch("PRAGMA wal_checkpoint(PASSIVE)").unwrap();
+        db.execute(
+            "INSERT OR REPLACE INTO threads VALUES(?1,?2)",
+            rusqlite::params!["other-after-restart", rollout.to_str().unwrap()],
+        )
+        .unwrap();
+    }
+    // A transaction still being written: a small page cache spills its pages
+    // into the WAL as frames without a commit (the child's new path included).
+    if case == "uncommitted" {
+        db.execute_batch("PRAGMA cache_size=1; BEGIN;").unwrap();
+        db.execute(
+            "UPDATE threads SET rollout_path=?2 WHERE id=?1",
+            rusqlite::params![
+                CHILD_ID,
+                home.join("rollout-uncommitted.jsonl").to_str().unwrap()
+            ],
+        )
+        .unwrap();
+        for index in 0..64 {
+            db.execute(
+                "INSERT INTO threads VALUES(?1,?2)",
+                rusqlite::params![format!("spill-{index}"), "x".repeat(6000)],
+            )
+            .unwrap();
+        }
+    }
     let ready = json!({
         "main_contains_child": main_contains_child,
         "stamps": stamps(&home),
     });
+    // Published whole: the test may read it the moment it appears.
     fs::write(
-        home.join("ready.json"),
+        home.join("ready.tmp"),
         serde_json::to_string(&ready).unwrap(),
     )
     .unwrap();
+    fs::rename(home.join("ready.tmp"), home.join("ready.json")).unwrap();
+    // On request, the main file changes in place (same inode, new modification
+    // time), as a live Codex writes: one commit and a PASSIVE checkpoint, or a
+    // full rewrite (the child's new rollout path, VACUUM, TRUNCATE checkpoint).
+    if case == "checkpoint" || case == "rewrite" {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !home.join("go").exists() && !home.join("stop").exists() && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if home.join("go").exists() {
+            if case == "checkpoint" {
+                db.execute(
+                    "INSERT OR REPLACE INTO threads VALUES(?1,?2)",
+                    rusqlite::params!["other-checkpoint", rollout.to_str().unwrap()],
+                )
+                .unwrap();
+                db.execute_batch("PRAGMA wal_checkpoint(PASSIVE)").unwrap();
+            } else {
+                db.execute(
+                    "UPDATE threads SET rollout_path=?2 WHERE id=?1",
+                    rusqlite::params![
+                        CHILD_ID,
+                        home.join("rollout-rewritten.jsonl").to_str().unwrap()
+                    ],
+                )
+                .unwrap();
+                db.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")
+                    .unwrap();
+            }
+            fs::write(home.join("done"), "").unwrap();
+        }
+    }
     if case == "busy" {
         let mut actions = fs::OpenOptions::new()
             .create(true)
@@ -306,6 +376,9 @@ fn busy_writer() {
         writer.home.join("rollout-child.jsonl").to_string_lossy()
     );
     let after = stamps(&writer.home);
+    // Stopped before its log is read, so no line is half written; the action
+    // that produced `after` logged its stamps after its write.
+    writer.finish();
     let actions = fs::read_to_string(writer.home.join("actions.jsonl")).unwrap();
     let actions: Vec<Value> = actions
         .lines()
@@ -325,6 +398,224 @@ fn busy_writer() {
     println!("before={}", writer.ready["stamps"]);
     println!("after={after}");
     println!("writer_actions={}", actions.len());
+    assert_removed(&directories);
+    writer.finish();
+}
+
+/// zerus-wa90v: runs `between` once, inside the first snapshot attempt, then
+/// returns the read's result and the main file's stamps before and after.
+fn read_with_one_change(
+    case: &str,
+    between: impl FnOnce(&Path) + 'static,
+) -> (
+    Result<std::collections::BTreeMap<String, String>>,
+    Value,
+    Value,
+    Writer,
+) {
+    let writer = start(case);
+    let home = writer.home.clone();
+    let before = stamps(&home);
+    let directories = directories();
+    let mut between = Some(between);
+    AFTER_READ.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            if let Some(change) = between.take() {
+                // Past the file system's timestamp granularity, so an in-place
+                // change gives the same file a new modification time.
+                std::thread::sleep(Duration::from_millis(20));
+                change(&home);
+            }
+        }));
+    });
+    let result = rollout_paths(&writer.home, &[CHILD_ID.into()], until());
+    AFTER_READ.with(|hook| {
+        hook.borrow_mut().take();
+    });
+    assert_removed(&directories);
+    let after = stamps(&writer.home);
+    (
+        result,
+        before["main"].clone(),
+        after["main"].clone(),
+        writer,
+    )
+}
+
+/// Asks the fixture writer for its one in-place change and waits for it.
+fn writer_changes(home: &Path) {
+    fs::write(home.join("go"), "").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !home.join("done").exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the writer did not change the catalog"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// The same file, changed in place: its device and inode stay, its content
+/// and modification time change.
+fn assert_in_place(before: &Value, after: &Value) {
+    assert_eq!(after["device"], before["device"]);
+    assert_eq!(after["inode"], before["inode"]);
+    assert_ne!(after["sha256"], before["sha256"]);
+    assert_ne!(
+        (&after["modified"], &after["modified_nanos"]),
+        (&before["modified"], &before["modified_nanos"])
+    );
+}
+
+/// A busy writer that commits and checkpoints into the same main file while a
+/// snapshot attempt runs: the reader retries and reads the catalog. Only a
+/// different file at the path is a replacement.
+#[test]
+fn a_checkpoint_between_attempts_is_retried_not_refused_as_a_replacement() {
+    isolated("checkpoint_between_attempts");
+}
+
+#[test]
+#[ignore = "process-isolated private state fixture"]
+fn checkpoint_between_attempts() {
+    if std::env::var("ZERUS_CODEX_SQLITE_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let (paths, before, after, mut writer) = read_with_one_change("checkpoint", writer_changes);
+    assert_in_place(&before, &after);
+    println!("main before={before} after={after}");
+    assert_eq!(
+        paths.unwrap()[CHILD_ID],
+        writer.home.join("rollout-child.jsonl").to_string_lossy()
+    );
+    writer.finish();
+}
+
+/// A full rewrite of the same file (VACUUM and a TRUNCATE checkpoint) between
+/// attempts is retried and read whole: the new rollout path, never a mix.
+#[test]
+fn an_in_place_rewrite_between_attempts_is_retried_and_read_consistently() {
+    isolated("rewrite_between_attempts");
+}
+
+#[test]
+#[ignore = "process-isolated private state fixture"]
+fn rewrite_between_attempts() {
+    if std::env::var("ZERUS_CODEX_SQLITE_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let (paths, before, after, mut writer) = read_with_one_change("rewrite", writer_changes);
+    assert_in_place(&before, &after);
+    assert_eq!(
+        paths.unwrap()[CHILD_ID],
+        writer
+            .home
+            .join("rollout-rewritten.jsonl")
+            .to_string_lossy()
+    );
+    writer.finish();
+}
+
+/// Another file renamed into place between attempts is a replacement and is
+/// refused, even with identical content, never read as the catalog.
+#[test]
+fn a_file_replaced_between_attempts_is_refused() {
+    isolated("replacement_between_attempts");
+}
+
+#[test]
+#[ignore = "process-isolated private state fixture"]
+fn replacement_between_attempts() {
+    if std::env::var("ZERUS_CODEX_SQLITE_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let (result, before, after, mut writer) = read_with_one_change("positive", |home| {
+        let database = home.join("state_5.sqlite");
+        let copy = home.join("copy.sqlite");
+        fs::copy(&database, &copy).unwrap();
+        fs::rename(&copy, &database).unwrap();
+    });
+    assert_ne!(after["inode"], before["inode"]);
+    assert_eq!(
+        result.unwrap_err(),
+        "Codex catalog was replaced during its read"
+    );
+    writer.finish();
+}
+
+/// zerus-wa90v: a live WAL restarted after a complete checkpoint keeps the
+/// earlier generation's frames after the current ones (another header salt).
+/// SQLite ignores them; the snapshot reads the catalog instead of refusing it.
+#[test]
+fn a_restarted_wal_with_an_earlier_tail_is_read() {
+    isolated("restarted_wal");
+}
+
+#[test]
+#[ignore = "process-isolated private state fixture"]
+fn restarted_wal() {
+    if std::env::var("ZERUS_CODEX_SQLITE_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let mut writer = start("restarted");
+    let wal = fs::read(writer.home.join("state_5.sqlite-wal")).unwrap();
+    let page = u32::from_be_bytes(wal[8..12].try_into().unwrap()) as usize;
+    let salts: Vec<bool> = wal[32..]
+        .chunks_exact(24 + page)
+        .map(|frame| frame[8..16] == wal[16..24])
+        .collect();
+    // The fixture's WAL holds current frames followed by an earlier tail.
+    assert!(
+        salts.first() == Some(&true) && salts.last() == Some(&false),
+        "{salts:?}"
+    );
+    let directories = directories();
+    let paths = rollout_paths(&writer.home, &[CHILD_ID.into()], until()).unwrap();
+    assert_eq!(
+        paths[CHILD_ID],
+        writer.home.join("rollout-child.jsonl").to_string_lossy()
+    );
+    assert_removed(&directories);
+    writer.finish();
+}
+
+/// zerus-wa90v: frames after the WAL's last commit frame belong to a
+/// transaction still being written. They are not catalog content, and a torn
+/// one is the writer's work in progress, not corruption.
+#[test]
+fn uncommitted_trailing_frames_are_not_read_or_refused() {
+    isolated("uncommitted_frames");
+}
+
+#[test]
+#[ignore = "process-isolated private state fixture"]
+fn uncommitted_frames() {
+    if std::env::var("ZERUS_CODEX_SQLITE_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let mut writer = start("uncommitted");
+    let wal_path = writer.home.join("state_5.sqlite-wal");
+    let mut wal = fs::read(&wal_path).unwrap();
+    let page = u32::from_be_bytes(wal[8..12].try_into().unwrap()) as usize;
+    let commits: Vec<bool> = wal[32..]
+        .chunks_exact(24 + page)
+        .map(|frame| frame[4..8] != [0; 4])
+        .collect();
+    // Committed frames, then the open transaction's frames.
+    assert!(
+        commits.contains(&true) && commits.last() == Some(&false),
+        "{commits:?}"
+    );
+    // The last frame torn, as a reader may find a frame still being written.
+    let last = wal.len() - page;
+    wal[last] ^= 1;
+    fs::write(&wal_path, wal).unwrap();
+    let directories = directories();
+    let paths = rollout_paths(&writer.home, &[CHILD_ID.into()], until()).unwrap();
+    assert_eq!(
+        paths[CHILD_ID],
+        writer.home.join("rollout-child.jsonl").to_string_lossy()
+    );
     assert_removed(&directories);
     writer.finish();
 }

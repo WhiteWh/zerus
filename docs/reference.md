@@ -974,7 +974,9 @@ A child is supervised when its own computer lists its parent as `live`; rows
 with a parent then also carry `human_request`, true while the child holds a
 request only the person can answer: a tool or permission approval, its own or
 a native subagent's, a folder or Codex hooks trust prompt, or signing in (an
-authentication failure or **Sign in required**). A supervised child is quiet
+authentication failure or **Sign in required**). DeepSeek and OpenCode rows
+carry it as well; their tool and permission approvals, listed as pending
+questions, count as approvals. A supervised child is quiet
 only when its host reports `human_request: false` and the row itself shows no
 such approval or sign-in; a host that does not report it keeps every request
 visible. A quiet child behaves like a muted session: no system notification, no rail, tray, menu bar or project header

@@ -36,6 +36,7 @@ class DeepSeekScopedActions(unittest.TestCase):
         self.generation = "fixture-generation"
         self.status = "completed"
         self.answer_generation = "fixture-generation"
+        self.list_items = None
         self.calls = []
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.serve, daemon=True); self.thread.start()
@@ -70,6 +71,8 @@ class DeepSeekScopedActions(unittest.TestCase):
                 elif method == "inspect":
                     value = {"generation": self.generation, "lifecycleActions": ["pause", "resume", "rename", "forget"],
                              "forkSupported": self.native, "forkReady": True}
+                elif method == "list" and self.list_items is not None:
+                    value = {"generation": self.generation, "items": self.list_items}
                 elif method == "session-action":
                     value = {"generation": self.answer_generation, "sessionId": "session-synthetic", "action": params["action"], "status": self.status, "error": "Synthetic refusal"}
                 elif method in ("fork", "search-history", "schedules") and not self.native:
@@ -97,6 +100,36 @@ class DeepSeekScopedActions(unittest.TestCase):
         result = subprocess.run([str(HGS), "session-action", self.name, "--json"], env=self.env, input=json.dumps(request), capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return request, json.loads(result.stdout)
+
+    def test_listed_child_marks_only_person_requests(self):
+        # zerus-lgr9s: a supervised DeepSeek child's listed row carries
+        # human_request. Its unread reply is its parent's, so the row stays
+        # quiet; a tool approval or signing in is the person's.
+        self.record["parent"] = {"schema": 1, "machine": "11111111-1111-4111-8111-111111111111", "host": "fixture",
+                                 "session_id": str(uuid.uuid4()), "name": "claude/example/lead",
+                                 "conversation_id": "lead-conversation", "run_id": "lead-run", "source": "launch", "at": 1}
+        self.binding.write_text(json.dumps(self.record))
+        outline = [{"turn": 3, "seq": 3, "prompt": "Check the fixture", "response": "Fixture checked"}]
+        idle = {"sessionId": "session-synthetic", "agentAvailable": True, "running": False, "updatedAt": 1_000_000.0,
+                "projections": {"values": {"turnOutline": outline}}, "pendingQuestions": []}
+
+        def listed(row):
+            self.list_items = [row]
+            result = subprocess.run([str(HGS), "ls", "--json", "--local"], env=self.env, capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            rows = [session for session in json.loads(result.stdout)["sessions"] if session["name"] == self.name]
+            self.assertEqual(len(rows), 1, result.stdout)
+            return rows[0]
+
+        quiet = listed(idle)
+        self.assertEqual((quiet["reply_id"], quiet["phase"], quiet["human_request"]), ("dsh-turn-3", "idle", False), quiet)
+        question = {"id": "question-1", "questions": [], "approval": False}
+        asked = listed({**idle, "pendingQuestions": [question]})
+        self.assertEqual((asked["phase"], asked["human_request"]), ("input", False), asked)
+        approval = listed({**idle, "pendingQuestions": [{**question, "approval": True}]})
+        self.assertEqual((approval["phase"], approval["human_request"]), ("input", True), approval)
+        sign_in = listed({**idle, "authRequired": True})
+        self.assertEqual((sign_in["activity_summary"], sign_in["human_request"]), ("Sign in required", True), sign_in)
 
     def test_supported_resident_adapter_uses_generation_without_create_or_restart(self):
         _, result = self.run_action("pause")

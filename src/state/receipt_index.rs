@@ -736,6 +736,17 @@ impl Catalog {
         // snapshot. Backfill finishing between separate queries must not turn
         // a prefix snapshot into complete legacy coverage.
         let transaction = sql(self.db.unchecked_transaction())?;
+        // The coverage check counts every retained row (the row-set witness),
+        // so it grows with the whole send history. Run it first in the same
+        // snapshot, bounded by the deadline alone: an exhausted page budget
+        // must never read as unverified coverage (zerus-hn36l). The page's
+        // own bounded queries keep their work cap below.
+        self.db.progress_handler(
+            1000,
+            Some(move || deadline.is_some_and(|d| Instant::now() >= d)),
+        );
+        let verified = self.coverage_verified();
+        let protocol = rowset_protocol(&self.db);
         let work = Arc::new(AtomicUsize::new(0));
         let counter = work.clone();
         self.db.progress_handler(
@@ -764,8 +775,6 @@ impl Catalog {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         ))?;
         let current = migration::stamp(&self.state.join(scope.source.directory()));
-        let verified = self.coverage_verified();
-        let protocol = rowset_protocol(&self.db);
         let ready = verified && complete && current.as_ref().is_ok_and(|v| *v == stamp);
         let mut position = if cursor.is_empty() {
             Cursor {
@@ -987,12 +996,17 @@ impl Catalog {
         // A row without a sequence, or a frontier behind MAX(change), means a
         // schema repair has not published its sequence yet. Never call that
         // Complete: the cursor must restart after the writer's repair.
+        // Per-source seeks on receipt_change(source,change): a whole-table
+        // scan here grew with the send history. Pages read only these
+        // sources, and receipt_sources lists each source a row can name.
         let consistent: bool = self
             .db
             .query_row(
-                "SELECT NOT EXISTS(SELECT 1 FROM receipt_rows WHERE change=0)
+                "SELECT NOT EXISTS(SELECT 1 FROM receipt_sources s WHERE EXISTS
+                     (SELECT 1 FROM receipt_rows r WHERE r.source=s.source AND r.change=0))
                    AND COALESCE((SELECT CAST(value AS INTEGER) FROM receipt_meta WHERE key='change_seq'),0)
-                       >= COALESCE((SELECT MAX(change) FROM receipt_rows),0)",
+                       >= COALESCE((SELECT MAX((SELECT MAX(change) FROM receipt_rows r WHERE r.source=s.source))
+                                      FROM receipt_sources s),0)",
                 [],
                 |row| row.get(0),
             )

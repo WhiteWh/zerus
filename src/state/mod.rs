@@ -601,10 +601,11 @@ fn live_row(session: &mut Value, record: Value, shared: &Shared, process_work: &
         .ok_or("invalid session")?
         .extend(summary.as_object().ok_or("invalid summary")?.clone());
     let questions = read_marks::pending_questions(&record, session, true, shared.budget);
-    if session.get("parent").is_some() {
-        let pending = questions.as_ref().ok().and_then(|questions| questions.as_deref());
-        session["human_request"] = json!(parent_link::human_request(session, pending));
-    }
+    let pending = questions
+        .as_ref()
+        .ok()
+        .and_then(|questions| questions.as_deref());
+    parent_link::mark_human_request(session, pending, false);
     read_marks::enrich_listing(session, shared.marks, journal::journal_name(&record), questions);
     notifications::enrich(session, shared.preferences, journal::journal_name(&record));
     keep_warm::enrich(session, shared.keep_warm, &record);

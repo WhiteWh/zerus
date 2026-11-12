@@ -238,11 +238,24 @@ mod snapshot {
         u32::from_be_bytes(bytes.try_into().unwrap())
     }
 
-    fn validate_wal(source: &Source, expected_page: usize, until: Instant) -> SnapshotResult<()> {
+    /// Validates the WAL as SQLite reads it and returns the length of its
+    /// committed content: the header and the current generation's frames up to
+    /// its last commit frame. A frame with another salt ends the generation: a
+    /// WAL restarted after a complete checkpoint keeps the earlier generation's
+    /// frames after its own, and SQLite ignores them. Frames after the last
+    /// commit frame belong to a transaction still being written and are not
+    /// content. Inside committed content (a frame that commits, or one a later
+    /// frame of the generation commits) a zero page or a failed cumulative
+    /// checksum is refused (zerus-wa90v).
+    fn validate_wal(
+        source: &Source,
+        expected_page: usize,
+        until: Instant,
+    ) -> SnapshotResult<usize> {
         live(until)?;
         let bytes = &source.bytes;
         if bytes.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
         if bytes.len() < 32 {
             return Err(SnapshotError::Changed);
@@ -265,18 +278,33 @@ mod snapshot {
         if !(bytes.len() - 32).is_multiple_of(frame) {
             return Err(SnapshotError::Changed);
         }
-        for header in bytes[32..].chunks_exact(frame) {
+        let generation: Vec<&[u8]> = bytes[32..]
+            .chunks_exact(frame)
+            .take_while(|header| &header[8..16] == salt)
+            .collect();
+        let commits = |frames: &[&[u8]]| frames.iter().any(|header| stored(&header[4..8]) != 0);
+        let mut committed = 32;
+        for (index, header) in generation.iter().enumerate() {
             live(until)?;
-            if stored(&header[..4]) == 0 || &header[8..16] != salt {
-                return Err(failed("Codex WAL frame identity is invalid"));
+            let refused = if stored(&header[..4]) == 0 {
+                Some("Codex WAL frame identity is invalid")
+            } else {
+                checksum(&header[..8], little, &mut first, &mut second);
+                checksum(&header[24..], little, &mut first, &mut second);
+                (first != stored(&header[16..20]) || second != stored(&header[20..24]))
+                    .then_some("Codex WAL frame checksum failed")
+            };
+            if let Some(reason) = refused {
+                if commits(&generation[index..]) {
+                    return Err(failed(reason));
+                }
+                break;
             }
-            checksum(&header[..8], little, &mut first, &mut second);
-            checksum(&header[24..], little, &mut first, &mut second);
-            if first != stored(&header[16..20]) || second != stored(&header[20..24]) {
-                return Err(failed("Codex WAL frame checksum failed"));
+            if stored(&header[4..8]) != 0 {
+                committed = 32 + (index + 1) * frame;
             }
         }
-        Ok(())
+        Ok(committed)
     }
 
     fn write_copy(path: &Path, bytes: &[u8], until: Instant) -> SnapshotResult<()> {
@@ -311,7 +339,7 @@ mod snapshot {
 
     fn query_copy(
         main: &Source,
-        wal: &Option<Source>,
+        wal: Option<&[u8]>,
         ids: &[String],
         until: Instant,
     ) -> SnapshotResult<BTreeMap<String, String>> {
@@ -331,11 +359,7 @@ mod snapshot {
         let main_path = directory.path().join("state_5.sqlite");
         write_copy(&main_path, &main.bytes, until)?;
         if let Some(wal) = wal {
-            write_copy(
-                &directory.path().join("state_5.sqlite-wal"),
-                &wal.bytes,
-                until,
-            )?;
+            write_copy(&directory.path().join("state_5.sqlite-wal"), wal, until)?;
         }
         let db = Connection::open_with_flags(
             &main_path,
@@ -418,10 +442,12 @@ mod snapshot {
         let main = read_source(&home.join("state_5.sqlite"), until)?;
         let size = page_size(&main)?;
         let wal = read_wal(&home.join("state_5.sqlite-wal"), until)?;
-        if let Some(source) = &wal {
-            validate_wal(source, size, until)?;
-        }
-        let paths = query_copy(&main, &wal, ids, until)?;
+        // The copy holds only the WAL's committed content (`validate_wal`).
+        let committed = match &wal {
+            Some(source) => Some(&source.bytes[..validate_wal(source, size, until)?]),
+            None => None,
+        };
+        let paths = query_copy(&main, committed, ids, until)?;
         if !unchanged(&main, &wal, home, until) {
             return Err(SnapshotError::Changed);
         }
@@ -460,8 +486,14 @@ mod snapshot {
                     SnapshotError::Missing => "Codex catalog is missing".to_owned(),
                     SnapshotError::Failed(error) => error,
                 })?;
-            let identity = main.version.identity;
-            if original.get_or_insert(identity) != &identity {
+            // Across attempts only another file at the path is a replacement:
+            // a live writer's commits and checkpoints change the same file in
+            // place (its modification time too), and that attempt is retried.
+            // Within an attempt the full identity, modification time included,
+            // still detects every change (`read_source`, `unchanged`, the WAL)
+            // (zerus-wa90v).
+            let file = (main.version.identity.device, main.version.identity.inode);
+            if original.get_or_insert(file) != &file {
                 return Err("Codex catalog was replaced during its read".into());
             }
             match attempt(home, ids, until) {

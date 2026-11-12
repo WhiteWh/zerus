@@ -389,4 +389,128 @@ mod tests {
         .unwrap();
         assert_eq!(page.coverage, Coverage::Gap);
     }
+    /// Unrelated send receipts, bound to their own rows as the trigger
+    /// witness requires. Written directly: the page reads none of them.
+    fn send_history(state: &Path, rows: u32) {
+        let db = rusqlite::Connection::open(state.join(DATABASE)).unwrap();
+        let transaction = db.unchecked_transaction().unwrap();
+        let start: i64 = transaction
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM receipt_meta WHERE key='change_seq'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        {
+            let mut insert = transaction
+                .prepare(
+                    "INSERT INTO receipt_rows(source,request,name,run,conversation,agent,first_message,at,files,binding,stamp,change)
+                     VALUES('terminal',?1,'codex/p/other','other-run','other-conversation','codex',0,?2,0,'fixture-binding','missing',?3)",
+                )
+                .unwrap();
+            for n in 1..=rows {
+                insert
+                    .execute(params![
+                        uuid::Uuid::from_u128(1_000_000 + u128::from(n)).to_string(),
+                        f64::from(n),
+                        start + i64::from(n)
+                    ])
+                    .unwrap();
+            }
+        }
+        transaction
+            .execute(
+                "UPDATE receipt_meta SET value=? WHERE key='change_seq'",
+                [(start + i64::from(rows)).to_string()],
+            )
+            .unwrap();
+        transaction.commit().unwrap();
+    }
+    /// zerus-hn36l: the coverage check of a question page must not depend on
+    /// how many receipts other sessions have sent. A large send history once
+    /// exhausted the page's SQLite work budget inside that check, which then
+    /// read as unverified: every Codex question page stayed Partial and every
+    /// answer was refused, however long the person waited.
+    #[test]
+    fn a_large_send_history_keeps_question_coverage_complete() {
+        let temp = tempfile::tempdir().unwrap();
+        let _worker = worker_lease(temp.path());
+        original(temp.path(), 1, "codex/p/tag", "run", "conversation");
+        let page = |deadline| {
+            question_page_at(
+                temp.path(),
+                "codex/p/tag",
+                "run",
+                "conversation",
+                None,
+                64,
+                deadline,
+            )
+        };
+        let inspect = || page(Some(Instant::now() + Duration::from_secs(60))).unwrap();
+        assert_eq!(page(None).unwrap().coverage, Coverage::Complete);
+        send_history(temp.path(), 30_000);
+        let inspection = inspect();
+        assert_eq!(inspection.coverage, Coverage::Complete);
+        assert!(!inspection.restart_required);
+        assert_eq!(
+            inspection.rows[0].request_id,
+            uuid::Uuid::from_u128(1).to_string()
+        );
+        // An answer (no deadline) is accepted as well.
+        let answer = page(None).unwrap();
+        assert_eq!(answer.coverage, Coverage::Complete);
+        assert_eq!(answer.rows.len(), 1);
+        // The row-set witness still refuses a history it cannot account for.
+        let db = rusqlite::Connection::open(temp.path().join(DATABASE)).unwrap();
+        let execute = |statement: &str| db.execute_batch(statement).unwrap();
+        execute("UPDATE receipt_sources SET indexed=indexed+1 WHERE source='terminal'");
+        assert_eq!(inspect().coverage, Coverage::Partial);
+        assert!(page(None).is_err());
+        execute("UPDATE receipt_sources SET indexed=indexed-1 WHERE source='terminal'");
+        assert_eq!(inspect().coverage, Coverage::Complete);
+        // So do the per-source consistency seeks: an unseeded row of this or
+        // any other source, and a frontier behind any source's change.
+        let question: i64 = db
+            .query_row(
+                "SELECT change FROM receipt_rows WHERE source='question'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        execute("UPDATE receipt_rows SET change=0 WHERE source='question'");
+        assert_eq!(inspect().coverage, Coverage::Partial);
+        db.execute(
+            "UPDATE receipt_rows SET change=? WHERE source='question'",
+            [question],
+        )
+        .unwrap();
+        assert_eq!(inspect().coverage, Coverage::Complete);
+        let last = uuid::Uuid::from_u128(1_030_000).to_string();
+        let change: i64 = db
+            .query_row(
+                "SELECT change FROM receipt_rows WHERE source='terminal' AND request=?",
+                [&last],
+                |row| row.get(0),
+            )
+            .unwrap();
+        db.execute(
+            "UPDATE receipt_rows SET change=0 WHERE source='terminal' AND request=?",
+            [&last],
+        )
+        .unwrap();
+        assert_eq!(inspect().coverage, Coverage::Partial);
+        db.execute(
+            "UPDATE receipt_rows SET change=? WHERE source='terminal' AND request=?",
+            params![change, last],
+        )
+        .unwrap();
+        assert_eq!(inspect().coverage, Coverage::Complete);
+        db.execute(
+            "UPDATE receipt_meta SET value=? WHERE key='change_seq'",
+            [(change - 1).to_string()],
+        )
+        .unwrap();
+        assert_eq!(inspect().coverage, Coverage::Partial);
+    }
 }
