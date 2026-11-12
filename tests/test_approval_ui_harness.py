@@ -1299,7 +1299,7 @@ class ApprovalHarnessTests(unittest.TestCase):
         for path, digest in {
             "mobile/android/app/src/androidTest/java/app/zerus/mobile/ApprovalChoicesSmokeInstrumentation.kt": "73cee450f08e33c007ad6f3188a6a69135674e2503f80ea48582ba8aa394a9f7",
             "mobile/android/app/src/main/java/app/zerus/mobile/QuestionUiProbe.kt": "beb6a3caf6ae07ca3a062f4f30286aad3b19b71427eed7c9e8d662f7d5ae85be",
-            "mobile/android/app/src/main/java/app/zerus/mobile/QuestionUi.kt": "841c0d5b2df250497b0f54ef8854574ca386e83cb735dc1a0873096d719e22a2",
+            "mobile/android/app/src/main/java/app/zerus/mobile/QuestionUi.kt": "53816da954ccfc33a8a64a72f5d5930b286f51b7586cc577bbcb4e2762317cb3",
         }.items():
             raw = (ROOT / path).read_text()
             if path in BASELINES: raw = reverse_focus_wait(path, raw)

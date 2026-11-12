@@ -171,6 +171,9 @@ class VoiceWorker(unittest.TestCase):
                 json.dumps({"type":"UserPromptSubmit","agent_id":"","at":at,"detail":text})))
         self.record=json.loads(self.record_path.read_text())
         self.record["last_event_at"]=at
+        # The UserPromptSubmit hook this stands in for also records the acceptance
+        # that confirms the typed input (journal update_activity, zerus-iitw8).
+        self.record["input_seen_at"]=at
         self.write_record()
 
     def history(self):
