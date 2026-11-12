@@ -359,12 +359,23 @@ class NativeHookedImagesClaude(NativeBusyClaude):
 
     @property
     def native_env(self):
-        return ('HGS_SESSION=' + self.name, 'HGS_RUN_ID=' + self.run_id, 'HGS_STATE_DIR=' + str(self.state),
-                'HGS_CONFIG_DIR=' + str(self.root / 'config'))
+        # The parent prepares its catalog before the native run IDs exist.
+        environment = getattr(self, '_native_settings_env', super().native_env)
+        if not hasattr(self, 'name'):
+            return environment
+        return (*environment, 'HGS_SESSION=' + self.name, 'HGS_RUN_ID=' + self.run_id,
+                'HGS_STATE_DIR=' + str(self.state), 'HGS_CONFIG_DIR=' + str(self.root / 'config'))
+
+    @native_env.setter
+    def native_env(self, environment):
+        self._native_settings_env = environment
 
     def native_settings(self, work):
+        settings = super().native_settings(work)
         hook = shlex.quote(str(claude.fixtures.HGS)) + ' __state hook'
-        return {'hooks': {'UserPromptSubmit': [{'hooks': [{'type': 'command', 'command': hook, 'timeout': 60}]}]}}
+        settings.setdefault('hooks', {})['UserPromptSubmit'] = [
+            {'hooks': [{'type': 'command', 'command': hook, 'timeout': 60}]}]
+        return settings
 
     def test_pasted_images_settle_before_the_one_enter_when_idle(self):
         started = time.monotonic()
