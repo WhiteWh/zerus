@@ -23,9 +23,11 @@ const STATEMENT: [&str; 10] = [
     "issued_at",
     "expires_at",
 ];
-/// The service's closed refusals, before any write.
-const REFUSALS: [&str; 5] = [
+/// The service's closed refusals, before any write; stale_decision is a
+/// statement not issued after the latch's last decision (zerus-sa9qn.53).
+const REFUSALS: [&str; 6] = [
     "not_verified",
+    "stale_decision",
     "stale_identity",
     "not_found",
     "capacity",

@@ -27,7 +27,8 @@ pub(super) fn migrate(tx: &Transaction<'_>) -> Result<()> {
         "CREATE TABLE desktop_question_route_children(
         session_id TEXT PRIMARY KEY CHECK(length(session_id)=36),
         person_off INTEGER NOT NULL CHECK(person_off IN(0,1)),
-        revision INTEGER NOT NULL CHECK(revision>=1));
+        revision INTEGER NOT NULL CHECK(revision>=0),
+        decided_at INTEGER NOT NULL CHECK(decided_at>=0));
         CREATE TRIGGER desktop_question_route_child_kept BEFORE DELETE ON desktop_question_route_children BEGIN
         SELECT RAISE(ABORT,'a question route latch is kept'); END;
         CREATE TABLE desktop_question_route_child_requests(
@@ -52,26 +53,42 @@ pub(super) fn remove_fixture(db: &Connection) {
     .unwrap();
 }
 
-/// The child's latch and its revision; an absent row is `(false, 0)`. A
-/// corrupt row is an error, never "not latched".
-pub(super) fn state(db: &Connection, session_id: &str) -> Result<(bool, i64)> {
-    let row: Option<(i64, i64)> = db
+/// The child's latch, its revision and the time of the person's last
+/// decision (seconds); an absent row is `(false, 0, 0)`. A corrupt row is an
+/// error, never "not latched".
+fn decision(db: &Connection, session_id: &str) -> Result<(bool, i64, i64)> {
+    let row: Option<(i64, i64, i64)> = db
         .query_row(
-            "SELECT person_off,revision FROM desktop_question_route_children WHERE session_id=?1",
+            "SELECT person_off,revision,decided_at FROM desktop_question_route_children
+             WHERE session_id=?1",
             [session_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
     match row {
-        None => Ok((false, 0)),
-        Some((off, revision)) => {
+        None => Ok((false, 0, 0)),
+        Some((off, revision, decided)) => {
             ensure!(
-                matches!(off, 0 | 1) && revision >= 1,
+                matches!(off, 0 | 1) && revision >= 0 && decided >= 0,
                 "question route latch changed"
             );
-            Ok((off == 1, revision))
+            Ok((off == 1, revision, decided))
         }
     }
+}
+/// The child's latch and its revision.
+pub(super) fn state(db: &Connection, session_id: &str) -> Result<(bool, i64)> {
+    let (off, revision, _) = decision(db, session_id)?;
+    Ok((off, revision))
+}
+
+/// What orders the person's decisions (zerus-sa9qn.53): the desktop's
+/// compare-and-swap at the latch revision, or a phone statement's own issue
+/// time (seconds), which must be after the latch's last decision. A phone's
+/// statement delivered late is never applied over a newer decision.
+pub(super) enum Guard {
+    Revision(i64),
+    IssuedAt(i64),
 }
 
 /// Whether the person latched this child off, read in the caller's
@@ -107,17 +124,19 @@ fn receipt(db: &Connection, id: &str) -> Result<Option<Value>> {
         .map(|(session, off, revision, applied)| reply(id, &session, off == 1, revision, applied == 1)))
 }
 
-/// Sets the child's latch to `person_off` for request `id`, once, at
-/// `expected_revision` (`None`: whatever it is, a phone's statement). The
-/// same request again returns its receipt; another value or child under a
-/// used request is refused. A stale revision is the closed `conflict`
-/// refusal with the current value; it writes nothing.
+/// Sets the child's latch to `person_off` for request `id`, once, as
+/// `guard` orders it. The same request again returns its receipt; another
+/// value or child under a used request is refused. A stale revision is the
+/// closed `conflict` refusal with the current value, and a phone statement
+/// not issued after the last decision the closed `stale_decision`; neither
+/// writes anything. Every accepted decision records its time, even one that
+/// changes nothing, so an older one delivered later is refused.
 pub(super) fn set(
     db: &mut Connection,
     id: &str,
     session_id: &str,
     person_off: bool,
-    expected_revision: Option<i64>,
+    guard: Guard,
     at: i64,
 ) -> Result<Value> {
     ensure!(
@@ -132,47 +151,66 @@ pub(super) fn set(
         );
         return Ok(old);
     }
-    let (now, revision) = state(&tx, session_id)?;
-    if expected_revision.is_some_and(|expected| expected != revision) {
-        let mut conflict = refusal(id, "conflict");
-        conflict["person_off"] = json!(now);
-        conflict["revision"] = json!(revision);
-        return Ok(conflict);
-    }
+    let (now, revision, decided) = decision(&tx, session_id)?;
+    let decided = match guard {
+        Guard::Revision(expected) => {
+            if expected != revision {
+                let mut conflict = refusal(id, "conflict");
+                conflict["person_off"] = json!(now);
+                conflict["revision"] = json!(revision);
+                return Ok(conflict);
+            }
+            decided.max(at.max(0) / 1000)
+        }
+        Guard::IssuedAt(issued) => {
+            if issued <= decided {
+                return Ok(refusal(id, "stale_decision"));
+            }
+            issued
+        }
+    };
     let applied = now != person_off;
-    let revision = if applied {
-        let next = revision
+    let next = if applied {
+        revision
             .checked_add(1)
             .filter(|r| *r < i64::MAX)
-            .ok_or_else(|| anyhow::anyhow!("question route latch revisions exhausted"))?;
-        if revision == 0 {
-            let kept: i64 = tx.query_row(
-                "SELECT count(*) FROM desktop_question_route_children",
-                [],
-                |r| r.get(0),
-            )?;
-            if kept >= CHILDREN {
-                return Ok(refusal(id, "capacity"));
-            }
-            tx.execute(
-                "INSERT INTO desktop_question_route_children(session_id,person_off,revision)
-                 VALUES(?1,?2,?3)",
-                params![session_id, person_off, next],
-            )?;
-        } else {
-            ensure!(
-                tx.execute(
-                    "UPDATE desktop_question_route_children SET person_off=?1,revision=?2
-                     WHERE session_id=?3 AND revision=?4",
-                    params![person_off, next, session_id, revision],
-                )? == 1,
-                "question route latch conflict"
-            );
-        }
-        next
+            .ok_or_else(|| anyhow::anyhow!("question route latch revisions exhausted"))?
     } else {
         revision
     };
+    let present = tx
+        .query_row(
+            "SELECT 1 FROM desktop_question_route_children WHERE session_id=?1",
+            [session_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if present {
+        ensure!(
+            tx.execute(
+                "UPDATE desktop_question_route_children SET person_off=?1,revision=?2,decided_at=?3
+                 WHERE session_id=?4 AND revision=?5",
+                params![person_off, next, decided, session_id, revision],
+            )? == 1,
+            "question route latch conflict"
+        );
+    } else {
+        let kept: i64 = tx.query_row(
+            "SELECT count(*) FROM desktop_question_route_children",
+            [],
+            |r| r.get(0),
+        )?;
+        if kept >= CHILDREN {
+            return Ok(refusal(id, "capacity"));
+        }
+        tx.execute(
+            "INSERT INTO desktop_question_route_children(session_id,person_off,revision,decided_at)
+             VALUES(?1,?2,?3,?4)",
+            params![session_id, person_off, next, decided],
+        )?;
+    }
+    let revision = next;
     let kept: i64 = tx.query_row(
         "SELECT count(*) FROM desktop_question_route_child_requests",
         [],
@@ -248,7 +286,7 @@ pub(in crate::desktop) fn frontend(
         &id,
         &session_id,
         person_off,
-        Some(expected),
+        Guard::Revision(expected),
         chrono::Utc::now().timestamp_millis(),
     ) {
         Ok(reply) => reply,
@@ -379,12 +417,15 @@ pub(in crate::desktop) fn person_request(
         Ok(None) => return refusal(&id, "not_found"),
         Err(_) => return refusal(&id, "question_route_store_refused"),
     }
+    let Ok(issued) = i64::try_from(statement.issued_at) else {
+        return refusal(&id, "invalid_request");
+    };
     let reply = match set(
         db,
         &id,
         &statement.session_id,
         statement.person_off,
-        None,
+        Guard::IssuedAt(issued),
         chrono::Utc::now().timestamp_millis(),
     ) {
         Ok(reply) => reply,

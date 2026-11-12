@@ -1933,9 +1933,9 @@ fn the_latch_request_is_exact_kept_and_bounded() {
     f.store
         .db
         .execute(
-            "INSERT INTO desktop_question_route_children(session_id,person_off,revision)
+            "INSERT INTO desktop_question_route_children(session_id,person_off,revision,decided_at)
              WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?1)
-             SELECT printf('%08x-0000-4000-8000-%012x',i,i),1,1 FROM n",
+             SELECT printf('%08x-0000-4000-8000-%012x',i,i),1,1,1 FROM n",
             [super::super::latch::CHILDREN - 1],
         )
         .unwrap();
@@ -1944,7 +1944,7 @@ fn the_latch_request_is_exact_kept_and_bounded() {
         &uuid::Uuid::new_v4().to_string(),
         "00000000-0000-4000-8000-00000000000a",
         true,
-        Some(0),
+        super::super::latch::Guard::Revision(0),
         1,
     )
     .unwrap();
@@ -1999,11 +1999,21 @@ fn exact_previous_store_upgrade_adds_only_the_latch_leaf() {
 
 /// A phone's latch statement as the connector forwards it (zerus-sa9qn.50).
 fn person(request_id: &str, person_off: bool) -> Value {
+    // Each statement is issued after the one before (zerus-sa9qn.53).
+    static ISSUED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1000);
+    person_at(
+        request_id,
+        person_off,
+        ISSUED.fetch_add(1, Ordering::SeqCst),
+    )
+}
+/// A phone's latch statement issued at `issued` (seconds).
+fn person_at(request_id: &str, person_off: bool, issued: i64) -> Value {
     json!({"op": "question_route_person", "signature": "c2lnbmF0dXJl",
         "statement": {"workspace_id": "workspace-fixture", "device_id": "phone-1",
             "gateway_id": "gateway-1", "session_id": CHILD_ID, "run_id": "run-1",
             "conversation_id": "conversation-1", "person_off": person_off,
-            "request_id": request_id, "issued_at": 1, "expires_at": 2}})
+            "request_id": request_id, "issued_at": issued, "expires_at": issued + 1}})
 }
 /// The verifier's confirmation of exactly this statement.
 fn verified(input: &Value) -> anyhow::Result<Value> {
@@ -2020,12 +2030,13 @@ fn a_phones_verified_statement_sets_the_latch_once_and_the_host_follows() {
     let state = f.config.state.clone();
     let id = uuid::Uuid::new_v4().to_string();
     let seen = std::cell::Cell::new(0);
-    let off = super::super::latch_person(&mut f.store.db, &state, &person(&id, true), |input| {
+    let request = person(&id, true);
+    let off = super::super::latch_person(&mut f.store.db, &state, &request, |input| {
         seen.set(seen.get() + 1);
         // The verifier gets exactly the statement and its signature.
         assert_eq!(
             input,
-            &json!({"statement": person(&id, true)["statement"], "signature": "c2lnbmF0dXJl"})
+            &json!({"statement": request["statement"], "signature": "c2lnbmF0dXJl"})
         );
         verified(input)
     });
@@ -2133,4 +2144,109 @@ fn an_unverified_or_mismatched_statement_changes_nothing() {
     }
     assert!(!super::super::latch::latched(&f.store.db, CHILD_ID).unwrap());
     assert_eq!(host(&f), Some(true));
+}
+
+/// zerus-sa9qn.53: phone statements apply in the order the person made
+/// them. Off, on, off issued at 1, 2, 3 and delivered 1, 3, 2 end off: the
+/// late "on" is the closed refusal stale_decision and writes nothing.
+#[test]
+fn a_phone_statement_delivered_late_never_overrides_a_newer_decision() {
+    let mut f = Fixture::new();
+    f.snapshot(vec![child_row(), parent_row()]);
+    let state = f.config.state.clone();
+    let id = || uuid::Uuid::new_v4().to_string();
+    let (first, second, third) = (id(), id(), id());
+    let one = super::super::latch_person(
+        &mut f.store.db,
+        &state,
+        &person_at(&first, true, 100),
+        verified,
+    );
+    assert_eq!(
+        (one["accepted"].clone(), one["person_off"].clone()),
+        (json!(true), json!(true))
+    );
+    let three = super::super::latch_person(
+        &mut f.store.db,
+        &state,
+        &person_at(&third, true, 300),
+        verified,
+    );
+    assert_eq!(
+        (three["accepted"].clone(), three["applied"].clone()),
+        (json!(true), json!(false)),
+        "already off, yet a decision"
+    );
+    let two = super::super::latch_person(
+        &mut f.store.db,
+        &state,
+        &person_at(&second, false, 200),
+        verified,
+    );
+    assert_eq!(
+        (two["accepted"].clone(), two["code"].clone()),
+        (json!(false), json!("stale_decision")),
+        "{two}"
+    );
+    assert!(super::super::latch::latched(&f.store.db, CHILD_ID).unwrap());
+    assert_eq!(mirror(&f).unwrap()["person_off"], true);
+    // A statement issued in the same second as the last decision is stale too;
+    // a replay of an applied one still answers its receipt.
+    let same = super::super::latch_person(
+        &mut f.store.db,
+        &state,
+        &person_at(&id(), false, 300),
+        verified,
+    );
+    assert_eq!(same["code"], "stale_decision");
+    let replay = super::super::latch_person(
+        &mut f.store.db,
+        &state,
+        &person_at(&first, true, 100),
+        |_| panic!("a replay is never verified again"),
+    );
+    assert_eq!(replay["accepted"], true);
+    // A newer statement applies.
+    let on = super::super::latch_person(
+        &mut f.store.db,
+        &state,
+        &person_at(&id(), false, 400),
+        verified,
+    );
+    assert_eq!(
+        (on["accepted"].clone(), on["person_off"].clone()),
+        (json!(true), json!(false))
+    );
+    assert!(!super::super::latch::latched(&f.store.db, CHILD_ID).unwrap());
+}
+
+/// zerus-sa9qn.53: the desktop's decision is ordered with the phones' by its
+/// time; a phone statement issued before it and delivered later is refused.
+#[test]
+fn a_phone_statement_issued_before_a_desktop_decision_is_refused() {
+    let mut f = Fixture::new();
+    f.snapshot(vec![child_row(), parent_row()]);
+    let state = f.config.state.clone();
+    let now = chrono::Utc::now().timestamp();
+    let off = latch(
+        &mut f,
+        &latch_request(&uuid::Uuid::new_v4().to_string(), true, 0),
+    );
+    assert_eq!(off["accepted"], true);
+    let late = super::super::latch_person(
+        &mut f.store.db,
+        &state,
+        &person_at(&uuid::Uuid::new_v4().to_string(), false, now - 10),
+        verified,
+    );
+    assert_eq!(late["code"], "stale_decision");
+    assert!(super::super::latch::latched(&f.store.db, CHILD_ID).unwrap());
+    let newer = super::super::latch_person(
+        &mut f.store.db,
+        &state,
+        &person_at(&uuid::Uuid::new_v4().to_string(), false, now + 2),
+        verified,
+    );
+    assert_eq!(newer["accepted"], true, "{newer}");
+    assert!(!super::super::latch::latched(&f.store.db, CHILD_ID).unwrap());
 }

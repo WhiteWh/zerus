@@ -54,6 +54,7 @@ public enum SessionQuestionRouting {
     }
     public static let personRefusals: [String: String] = [
         "not_verified": "The computer did not accept this phone's signature. Refresh this workspace and try again.",
+        "stale_decision": "A newer choice for this child was made. Refresh and choose again.",
         "stale_identity": "The conversation changed. Refresh its exact identity before applying.",
         "not_found": "This conversation is no longer available.",
         "capacity": "The computer's question routing storage is full. The setting was not changed.",

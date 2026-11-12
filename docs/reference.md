@@ -1006,7 +1006,13 @@ The person has two switches, both on by default (zerus-sa9qn.32):
   that statement for this gateway, and must reply exactly `{ok, verifier:
   "question-route-person-v1", verified}`. Any failure, timeout or other
   output is the closed refusal `not_verified`. The service then sets the
-  latch once per request ID, and the host file follows. Peers and Windows
+  latch once per request ID, and the host file follows. Decisions apply in
+  the order the person made them (zerus-sa9qn.53): the latch keeps the
+  time of its last decision (a desktop decision records the computer's
+  time). A statement not issued after it, such as one delivered late, is
+  the closed refusal `stale_decision` and changes nothing. A decision that
+  changes nothing still records its time. The phone then refreshes and
+  asks again. Peers and Windows
   gateways do not offer it, and a legacy connection keeps the host switch.
   The shared vector is
   `services/mobile/crypto/tests/vectors/question-route-person-v1.json`.

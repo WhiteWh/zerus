@@ -152,6 +152,7 @@ fn only_one_exact_statement_and_its_exact_receipt_or_closed_refusal() {
     };
     for code in [
         "not_verified",
+        "stale_decision",
         "stale_identity",
         "not_found",
         "capacity",

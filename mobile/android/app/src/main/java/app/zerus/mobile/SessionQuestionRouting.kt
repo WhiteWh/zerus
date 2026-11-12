@@ -80,6 +80,7 @@ object SessionQuestionRouting {
     }
     val personRefusals = mapOf(
         "not_verified" to "The computer did not accept this phone's signature. Refresh this workspace and try again.",
+        "stale_decision" to "A newer choice for this child was made. Refresh and choose again.",
         "stale_identity" to "The conversation changed. Refresh its exact identity before applying.",
         "not_found" to "This conversation is no longer available.",
         "capacity" to "The computer's question routing storage is full. The setting was not changed.",
