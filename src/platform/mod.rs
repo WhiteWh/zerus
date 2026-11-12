@@ -200,30 +200,39 @@ pub fn lock_contended(error: &io::Error) -> bool {
 /// Windows frees a closed handle's lock only when system resources allow, and a
 /// forked child can keep a Unix descriptor open until exec, so closing the file
 /// alone can leave the next process waiting.
-pub struct FileLock(File);
+pub struct FileLock {
+    file: File,
+    owner_pid: u32,
+}
 
 impl FileLock {
     pub fn exclusive(file: File) -> io::Result<Self> {
         fs2::FileExt::lock_exclusive(&file)?;
-        Ok(Self(file))
+        Ok(Self::held(file))
     }
 
     /// Takes ownership of a file whose lock this process has just acquired.
     pub fn held(file: File) -> Self {
-        Self(file)
+        Self {
+            file,
+            owner_pid: std::process::id(),
+        }
     }
 
     /// The identity of the exact file object this lock is held on.
     #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     pub fn identity(&self) -> io::Result<FileIdentity> {
-        FileIdentity::of(&self.0)
+        FileIdentity::of(&self.file)
     }
 }
 
 impl Drop for FileLock {
     fn drop(&mut self) {
         // Rust 1.89+ File::unlock would shadow the trait method; name fs2 explicitly.
-        let _ = fs2::FileExt::unlock(&self.0);
+        // An inherited copy must not unlock its parent's still-live scope.
+        if self.owner_pid == std::process::id() {
+            let _ = fs2::FileExt::unlock(&self.file);
+        }
     }
 }
 
@@ -920,3 +929,6 @@ mod console_allocation_tests {
         );
     }
 }
+
+#[cfg(all(test, unix))]
+pub(crate) mod lock_tests;
