@@ -34,6 +34,7 @@ METHODS = (
     'test_kimi_native.NativeKimi.test_exact_input_reaches_the_model_once',
     'test_kimi_native.NativeKimi.test_busy_attachment_send_is_typed_once_and_delivered_once',
     'test_kimi_native.NativeKimi.test_clear_input_discards_a_residue_and_kimi_keeps_running',
+    'test_kimi_native.NativeKimi.test_hint_reaches_model_through_real_hgs_hook',
     'test_kimi_native.NativeKimi.test_manual_compaction_reaches_native_hooks',
     'test_kimi_native.NativeKimi.test_pause_and_resume_keep_the_conversation',
     'test_kimi_native.NativeKimi.test_rolling_window_429_recovers_in_the_same_conversation',
