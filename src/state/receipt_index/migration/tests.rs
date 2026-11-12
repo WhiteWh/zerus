@@ -27,6 +27,12 @@ fn finishing(migration: &mut Migration, count: u128) {
         after: Some(uuid::Uuid::from_u128(count).to_string()),
         indexed: count as i64,
         count_at_start: state(migration).0,
+        schema: migration
+            .catalog
+            .db
+            .query_row("PRAGMA schema_version", [], |row| row.get(0))
+            .unwrap(),
+        witness_error: false,
         epoch: migration
             .catalog
             .db

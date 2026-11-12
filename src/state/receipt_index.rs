@@ -30,8 +30,33 @@ pub(super) const PAGE_LIMIT: usize = 100;
 const EXAMINE: usize = 256;
 const ORIGINAL_BYTES: u64 = 256 * 1024;
 const DATABASE: &str = "delivery-receipts-v1.sqlite3";
-const ROWSET_PROTOCOL: &str = "3";
+// 4: the rebound trigger also moves a row's count between sources, so the
+// witness token stays exact across a source change (zerus-z5uax.1).
+const ROWSET_PROTOCOL: &str = "4";
 const VERIFY_SECONDS: f64 = 600.0;
+// The row-set witness token (zerus-z5uax): one receipt_meta entry per source.
+const WITNESS_PREFIX: &str = "rowset_witness:";
+// A reader verifies at most this many rows appended after the last exact
+// witness; beyond it the token is stale (unknown) until the worker re-witnesses.
+const WITNESS_DELTA: i64 = 4096;
+const WITNESS_MISMATCHES: &str = "rowset_witness_mismatches";
+
+/// The exact count a worker last verified for one source, under the schema
+/// it verified (its delete/rebind triggers) and up to the row sequence then.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Witnessed {
+    Agreed,
+    Mismatch,
+    Raced,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WitnessEntry {
+    schema: i64,
+    seq: i64,
+    count: i64,
+    at: f64,
+}
 
 // Coverage is sealed only after discovery. These guards invalidate that seal
 // if a cached locator disappears or moves without a matching original walk.
@@ -431,6 +456,8 @@ impl Catalog {
                   OR OLD.at IS NOT NEW.at OR OLD.files IS NOT NEW.files OR OLD.binding IS NOT NEW.binding)
                 BEGIN
                   UPDATE receipt_sources SET complete=0 WHERE source IN(OLD.source,NEW.source);
+                  UPDATE receipt_sources SET indexed=MAX(0,indexed-1) WHERE source=OLD.source AND OLD.source IS NOT NEW.source;
+                  UPDATE receipt_sources SET indexed=indexed+1 WHERE source=NEW.source AND OLD.source IS NOT NEW.source;
                   INSERT INTO receipt_errors VALUES(OLD.source,OLD.request||'.json',CASE WHEN OLD.conversation IS NOT NEW.conversation THEN 'binding_changed' ELSE 'index_row_changed' END)
                     ON CONFLICT(source,name) DO UPDATE SET reason=excluded.reason;
                   UPDATE receipt_meta SET value=lower(hex(randomblob(16))) WHERE key='epoch';
@@ -499,7 +526,8 @@ impl Catalog {
             sql(db.execute_batch(
                 "CREATE INDEX IF NOT EXISTS receipt_change ON receipt_rows(source,change);
                  CREATE INDEX IF NOT EXISTS receipt_change_scope ON receipt_rows(source,agent,conversation,change,request);
-                 CREATE INDEX IF NOT EXISTS receipt_change_initial ON receipt_rows(source,agent,run,change,request);",
+                 CREATE INDEX IF NOT EXISTS receipt_change_initial ON receipt_rows(source,agent,run,change,request);
+                 CREATE INDEX IF NOT EXISTS receipt_seq ON receipt_rows(source,seq);",
             ))?;
 
             // The frontier must cover every seeded row, repairing a persisted
@@ -538,6 +566,8 @@ impl Catalog {
                        OR OLD.at IS NOT NEW.at OR OLD.files IS NOT NEW.files OR OLD.binding IS NOT NEW.binding)
                      BEGIN
                        UPDATE receipt_sources SET complete=0 WHERE source IN(OLD.source,NEW.source);
+                       UPDATE receipt_sources SET indexed=MAX(0,indexed-1) WHERE source=OLD.source AND OLD.source IS NOT NEW.source;
+                       UPDATE receipt_sources SET indexed=indexed+1 WHERE source=NEW.source AND OLD.source IS NOT NEW.source;
                        INSERT INTO receipt_errors VALUES(OLD.source,OLD.request||'.json',CASE WHEN OLD.conversation IS NOT NEW.conversation THEN 'binding_changed' ELSE 'index_row_changed' END)
                          ON CONFLICT(source,name) DO UPDATE SET reason=excluded.reason;
                        UPDATE receipt_meta SET value=lower(hex(randomblob(16))) WHERE key='epoch';
@@ -582,10 +612,17 @@ impl Catalog {
             sql(transaction.commit())?;
         }
         drop(upgrade);
-        Ok(Self {
+        let catalog = Self {
             db,
             state: state.to_owned(),
-        })
+        };
+        // A new, upgraded or schema-changed cache has no current token. Take
+        // the exact witness once here; if that is busy or fails, readers stay
+        // unknown and request the worker, which re-witnesses on every run.
+        if create && !catalog.witness_present() {
+            let _ = catalog.witness();
+        }
+        Ok(catalog)
     }
     fn remember(&self, source: Source, path: &Path, value: &Value) -> Result<()> {
         // Sequence allocation and the row write must be visible together: a
@@ -639,8 +676,10 @@ impl Catalog {
             // An unchanged original can have corrupted cached projection fields.
             // Restore those too; preserve the immutable fingerprint and the
             // existing one-way first-prompt conversation pin.
+            // An empty cached conversation with an equally empty original is
+            // unchanged: rewriting it would publish a change on every walk.
             let resolved = prior.conversation.is_empty();
-            if resolved || prior.stamp != stamp || !prior.matches(&binding) {
+            if prior.stamp != stamp || !prior.matches(&binding) {
                 let proof = if resolved && !binding.conversation.is_empty() {
                     let original = self.state.join(source.directory()).join(filename);
                     let Some(proof) = pin::ProvenPin::read(source, &original, &binding, &stamp)
@@ -736,11 +775,11 @@ impl Catalog {
         // snapshot. Backfill finishing between separate queries must not turn
         // a prefix snapshot into complete legacy coverage.
         let transaction = sql(self.db.unchecked_transaction())?;
-        // The coverage check counts every retained row (the row-set witness),
-        // so it grows with the whole send history. Run it first in the same
-        // snapshot, bounded by the deadline alone: an exhausted page budget
-        // must never read as unverified coverage (zerus-hn36l). The page's
-        // own bounded queries keep their work cap below.
+        // Run the coverage check first in the same snapshot, bounded by the
+        // deadline alone: an exhausted page budget must never read as
+        // unverified coverage (zerus-hn36l). Its row-set witness token keeps
+        // the check bounded whatever the history size (zerus-z5uax). The
+        // page's own bounded queries keep their work cap below.
         self.db.progress_handler(
             1000,
             Some(move || deadline.is_some_and(|d| Instant::now() >= d)),
@@ -982,15 +1021,7 @@ impl Catalog {
         if !rowset_protocol(&self.db) {
             return false;
         }
-        let witness: bool = self
-            .db
-            .query_row(
-                "SELECT NOT EXISTS(SELECT 1 FROM receipt_sources WHERE indexed != (SELECT COUNT(*) FROM receipt_rows WHERE source=receipt_sources.source))",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(false);
-        if !witness {
+        if !self.witness_current() {
             return false;
         }
         // A row without a sequence, or a frontier behind MAX(change), means a
@@ -1016,9 +1047,244 @@ impl Catalog {
         }
         true
     }
+    /// The row-set witness in bounded work, whatever the history size: every
+    /// source's trigger counter equals the exact count a worker last verified
+    /// plus the rows appended after it, and the schema (with its delete and
+    /// rebind triggers) is unchanged since. A deletion fires those triggers,
+    /// and a schema change voids the token. More than WITNESS_DELTA appended
+    /// rows, a missing or foreign token, or any read failure is unknown: the
+    /// caller requests the worker, which re-witnesses the exact rows.
+    fn witness_current(&self) -> bool {
+        let read = || -> rusqlite::Result<bool> {
+            let schema: i64 = self
+                .db
+                .query_row("PRAGMA schema_version", [], |row| row.get(0))?;
+            let mut statement = self.db.prepare(
+                "SELECT s.source,s.indexed,m.value FROM receipt_sources s
+                   LEFT JOIN receipt_meta m ON m.key=?1||s.source",
+            )?;
+            let rows = statement
+                .query_map([WITNESS_PREFIX], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut entries = Vec::with_capacity(rows.len());
+            for (source, indexed, value) in rows {
+                let Some(entry) =
+                    value.and_then(|value| serde_json::from_str::<WitnessEntry>(&value).ok())
+                else {
+                    return Ok(false);
+                };
+                if entry.schema != schema {
+                    return Ok(false);
+                }
+                entries.push((source, indexed, entry));
+            }
+            if entries.is_empty() {
+                return Ok(false);
+            }
+            // Each source's rows after its own token, on the (source,seq)
+            // index and capped: a missing index is a read failure (unknown).
+            for (source, indexed, entry) in entries {
+                let added: i64 = self.db.query_row(
+                    "SELECT COUNT(*) FROM (SELECT 1 FROM receipt_rows INDEXED BY receipt_seq
+                       WHERE source=?1 AND seq>?2 LIMIT ?3)",
+                    params![source, entry.seq, WITNESS_DELTA + 1],
+                    |row| row.get(0),
+                )?;
+                if added > WITNESS_DELTA || indexed != entry.count + added {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        };
+        read().unwrap_or(false)
+    }
+    /// Whether every source has a token taken under the current schema.
+    fn witness_present(&self) -> bool {
+        let schema: rusqlite::Result<i64> = self
+            .db
+            .query_row("PRAGMA schema_version", [], |row| row.get(0));
+        let Ok(schema) = schema else {
+            return false;
+        };
+        Source::ALL.into_iter().all(|source| {
+            self.db
+                .query_row(
+                    "SELECT value FROM receipt_meta WHERE key=?",
+                    [format!("{WITNESS_PREFIX}{}", source.key())],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok()
+                .and_then(|value| serde_json::from_str::<WitnessEntry>(&value).ok())
+                .is_some_and(|entry| entry.schema == schema)
+        })
+    }
+    /// Publish one source's row-set witness inside the caller's transaction:
+    /// `counted` is an exact count of its rows taken under guards that rule
+    /// out a concurrent change (the walk's bounded count, or a snapshot count
+    /// plus the rows appended since). The trigger counter must equal it.
+    /// Agreement refreshes the source's token; disagreement is a recorded
+    /// mismatch. Constant SQL work: no row is counted here.
+    pub(super) fn witness_publish(
+        &self,
+        source: Source,
+        counter: i64,
+        counted: i64,
+    ) -> Result<bool> {
+        if counter != counted {
+            self.witness_mismatch(source, counter, counted)?;
+            return Ok(false);
+        }
+        let schema: i64 = sql(self
+            .db
+            .query_row("PRAGMA schema_version", [], |row| row.get(0)))?;
+        let seq: i64 =
+            sql(self
+                .db
+                .query_row("SELECT COALESCE(MAX(seq),0) FROM receipt_rows", [], |row| {
+                    row.get(0)
+                }))?;
+        let entry = WitnessEntry {
+            schema,
+            seq,
+            count: counted,
+            at: now(),
+        };
+        sql(self.db.execute(
+            "INSERT INTO receipt_meta VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![
+                format!("{WITNESS_PREFIX}{}", source.key()),
+                serde_json::to_string(&entry).map_err(|_| "Receipt index is unavailable")?
+            ],
+        ))?;
+        Ok(true)
+    }
+    /// A trigger counter that disagrees with its rows. Nothing is re-sealed
+    /// here: the whole token is cleared, this source's coverage becomes
+    /// unknown, cursors restart, and a visible error plus a durable diagnostic
+    /// are recorded. The counter takes the exact count so that a later walk,
+    /// which starts after this record and re-reads every original, can seal
+    /// the source again; only such a walk clears the error.
+    fn witness_mismatch(&self, source: Source, counter: i64, exact: i64) -> Result<()> {
+        sql(self.db.execute(
+            "DELETE FROM receipt_meta WHERE key GLOB ?1",
+            [format!("{WITNESS_PREFIX}*")],
+        ))?;
+        sql(self.db.execute(
+            "UPDATE receipt_sources SET complete=0,indexed=?1 WHERE source=?2",
+            params![exact, source.key()],
+        ))?;
+        sql(self.db.execute(
+            "UPDATE receipt_meta SET value=? WHERE key='epoch'",
+            [uuid::Uuid::new_v4().to_string()],
+        ))?;
+        self.error(source, "@witness", "witness_mismatch")?;
+        let prior: i64 = sql(self
+            .db
+            .query_row(
+                "SELECT value FROM receipt_meta WHERE key=?",
+                [WITNESS_MISMATCHES],
+                |row| row.get::<_, String>(0),
+            )
+            .optional())?
+        .and_then(|value| serde_json::from_str::<Value>(&value).ok())
+        .and_then(|value| value["count"].as_i64())
+        .unwrap_or(0);
+        sql(self.db.execute(
+            "INSERT INTO receipt_meta VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![
+                WITNESS_MISMATCHES,
+                json!({"count":prior+1,"source":source.key(),"counter":counter,"rows":exact,"at":now()}).to_string()
+            ],
+        ))?;
+        Ok(())
+    }
+    /// Re-witness every source exactly: each worker run, and a new, upgraded
+    /// or schema-changed cache. The exact counts come from one read snapshot,
+    /// without the write lock; a short IMMEDIATE transaction then adds the
+    /// rows appended since that snapshot and publishes. A delete, rebind or
+    /// schema change in between (each rotates the epoch or the schema) is a
+    /// race: nothing changes and the next run retries. Any mismatch leaves no
+    /// token at all, so readers stay unknown until a clean witness.
+    pub(super) fn witness(&self) -> Result<Witnessed> {
+        let (epoch, schema, watermark, counts) = {
+            let read = sql(self.db.unchecked_transaction())?;
+            let epoch: String = sql(self.db.query_row(
+                "SELECT value FROM receipt_meta WHERE key='epoch'",
+                [],
+                |row| row.get(0),
+            ))?;
+            let schema: i64 = sql(self
+                .db
+                .query_row("PRAGMA schema_version", [], |row| row.get(0)))?;
+            let watermark: i64 = sql(self.db.query_row(
+                "SELECT COALESCE(MAX(seq),0) FROM receipt_rows",
+                [],
+                |row| row.get(0),
+            ))?;
+            let mut counts = Vec::with_capacity(Source::ALL.len());
+            for source in Source::ALL {
+                counts.push(sql(self.db.query_row(
+                    "SELECT COUNT(*) FROM receipt_rows WHERE source=?",
+                    [source.key()],
+                    |row| row.get::<_, i64>(0),
+                ))?);
+            }
+            sql(read.commit())?;
+            (epoch, schema, watermark, counts)
+        };
+        let write = sql(rusqlite::Transaction::new_unchecked(
+            &self.db,
+            rusqlite::TransactionBehavior::Immediate,
+        ))?;
+        let now_epoch: String = sql(self.db.query_row(
+            "SELECT value FROM receipt_meta WHERE key='epoch'",
+            [],
+            |row| row.get(0),
+        ))?;
+        let now_schema: i64 = sql(self
+            .db
+            .query_row("PRAGMA schema_version", [], |row| row.get(0)))?;
+        if now_epoch != epoch || now_schema != schema {
+            sql(write.commit())?;
+            return Ok(Witnessed::Raced);
+        }
+        let mut agreed = true;
+        for (source, counted) in Source::ALL.into_iter().zip(counts) {
+            let appended: i64 = sql(self.db.query_row(
+                "SELECT COUNT(*) FROM receipt_rows INDEXED BY receipt_seq WHERE source=?2 AND seq>?1",
+                params![watermark, source.key()],
+                |row| row.get(0),
+            ))?;
+            let counter: i64 = sql(self.db.query_row(
+                "SELECT indexed FROM receipt_sources WHERE source=?",
+                [source.key()],
+                |row| row.get(0),
+            ))?;
+            agreed &= self.witness_publish(source, counter, counted + appended)?;
+        }
+        if !agreed {
+            sql(self.db.execute(
+                "DELETE FROM receipt_meta WHERE key GLOB ?1",
+                [format!("{WITNESS_PREFIX}*")],
+            ))?;
+        }
+        sql(write.commit())?;
+        Ok(if agreed {
+            Witnessed::Agreed
+        } else {
+            Witnessed::Mismatch
+        })
+    }
     /// A stale-but-consistent locator stays complete: age only schedules the
     /// background re-verification walk, which flips coverage when it finds a
-    /// discrepancy. No consumer waits on the 600 s timer by itself.
+    /// discrepancy. No consumer waits on the 600 s timer by itself. The
+    /// row-set token has the same cadence: a missing or old token is due.
     fn verification_due(&self) -> bool {
         let verified_at = self
             .db
@@ -1032,7 +1298,21 @@ impl Catalog {
             .flatten()
             .and_then(|value| value.parse::<f64>().ok())
             .unwrap_or(0.0);
-        now() - verified_at >= VERIFY_SECONDS
+        let witnessed_at = Source::ALL
+            .into_iter()
+            .map(|source| {
+                self.db
+                    .query_row(
+                        "SELECT value FROM receipt_meta WHERE key=?",
+                        [format!("{WITNESS_PREFIX}{}", source.key())],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .ok()
+                    .and_then(|value| serde_json::from_str::<WitnessEntry>(&value).ok())
+                    .map_or(0.0, |entry| entry.at)
+            })
+            .fold(f64::INFINITY, f64::min);
+        now() - verified_at.min(witnessed_at) >= VERIFY_SECONDS
     }
     fn change_epoch(&self) -> Result<(String, String, i64)> {
         let epoch: String = sql(self.db.query_row(

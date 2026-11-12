@@ -1195,12 +1195,20 @@ fn a_lost_witness_or_stale_verification_turns_coverage_incomplete_and_the_walk_r
         .unwrap();
     let page = catalog.page(&scope, "", 100, true).unwrap();
     assert_eq!(page.metadata["migration_complete"], false);
-    // The bounded verification requests the worker; its forced walk repairs
-    // the witness (and any lost row) and refreshes the verification age.
+    // The bounded verification requests the worker. Its count publication
+    // records the mismatch and seals nothing (zerus-z5uax): the error stays
+    // visible until a later walk, which re-reads every original, completes.
+    let mut migration = migration::Migration::new(temp.path()).unwrap();
+    while !migration.step().unwrap() {}
+    let recorded = catalog.page(&scope, "", 100, true).unwrap();
+    assert_eq!(recorded.metadata["migration_complete"], false);
+    assert_eq!(recorded.metadata["unattributed_errors"], 1);
+    assert_eq!(recorded.metadata["indexed"], 2);
     let mut migration = migration::Migration::new(temp.path()).unwrap();
     while !migration.step().unwrap() {}
     let repaired = catalog.page(&scope, "", 100, true).unwrap();
     assert_eq!(repaired.metadata["migration_complete"], true);
+    assert_eq!(repaired.metadata["unattributed_errors"], 0);
     assert_eq!(repaired.metadata["indexed"], 2);
     // Age alone is not evidence: a stale-but-consistent locator stays
     // complete and only schedules the re-verification walk.
@@ -1505,3 +1513,6 @@ mod scope_restore;
 
 #[path = "pin_tests.rs"]
 mod proven_pin;
+
+#[path = "witness_tests.rs"]
+mod witness_token;

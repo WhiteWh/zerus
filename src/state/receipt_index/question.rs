@@ -450,6 +450,14 @@ mod tests {
         let inspect = || page(Some(Instant::now() + Duration::from_secs(60))).unwrap();
         assert_eq!(page(None).unwrap().coverage, Coverage::Complete);
         send_history(temp.path(), 30_000);
+        // 30,000 rows after the witness token is more than a reader verifies
+        // by itself: unknown until the worker, which readers request,
+        // re-witnesses the exact rows (zerus-z5uax).
+        assert_eq!(inspect().coverage, Coverage::Partial);
+        assert_eq!(
+            Catalog::open(temp.path(), true).unwrap().witness().unwrap(),
+            Witnessed::Agreed
+        );
         let inspection = inspect();
         assert_eq!(inspection.coverage, Coverage::Complete);
         assert!(!inspection.restart_required);

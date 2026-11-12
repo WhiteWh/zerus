@@ -115,13 +115,20 @@ struct Walk {
     indexed: i64,
     epoch: String,
     count_at_start: i64,
+    // The schema the bounded count runs under: its triggers make the count
+    // exact while the counter and epoch stay unchanged.
+    schema: i64,
+    // A row-set witness mismatch recorded before this walk began. Only a
+    // complete walk that started after it may clear that error.
+    witness_error: bool,
 }
-fn source_witness(catalog: &Catalog, source: Source) -> Result<(String, i64)> {
+fn source_witness(catalog: &Catalog, source: Source) -> Result<(String, i64, i64)> {
     sql(catalog.db.query_row(
-        "SELECT (SELECT value FROM receipt_meta WHERE key='epoch'),indexed
+        "SELECT (SELECT value FROM receipt_meta WHERE key='epoch'),indexed,
+                (SELECT schema_version FROM pragma_schema_version)
            FROM receipt_sources WHERE source=?",
         [source.key()],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     ))
 }
 pub(super) struct Migration {
@@ -209,7 +216,12 @@ impl Migration {
                     Some(fs::read_dir(&directory).map_err(|_| "Receipt source is unavailable")?)
                 };
                 let covered = prior.is_some_and(|(stamp, complete)| complete && stamp == started);
-                let (epoch, count_at_start) = source_witness(&self.catalog, source)?;
+                let (epoch, count_at_start, schema) = source_witness(&self.catalog, source)?;
+                let witness_error: bool = sql(self.catalog.db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM receipt_errors WHERE source=? AND name='@witness')",
+                    [source.key()],
+                    |row| row.get(0),
+                ))?;
                 self.walk = Some(Walk {
                     source,
                     entries,
@@ -219,6 +231,8 @@ impl Migration {
                     indexed: 0,
                     epoch,
                     count_at_start,
+                    schema,
+                    witness_error,
                 });
             }
             let walk = self.walk.as_mut().unwrap();
@@ -283,7 +297,7 @@ impl Migration {
                         walk.entries = None;
                         // Discovery may repair a lost row and rotate the epoch.
                         // The retained-row count starts only after that repair.
-                        (walk.epoch, walk.count_at_start) =
+                        (walk.epoch, walk.count_at_start, walk.schema) =
                             source_witness(&self.catalog, walk.source)?;
                     }
                 }
@@ -347,25 +361,39 @@ impl Migration {
             }
             let source = walk.source;
             let current = stamp(&self.catalog.state.join(source.directory()));
-            let (epoch, count) = source_witness(&self.catalog, source)?;
-            let complete = current.as_ref().is_ok_and(|stamp| *stamp == walk.started)
-                && epoch == walk.epoch
-                && count == walk.count_at_start;
+            let (epoch, count, schema) = source_witness(&self.catalog, source)?;
+            // The count publication carries the exact row-set witness in this
+            // transaction (zerus-z5uax). The walk counted every row in bounded
+            // slices; with the counter, epoch and schema unchanged since that
+            // count began (no insert, delete, rebind or trigger change), it is
+            // the exact COUNT(*). The trigger counter must equal it, or the
+            // mismatch is recorded and nothing is sealed. The counter is never
+            // overwritten by the walk's count. A changed guard is unknown.
+            let guarded =
+                epoch == walk.epoch && count == walk.count_at_start && schema == walk.schema;
+            let witnessed = guarded && self.catalog.witness_publish(source, count, walk.indexed)?;
             // Count each retained binding in the already budgeted indexed
             // pass, including missing originals and previously seen paths.
             // A backdated arrival or a changed row set can pass the cursor:
-            // keep the live trigger count until a fresh stable walk finishes.
-            // An insert can also repair an existing file without changing its
-            // directory stamp or epoch. The trigger witness catches that race.
+            // a changed trigger count or a walk count that disagrees with
+            // the witnessed rows leaves the source incomplete. An insert can
+            // also repair an existing file without changing its directory
+            // stamp or epoch. The trigger witness catches that race.
+            let complete = witnessed && current.as_ref().is_ok_and(|stamp| *stamp == walk.started);
             sql(self.catalog.db.execute(
-                "UPDATE receipt_sources SET stamp=?1,complete=?2,
-                   indexed=CASE WHEN ?2 THEN ?3 ELSE indexed END WHERE source=?4",
-                params![walk.started, complete, walk.indexed, source.key()],
+                "UPDATE receipt_sources SET stamp=?1,complete=?2 WHERE source=?3",
+                params![walk.started, complete, source.key()],
             ))?;
             sql(self.catalog.db.execute(
                 "DELETE FROM receipt_errors WHERE source=? AND name IN('@source','@enumeration')",
                 [source.key()],
             ))?;
+            if complete && walk.witness_error {
+                sql(self.catalog.db.execute(
+                    "DELETE FROM receipt_errors WHERE source=? AND name='@witness'",
+                    [source.key()],
+                ))?;
+            }
             sql(self.catalog.db.execute(
                         "INSERT INTO receipt_meta VALUES('verified_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                         [now().to_string()],
@@ -397,6 +425,9 @@ pub(super) fn worker(state: &Path) -> Result<i32> {
         return Ok(0);
     };
     let mut migration = Migration::new(state)?;
+    // Every worker request re-witnesses the exact row set first, so a stale
+    // token (old, foreign schema or past WITNESS_DELTA) converges here.
+    migration.catalog.witness()?;
     while !migration.step()? {
         std::thread::sleep(Duration::from_millis(10));
     }
