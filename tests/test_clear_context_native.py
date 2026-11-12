@@ -170,8 +170,11 @@ wire_api="responses"
         NativeCodexClear.launch(self, self.root, 'resume', self.conversation_id)
         # Resume is a native event a loaded runner reaches late; wait_for's
         # 100 polls (about 2 s plus tmux time) are too short a budget for it.
-        self.wait_until(lambda: 'Previous fixture answer' in self.tmux('capture-pane', '-p', '-t', self.pane),
-                        30, lambda: 'native resume did not show the previous answer')
+        # Called through the class: suites reusing this setUp borrow methods
+        # rather than inherit InputTransport.
+        test_input.InputTransport.wait_until(
+            self, lambda: 'Previous fixture answer' in self.tmux('capture-pane', '-p', '-t', self.pane),
+            30, lambda: 'native resume did not show the previous answer')
         self.record.update(transcript=str(path), last_message='Previous fixture answer')
         self.write_record()
 
