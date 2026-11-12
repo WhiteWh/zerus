@@ -1719,7 +1719,7 @@ fn routed_command<'a>(command: &'a str, args: &'a [String]) -> Option<&'a str> {
 /// session proves it as its caller, a Claude background job included. Like
 /// every marker this guards against accidental agent use, not against an
 /// agent that clears its own environment.
-fn agent_caller() -> bool {
+pub(crate) fn agent_caller() -> bool {
     let set = |name: &str| env::var_os(name).is_some_and(|value| !value.is_empty());
     (set("HGS_SESSION") && set("HGS_RUN_ID"))
         || env::var_os("HGS_AGENT").is_some_and(|agent| agent == "dsh")

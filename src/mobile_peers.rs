@@ -1324,6 +1324,9 @@ fn transport_budget(helper: Helper, request: Option<&LocalRequest>) -> Duration 
     Duration::from_secs(30)
 }
 
+/// An agent's `mobile-peer` call (zerus-ppd26.11).
+const AGENT_REFUSED: &str = "hgs mobile-peer forwards a phone's request, which the other computer runs as the person; an agent never forwards one";
+
 fn execute(config: &Config, args: &[String]) -> Result<i32> {
     ensure!(
         args.len() == 2 && args[1] == "--json",
@@ -1341,6 +1344,10 @@ fn execute(config: &Config, args: &[String]) -> Result<i32> {
         "__mobile-peer-local" => local(config, input()?),
         "__mobile-peer-transport" => supervise(),
         "mobile-peer" => {
+            // The peer's __mobile-peer-local runs the phone's request as the
+            // person, so an agent's process never forwards one; the
+            // connector's own call carries no agent marker (zerus-ppd26.11).
+            ensure!(!crate::cli::agent_caller(), AGENT_REFUSED);
             let request: PeerRequest = input()?;
             let config = &Config::load()?;
             ensure!(
