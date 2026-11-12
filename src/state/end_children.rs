@@ -5,9 +5,11 @@
 //! computer get the same command, one at a time, through its own existing
 //! per-session rules: Terminate keeps every working folder (worktree removal
 //! is never implied), Archive takes only stopped sessions, and a provider
-//! without the action refuses it. Each child is bound to its exact session ID
-//! and, for Terminate, its listed run. A child's outcome is reported and never
-//! retried. Descendants come from one listing: a link names a parent by its
+//! without the action refuses it. The parent's own command and each child's
+//! are bound to the session ID, run and conversation the listing showed, so a
+//! session renamed, restarted or replaced under its label since then refuses
+//! (zerus-sa9qn.29 for the parent: then no child is touched). A child's outcome
+//! is reported and never retried. Descendants come from one listing: a link names a parent by its
 //! session ID, and only a link without a session ID names a parent listed
 //! without one, by conversation. That is stricter than the listing's nesting
 //! (`parent_link::decorate`), which also falls back to the conversation for an
@@ -100,13 +102,32 @@ fn listing() -> Result<Vec<Value>> {
     Ok(merged["sessions"].as_array().cloned().unwrap_or_default())
 }
 
-/// `command` (terminate or archive) with `args` that hold [`FLAG`].
-pub(super) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
-    let verb = if command == "terminate" {
+/// What `--with-children` decided from one listing, before anything ran: the
+/// parent's own command and the parent and its live descendants as listed.
+struct Plan {
+    command: String,
+    dry: bool,
+    call: Vec<String>,
+    parent: Child,
+    children: Vec<Child>,
+}
+
+fn verb(command: &str) -> &'static str {
+    if command == "terminate" {
         "terminated"
     } else {
         "archived"
-    };
+    }
+}
+
+/// `command` (terminate or archive) with `args` that hold [`FLAG`].
+pub(super) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
+    run(&plan(command, args)?)
+}
+
+/// The listing's parent and descendants for `command` with `args`.
+fn plan(command: &str, args: &[String]) -> Result<Plan> {
+    let verb = verb(command);
     let base: Vec<String> = args.iter().filter(|arg| *arg != FLAG).cloned().collect();
     let dry = base.iter().any(|arg| arg == "--dry-run");
     // The session comes first, as each command reads it; `--dry-run` may
@@ -146,9 +167,37 @@ pub(super) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
     let children = descendants(&rows, parent);
     let mut call = vec![command.to_owned()];
     call.extend(base.iter().cloned());
-    if dry {
-        let code = super::dispatch(&call)?;
-        for child in &children {
+    Ok(Plan {
+        command: command.to_owned(),
+        dry,
+        call,
+        parent: Child {
+            name: string(parent, "name").into(),
+            session_id: string(parent, "session_id").into(),
+            run_id: string(parent, "run_id").into(),
+            conversation_id: string(parent, "conversation_id").into(),
+            depth: 0,
+        },
+        children,
+    })
+}
+
+/// Runs `plan`: the parent, then each child.
+fn run(plan: &Plan) -> Result<i32> {
+    let (command, verb, parent) = (plan.command.as_str(), verb(&plan.command), &plan.parent);
+    // zerus-sa9qn.29: the parent's own command reads its label only as the
+    // session the listing named, with the session ID, run and conversation the
+    // descendants were found under. A rename plus a reused label, or a restart,
+    // since the listing refuses here, and no child is touched.
+    session_id::select_guarded(
+        &parent.name,
+        &parent.session_id,
+        &parent.run_id,
+        &parent.conversation_id,
+    );
+    if plan.dry {
+        let code = super::dispatch(&plan.call)?;
+        for child in &plan.children {
             println!(
                 "hgs: would also {command} child session {} (level {})",
                 child.name, child.depth
@@ -158,16 +207,19 @@ pub(super) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
     }
     // The parent first, with its own command and rules. Its failure ends here:
     // no child is touched.
-    let code = super::dispatch(&call)?;
+    let code = super::dispatch(&plan.call)?;
     if code != 0 {
-        eprintln!("hgs: {name} was not {verb}; no child session was {verb}");
+        eprintln!(
+            "hgs: {} was not {verb}; no child session was {verb}",
+            parent.name
+        );
         return Ok(code);
     }
-    let failed = end_each(command, verb, &children);
+    let failed = end_each(command, verb, &plan.children);
     if failed > 0 {
         return Err(format!(
             "{failed} of {} child sessions were not {verb}; nothing was retried",
-            children.len()
+            plan.children.len()
         ));
     }
     Ok(0)
@@ -433,6 +485,103 @@ mod tests {
                     let kept: Value =
                         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
                     assert_eq!(kept[change], now[change], "{label}");
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_parent_relabeled_or_restarted_after_the_listing_ends_nobody() {
+        isolated("relabeled_parent_fixture");
+    }
+
+    /// zerus-sa9qn.29: between the listing and the parent's own call, the
+    /// parent is renamed away and another session takes its label, or the
+    /// parent is restarted into another run. Both commands refuse, and the
+    /// label's new holder, the renamed parent and the child all stay; the same
+    /// parent unchanged ends with its child.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "process-isolated private state fixture"]
+    fn relabeled_parent_fixture() {
+        if std::env::var("ZERUS_END_CHILDREN_FIXTURE").as_deref() != Ok("1") {
+            return;
+        }
+        let archived = |name: &str| {
+            archive::records()
+                .unwrap()
+                .iter()
+                .filter(|entry| string(entry, "name") == name)
+                .count()
+        };
+        let mut n = 100;
+        for command in ["archive", "terminate"] {
+            for change in ["", "relabel", "restart"] {
+                n += 3;
+                let label = format!(
+                    "{command}-{}",
+                    if change.is_empty() { "same" } else { change }
+                );
+                let parent = saved(n, &format!("{label}-lead"), None);
+                let child = saved(n + 1, &format!("{label}-child"), Some(&parent));
+                let name = string(&parent, "name").to_owned();
+                session_id::clear();
+                let planned = plan(command, &[name.clone(), FLAG.into()]).unwrap();
+                assert_eq!(
+                    planned.parent.session_id,
+                    string(&parent, "session_id"),
+                    "{label}"
+                );
+                assert_eq!(planned.children.len(), 1, "{label}");
+                let renamed = format!("codex/example/{label}-renamed");
+                let mut holder = parent.clone();
+                match change {
+                    "relabel" => {
+                        let mut moved = parent.clone();
+                        moved["name"] = json!(renamed);
+                        std::fs::remove_file(legacy_record_path(&name)).unwrap();
+                        write_saved(&moved);
+                        holder["session_id"] = json!(id(n + 2));
+                        holder["run_id"] = json!(format!("run-{}", n + 2));
+                        holder["conversation_id"] = json!(format!("conversation-{}", n + 2));
+                        write_saved(&holder);
+                    }
+                    "restart" => {
+                        holder["run_id"] = json!(format!("{}-new", string(&parent, "run_id")));
+                        write_saved(&holder);
+                    }
+                    _ => {}
+                }
+                let result = run(&planned);
+                if change.is_empty() {
+                    assert_eq!(result, Ok(0), "{label}");
+                    assert_eq!(archived(&name), 1, "{label}");
+                    assert_eq!(archived(string(&child, "name")), 1, "{label}");
+                    continue;
+                }
+                assert!(
+                    result.is_err(),
+                    "{label}: the parent changed after the listing: {result:?}"
+                );
+                assert_eq!(archived(&name), 0, "{label}: the label's holder stays");
+                assert_eq!(archived(&renamed), 0, "{label}");
+                assert_eq!(
+                    archived(string(&child, "name")),
+                    0,
+                    "{label}: no child is touched"
+                );
+                let kept: Value = serde_json::from_str(
+                    &std::fs::read_to_string(legacy_record_path(&name)).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(kept, holder, "{label}");
+                assert!(
+                    legacy_record_path(string(&child, "name")).exists(),
+                    "{label}"
+                );
+                if change == "relabel" {
+                    assert!(legacy_record_path(&renamed).exists(), "{label}");
                 }
             }
         }
