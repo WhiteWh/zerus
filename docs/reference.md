@@ -136,7 +136,17 @@ folder, open a shell there, **Copy session ID** and **Clear session**. Its
 **Session actions** menu shares the same checked handlers. A stopped session
 hides the Clear session icon and offers
 **Start fresh…** in the menu; an archived session shows **Restore session** in its
-place. The session list context menu offers **Clear session…** for a live session
+place. **Restore session** follows the computer's restore decision, as batch
+Restore does; a computer that reports no actions keeps the earlier rule.
+
+A Claude or Codex session that exited before its first message reported a
+conversation ID but wrote no transcript. Its archive therefore does not offer
+Restore, and gives the reason "This session ended before its first message"
+(zerus-wyrqg). The archive summary checks this with one metadata read of the
+saved transcript (Claude's transcript, Codex's rollout): it must be a
+non-empty regular file. The restore's own check stays the authority.
+
+The session list context menu offers **Clear session…** for a live session
 where a stopped one offers **Start fresh…**. For a session that is not open, it
 becomes available once that session's own inspection confirms the conversation
 listed for it; choosing it opens the session and asks the same confirmation.
