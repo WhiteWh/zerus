@@ -227,11 +227,15 @@ active, launch/resume reports that the optional hint is unavailable and
 inspection exposes `agent_hint_status.state` and its reason.
 
 Cold starts reclaim at most 16 verified Zerus plugin folders using a 100 ms
-maintenance deadline. A bounded PID/birth and launch-overlay census protects
-folders still used by older live services as well as the latest service marker.
-Incomplete process inspection, unknown files and links retain assets. The
-256-folder inventory limit suppresses new optional overlays until room is
-available; it never authorizes deletion or changes the person's OpenCode config.
+maintenance deadline. Each unique launch folder records the exact service PID
+and birth after a matching launch environment is verified. Cleanup inspects
+only that service and keeps a folder while it is alive or uncertain, plus the
+latest service marker's folder. Unrelated protected processes and host churn
+do not block reclamation. A durable intent is written before spawn; abandoned
+prepared folders are unused, while unresolved starts and legacy unpinned folders
+stay retained. Unknown files and links also stay retained. The 256-folder limit
+remains an allocation backstop and never grants deletion authority or changes
+the person's OpenCode config.
 Forgetting a binding also retires its private hint route. Ambiguous routes stay
 blocked until a complete check finds no remaining binding; the check examines
 at most 64 entries and 1 MiB in 25 ms, retaining the route on any uncertainty.

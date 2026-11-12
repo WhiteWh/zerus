@@ -153,12 +153,14 @@ class OpenCodeHintNative(native.OpenCodeNative):
         # registration overwrites Zerus's latest marker. Give that service its
         # own HOME/config/state and retain its exact launch-overlay source.
         marker_path = self.state / 'opencode/context-hint/service.json'
-        old_marker = json.loads(marker_path.read_text())
-        old_folder = marker_path.parent / 'plugins' / old_marker['nonce']
-        failed_folder = old_folder.parent / str(uuid.uuid4())
-        shutil.copytree(old_folder, failed_folder)
+        first_marker = json.loads(marker_path.read_text())
+        first_folder = marker_path.parent / 'plugins' / first_marker['nonce']
+        # A start whose service identity was never verified stays unknown.
+        failed_folder = first_folder.parent / str(uuid.uuid4())
+        shutil.copytree(first_folder, failed_folder)
         ownership = json.loads((failed_folder / 'owner.json').read_text())
-        ownership['nonce'] = failed_folder.name
+        ownership.update(nonce=failed_folder.name, launch='starting')
+        ownership.pop('service', None)
         (failed_folder / 'owner.json').write_text(json.dumps(ownership))
         alternate = self.root / 'older-live-service'
         alt_env = dict(self.env)
@@ -169,11 +171,8 @@ class OpenCodeHintNative(native.OpenCodeNative):
             alt_env[key] = str(path)
         (alternate / 'config/opencode').mkdir(mode=0o700)
         shutil.copyfile(config_path, alternate / 'config/opencode/opencode.json')
-        alt_env['OPENCODE_CONFIG_CONTENT'] = json.dumps({'plugins': [{'package': str(old_folder), 'options': {
-            'hgs': str(native.HGS), 'state': str(self.state), 'nonce': old_marker['nonce']}}]})
-
-        def alt(*args):
-            run = subprocess.run([native.NATIVE, *args], env=alt_env, cwd=self.workspace,
+        def alt(*args, hgs=False):
+            run = subprocess.run([str(native.HGS) if hgs else native.NATIVE, *args], env=alt_env, cwd=self.workspace,
                                  stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
             self.assertEqual(run.returncode, 0, run.stderr[-1000:])
             return run
@@ -188,23 +187,27 @@ class OpenCodeHintNative(native.OpenCodeNative):
 
         alt('service', 'set', 'port', str(native.free_port()))
         try:
-            alt('service', 'start')
+            alt('account', 'start', 'native-opencode', hgs=True)
             registration = alternate / 'state/opencode/service.json'
             end = time.monotonic() + 10
             while not registration.exists() and time.monotonic() < end:
                 time.sleep(.025)
             alt_reg = json.loads(registration.read_text())
             self.assertNotEqual(alt_reg['pid'], self.registration()['pid'])
-            for attempt in range(3):
+            old_marker = json.loads(marker_path.read_text())
+            old_folder = marker_path.parent / 'plugins' / old_marker['nonce']
+            self.assertNotEqual(old_folder, first_folder)
+            old_owner = json.loads((old_folder / 'owner.json').read_text())
+            self.assertEqual(old_owner['service']['pid'], alt_reg['pid'])
+            self.assertTrue(old_owner['service']['birth'])
+            # Two primary restarts overwrite the latest marker. The older
+            # independently managed service is protected by its own folder pin.
+            for attempt in range(2):
                 stop_primary()
                 target = resume(target)
                 self.assertTrue(old_folder.joinpath('index.js').is_file())
-                if not failed_folder.exists():
-                    break
-            # A complete native census must reclaim the failed-start asset,
-            # while the older service's source remains available for lazy load.
-            self.assertFalse(failed_folder.exists())
-            self.assertTrue(old_folder.joinpath('index.js').is_file())
+            self.assertFalse(first_folder.exists())
+            self.assertTrue(failed_folder.exists())
             self.assertNotEqual(json.loads(marker_path.read_text())['nonce'], old_marker['nonce'])
             headers = {}
             if alt_reg.get('password'):
@@ -339,7 +342,8 @@ class OpenCodeHintNative(native.OpenCodeNative):
                 'hint_in_database': False, 'unmanaged_service_pid_preserved': pid,
                 'cleanup': {'older_live_service_pid': alt_reg['pid'], 'older_source_activated': True,
                             'older_source_pruned_after_exit': not old_folder.exists(),
-                            'failed_start_folder_pruned': not failed_folder.exists(),
+                            'unknown_start_folder_retained': failed_folder.exists(),
+                            'known_dead_first_service_folder_pruned': not first_folder.exists(),
                             'sole_binding_route_retired': not other_route.exists(),
                             'ambiguous_route_blocked_until_last_holder_forgotten': True},
             }, indent=2)+'\n')
