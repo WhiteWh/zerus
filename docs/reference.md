@@ -821,11 +821,17 @@ such a session, list them and offer **Also end N child sessions** (Archive:
 not apply to now (Terminate takes running sessions, Archive stopped or paused
 ones; an offline computer or a write in flight leaves one out too) are listed
 as staying. The count and the list cover every level, not only the direct
-children, and the confirmation says so. At most 50 are named; the rest are
-counted. When chosen, the children run after the parent's own outcome is done
-as one preconfirmed selection batch: each through its own guarded action,
-rechecked as the same instance, one at a time and never retried, without the
-parent's Remove working folder choice. A Terminate child without an HGS archive
+children, and the confirmation says so. As on the command line, a session whose
+link its own listing marks `missing` (a link another computer forwarded is
+always `missing`) is never offered, although the list may still nest it. At
+most 50 are named; the rest are counted. When chosen, the children run after
+the parent's own outcome is done as one preconfirmed selection batch: each
+through its own guarded action, rechecked as the same instance, one at a time
+and never retried, without the parent's Remove working folder choice. Like
+every end action started in the desktop, each child's call passes the undo
+window and runs the scoped `hgs session-action` envelope with the run and
+conversation the confirmation listed, so a child restarted or given another
+conversation meanwhile is refused and kept. A Terminate child without an HGS archive
 is killed, as its own Terminate and a selection's Terminate kill it: it leaves
 the list and any native conversation history is kept. The confirmation marks
 each such child and counts them. Terminate lists a stopped or paused child as

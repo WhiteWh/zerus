@@ -37,6 +37,23 @@ describe("a parent's live descendants (zerus-sa9qn.17)", () => {
     expect(names(walk(parent, [parent, child]))).toEqual(["s2"]);
   });
 
+  it("never lists a child whose own listing marks its link missing, as hgs --with-children never matches it (zerus-sa9qn.22)", () => {
+    const parent = session(1);
+    // A link another computer forwarded is `missing` in its own listing whatever
+    // session its IDs name (parent_link::decorate), here the parent's own.
+    const forwarded = session(2, link(1, { state: "missing" }));
+    // So is a conversation-only link to a parent that lists a session ID.
+    const conversationOnly = session(3, link(1, { session_id: "", state: "missing" }));
+    // A row that is not a child is no way to its own children either.
+    const throughForwarded = session(4, 2);
+    const verified = session(5, 1);
+    const rows = [parent, forwarded, conversationOnly, throughForwarded, verified];
+    expect(names(walk(parent, rows))).toEqual(["s5"]);
+    // The list itself may still nest them: the exclusion is the offer's alone.
+    const nest = parentIndex(rows, (c) => machines[c]);
+    expect([forwarded, conversationOnly].map((s) => nest(s))).toEqual([parent.key, parent.key]);
+  });
+
   it("never loops on a cycle and never lists the parent itself", () => {
     const a = session(1, 2), b = session(2, 1), c = session(3, 2);
     expect(names(walk(a, [a, b, c]))).toEqual(["s2", "s3"]);
