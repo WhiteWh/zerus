@@ -16,9 +16,69 @@ import unittest
 import uuid
 
 import test_opencode_native as native
+from opencode_fsync_gate import held_sender
+
+
 
 
 class OpenCodeHintNative(native.OpenCodeNative):
+    model_handler = native.ContextModel
+
+    def test_sender_writer_omits_context_without_error_or_replay(self):
+        workspace = os.path.realpath(self.workspace)
+        self.hgs(['account', 'start', 'native-opencode'])
+        conversation = 'ses_' + native.native_suffix()
+        status, answer = self.api('POST', '/api/session', {
+            'id': conversation, 'title': 'held sender', 'location': {'directory': workspace}})
+        self.assertEqual(status, 200, answer)
+        status, answer = self.api('POST', f'/api/session/{conversation}/prompt', {
+            'id': 'msg_' + native.native_suffix(), 'text': 'Before writer control', 'delivery': 'queue'})
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(self.api('POST', f'/api/experimental/session/{conversation}/wait', {})[0], 204)
+        binding = self.save_binding('held-sender', service='opencode2', conversation_id=conversation)
+        self.hgs(['opencode', str(self.workspace), '-n', 'held-sender', '-d', '--account', 'native-opencode'])
+        binding = json.loads(self.binding_path(binding['name']).read_text())
+        marker = json.loads((self.state / 'opencode/context-hint/service.json').read_text())
+        args = ['--opencode-agent-hint', marker['nonce'], str(marker['pid']), workspace, conversation]
+        self.assertEqual(self.hgs(args)['context'], native.Model.HINT)
+        text = 'One original send through the held writer'
+        payload = self.payload(binding, text=text)
+        with held_sender(self.root, self.state, self.workspace, self.env, native.HGS, binding, payload) as sender:
+            # The framed fsync witness comes from this exact live sender, after
+            # it took the provider writer and before its single native POST.
+            with (self.state / 'opencode/bindings.lock').open('r+') as lock:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            probe = subprocess.run([str(native.HGS), *args], env=self.env, cwd=self.workspace,
+                                   capture_output=True, text=True,
+                                   timeout=max(0, sender.fixture_deadline - time.monotonic()))
+            self.assertEqual(probe.returncode, 0, probe.stderr)
+            self.assertEqual(probe.stderr, '')
+            self.assertEqual(json.loads(probe.stdout), {'context': None})
+            self.assertIsNone(sender.poll())
+            self.assertFalse(any(r['last_user'] == text for r in self.model.requests))
+        self.assertEqual(sender.returncode, 0, sender.stderr_text)
+        self.assertEqual(sender.receipt['status'], 'submitted')
+        self.assertEqual(sender.receipt['request_id'], payload['request_id'])
+        self.assertNotIn(native.Model.HINT, json.dumps(sender.receipt))
+        self.assertEqual(self.api('POST', f'/api/experimental/session/{conversation}/wait', {})[0], 204)
+        requests = [r for r in self.model.requests if r['last_user'] == text and r['tools']]
+        self.assertEqual(len(requests), 1)
+        status, history = self.api('GET', f'/api/session/{conversation}/message?limit=100')
+        self.assertEqual(status, 200, history)
+        self.assertNotIn(native.Model.HINT, json.dumps(history))
+        self.assertEqual(self.hgs(args)['context'], native.Model.HINT)
+        if folder := os.environ.get('ZERUS_TEST_OPENCODE_HINT_EVIDENCE'):
+            (Path(folder) / 'sender-writer-native.json').write_text(json.dumps({
+                'version': self.version, 'sender_pid': sender.pid,
+                'framed_original_sender_fsync': True, 'writer_was_exclusive': True,
+                'helper': {'returncode': probe.returncode, 'stderr': probe.stderr,
+                           'answer': json.loads(probe.stdout)},
+                'send': {'returncode': sender.returncode, 'status': sender.receipt['status'],
+                         'request_id': payload['request_id'], 'model_requests': len(requests)},
+                'idle_helper_returns_hint': True, 'history_has_no_hint': True,
+            }, indent=2) + '\n')
+
     @classmethod
     def cleanup(cls):
         if hasattr(cls, 'env'):
@@ -71,8 +131,12 @@ class OpenCodeHintNative(native.OpenCodeNative):
         owner.mkdir()
         (owner / 'package.json').write_text(json.dumps({
             'type': 'module', 'name': 'owner-canary', 'exports': {'./server': './index.js'}}))
-        (owner / 'index.js').write_text('export default {id:"owner-canary",setup:async(ctx)=>{'
-            'await ctx.session.hook("context",e=>{e.system.push({type:"text",text:"OWNER_PLUGIN_CANARY"})})}};')
+        # A model HTTP request is already past context assembly. This earlier
+        # private hook uses the keyless model's barrier endpoint instead: the
+        # first context/model request cannot reach the hint helper until send
+        # has returned and released its provider writer. No product lock or
+        # timeout changes, sleeps, or second delivery are involved.
+        (owner / 'index.js').write_text(native.context_barrier_source(self.model.server_port, canary=True))
         config = json.loads(config_path.read_text())
         config['plugins'] = [str(owner)]
         config_path.write_text(json.dumps(config, indent=2) + '\n')
@@ -90,10 +154,16 @@ class OpenCodeHintNative(native.OpenCodeNative):
             status, answer = self.api('POST', f"/api/experimental/session/{binding['conversation_id']}/wait", {})
             self.assertEqual(status, 204, answer)
 
+        context_barriers = []
+
         def turn(binding, text, expected):
-            receipt = self.hgs(['send', binding['name'], '--json'], self.payload(binding, text=text))
+            receipt, gate = native.send_with_context_barrier(self, binding, text)
             self.assertNotIn(native.Model.HINT, json.dumps(receipt))
             wait(binding)
+            native.assert_context_barrier(self, gate)
+            context_barriers.append(dict(text=text, entered_at=gate['entered_at'],
+                                         sender_returned_at=gate['returned_at'], opened_at=gate['opened_at'],
+                                         first_model_at=gate['first_model_at']))
             requests = [r for r in self.model.requests if r['last_user'] == text and r['tools']]
             self.assertEqual(len(requests), 1, (text, self.model.requests[-2:]))
             model_messages = requests[0]['messages']
@@ -345,6 +415,7 @@ class OpenCodeHintNative(native.OpenCodeNative):
             out.mkdir(parents=True, exist_ok=True)
             (out / 'context-native.json').write_text(json.dumps({
                 'version': self.version, 'model_requests': self.model.requests, 'database_tables_scanned': table_count,
+                'context_barriers': context_barriers,
                 'target': target, 'baseline': baseline, 'config_unchanged': True, 'owner_plugin_unchanged': True,
                 'compaction': compacted, 'compacted_active_context': active_context,
                 'hint_in_database': False, 'unmanaged_service_pid_preserved': pid,
@@ -359,4 +430,7 @@ class OpenCodeHintNative(native.OpenCodeNative):
 
 def load_tests(loader, _tests, _pattern):
     # Reuse the private service fixture, not the parent's contract inventory.
-    return loader.loadTestsFromName('OpenCodeHintNative.test_existing_turn_context_hint', sys.modules[__name__])
+    return loader.loadTestsFromNames([
+        'OpenCodeHintNative.test_existing_turn_context_hint',
+        'OpenCodeHintNative.test_sender_writer_omits_context_without_error_or_replay',
+    ], sys.modules[__name__])

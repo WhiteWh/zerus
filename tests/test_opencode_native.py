@@ -119,6 +119,9 @@ class Model(http.server.BaseHTTPRequestHandler):
         messages = body.get('messages', [])
         tools = [tool.get('function', {}).get('name') for tool in body.get('tools', [])]
         last_user = next((str(m.get('content', '')) for m in reversed(messages) if m.get('role') == 'user'), '')
+        gate = getattr(self.server, 'context_gate', None)
+        if gate is not None and gate['text'] == last_user:
+            gate.setdefault('first_model_at', time.monotonic())
         self.server.requests.append({'model': body.get('model'), 'tools': tools, 'last_user': last_user[:200],
                                      'messages': messages,
                                      'options': {k: v for k, v in body.items() if k not in ('messages', 'tools')}})
@@ -179,6 +182,59 @@ class Model(http.server.BaseHTTPRequestHandler):
             pass
 
 
+class ContextModel(Model):
+    def do_POST(self):
+        if self.path != '/context-gate':
+            return super().do_POST()
+        size = int(self.headers.get('Content-Length', '0'))
+        if not 0 < size <= 1024:
+            self.send_error(400)
+            return
+        session = json.loads(self.rfile.read(size)).get('session')
+        gate = getattr(self.server, 'context_gate', None)
+        status = 204
+        if gate is not None and gate['session'] == session:
+            gate['entered_at'] = time.monotonic()
+            gate['entered'].set()
+            if not gate['returned'].wait(max(0, gate['deadline'] - time.monotonic())):
+                gate['expired'] = True
+                status = 409
+            gate['opened_at'] = time.monotonic()
+        self.send_response(status)
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
+
+def context_barrier_source(port, *, canary=False):
+    url = f'http://127.0.0.1:{port}/context-gate'
+    mark = 'e.system.push({type:"text",text:"OWNER_PLUGIN_CANARY"});' if canary else ''
+    return ('export default {id:"private-context-barrier",setup:async(ctx)=>{'
+            'await ctx.session.hook("context",async e=>{'
+            f'const r=await fetch({json.dumps(url)},{{method:"POST",'
+            'headers:{"Content-Type":"application/json"},body:JSON.stringify({session:e.sessionID})});'
+            'if(!r.ok)throw new Error("Private context barrier expired");' + mark + '})}};')
+
+
+def send_with_context_barrier(case, binding, text):
+    gate = dict(session=binding['conversation_id'], text=text, entered=threading.Event(),
+                returned=threading.Event(), deadline=time.monotonic() + 60, expired=False)
+    case.model.context_gate = gate
+    try:
+        receipt = case.hgs(['send', binding['name'], '--json'], case.payload(binding, text=text))
+    finally:
+        gate['returned_at'] = time.monotonic()
+        gate['returned'].set()
+    return receipt, gate
+
+
+def assert_context_barrier(case, gate):
+    case.assertTrue(gate['entered'].is_set(), 'The native context hook did not reach the private barrier')
+    case.assertFalse(gate['expired'], 'The original send deadline expired at the private barrier')
+    case.assertGreaterEqual(gate['opened_at'], gate['returned_at'])
+    case.assertGreaterEqual(gate['first_model_at'], gate['opened_at'])
+    case.model.context_gate = None
+
+
 def stub_service(version, pid, openapi=None):
     """A loopback HTTP stub that answers like an OpenCode service of `version`."""
     class Stub(http.server.BaseHTTPRequestHandler):
@@ -216,6 +272,7 @@ def stub_service(version, pid, openapi=None):
 
 @unittest.skipUnless(os.environ.get('ZERUS_TEST_OPENCODE_NATIVE') == '1', 'explicit private native qualification required')
 class OpenCodeNative(unittest.TestCase):
+    model_handler = ContextModel
     @classmethod
     def setUpClass(cls):
         if not NATIVE or not Path(NATIVE).is_file() or not HGS.is_file():
@@ -243,7 +300,7 @@ class OpenCodeNative(unittest.TestCase):
         # user's default server, where a missing directory would fall back to it.
         (root / 'tmux').mkdir(mode=0o700)
         (root / 'tmp').mkdir(mode=0o700)
-        cls.model = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+        cls.model = http.server.ThreadingHTTPServer(('127.0.0.1', 0), cls.model_handler)
         cls.model.holding, cls.model.release, cls.model.requests = threading.Event(), threading.Event(), []
         threading.Thread(target=cls.model.serve_forever, daemon=True).start()
         native = Path(NATIVE).absolute()
@@ -1270,8 +1327,21 @@ class OpenCodeNative(unittest.TestCase):
         self.assertEqual([e.get('request_id') for e in view['events'] if e.get('detail') == 'Typed in OpenCode'], [None])
 
     def test_14_instruction_hint_empty_lifecycle_and_context_adoption(self):
+        # The same pre-context barrier covers every lifecycle send, including
+        # queued sends after compaction and the previously used adoptions.
+        owner = self.root / 'lifecycle-context-barrier'
+        owner.mkdir()
+        (owner / 'package.json').write_text(json.dumps({
+            'type': 'module', 'name': 'lifecycle-context-barrier', 'exports': {'./server': './index.js'}}))
+        (owner / 'index.js').write_text(context_barrier_source(self.model.server_port))
+        config_path = self.root / 'xdg-config/opencode/opencode.json'
+        original_config = config_path.read_bytes()
+        config = json.loads(original_config)
+        config['plugins'] = [*config.get('plugins', []), str(owner)]
+        config_path.write_text(json.dumps(config))
+        self.addCleanup(config_path.write_bytes, original_config)
         def turn(binding, text, expected):
-            self.hgs(['send', binding['name'], '--json'], self.payload(binding, text=text))
+            _, gate = send_with_context_barrier(self, binding, text)
             self.wait(binding['name'], lambda v: v['phase'] == 'idle' and any(
                 e['type'] == 'UserPromptSubmit' and e['detail'] == text and not e.get('delivery_state')
                 for e in v.get('events', [])))
@@ -1279,6 +1349,7 @@ class OpenCodeNative(unittest.TestCase):
             while time.monotonic() < end:
                 requests = [r for r in self.model.requests if r['last_user'] == text and r['tools']]
                 if requests:
+                    assert_context_barrier(self, gate)
                     self.assertEqual(json.dumps(requests[-1]['messages']).count(Model.HINT), expected,
                                      (text, requests[-1]['messages']))
                     return
