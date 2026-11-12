@@ -700,6 +700,23 @@ fn a_reserved_route_interrupted_by_a_restart_settles_unknown_and_never_runs() {
 }
 
 #[test]
+fn a_child_renamed_with_shell_text_is_refused_and_never_sent() {
+    // zerus-sa9qn.35: the routed text prints the child's name in a command.
+    let hostile = "claude/example/x;touch pwned;#";
+    let mut f = Fixture::new();
+    let mut row = child_row();
+    row["name"] = json!(hostile);
+    let mut read = inspect(vec![card("tool:toolu_1")]);
+    read["name"] = json!(hostile);
+    f.reply(vec![read]);
+    f.snapshot(vec![row, parent_row()]);
+    f.until("refused", |f| f.states() == ["refused"]);
+    assert_eq!(f.routes()[0].2, ledger::INVALID);
+    f.settle();
+    assert_eq!((f.sent(), f.states()), (0, vec!["refused".to_owned()]));
+}
+
+#[test]
 fn a_refusal_before_any_child_is_final() {
     let mut f = Fixture::new();
     *f.child.lock().unwrap() = Child::NotStarted;

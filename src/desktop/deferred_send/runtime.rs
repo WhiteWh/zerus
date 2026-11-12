@@ -968,7 +968,8 @@ impl Runtime {
     /// Constructs a live admission of `original` with this runtime's lease
     /// under the person's consent (`route` false) or the owner-approved route
     /// (`route` true), and drops it: each authority admits only its own kind.
-    #[cfg(test)]
+    /// Only the Linux question route tests use it.
+    #[cfg(all(test, target_os = "linux"))]
     pub(in crate::desktop) fn fixture_admit_as(
         &self,
         original: wire::Verified,

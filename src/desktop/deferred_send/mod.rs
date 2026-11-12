@@ -13,7 +13,8 @@ mod recovery;
 mod runtime;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use child::adopt_custody;
-#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+// Only the Linux question route tests drive this actor's fixture child.
+#[cfg(all(test, target_os = "linux"))]
 pub(in crate::desktop) use child::Ended;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) use recovery::{Owned, Recovery};

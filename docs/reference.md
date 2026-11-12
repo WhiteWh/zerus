@@ -899,7 +899,9 @@ own receipt), `refused` (before any child ran, an invalid text, or more than
 Nothing is retried; an unknown result is never replayed, and a routed or
 refused identity never routes again. The text is a fixed English template of
 at most 2 KiB: the header `[Zerus child question]`, the child's name and
-reference, the question kind and option count, at most 300 characters of the
+reference (the name single-quoted; a child whose name holds anything but
+ASCII letters, digits, `.`, `_` and `-` in three segments is never routed and
+is recorded `refused` as `question_route_invalid`), the question kind and option count, at most 300 characters of the
 first question as one quoted line labelled as the child's data, `hgs inspect
 '<reference>'` for the full question, the exact `hgs answer CHILD --json`
 fields (run, conversation, question ID and hash) and "If only the person can
