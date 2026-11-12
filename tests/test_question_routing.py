@@ -170,6 +170,32 @@ class QuestionRouting(unittest.TestCase):
         self.assertEqual(code, 0, changed)
         self.assertEqual(changed['question_routing'], {'send_to_parent': False, 'revision': 1})
 
+    def test_the_private_state_entry_refuses_an_agent_too(self):
+        # Hooks' private `hgs __state` entry reaches question routing without
+        # the public command's early check, so the change's own check refuses
+        # every agent there: a proven caller, and a resident DeepSeek host's
+        # tool call without a provable session (zerus-ppd26.1).
+        before = self.stored()
+        request = json.dumps(dict(expected_run_id=self.child['run_id'],
+                                  expected_conversation_id=self.child['conversation_id'],
+                                  expected_revision=0, send_to_parent=False))
+
+        def private(env):
+            return subprocess.run([str(HGS), '__state', 'question-routing', self.child['name'], '--json'], env=env,
+                                  input=request, capture_output=True, text=True, timeout=10)
+
+        agent = self.record('codex/example/parent', 'codex', 'run-parent', 'conversation-parent', PARENT_ID, owned=True)
+        for name, env in (('hosted', dict(self.env, HGS_AGENT='dsh')),
+                          ('proven', dict(self.env, HGS_SESSION=agent['name'], HGS_RUN_ID=agent['run_id']))):
+            with self.subTest(name):
+                result = private(env)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(json.loads(result.stdout), {'ok': False, 'error': 'agent_refused'})
+                self.assertEqual(self.stored(), before)
+        person = private(self.env)
+        self.assertEqual(person.returncode, 0, person.stderr)
+        self.assertEqual(json.loads(person.stdout)['question_routing'], {'send_to_parent': False, 'revision': 1})
+
     def test_the_gui_and_the_connector_are_not_agents(self):
         # Their hgs runs outside any agent's process tree. A shell that
         # inherited an agent's variables is still not that agent's process.
