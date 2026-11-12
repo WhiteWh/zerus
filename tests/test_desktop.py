@@ -1794,8 +1794,8 @@ finally:
     @staticmethod
     def remove_catalog_reason_schema(db):
         # Rewind the later leaves too, never leaving one labelled older: the
-        # schema-36 to 39 question route leaves (zerus-sa9qn.8, .32, .33 and .50;
-        # dropping a table drops its triggers and indexes), the
+        # schema-36 to 40 question route leaves (zerus-sa9qn.8, .32, .33, .50
+        # and .36; dropping a table drops its triggers and indexes), the
         # schema-34 session resume, schema-32 startup attention index,
         # schema-30 compact-to-send, schema-29
         # deferred answer, schema-28
@@ -1803,6 +1803,7 @@ finally:
         # message inputs, schema-26 task message, schema-25 termination
         # retention, creation launch/worktree, then the schema-22 catalog
         # approval.
+        db.execute('DROP TABLE desktop_question_route_retention')
         db.execute('DROP TABLE desktop_question_route_children')
         db.execute('DROP TABLE desktop_question_route_child_requests')
         db.execute('DROP TABLE desktop_question_route_policy')

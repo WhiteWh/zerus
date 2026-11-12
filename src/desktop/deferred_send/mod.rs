@@ -40,6 +40,9 @@ pub(in crate::desktop) enum Reservation {
     Refused,
     /// The person's switch is off: roll back, nothing is written.
     Off,
+    /// The route ledger stayed full after its retention pass: commit that
+    /// pass only, no original (zerus-sa9qn.36).
+    Full,
 }
 
 use zerus_client_core::desktop::deferred_send as wire;
