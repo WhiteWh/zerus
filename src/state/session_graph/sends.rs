@@ -47,6 +47,11 @@ fn token_record() -> Option<Value> {
     if !process_alive(&record) || record["state"] == "archived" {
         return None;
     }
+    // Ancestry through a recorded DeepSeek host proves no other agent's
+    // session (zerus-ppd26.15).
+    if crate::state::dsh::host_check() != crate::state::dsh::HostCheck::Outside {
+        return None;
+    }
     let owner = u32::try_from(record["pid"].as_u64()?).ok()?;
     let mut pid = std::process::id();
     for _ in 0..64 {

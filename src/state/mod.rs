@@ -1644,6 +1644,8 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
+#[cfg(all(test, unix))]
+mod hosted_ancestry_tests;
 #[cfg(test)]
 mod task_binding_tests {
     use super::*;

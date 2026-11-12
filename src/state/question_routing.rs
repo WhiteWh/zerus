@@ -132,6 +132,25 @@ pub(super) fn load() -> Option<Store> {
 /// from the CLI state root `state` (the desktop service's own): `None` when
 /// the setting is unreadable or the ID is not a session ID, which never
 /// routes.
+/// The refusal for an agent's command, here and before any `@host`
+/// forwarding: a proven agent, a resident DeepSeek host's tool call marked as
+/// one (zerus-ppd26.1), and any command under a recorded DeepSeek host, which
+/// the process tree and the host records decide (zerus-ppd26.15). A host
+/// check that cannot be verified refuses too, with `host_unverified` and the
+/// sentence that names the record and how to clear it.
+pub(crate) fn agent_refusal() -> Option<Value> {
+    if session_graph::caller_record().is_some() || session_graph::hosted_agent_call() {
+        return Some(json!({"ok": false, "error": "agent_refused"}));
+    }
+    match super::dsh::host_check() {
+        super::dsh::HostCheck::Outside => None,
+        super::dsh::HostCheck::Under => Some(json!({"ok": false, "error": "agent_refused"})),
+        super::dsh::HostCheck::Unverified(message) => {
+            Some(json!({"ok": false, "error": "host_unverified", "message": message}))
+        }
+    }
+}
+
 pub(crate) fn send_to_parent_at(state: &Path, session_id: &str) -> Option<bool> {
     if !session_id::canonical(session_id) {
         return None;
@@ -228,10 +247,8 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     // Refuse an agent's own process tree, the parent or the child itself
     // (zerus-sa9qn.32): a guard against accidental agent use, not a boundary
     // (zerus-sa9qn.49). `hgs @host` refuses before forwarding (cli.rs).
-    // So is a resident DeepSeek host's tool call without a provable session
-    // (zerus-ppd26.1).
-    if session_graph::caller_record().is_some() || session_graph::hosted_agent_call() {
-        println!("{}", json!({"ok": false, "error": "agent_refused"}));
+    if let Some(refused) = agent_refusal() {
+        println!("{refused}");
         return Ok(1);
     }
     expect(

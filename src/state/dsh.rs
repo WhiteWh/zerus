@@ -20,6 +20,60 @@ mod host_identity;
 mod shell_identity;
 #[cfg(all(test, unix))]
 pub(super) use host_identity::record_running_for_test;
+#[cfg(all(test, unix))]
+pub(super) use host_identity::recorded::UNDER_HOST as UNDER_HOST_FOR_TESTS;
+/// The shared check (zerus-ppd26.15): Agent Teams' caller proof calls it too.
+#[cfg(unix)]
+pub(crate) use host_identity::recorded::{hosted_ancestor, Host, Refusal};
+
+/// Whether this command runs under a DeepSeek host this computer records
+/// (zerus-ppd26.15). Such a command can be only that host's own hosted
+/// session, never another agent's session and never the person. The process
+/// tree and the recorded host files decide, never a marker the caller sets.
+/// See `host_identity/recorded.rs` for the rules and limits.
+// DeepSeek hosts never run on Windows, so there only `Outside` is built.
+#[cfg_attr(not(unix), allow(dead_code))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum HostCheck {
+    /// Every record was read and none is an ancestor.
+    Outside,
+    /// A recorded host is an ancestor.
+    Under,
+    /// The ancestry or a record could not be verified: refused like `Under`,
+    /// with the sentence that names the path and how to clear it.
+    Unverified(String),
+}
+
+/// The check for this process. DeepSeek hosts never run on Windows, so no
+/// host is recorded there.
+pub(crate) fn host_check() -> HostCheck {
+    #[cfg(unix)]
+    {
+        let found: std::result::Result<Option<Host>, Refusal> = hosted_ancestor();
+        match found {
+            Ok(None) => HostCheck::Outside,
+            Ok(Some(_)) => HostCheck::Under,
+            Err(refusal) => HostCheck::Unverified(refusal.sentence()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        HostCheck::Outside
+    }
+}
+
+/// The sentence that refuses this command as an agent session and as the
+/// person, or `None` outside every recorded host.
+pub(crate) fn host_refusal() -> Option<String> {
+    match host_check() {
+        HostCheck::Outside => None,
+        #[cfg(unix)]
+        HostCheck::Under => Some(host_identity::recorded::UNDER_HOST.to_owned()),
+        #[cfg(not(unix))]
+        HostCheck::Under => None,
+        HostCheck::Unverified(sentence) => Some(sentence),
+    }
+}
 
 #[cfg(unix)]
 // Resident bridge identity is independent of the installed harness release.

@@ -818,17 +818,13 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
     } else {
         Some(command.as_str())
     };
-    // A resident DeepSeek host's tool call is an agent's even without a provable
-    // session (zerus-ppd26.1).
-    if routed == Some("question-routing")
-        && (crate::state::session_graph::caller_record().is_some()
-            || crate::state::session_graph::hosted_agent_call())
-    {
-        println!(
-            "{}",
-            serde_json::json!({"ok": false, "error": "agent_refused"})
-        );
-        return Ok(1);
+    // The same agent refusal as a local change, before forwarding
+    // (zerus-ppd26.1, zerus-ppd26.15).
+    if routed == Some("question-routing") {
+        if let Some(refused) = crate::state::question_routing::agent_refusal() {
+            println!("{refused}");
+            return Ok(1);
+        }
     }
     // zerus-ucck P1c: a session reference selects the session it names on every
     // session command, through the same checks as `--session-id`. `inspect`

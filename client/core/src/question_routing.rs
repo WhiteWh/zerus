@@ -18,6 +18,8 @@ const UNCONFIRMED: &str =
 const IDENTITY: &str = source!("The session has no confirmed conversation yet.");
 const HELP_CAP: usize = 256 * 1024;
 const REPLY_CAP: usize = 64 * 1024;
+/// At most this much of the host's own sentence for a check it cannot verify.
+const MESSAGE_CHARS: usize = 2000;
 
 /// Whether `stdout` lists the marker as a whole line.
 pub fn has_marker(stdout: &[u8]) -> bool {
@@ -99,6 +101,18 @@ pub fn classify(
             .filter(|reply| reply["ok"] == false)
             .and_then(|reply| reply["error"].as_str())
             .unwrap_or("");
+        // A DeepSeek host check the host cannot verify refuses the person too;
+        // its sentence names the record and how to clear it, so it is shown
+        // as given (zerus-ppd26.15).
+        if error == "host_unverified" {
+            if let Some(message) = reply
+                .as_ref()
+                .and_then(|reply| reply["message"].as_str())
+                .filter(|message| !message.trim().is_empty())
+            {
+                return Err(message.trim().chars().take(MESSAGE_CHARS).collect());
+            }
+        }
         return Err(refusal(error).to_owned());
     }
     let Some(mut reply) = reply else {
@@ -241,6 +255,29 @@ mod tests {
         assert!(refused("conflict").contains("another device"));
         assert!(refused("agent_refused").starts_with("Only you"));
         assert_eq!(refused("whatever"), UNCONFIRMED);
+        // zerus-ppd26.15: an unverified host check shows the host's sentence,
+        // bounded; without one it is unconfirmed.
+        let sentence = "Cannot verify the DeepSeek agent host record /state/dsh/hosts/a/host.identity.json: remove it.";
+        let unverified = |message: Value| {
+            classify(
+                &t,
+                false,
+                0,
+                reply(
+                    json!({"ok": false, "error": "host_unverified", "message": message}),
+                    1,
+                ),
+            )
+            .unwrap_err()
+        };
+        assert_eq!(unverified(json!(sentence)), sentence);
+        assert_eq!(
+            unverified(json!("x".repeat(5000))).chars().count(),
+            MESSAGE_CHARS
+        );
+        assert_eq!(unverified(json!("")), UNCONFIRMED);
+        assert_eq!(unverified(json!(null)), UNCONFIRMED);
+        assert_eq!(refused("host_unverified"), UNCONFIRMED);
         assert_eq!(
             classify(&t, false, 0, Exit::TimedOut).unwrap_err(),
             UNCONFIRMED
