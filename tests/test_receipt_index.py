@@ -107,6 +107,52 @@ class ReceiptIndex(unittest.TestCase):
                   payload=dict(expected_run_id="wrong", expected_conversation_id=self.fixture.conversation_id),
                   success=False)
 
+    def test_worker_seals_missing_originals_as_explicit_gaps_and_recovers_restoration(self):
+        paths = [self.original(n) for n in range(1, 4)]
+        original = paths[0].read_bytes()
+        kept = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in paths[1:]}
+        self.migrate()
+        paths[0].unlink()
+        self.migrate()
+        projected = self.inspect()
+        coverage = projected["receipt_projection"]
+        self.assertTrue(coverage["migration_complete"], coverage)
+        self.assertEqual(coverage["state"], "partial")
+        self.assertEqual(coverage["unattributed_errors"], 1)
+        self.assertIn(dict(request_id=paths[0].stem, state="missing"), coverage["gaps"])
+        with closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(db.execute("SELECT reason FROM receipt_errors WHERE source='terminal' AND name=?",
+                                        (paths[0].name,)).fetchone(), ("missing",))
+            self.assertEqual(db.execute("SELECT indexed FROM receipt_sources WHERE source='terminal'").fetchone(), (3,))
+        self.assertEqual(self.ids(projected), [paths[2].stem, paths[1].stem])
+        self.assertFalse(coverage["absence_confirmed"])
+        for p, expected in kept.items():
+            self.assertEqual((p.read_bytes(), p.stat().st_mtime_ns), expected)
+        paths[0].write_bytes(original)
+        self.migrate()
+        restored = self.inspect()
+        self.assertEqual(restored["receipt_projection"]["state"], "indexed")
+        self.assertEqual(restored["receipt_projection"]["gaps"], [])
+        self.assertEqual(self.ids(restored), [p.stem for p in reversed(paths)])
+
+    def test_worker_seals_a_disappeared_family_without_dropping_its_bindings(self):
+        paths = [self.original(n) for n in range(1, 3)]
+        self.migrate()
+        for p in paths:
+            p.unlink()
+        self.directory.rmdir()
+        self.migrate()
+        projected = self.inspect()["receipt_projection"]
+        self.assertTrue(projected["migration_complete"], projected)
+        self.assertEqual(projected["state"], "partial")
+        self.assertEqual(projected["unattributed_errors"], 2)
+        exact = [g for g in projected["gaps"] if "request_id" in g]
+        self.assertEqual({g["request_id"] for g in exact}, {p.stem for p in paths})
+        self.assertEqual({g["state"] for g in exact}, {"missing"})
+        with closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM receipt_rows WHERE source='terminal'").fetchone(), (2,))
+        self.assertFalse(self.directory.exists())
+
     def test_snapshot_pages_survive_backdated_arrivals_and_reject_other_scopes(self):
         originals = [self.original(n) for n in range(1, 13)]
         self.migrate()
