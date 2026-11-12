@@ -490,6 +490,9 @@ mod tests {
                     other => panic!("Private plugin query did not arrive: {other:?}"),
                 }
             };
+            // BSD sockets inherit O_NONBLOCK from the listener on accept
+            // (Linux does not); the timed reads below need a blocking peer.
+            peer.set_nonblocking(false).unwrap();
             peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
             peer.set_write_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
