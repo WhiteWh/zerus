@@ -460,3 +460,94 @@ fn an_unchanged_empty_conversation_row_publishes_no_change_on_a_later_walk() {
     );
     assert_eq!(source_row(&catalog, Source::Terminal), (true, 1));
 }
+
+/// zerus-z5uax.1, the review probe: a witnessed terminal row rebound to dsh.
+fn rebind_one_terminal_row_to_dsh(catalog: &Catalog) {
+    catalog
+        .db
+        .execute(
+            "UPDATE receipt_rows SET source='dsh' WHERE source='terminal' AND request=?",
+            [uuid::Uuid::from_u128(1).to_string()],
+        )
+        .unwrap();
+}
+fn rows(catalog: &Catalog, source: Source) -> i64 {
+    catalog
+        .db
+        .query_row(
+            "SELECT COUNT(*) FROM receipt_rows WHERE source=?",
+            [source.key()],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_row_moved_to_another_source_moves_its_count() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(temp.path(), true).unwrap();
+    for n in 1..=5 {
+        put(
+            &catalog,
+            Source::Terminal,
+            &value(n, "wanted", "run", "", n as f64),
+        );
+    }
+    walk(temp.path());
+    assert_eq!(token(&catalog, Source::Terminal).unwrap().count, 5);
+    assert!(catalog.coverage_verified());
+    rebind_one_terminal_row_to_dsh(&catalog);
+    // Both counters follow the row, so they stay exact...
+    assert_eq!(source_row(&catalog, Source::Terminal), (false, 4));
+    assert_eq!(source_row(&catalog, Source::Dsh), (false, 1));
+    assert_eq!(rows(&catalog, Source::Terminal), 4);
+    assert_eq!(rows(&catalog, Source::Dsh), 1);
+    // ...and no longer match the tokens taken before the move: unknown at
+    // once, not only after the next witness.
+    assert!(!catalog.coverage_verified());
+    assert_eq!(catalog.witness().unwrap(), Witnessed::Agreed);
+    assert_eq!(mismatches(&catalog), 0);
+    assert!(catalog.coverage_verified());
+}
+
+#[test]
+fn a_cache_with_the_uncounted_rebound_trigger_is_upgraded() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(temp.path(), true).unwrap();
+    for n in 1..=5 {
+        put(
+            &catalog,
+            Source::Terminal,
+            &value(n, "wanted", "run", "", n as f64),
+        );
+    }
+    walk(temp.path());
+    // The protocol-3 trigger: it never moved the count.
+    let current: String = catalog
+        .db
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name='receipt_row_rebound'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let legacy: String = current
+        .lines()
+        .filter(|line| !line.contains("OLD.source IS NOT NEW.source;"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_ne!(legacy, current);
+    catalog
+        .db
+        .execute_batch(&format!(
+            "DROP TRIGGER receipt_row_rebound; {legacy};
+             UPDATE receipt_meta SET value='3' WHERE key='rowset_protocol';"
+        ))
+        .unwrap();
+    assert!(Catalog::open(temp.path(), false).is_err());
+    let upgraded = Catalog::open(temp.path(), true).unwrap();
+    rebind_one_terminal_row_to_dsh(&upgraded);
+    assert_eq!(source_row(&upgraded, Source::Terminal), (false, 4));
+    assert_eq!(source_row(&upgraded, Source::Dsh), (false, 1));
+    assert_eq!(upgraded.witness().unwrap(), Witnessed::Agreed);
+}

@@ -30,7 +30,9 @@ pub(super) const PAGE_LIMIT: usize = 100;
 const EXAMINE: usize = 256;
 const ORIGINAL_BYTES: u64 = 256 * 1024;
 const DATABASE: &str = "delivery-receipts-v1.sqlite3";
-const ROWSET_PROTOCOL: &str = "3";
+// 4: the rebound trigger also moves a row's count between sources, so the
+// witness token stays exact across a source change (zerus-z5uax.1).
+const ROWSET_PROTOCOL: &str = "4";
 const VERIFY_SECONDS: f64 = 600.0;
 // The row-set witness token (zerus-z5uax): one receipt_meta entry per source.
 const WITNESS_PREFIX: &str = "rowset_witness:";
@@ -454,6 +456,8 @@ impl Catalog {
                   OR OLD.at IS NOT NEW.at OR OLD.files IS NOT NEW.files OR OLD.binding IS NOT NEW.binding)
                 BEGIN
                   UPDATE receipt_sources SET complete=0 WHERE source IN(OLD.source,NEW.source);
+                  UPDATE receipt_sources SET indexed=MAX(0,indexed-1) WHERE source=OLD.source AND OLD.source IS NOT NEW.source;
+                  UPDATE receipt_sources SET indexed=indexed+1 WHERE source=NEW.source AND OLD.source IS NOT NEW.source;
                   INSERT INTO receipt_errors VALUES(OLD.source,OLD.request||'.json',CASE WHEN OLD.conversation IS NOT NEW.conversation THEN 'binding_changed' ELSE 'index_row_changed' END)
                     ON CONFLICT(source,name) DO UPDATE SET reason=excluded.reason;
                   UPDATE receipt_meta SET value=lower(hex(randomblob(16))) WHERE key='epoch';
@@ -562,6 +566,8 @@ impl Catalog {
                        OR OLD.at IS NOT NEW.at OR OLD.files IS NOT NEW.files OR OLD.binding IS NOT NEW.binding)
                      BEGIN
                        UPDATE receipt_sources SET complete=0 WHERE source IN(OLD.source,NEW.source);
+                       UPDATE receipt_sources SET indexed=MAX(0,indexed-1) WHERE source=OLD.source AND OLD.source IS NOT NEW.source;
+                       UPDATE receipt_sources SET indexed=indexed+1 WHERE source=NEW.source AND OLD.source IS NOT NEW.source;
                        INSERT INTO receipt_errors VALUES(OLD.source,OLD.request||'.json',CASE WHEN OLD.conversation IS NOT NEW.conversation THEN 'binding_changed' ELSE 'index_row_changed' END)
                          ON CONFLICT(source,name) DO UPDATE SET reason=excluded.reason;
                        UPDATE receipt_meta SET value=lower(hex(randomblob(16))) WHERE key='epoch';
