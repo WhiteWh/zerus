@@ -103,6 +103,37 @@ class QuestionRouting(unittest.TestCase):
                     self.assertEqual((code, refused), (1, {'ok': False, 'error': 'agent_refused'}))
                     self.assertEqual(self.stored(), before)
 
+    def test_an_agent_is_refused_before_any_remote_forwarding(self):
+        # zerus-sa9qn.47: the peer's hgs cannot see this caller, so the refusal
+        # runs here before the ssh command is built, in both target forms.
+        agent = self.record('codex/example/parent', 'codex', 'run-parent', 'conversation-parent', PARENT_ID, owned=True)
+        request = json.dumps(dict(expected_run_id='run-child', expected_conversation_id='conversation-child',
+                                  expected_revision=0, send_to_parent=True))
+        forms = (['@peer', 'question-routing', self.child['name'], '--json'],
+                 ['@peer', '--expect-machine', '55555555-5555-4555-8555-555555555555', 'question-routing',
+                  self.child['name'], '--json'])
+        for form in forms:
+            def run(extra):
+                return subprocess.run([str(HGS), '--dry-run', *form], env=dict(self.env, HGS_PEERS='peer', **extra),
+                                      input=request, capture_output=True, text=True, timeout=10)
+            with self.subTest(form=form[1]):
+                refused = run(dict(HGS_SESSION=agent['name'], HGS_RUN_ID=agent['run_id']))
+                self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
+                self.assertEqual(json.loads(refused.stdout), {'ok': False, 'error': 'agent_refused'})
+                self.assertNotIn('ssh', refused.stdout + refused.stderr)
+                # The person's call (no agent process tree) goes on to the
+                # forwarding path: the plain form prints its ssh command; the
+                # guarded form reaches its own refusal of --dry-run.
+                forwarded = run({})
+                if form[1] == 'question-routing':
+                    self.assertEqual(forwarded.returncode, 0, forwarded.stderr)
+                    self.assertIn('ssh', forwarded.stdout)
+                    self.assertIn('question-routing', forwarded.stdout)
+                else:
+                    self.assertEqual(forwarded.returncode, 2, forwarded.stderr)
+                    self.assertIn('Guarded calls do not support --dry-run', forwarded.stderr)
+        self.assertIsNone(self.stored())
+
     def test_the_gui_and_the_connector_are_not_agents(self):
         # Their hgs runs outside any agent's process tree. A shell that
         # inherited an agent's variables is still not that agent's process.

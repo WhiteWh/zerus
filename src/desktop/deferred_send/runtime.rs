@@ -8,7 +8,7 @@
 use super::child;
 use super::child::Ended;
 use super::receipt::{self, Evidence, Observed, Roots};
-use super::{admitted::Admitted, ledger, target};
+use super::{admitted::Admitted, ledger, target, Reservation};
 use crate::desktop::creation_clone::lease::{Lease, Machine};
 use crate::desktop::custody::Observation;
 use crate::desktop::not_admitted;
@@ -55,17 +55,6 @@ pub(in crate::desktop) enum Routed {
     /// or the request already has an original.
     Unavailable,
     /// The person's switch was off at the reservation: nothing was written.
-    Off,
-}
-/// What a route's own reservation decided, inside the admission transaction.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-#[derive(Debug, PartialEq, Eq)]
-pub(in crate::desktop) enum Reservation {
-    /// The route ledger reserved the question: admit the original.
-    Reserved,
-    /// The route ledger recorded a final refusal: commit it, no original.
-    Refused,
-    /// The person's switch is off: roll back, nothing is written.
     Off,
 }
 /// The conservative refusal: the request may have been admitted.

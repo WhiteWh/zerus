@@ -796,6 +796,24 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
         return Ok(1);
     };
     let args = &args[index + 1..];
+    // The per-child question route switch (zerus-sa9qn.32): refuse a change
+    // from an agent's own process tree here, before any `@host` forwarding,
+    // because the peer's hgs cannot see this caller (zerus-sa9qn.47). This is
+    // a guard against accidental agent use, not a security boundary: the
+    // person-only control is the global switch (zerus-sa9qn.49).
+    let routed = if command == "--expect-machine" {
+        args.get(1).map(String::as_str)
+    } else {
+        Some(command.as_str())
+    };
+    if routed == Some("question-routing") && crate::state::session_graph::caller_record().is_some()
+    {
+        println!(
+            "{}",
+            serde_json::json!({"ok": false, "error": "agent_refused"})
+        );
+        return Ok(1);
+    }
     // zerus-ucck P1c: a session reference selects the session it names on every
     // session command, through the same checks as `--session-id`. `inspect`
     // keeps its own read-only reference path below.

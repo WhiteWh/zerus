@@ -1,7 +1,9 @@
 //! Where a supervised child's questions go (`hgs [@host] question-routing
 //! NAME --json`, zerus-sa9qn.32): the person's per-child switch of the
 //! owner-approved question route. This only asks the child's host and
-//! reports what it confirmed; the host refuses a change from an agent.
+//! reports what it confirmed. The CLI refuses a change from an agent's
+//! process tree, a guard against accidental agent use rather than a boundary;
+//! the person-only control is the global switch (zerus-sa9qn.49).
 use crate::actions::{help_invocation, prepend_alias, Exit, Invocation, Target};
 use crate::source;
 use serde_json::{json, Value};

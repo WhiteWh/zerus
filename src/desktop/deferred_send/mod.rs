@@ -20,15 +20,28 @@ pub(in crate::desktop) use child::Ended;
 pub(super) use recovery::{Owned, Recovery};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod target;
+#[cfg(target_os = "linux")]
+pub(super) use runtime::Routed;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) use runtime::Runtime;
-#[cfg(target_os = "linux")]
-pub(super) use runtime::{Reservation, Routed};
 #[cfg_attr(windows, allow(dead_code))]
 // Windows keeps bounded receipts; this executor is POSIX-only, like clone.
 mod ledger;
 
 use anyhow::{ensure, Context};
+
+/// What a route's own reservation decided, inside the admission transaction.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::desktop) enum Reservation {
+    /// The route ledger reserved the question: admit the original.
+    Reserved,
+    /// The route ledger recorded a final refusal: commit it, no original.
+    Refused,
+    /// The person's switch is off: roll back, nothing is written.
+    Off,
+}
+
 use zerus_client_core::desktop::deferred_send as wire;
 
 // Merge-order allocation: the next free Store version when this lands. A

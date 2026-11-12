@@ -3,8 +3,13 @@
 //! kept on the child's computer beside the shared notification preference so
 //! every desktop and phone sees the same value. It is on by default, keyed by
 //! the child's durable session ID, so a rename or a new conversation keeps
-//! it. Only the person changes it: a change from an agent's own process tree
-//! is refused, so neither a parent nor a child agent can turn routing back on.
+//! it. A change from an agent's own process tree is refused, by this CLI
+//! before any `@host` forwarding and again on the switch's own computer.
+//! That refusal is a guard against accidental agent use, not a security
+//! boundary (zerus-sa9qn.49): a same-user agent can clear its session
+//! variables, leave its process tree, or write this file directly. The
+//! person-only control is the global switch, changed only through the
+//! desktop's native frontend lane (`Request::QuestionRoutes`).
 //!
 //! The desktop service reads it again inside each route reservation
 //! ([`send_to_parent_at`]); a change written here before that read always
@@ -220,8 +225,9 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         return Err("question routing request exceeds limits".into());
     }
     let request = parse(&bytes)?;
-    // The person's choice: an agent, the parent or the child itself, never
-    // turns routing on or off (owner direction, zerus-sa9qn.32).
+    // Refuse an agent's own process tree, the parent or the child itself
+    // (zerus-sa9qn.32): a guard against accidental agent use, not a boundary
+    // (zerus-sa9qn.49). `hgs @host` refuses before forwarding (cli.rs).
     if session_graph::caller_record().is_some() {
         println!("{}", json!({"ok": false, "error": "agent_refused"}));
         return Ok(1);
