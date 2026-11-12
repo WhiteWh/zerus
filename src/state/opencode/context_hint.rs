@@ -172,15 +172,22 @@ fn owned(service: &service::Registration, marker: &Value) -> bool {
             .is_some_and(|n| uuid::Uuid::parse_str(n).is_ok())
 }
 fn ready(service: &service::Service, marker: &Value, cwd: &str) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(2);
     let query = format!(
         "/api/plugin?location%5Bdirectory%5D={}",
         catalog::encode(cwd)
     );
-    let expected = directory().join("plugins").join(string(marker, "nonce"));
+    // overlay() creates the source under this canonical root. A configured
+    // state alias must not make the same active source look unavailable.
+    let Ok(state) = absolute_root() else {
+        return false;
+    };
+    let expected = state
+        .join("opencode/context-hint/plugins")
+        .join(string(marker, "nonce"));
     // A cold service announces its HTTP endpoint before a location finishes
     // activating plugins. Observe the exact active source within one bounded
     // readiness window; never restart a host or treat a partial list as ready.
-    let deadline = Instant::now() + Duration::from_secs(2);
     while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
         if let Ok(v) = service.call_within(
             "GET",
@@ -406,6 +413,125 @@ pub(crate) fn lookup(args: &[String]) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn readiness_matches_the_overlay_through_a_symlinked_state_parent() {
+        use std::process::{Command, Stdio};
+        let temp = tempfile::tempdir().unwrap();
+        let physical = temp.path().join("physical");
+        fs::create_dir_all(physical.join("state")).unwrap();
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&physical, &alias).unwrap();
+        let output = temp.path().join("child.log");
+        let log = fs::File::create(&output).unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "--ignored",
+                "state::opencode::context_hint::tests::readiness_alias_child",
+            ])
+            .env("HGS_STATE_DIR", alias.join("state"))
+            .env("ZERUS_OPENCODE_ALIAS_CHILD", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log.try_clone().unwrap()))
+            .stderr(Stdio::from(log))
+            .spawn()
+            .unwrap();
+        let end = Instant::now() + Duration::from_secs(15);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= end {
+                child.kill().unwrap();
+                let _ = child.wait();
+                panic!("The private alias readiness child did not finish");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let mut detail = String::new();
+        std::io::Read::read_to_string(
+            &mut std::io::Read::take(fs::File::open(output).unwrap(), 32768),
+            &mut detail,
+        )
+        .unwrap();
+        assert!(status.success(), "{detail}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "private environment child, run by readiness_matches_the_overlay_through_a_symlinked_state_parent"]
+    fn readiness_alias_child() {
+        use std::io::{BufRead, Write};
+        assert_eq!(
+            std::env::var("ZERUS_OPENCODE_ALIAS_CHILD").as_deref(),
+            Ok("1")
+        );
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let physical = absolute_root().unwrap();
+        assert_ne!(root(), physical);
+        let source = physical.join("opencode/context-hint/plugins").join(&nonce);
+        fs::create_dir_all(&source).unwrap();
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let worker = std::thread::spawn(move || {
+            let end = Instant::now() + Duration::from_secs(5);
+            let mut peer = loop {
+                match listener.accept() {
+                    Ok((peer, _)) => break peer,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < end =>
+                    {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    other => panic!("Private plugin query did not arrive: {other:?}"),
+                }
+            };
+            peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            peer.set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(std::io::Read::take(&mut peer, 8192));
+            let mut bytes = 0;
+            loop {
+                let mut line = String::new();
+                let read = reader.read_line(&mut line).unwrap();
+                bytes += read;
+                assert!(read > 0 && bytes <= 8192);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let body = json!({"data":[{"id":PLUGIN,"source":{"type":"local","path":source},
+                "state":{"status":"active"},"features":{"server":true}}]})
+            .to_string();
+            write!(
+                peer,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        let service = service::Service {
+            reg: service::Registration {
+                id: "private-alias-fixture".into(),
+                version: "2.2.7".into(),
+                port,
+                pid: std::process::id(),
+                password: None,
+            },
+        };
+        let active = ready(&service, &json!({"nonce":nonce}), "/example");
+        worker.join().unwrap();
+        assert!(
+            active,
+            "The active canonical overlay must match through the state alias"
+        );
+    }
+
     #[test]
     fn exact_decided_context_binding_excludes_stale_off_and_entry_backed_records() {
         let marker = json!({"id":"service"});
