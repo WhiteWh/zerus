@@ -1,10 +1,16 @@
 """Adapter controls; the native suites separately exercise the real engine."""
+import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import unittest
 
 BRIDGE = Path(__file__).resolve().parents[1] / 'src/dsh/bridge.mjs'
+LIST_CAPTURE = Path(__file__).resolve().parent / 'fixtures/dsh-bridge-list-row.json'
+# Rewrites LIST_CAPTURE from the bridge's own answers instead of comparing them.
+REGENERATE_LIST_CAPTURE = 'ZERUS_REGENERATE_DSH_BRIDGE_CAPTURE'
 
 
 @unittest.skipUnless(shutil.which('node'), 'Node.js required')
@@ -195,6 +201,96 @@ assert.deepEqual(calls, [
 ]);
 await assert.rejects(manageSchedule({ update() {}, view() {}, edit() {} }, { ...p, action: 'delete' }), /incompatible official/);
 """)
+
+
+# The real bridge's apply() over a minimal stand-in for the official host: a
+# job registry, a scripted session list and no-op hooks. It answers ping and
+# list on its own socket, exactly as HGS reads them.
+LIST_HARNESS = r"""
+import net from 'node:net';
+const [bridgeUrl, socket, withRegistry] = process.argv.slice(2);
+const { apply } = await import(bridgeUrl);
+const job = (id, owner, status, extra = {}) =>
+  ({ id, kind: 'bash', owner, status, startedAt: 1790000000000, label: `sleep ${id}`, ...extra });
+const jobs = [
+  job('job-1', 'session-busy', 'running'),
+  job('job-2', 'session-busy', 'completed', { finishedAt: 1790000060000 }),
+  { ...job('job-3', 'session-busy', 'running'), kind: 'agent' },
+  job('job-4', 'session-child', 'running'),
+  ...Array.from({ length: 33 }, (_, i) => job(`many-${i}`, 'session-many', 'running')),
+];
+const registry = { list: owner => jobs.filter(entry => entry.owner === owner), events: { subscribe: () => () => {} } };
+const rows = [
+  { sessionId: 'session-busy', running: false, agentAvailable: true },
+  { sessionId: 'session-child', origin: 'subagent', parentSessionId: 'session-busy', running: true, agentAvailable: true },
+  { sessionId: 'session-idle', running: false, agentAvailable: true },
+  { sessionId: 'session-many', running: false, agentAvailable: true },
+];
+const effects = [];
+const ctx = new Proxy({
+  sessionController: { list: async () => ({ items: rows.map(row => ({ ...row })) }),
+    agents: { composeAgent: async () => ({}), presetForObservation() {}, serializeImageAdmission() {} } },
+  agents: { get: () => undefined, roots: () => [] },
+  goals: { get: () => null },
+  get: name => (name === 'jobs' && withRegistry === '1' ? registry : undefined),
+  on: () => () => {},
+  effect: run => { effects.push(run()); },
+}, { get: (target, key) => (key in target ? target[key] : undefined) });
+apply(ctx, { socket });
+await Promise.all(effects);
+const call = method => new Promise((resolve, reject) => {
+  const client = net.connect(socket);
+  let data = '';
+  client.on('data', chunk => { data += chunk; });
+  client.on('end', () => resolve(JSON.parse(data)));
+  client.on('error', reject);
+  client.write(JSON.stringify({ method, params: {} }) + '\n');
+});
+process.stdout.write(JSON.stringify({ ping: await call('ping'), list: await call('list') }));
+process.exit(0);
+"""
+
+
+@unittest.skipUnless(shutil.which('node'), 'Node.js required')
+class ListJobs(unittest.TestCase):
+    """zerus-yj7ef: the list rows' bounded `listJobs` summary (docs/reference.md)."""
+
+    def answers(self, registry=True):
+        with tempfile.TemporaryDirectory(prefix='hgs-dsh-list-', dir=os.environ.get('ZERUS_TEST_SHORT_TMPDIR', '/tmp')) as root:
+            result = subprocess.run(['node', '--input-type=module', '-', BRIDGE.as_uri(), str(Path(root) / 'host.sock'),
+                                     '1' if registry else '0'], input=LIST_HARNESS, text=True, capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        answers = json.loads(result.stdout)
+        for answer in answers.values():
+            self.assertTrue(answer['ok'], answer)
+            # The host generation is a fresh UUID per bridge; nothing else varies.
+            answer['value']['generation'] = '<generation>'
+        return {name: answer['value'] for name, answer in answers.items()}
+
+    def test_rows_count_running_jobs_only_when_complete(self):
+        answers = self.answers()
+        self.assertIs(answers['ping']['listJobs'], True)
+        rows = {row['sessionId']: row['listJobs'] for row in answers['list']['items']}
+        # Own and listed subagents' running bash jobs; settled and other kinds are not work.
+        self.assertEqual((rows['session-busy']['complete'], rows['session-busy']['count']), (True, 2))
+        self.assertEqual([job['id'] for job in rows['session-busy']['jobs']], ['job-1', 'job-4'])
+        self.assertEqual(rows['session-child'], {**rows['session-child'], 'complete': True, 'count': 1})
+        self.assertEqual(rows['session-idle'], {'complete': True, 'count': 0, 'jobs': []})
+        # Over the bound, or without a registry, there is no count: unknown, never idle.
+        self.assertEqual(rows['session-many'], {'complete': False, 'count': None, 'jobs': []})
+        bare = self.answers(registry=False)
+        self.assertEqual({row['listJobs']['complete'] for row in bare['list']['items']}, {False})
+
+    def test_list_answer_matches_the_committed_capture(self):
+        answers = self.answers()
+        capture = {'about': 'The real bridge\'s ping and list answers for the zerus-yj7ef listJobs contract, '
+                            'written by tests/test_dsh_bridge.py ListJobs. Regenerate: '
+                            f'{REGENERATE_LIST_CAPTURE}=1 python3 -m unittest test_dsh_bridge.ListJobs (from tests/).',
+                   **answers}
+        if os.environ.get(REGENERATE_LIST_CAPTURE) == '1':
+            LIST_CAPTURE.write_text(json.dumps(capture, indent=2, sort_keys=True) + '\n')
+        self.assertEqual(json.loads(LIST_CAPTURE.read_text()), capture,
+                         f'The bridge\'s list answer changed; review it, then set {REGENERATE_LIST_CAPTURE}=1')
 
 
 if __name__ == '__main__':

@@ -5653,6 +5653,32 @@ Hosts are asked at once, each scanning for at most 5 seconds; a stopped host, an
 older adapter or a host that does not answer within 7 seconds reports that
 history as unavailable.
 
+A DeepSeek row in `hgs ls` and the GUI reports its background work without an
+inspection, so an idle session with a running background job shows
+**Background**. The adapter answers `ping` with `listJobs: true`. Each row of
+its `list` answer then carries `listJobs`: a summary of the running bash jobs
+of that session and of its subagents listed in the same answer. Jobs are taken
+from the same native job registry that an inspection reads:
+
+- `{"complete": true, "count": N, "jobs": [...]}` when at most 32 such jobs run.
+  `count` equals the number of `jobs` entries, and 0 means no background work.
+  Each entry is `{"id", "kind": "bash", "owner", "status", "startedAt",
+  "label", "callId"}`. `status` is `starting`, `running` or `stopping`;
+  `owner` is the session or subagent ID; `startedAt` is milliseconds since the
+  epoch; `label` holds at most 240 characters; `callId` may be null.
+- `{"complete": false, "count": null, "jobs": []}` when there is no job registry
+  or more than 32 jobs run. There is no count.
+
+A count is a number only when `complete` is true. HGS lists such a row with
+`process_work.count` N; an incomplete summary, or one whose count disagrees with
+its jobs, leaves `process_work.count` null. An adapter from an older Zerus has
+no `listJobs` in `ping` and no `listJobs` key in its rows. Its rows also keep
+`process_work.count` null. Consumers read null as unknown, never as free. A host
+is never restarted to gain this; hosts started by this version provide it. The
+bridge's own `ping` and `list` answers for this contract are captured in
+`tests/fixtures/dsh-bridge-list-row.json`; `tests/test_dsh_bridge.py` fails when
+they differ and rewrites the file with `ZERUS_REGENERATE_DSH_BRIDGE_CAPTURE=1`.
+
 The official Schedule plugin (**Automation tasks** in Native UI Plugins) is
 listed and managed per exact session. The reviewed web bundles include it,
 and the profile Zerus creates layers that bundle, so it is on unless the

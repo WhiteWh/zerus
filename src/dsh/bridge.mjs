@@ -519,23 +519,50 @@ export function apply(ctx, config) {
     if (p.action === 'update' && (!p.expected || typeof p.expected !== 'object')) throw new Error('Expected task record is required');
     return { available: true, generation, result: await manageSchedule(schedule, p) };
   }
+  // zerus-yj7ef: every list row carries `listJobs`, a bounded summary of the
+  // session's running bash jobs, its own and its listed subagents', read from
+  // the same job registry as inspect. Contract (docs/reference.md):
+  //   {complete: true, count: N, jobs: [N jobs]} when N <= LIST_JOB_LIMIT;
+  //   {complete: false, count: null, jobs: []} without a registry or over it.
+  // ping advertises listJobs: true. A host without both is unknown, never idle.
+  // Kept apart from the rest of the list builder.
+  const LIST_JOB_LIMIT = 32;
+  const runningJob = job => job.kind === 'bash' && ['starting', 'running', 'stopping'].includes(job.status);
+  function listJobs(items) {
+    const registry = ctx.get('jobs');
+    const owners = new Map(items.map(row => [row.sessionId, [row.sessionId]]));
+    for (const row of items) {
+      if (row.origin === 'subagent' && row.parentSessionId !== row.sessionId) owners.get(row.parentSessionId)?.push(row.sessionId);
+    }
+    const summaries = new Map();
+    for (const [sessionId, ids] of owners) {
+      const jobs = typeof registry?.list === 'function'
+        ? ids.flatMap(owner => registry.list(owner).filter(job => job.owner === owner && runningJob(job))) : null;
+      summaries.set(sessionId, !jobs || jobs.length > LIST_JOB_LIMIT ? { complete: false, count: null, jobs: [] }
+        : { complete: true, count: jobs.length, jobs: jobs.map(job => ({ id: job.id, kind: job.kind, owner: job.owner,
+          status: job.status, startedAt: job.startedAt, label: String(job.label ?? '').slice(0, 240), callId: jobCalls.get(job.id)?.callId ?? null })) });
+    }
+    return summaries;
+  }
   async function execute(request) {
     if (closing) throw new Error('Native host is stopping');
     const p = request.params ?? {};
     switch (request.method) {
-      case 'ping': return { protocol: 1, version: '0.2.1-rc.2', generation, accountPermissions: true, sessionActions: true,
+      case 'ping': return { protocol: 1, version: '0.2.1-rc.2', generation, accountPermissions: true, sessionActions: true, listJobs: true,
         nativeOperations: ['fork', 'history-search', 'schedules'], schedule: Boolean(scheduleService()) };
       case 'list': {
         const list = await api.list({}, new AbortController().signal);
         const status = await accountStatus();
         const scheduled = await scheduleSummaries();
+        const jobSummaries = listJobs(list.items);
         return { ...list, generation, items: list.items.map(row => {
           const agent = ctx.agents.get(row.sessionId);
           const selection = agent ? selectionOf(agent, row.projections?.values) : null;
           return { ...row, selection, accountStatus: status, authRequired: needsSignIn(selection, status),
             goal: agent ? ctx.goals.get(agent) ?? null : row.projections?.values.goal ?? null,
             pendingQuestions: publicQuestions(row.sessionId), nativeRecovery: recoveryPublic(row.sessionId),
-            ...(scheduled ? { schedules: scheduled.get(row.sessionId) ?? { count: 0, recurring: 0, nextAt: null } } : {}) };
+            ...(scheduled ? { schedules: scheduled.get(row.sessionId) ?? { count: 0, recurring: 0, nextAt: null } } : {}),
+            listJobs: jobSummaries.get(row.sessionId) };
         }) };
       }
       case 'inspect': return inspect(p);
