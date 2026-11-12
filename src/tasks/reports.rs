@@ -256,11 +256,16 @@ mod tests {
                 ]
                 .map(String::from),
             );
+            // zerus-sa9qn.42: the start acknowledgement is pinned too.
             assert_eq!(
                 shell_calls(&dispatched),
-                [plain("get"), worker],
+                [plain("start"), plain("get"), worker],
                 "{project:?}"
             );
+            let (direct, _) =
+                super::super::dispatch_content(&settings, &view, project, false).unwrap();
+            assert_eq!(shell_calls(&direct), [plain("start")], "{project:?}");
+            assert!(direct.contains("\n[Zerus task start]\nAcknowledge this task with `hgs task start "));
         }
     }
 }
