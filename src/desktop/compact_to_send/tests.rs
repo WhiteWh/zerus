@@ -2625,9 +2625,18 @@ else:
         assert_eq!(sent.counts(), (0, 0));
         assert_eq!(super::reservation_budget::budget(&f.store.db).2, 32);
         f.runtime.request_stop();
-        f.until("queued originals retire without input", |f| {
-            f.runtime.drained()
-        });
+        // Each poll retires one queued original however long this host takes
+        // for it, so the drain is bounded in polls, not in seconds: in a
+        // loaded suite the fixture's eight seconds ran out with 6 to 18 of
+        // the 32 still queued (zerus-dha0w).
+        for _ in 0..32 {
+            f.runtime.poll(&mut f.store, Some(f.exclusion.clone()));
+        }
+        assert!(
+            f.runtime.drained(),
+            "queued originals retire without input, one per poll: {}",
+            f.runtime.status()
+        );
         assert_eq!(super::reservation_budget::budget(&f.store.db), (0, 0, 0));
         assert!(f.admit(&refused).not_admitted(&refused.intent));
         assert_eq!(sent.counts(), (0, 0));
