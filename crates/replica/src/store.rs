@@ -2318,6 +2318,10 @@ mod tests {
         assert_eq!(store.agent_starts_since(2_000).unwrap(), 0);
     }
 
+    /// The lock is released when the store drops, at once. No test of this
+    /// binary starts a child process: a child forked between this store's
+    /// open and its drop holds a copy of the lock's descriptor until it
+    /// executes, and the lock with it (zerus-kxpjt).
     #[test]
     fn the_project_lock_is_exclusive() {
         let root = tempfile::tempdir().unwrap();
@@ -2700,15 +2704,15 @@ mod tests {
                 .documents,
             Some(BTreeSet::new())
         );
-        // A special file is never opened to wait on.
+        // A special file is never opened to wait on. It is made in this
+        // process, never by a child: a child forked beside another test holds
+        // that test's open descriptors until it executes, and so its project
+        // lock (the_project_lock_is_exclusive, zerus-kxpjt).
         #[cfg(unix)]
         {
             fs::remove_file(&path).unwrap();
-            let made = std::process::Command::new("mkfifo")
-                .arg(&path)
-                .status()
-                .unwrap();
-            assert!(made.success());
+            let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
             assert!(store
                 .changes_since(&known.generation, known.offset)
                 .unwrap()
