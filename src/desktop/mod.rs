@@ -59,6 +59,8 @@ pub(crate) mod program_stop;
 #[allow(dead_code)] // The private final-cleanup adapter is the next caller.
 pub(crate) mod program_cleanup;
 mod protocol;
+/// The owner-approved question route leaf (zerus-sa9qn.8, slice a).
+mod question_route;
 mod registration;
 mod revoke;
 #[cfg(any(windows, test))]

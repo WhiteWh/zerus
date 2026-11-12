@@ -161,7 +161,11 @@ pub(super) fn load(db: &Connection, id: &str) -> Result<Option<Row>> {
         checkpoint,
         original: source,
     };
-    let verified = intent.verify().map_err(anyhow::Error::msg)?;
+    // Each original is re-derived by its own kind's rule: a person's
+    // deferred send, or an owner-approved question route.
+    let verified = intent
+        .verify_kind(receipt.binding.kind)
+        .map_err(anyhow::Error::msg)?;
     let plan: Plan = serde_json::from_str(&plan)?;
     ensure!(
         verified.plan == plan

@@ -131,7 +131,8 @@ fn exact_previous_store_upgrade_adds_only_the_independent_compact_to_send_leaf()
         crate::desktop::store::SCHEMA
     );
     // Its own two tables, then the session resume leaf's two.
-    assert_eq!(tables(&store.db), before + 2 + 2);
+    // ... and the question route leaf's one table (zerus-sa9qn.8).
+    assert_eq!(tables(&store.db), before + 2 + 2 + 1);
     assert_eq!(ledger::undrained(&store.db).unwrap(), 0);
     assert_eq!(
         store.operation_status()["kinds"]["compact_to_send"]["undrained"],

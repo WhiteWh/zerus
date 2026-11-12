@@ -51,6 +51,9 @@ pub(super) struct Runtime {
     resume: super::session_resume::Runtime,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     task_start: super::task_start_reconcile::Runtime,
+    /// The owner-approved question route, Linux only in v1 (zerus-sa9qn.8).
+    #[cfg(target_os = "linux")]
+    route: super::question_route::Runtime,
 }
 
 /// The actor can replace only an already admitted background runtime after its
@@ -103,6 +106,8 @@ impl Runtime {
             super::session_resume::Runtime::new(config, epoch, owner.clone(), fences.clone())?;
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let task_start = super::task_start_reconcile::Runtime::new(config, epoch, owner.clone())?;
+        #[cfg(target_os = "linux")]
+        let route = super::question_route::Runtime::new(config, epoch);
         match fleet::Runtime::start(config, epoch) {
             Ok(fleet) => Ok(Self {
                 fleet,
@@ -137,6 +142,8 @@ impl Runtime {
                 resume,
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 task_start,
+                #[cfg(target_os = "linux")]
+                route,
             }),
             Err(error) => {
                 producer.close();
@@ -196,6 +203,10 @@ impl Runtime {
                     self.resume.observe(&event);
                     #[cfg(any(target_os = "linux", target_os = "macos"))]
                     self.task_start.observe(&event);
+                    // Independent of the notification setting: muting never
+                    // stops routing.
+                    #[cfg(target_os = "linux")]
+                    self.route.observe(store, &event);
                     self.delivery.observe(store, &event);
                     self.maintenance.observe(store, &event);
                     if self.attention.enabled() {
@@ -232,6 +243,8 @@ impl Runtime {
                     self.resume.reject(&event);
                     #[cfg(any(target_os = "linux", target_os = "macos"))]
                     self.task_start.reject(&event);
+                    #[cfg(target_os = "linux")]
+                    self.route.reject(&event);
                     self.maintenance.reject(&event);
                     self.attention.reject_event(&event);
                     self.details.reject(&event, seq);
@@ -255,6 +268,9 @@ impl Runtime {
         self.message.poll(store, self.notifications.handoff());
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         self.send.poll(store, self.notifications.handoff());
+        #[cfg(target_os = "linux")]
+        self.route
+            .poll(store, &mut self.send, self.notifications.handoff());
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         self.answer.poll(store, self.notifications.handoff());
         #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -484,6 +500,10 @@ impl Runtime {
             value["lifecycle"]["background"]["operations"] =
                 value["creation_clone_runtime"].clone();
             value["task_start_reconcile_runtime"] = self.task_start.status();
+            #[cfg(target_os = "linux")]
+            {
+                value["question_route_runtime"] = self.route.status();
+            }
             value["lifecycle"]["background"]["operations"]["task_start_reconcile"] =
                 self.task_start.status();
         }
@@ -620,6 +640,8 @@ impl Runtime {
         self.resume.request_stop();
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         self.task_start.request_stop();
+        #[cfg(target_os = "linux")]
+        self.route.request_stop();
         if let Some(presence) = &self.presence {
             presence.request_stop();
         }
@@ -656,6 +678,9 @@ impl Runtime {
         self.message.poll(store, self.notifications.handoff());
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         self.send.poll(store, self.notifications.handoff());
+        #[cfg(target_os = "linux")]
+        self.route
+            .poll(store, &mut self.send, self.notifications.handoff());
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         self.answer.poll(store, self.notifications.handoff());
         #[cfg(any(target_os = "linux", target_os = "macos"))]

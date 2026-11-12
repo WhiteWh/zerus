@@ -997,6 +997,60 @@ toggle adds **Asking** (quiet requests waiting for it) and **Needs you**
 `client/core/tests/fixtures/supervised-attention.json` lists the cases the
 desktop projects and Android and iOS check.
 
+A supervised child's blocking question also goes to its parent session, once
+(zerus-sa9qn.8, owner approval of 2026-11-12). This is an owner-approved,
+service-originated route, not the person's consent: the durable desktop
+service on the child's own computer originates one guarded `hgs send` to the
+live parent with no per-message confirmation, and nothing else. It never
+answers, selects or approves anything, never builds a UI permit and never
+changes who is alerted: the child stays quiet exactly as above, and every
+person-only request still notifies. The service watches its own computer's
+rows on every catalog event, whatever the notification settings. A row is an
+edge when it is a running Claude child waiting for input (`phase: input`)
+whose parent is `live`, not forwarded, and whose host reports
+`human_request: false`; a new `attention_signature` is a new edge, and a
+question already pending at startup counts once. After about 3 seconds the
+service reads the child with one bounded `hgs inspect NAME --after
+9223372036854775807 --skip-processes` and its `hgs reference`, at most one
+read per child and two in all, each with a 5-second timeout, from a
+deduplicated queue of at most 64 edges; it reads again immediately before
+sending. Only Claude's own AskUserQuestion card routes: source `hook`, the
+main agent, not optional, no `answer_delivery`, `can_answer: true` and a full
+identity. Claude Code's own prompts (`claude_native_question`), every
+synthetic native card, approvals, trust and sign-in never route. Codex asks
+blocking questions only through native prompts and its async questions are
+optional, so a Codex child has nothing to route in v1; Kimi, DeepSeek and
+OpenCode questions are a follow-up (zerus-sa9qn.34).
+
+The parent's own current row on the same computer, matched by the link's
+session ID, must be running a terminal agent (Claude, Codex or Kimi); the send
+names its current run and conversation. The deferred-send actor runs the one
+fixed `hgs send PARENT --json` as its `route_question` kind, with the usual
+guarded checks (exact run and conversation, native input state; a draft or
+busy layout refuses). Its request ID is a name-based UUID of the question
+identity (RFC 9562 version 8 from SHA-256: machine, child session, run,
+conversation, question ID and hash), so it is idempotent across restarts. The
+route ledger reserves each identity in the same transaction as the actor's
+original and settles it from the actor's receipt only: `submitted` (the CLI's
+own receipt), `refused` (before any child ran, an invalid text, or more than
+20 routed questions for that parent in the last hour) or `unknown`
+(everything else, including an `hgs send` refusal, which leaves no receipt).
+Nothing is retried; an unknown result is never replayed, and a routed or
+refused identity never routes again. The text is a fixed English template of
+at most 2 KiB: the header `[Zerus child question]`, the child's name and
+reference (the name single-quoted; a child whose name holds anything but
+ASCII letters, digits, `.`, `_` and `-` in three segments is never routed and
+is recorded `refused` as `question_route_invalid`), the question kind and option count, at most 300 characters of the
+first question as one quoted line labelled as the child's data, `hgs inspect
+'<reference>'` for the full question, the exact `hgs answer CHILD --json`
+fields (run, conversation, question ID and hash) and "If only the person can
+decide, say so in your reply." It carries no ticket, wait or other authority.
+v1 routes on Linux only; macOS follows the deferred-send actor's macOS child
+seam and Windows keeps today's behaviour. There is no opt-out in this slice
+(zerus-sa9qn.32) and no Activity outcome line yet (zerus-sa9qn.33). The
+service advertises `Desktop question route: route-questions-v1` in `hgs
+--help`; an older service does not route.
+
 Android (zerus-sa9qn.4) and iOS (zerus-sa9qn.5) apply the same contract, iOS
 in ZerusKit `ChildSessions` and the session card: child cards nest under a
 parent shown in the same project group, 16 dp per level up to three levels

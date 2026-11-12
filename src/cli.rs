@@ -75,6 +75,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        Desktop task message references: desktop-task-message-reference-v1
        Desktop task message input review: desktop-task-message-input-review-v1
        Desktop deferred send ABI: desktop-deferred-send-v1
+       Desktop question route: route-questions-v1
        Desktop deferred answer ABI: desktop-deferred-answer-v1
        Desktop deferred answer update phase: desktop-deferred-answer-update-phase-v1
        Desktop deferred compact to send ABI: desktop-deferred-compact-to-send-v1
@@ -525,6 +526,7 @@ fn unix_only_usage(line: &str) -> bool {
         zerus_client_core::desktop::task_message::REFERENCE_HELP_MARKER,
         zerus_client_core::desktop::task_message::review::HELP_MARKER,
         zerus_client_core::desktop::deferred_send::HELP_MARKER,
+        zerus_client_core::desktop::question_route::HELP_MARKER,
         zerus_client_core::desktop::deferred_answer::HELP_MARKER,
         zerus_client_core::desktop::deferred_answer::UPDATE_PHASE_MARKER,
         zerus_client_core::desktop::compact_to_send::HELP_MARKER,
@@ -584,6 +586,7 @@ fn advertised(usage: Cow<'static, str>, linux: bool) -> Cow<'static, str> {
         zerus_client_core::desktop::task_message::REFERENCE_HELP_MARKER,
         zerus_client_core::desktop::task_message::review::HELP_MARKER,
         zerus_client_core::desktop::deferred_send::HELP_MARKER,
+        zerus_client_core::desktop::question_route::HELP_MARKER,
         zerus_client_core::desktop::deferred_answer::HELP_MARKER,
         zerus_client_core::desktop::deferred_answer::UPDATE_PHASE_MARKER,
         zerus_client_core::desktop::compact_to_send::HELP_MARKER,
@@ -3809,6 +3812,8 @@ mod tests {
         assert!(USAGE.lines().any(|line| line.trim() == task_marker));
         let send_marker = zerus_client_core::desktop::deferred_send::HELP_MARKER;
         assert!(USAGE.lines().any(|line| line.trim() == send_marker));
+        let route_marker = zerus_client_core::desktop::question_route::HELP_MARKER;
+        assert!(USAGE.lines().any(|line| line.trim() == route_marker));
         let answer_marker = zerus_client_core::desktop::deferred_answer::HELP_MARKER;
         assert!(USAGE.lines().any(|line| line.trim() == answer_marker));
         let phase_marker = zerus_client_core::desktop::deferred_answer::UPDATE_PHASE_MARKER;
@@ -3881,6 +3886,10 @@ mod tests {
                     ""
                 )
                 .replace(
+                    "       Desktop question route: route-questions-v1\n",
+                    ""
+                )
+                .replace(
                     "       Desktop deferred answer ABI: desktop-deferred-answer-v1\n",
                     ""
                 )
@@ -3931,6 +3940,7 @@ mod tests {
         let references = zerus_client_core::desktop::task_message::REFERENCE_HELP_MARKER;
         let review = zerus_client_core::desktop::task_message::review::HELP_MARKER;
         let send = zerus_client_core::desktop::deferred_send::HELP_MARKER;
+        let route = zerus_client_core::desktop::question_route::HELP_MARKER;
         let answer = zerus_client_core::desktop::deferred_answer::HELP_MARKER;
         let phase = zerus_client_core::desktop::deferred_answer::UPDATE_PHASE_MARKER;
         let compact = zerus_client_core::desktop::compact_to_send::HELP_MARKER;
@@ -3944,6 +3954,7 @@ mod tests {
         assert!(!mac.lines().any(|line| line.trim() == references));
         assert!(!mac.lines().any(|line| line.trim() == review));
         assert!(!mac.lines().any(|line| line.trim() == send));
+        assert!(!mac.lines().any(|line| line.trim() == route));
         assert!(!mac.lines().any(|line| line.trim() == answer));
         assert!(!mac.lines().any(|line| line.trim() == phase));
         assert!(!mac.lines().any(|line| line.trim() == compact));
@@ -3971,6 +3982,10 @@ mod tests {
                 )
                 .replace(
                     "       Desktop deferred send ABI: desktop-deferred-send-v1\n",
+                    ""
+                )
+                .replace(
+                    "       Desktop question route: route-questions-v1\n",
                     ""
                 )
                 .replace(

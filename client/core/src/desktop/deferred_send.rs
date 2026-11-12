@@ -14,6 +14,7 @@
 //! v1 carries a plain send to a local session: no subagent target, no
 //! compaction (`compact_to_send` is its own kind), no `@alias` or other
 //! machine.
+use super::question_route;
 use crate::{creation, operation_recovery::deferred_input};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
@@ -62,8 +63,21 @@ const MAX_TOTAL: usize = 20 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
+    /// The person's deferred send: admitted only by their native UI permit
+    /// for a draft checkpoint ([`Intent::verify`]).
     DeferredSend,
+    /// The owner-approved, service-originated route of a supervised child's
+    /// blocking question to its live parent (zerus-sa9qn.8): the service
+    /// originates it under the owner's standing approval, never under a
+    /// person's consent or UI permit ([`Intent::verify_route`]).
+    RouteQuestion,
 }
+/// The domain of a route's authority digest, which a route's binding keeps
+/// in its `consent_sha256` field: the owner-approved route authority, never a
+/// person's consent.
+const ROUTE_AUTHORITY: &[u8] = b"desktop-route-question-authority-v1\0";
+/// The largest route checkpoint ([`question_route::Record`]).
+const ROUTE_CHECKPOINT_BYTES: usize = 8 << 10;
 
 /// One deferred send: the exact checkpoint the client saved with its draft
 /// before this dispatch, and the exact stdin of `hgs send <session> --json`.
@@ -163,12 +177,15 @@ pub struct Binding {
     pub message_sha256: String,
     pub input_sha256: String,
     pub plan_sha256: String,
+    /// A deferred send's digest of the person's consent (its checkpoint and
+    /// stdin); a route's digest of the owner-approved route authority over
+    /// its record and stdin, never a person's consent.
     pub consent_sha256: String,
 }
 impl Binding {
+    /// Either kind; the kind decides which verification re-derives it.
     pub fn valid(&self) -> bool {
-        self.kind == Kind::DeferredSend
-            && self.schema == 1
+        self.schema == 1
             && super::digest(&self.configuration)
             && local_session(&self.session)
             && uuid(&self.request_id)
@@ -382,6 +399,86 @@ fn reference_label(value: &str) -> bool {
 }
 
 impl Intent {
+    /// Verifies a saved original by the kind its binding was admitted as.
+    pub fn verify_kind(self, kind: Kind) -> Result<Verified, &'static str> {
+        match kind {
+            Kind::DeferredSend => self.verify(),
+            Kind::RouteQuestion => self.verify_route(),
+        }
+    }
+    /// The owner-approved route of a supervised child's question
+    /// (zerus-sa9qn.8). The checkpoint is the route's canonical
+    /// [`question_route::Record`] and the stdin exactly the one it derives,
+    /// so a route can carry no other text, target or identity. No person's
+    /// permit, draft or consent is involved or implied.
+    pub fn verify_route(self) -> Result<Verified, &'static str> {
+        if !self.scope.valid()
+            || !local_session(&self.session)
+            || !uuid(&self.request_id)
+            || self.checkpoint.is_empty()
+            || self.checkpoint.len() > ROUTE_CHECKPOINT_BYTES
+            || self.original.is_empty()
+        {
+            return Err("invalid_question_route_intent");
+        }
+        let record: question_route::Record =
+            serde_json::from_str(&self.checkpoint).map_err(|_| "invalid_question_route_record")?;
+        if !record.valid()
+            || serde_json::to_string(&record).ok().as_deref() != Some(self.checkpoint.as_str())
+            || record.request_id() != self.request_id
+            || record.parent.session != self.session
+        {
+            return Err("invalid_question_route_record");
+        }
+        if record.stdin().as_deref() != Some(self.original.as_str()) {
+            return Err("question_route_original_changed");
+        }
+        let send = frozen(&self.original).map_err(|_| "question_route_message_refused")?;
+        if send.request_id != self.request_id
+            || send.run_id != record.parent.run_id
+            || send.conversation_id != record.parent.conversation_id
+            || !send.compaction_id.is_empty()
+        {
+            return Err("question_route_original_changed");
+        }
+        let plan = Plan {
+            session: self.session.clone(),
+            request_id: self.request_id.clone(),
+            run_id: record.parent.run_id.clone(),
+            conversation_id: record.parent.conversation_id.clone(),
+            message_sha256: send.message_sha256,
+            input_sha256: hash(self.original.as_bytes()),
+        };
+        if !plan.valid() {
+            return Err("invalid_question_route_plan");
+        }
+        let encoded = serde_json::to_vec(&plan).map_err(|_| "invalid_question_route_plan")?;
+        let mut authority = ROUTE_AUTHORITY.to_vec();
+        authority.extend_from_slice(self.checkpoint.as_bytes());
+        authority.push(0);
+        authority.extend_from_slice(self.original.as_bytes());
+        let binding = Binding {
+            kind: Kind::RouteQuestion,
+            schema: 1,
+            configuration: self.scope.configuration.clone(),
+            session: self.session.clone(),
+            request_id: self.request_id.clone(),
+            run_id: plan.run_id.clone(),
+            conversation_id: plan.conversation_id.clone(),
+            source_sha256: hash(self.original.as_bytes()),
+            checkpoint_sha256: hash(self.checkpoint.as_bytes()),
+            message_sha256: plan.message_sha256.clone(),
+            input_sha256: plan.input_sha256.clone(),
+            plan_sha256: hash(&encoded),
+            consent_sha256: hash(&authority),
+        };
+        Ok(Verified {
+            intent: self,
+            plan,
+            binding,
+        })
+    }
+    /// The person's deferred send, admitted only by their native UI permit.
     pub fn verify(self) -> Result<Verified, &'static str> {
         if !self.scope.valid()
             || !local_name(&self.session)
