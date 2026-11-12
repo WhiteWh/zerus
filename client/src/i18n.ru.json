@@ -2153,6 +2153,8 @@
   "Qt preferences": "Настройки Qt",
   "Question": "Вопрос",
   "Question %1": "Вопрос %1",
+  "Question from a child session": "Вопрос от дочерней сессии",
+  "Question sent to the parent session": "Вопрос отправлен родительской сессии",
   "Questions waiting for an answer, including the questions shown in this card.": "Вопросы, ожидающие ответа, включая вопросы, показанные на этой карточке.",
   "Queue action failed. Check Terminal before retrying.": "Не удалось выполнить действие в очереди. Проверьте терминал перед повторной попыткой.",
   "Queue action timed out. Check Terminal before retrying.": "Время ожидания действия в очереди истекло. Проверьте терминал перед повторной попыткой.",
@@ -3714,6 +3716,8 @@
   "↓  %1 new — Jump to latest": "↓  Новых: %1 — Перейти к последней активности",
   "↓  Jump to latest": "↓  Перейти к последней активности",
   "▸ Show report": "▸ Показать отчет",
+  "▸ Show the received message": "▸ Показать полученное сообщение",
   "▾ Hide report": "▾ Скрыть отчет",
+  "▾ Hide the received message": "▾ Скрыть полученное сообщение",
   "✓ %1": "✓ %1"
 }

@@ -38,6 +38,7 @@ import { DELETE_TEXT, DELETE_TITLE, retryReason, routeInspect } from "./local-ac
 import { NOT_DELIVERED_HINT } from "./inbox-actions";
 import { createInboxRemoveScope, InboxRemove, RemoveQueuedDialog, type InboxRemovePorts, type InboxRemoveScope } from "./InboxRemove";
 import { emptyActivity } from "./activity-empty";
+import { refreshRouteActivity, routeActivityOf, routeSessionOf } from "../../store/questionRouteActivity";
 import { markdownReady } from "./markdown";
 import { ActivitySession, Body, HighlightQuery } from "./MarkdownBody";
 import { searchHitItems } from "./search-hit";
@@ -587,6 +588,32 @@ function EchoBody(props: { item: ActivityItem; scope?: AttachmentScope }) {
   return <ItemBody {...props} item={shown()} />;
 }
 
+/**
+ * A submitted question route's line (zerus-sa9qn.33): who it went to or came
+ * from, the child's preview as plain text and its reference. A parent's own
+ * message of exactly the routed text folds in behind the disclosure.
+ */
+function RouteReceipt(props: { item: ActivityItem; open: boolean; onToggle: () => void }) {
+  const route = () => props.item.route!;
+  return (
+    <article class="act-msg k-receipt act-route" id={`item-${props.item.id}`}>
+      <header><b>{props.item.sender}</b><span class="act-time">{props.item.at}</span><span class="grow" /></header>
+      <div class="act-body">
+        <p class="act-route-line"><span class="mono">{route().role === "child" ? route().parent : route().child}</span>
+          <Show when={route().preview}><q class="act-route-preview">{route().preview}</q></Show></p>
+        <div class="row act-route-ref">
+          <span class="mono ell" title={route().reference}>{route().reference}</span>
+          <button class="icon-btn small" title={tr("Copy session reference")} onClick={() => copyText(route().reference, tr("The session reference is on the clipboard"))}><Icon name="copy" size={12} /></button>
+        </div>
+        <Show when={route().text}>
+          <button class="link" onClick={() => props.onToggle()}>{props.open ? tr("▾ Hide the received message") : tr("▸ Show the received message")}</button>
+          <Show when={props.open}><p class="wrap-pre act-route-text">{route().text}</p></Show>
+        </Show>
+      </div>
+    </article>
+  );
+}
+
 function Item(props: {
   item: TranscriptItem; scope?: AttachmentScope; sourceId?: string; postersEnabled?: boolean; expanded?: boolean; onExpanded?: (open: boolean) => void;
   /** A tool row's Show more state per event, and View process links. */
@@ -596,6 +623,7 @@ function Item(props: {
   const it = props.item;
   if (it.kind === "media") return <MediaCard item={it} scope={rowScope(it, props.scope)} sourceId={props.sourceId} postersEnabled={props.postersEnabled} expanded={props.expanded} onExpanded={props.onExpanded} />;
   if (it.kind === "context") return <div class="act-label eyebrow" id={`item-${it.id}`}>{it.body}</div>;
+  if (it.kind === "receipt" && it.route) return <RouteReceipt item={it} open={open()} onToggle={toggleOpen} />;
   // Thinking and subagent reports are Markdown, as in Qt (ActivityView.cpp:942-975).
   if (it.kind === "thinking") return <div class="act-thinking" id={`item-${it.id}`} classList={{ inherited: !!it.inherited }}><span class="eyebrow">{tr("Thinking")}</span><div class="act-thinking-body act-body"><Body text={it.body ?? ""} /></div></div>;
   if (it.kind === "report")
@@ -751,7 +779,17 @@ export function ActivityView(props: { source?: ActivitySource }) {
   const local = createMemo(() => localRows(source(), s()), undefined, { equals: (a, b) => a === b || (a.length === 0 && b.length === 0) });
   const project = createActivityProjections();
   const displayTarget = () => source().displayKey?.() ?? source().target()?.id;
-  const built = createMemo(() => project(!!subagentOpen(), displayTarget(), source().events(), source().transcriptSummary?.() ?? source().summary(), local()));
+  // The service's submitted question routes of the live local session, never
+  // a subagent's or an archive's (zerus-sa9qn.33). Read at most once per
+  // window while its activity changes, and a child slowly as well.
+  const routeSession = () => routeSessionOf(s(), { archive: !!props.source, subagent: !!subagentOpen(), target: source().target()?.id });
+  // Only the live view reads them; an archive's view never starts or clears the read.
+  if (!props.source) {
+    createEffect(() => { source().events(); refreshRouteActivity(routeSession(), !!s()?.parent); });
+    onCleanup(() => refreshRouteActivity(undefined));
+  }
+  const built = createMemo(() => project(!!subagentOpen(), displayTarget(), source().events(), source().transcriptSummary?.() ?? source().summary(), local(),
+    subagentOpen() ? [] : routeActivityOf(routeSession())));
   createEffect(() => {
     const items = built(), loaded = source().loaded();
     const expired = source().olderDone() && source().events().length > 0 && source().summary()?.history_truncated === true;

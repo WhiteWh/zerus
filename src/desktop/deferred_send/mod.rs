@@ -79,6 +79,23 @@ pub(super) fn receipt(
     Ok(ledger::load(db, request_id)?.map(|row| row.receipt))
 }
 
+/// One route original's own record, read-only, for its Activity line
+/// (zerus-sa9qn.33). The original is loaded and re-derived by its kind like
+/// every saved original; `None` when it is absent or not a route. It grants
+/// nothing.
+pub(super) fn route_record(
+    db: &rusqlite::Connection,
+    request_id: &str,
+) -> anyhow::Result<Option<zerus_client_core::desktop::question_route::Record>> {
+    let Some(row) = ledger::load(db, request_id)? else {
+        return Ok(None);
+    };
+    if row.verified.binding.kind != wire::Kind::RouteQuestion {
+        return Ok(None);
+    }
+    Ok(serde_json::from_str(&row.verified.intent.checkpoint).ok())
+}
+
 /// The scoped read-only lookup of one original's receipt
 /// (`deferred_send_result`). It never sends, admits or retries anything.
 pub(super) fn query(store: &super::store::Store, value: &serde_json::Value) -> serde_json::Value {

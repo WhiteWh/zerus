@@ -40,6 +40,7 @@ pub mod runtime;
 mod session_labels;
 pub mod session_notifications;
 pub mod session_projects;
+pub mod session_question_routing;
 pub mod session_selector;
 pub mod speech;
 pub mod startup;

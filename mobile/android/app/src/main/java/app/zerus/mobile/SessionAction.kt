@@ -15,7 +15,7 @@ data class SessionAction(val requestId: String, val target: Target, val operatio
 
 object SessionActionPolicies {
     val lifecycle = setOf("pause", "resume", "archive", "rename", "fork", "terminate", "restore", "forget")
-    val operations = lifecycle + setOf("send_now", "settings", "process_stop", "terminal_input", "launch", "worktree_create", "directory_create", RepositoryAcquisition.clone, "recovery_action", SessionNotificationPreferences.operation, SessionProjectProtocol.assign)
+    val operations = lifecycle + setOf("send_now", "settings", "process_stop", "terminal_input", "launch", "worktree_create", "directory_create", RepositoryAcquisition.clone, "recovery_action", SessionNotificationPreferences.operation, SessionQuestionRouting.operation, SessionProjectProtocol.assign)
     val terminalKeys=setOf("Enter","Escape","Tab","BTab","BSpace","Up","Down","Left","Right","Home","End","PPage","NPage","DC","C-c","C-d","C-l","C-a","C-e","C-u","C-w")
     /** Effort names every relay accepts in `settings`. */
     val relayEfforts = setOf("", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "on")
@@ -38,6 +38,7 @@ object SessionActionPolicies {
             return checked
         }
         if(operation == SessionNotificationPreferences.operation) return SessionNotificationPreferences.arguments(raw)
+        if(operation == SessionQuestionRouting.operation) return SessionQuestionRouting.arguments(raw)
         require(operation in operations) { "Unsupported session action." }
         if(operation==SessionProjectProtocol.assign) return SessionProjectProtocol.arguments(raw)
         val allowed = when(operation) { "rename" -> setOf("new_name"); "fork" -> setOf("tag"); "send_now" -> setOf("queue_id")
@@ -104,6 +105,7 @@ object SessionActionPolicies {
         }
         val fields=when(operation) {
             SessionNotificationPreferences.operation -> listOf("run_id","conversation_id","archive_id","notification_preferences")
+            SessionQuestionRouting.operation -> listOf("run_id","conversation_id","archive_id","question_routing","parent","state")
             "settings" -> listOf("model", "effort", "model_options", "effort_options", "pending_model", "pending_effort", "pending_settings_id", "settings_apply_when", "settings_change_supported")
             "send_now" -> listOf("input_queue")
             "recovery_action" -> listOf("recovery")
@@ -113,6 +115,9 @@ object SessionActionPolicies {
         return JSONObject().also { value -> fields.forEach { field -> value.put(field,raw.opt(field) ?: JSONObject.NULL) } }.toString()
     }
     fun inspectReason(target: Target, operation: String, args: JSONObject, raw: JSONObject): String {
+        if(operation == SessionQuestionRouting.operation) return SessionQuestionRouting.reason(target,raw).ifBlank {
+            if(SessionQuestionRouting.parse(raw)?.revision != args.getLong("expected_revision")) "Where this child's questions go changed. Refresh before applying." else ""
+        }
         if(operation == SessionNotificationPreferences.operation) return SessionNotificationPreferences.reason(target,raw).ifBlank {
             if(SessionNotificationPreferences.parse(raw,target)?.revision != args.getLong("expected_revision")) "Shared notification settings changed. Refresh before applying." else ""
         }
@@ -162,6 +167,7 @@ object SessionActionPolicies {
         if(action.operation==SessionProjectProtocol.assign) return SessionProjectProtocol.result(action,receipt)
         if(receipt.string("state") == "failed") return action.copy(status="failed",error=receipt.string("error").ifBlank { "The computer rejected this action." })
         if(action.operation == SessionNotificationPreferences.operation) return SessionNotificationPreferences.result(action,receipt)
+        if(action.operation == SessionQuestionRouting.operation) return SessionQuestionRouting.result(action,receipt)
         if(action.operation == MobileDelivery.OPERATION) return MobileDelivery.result(action,receipt)
         if(action.operation == DirectoryCreation.operation) return DirectoryCreation.result(action,receipt)
         val native = receipt.optJSONObject("result")

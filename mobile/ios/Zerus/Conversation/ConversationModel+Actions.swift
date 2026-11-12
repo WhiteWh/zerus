@@ -43,6 +43,10 @@ extension ConversationModel {
             let reason = SessionNotificationPreferences.reason(target,raw)
             if !reason.isEmpty { return reason }
         }
+        if operation == SessionQuestionRouting.operation {
+            let reason = SessionQuestionRouting.reason(target,raw)
+            if !reason.isEmpty { return reason }
+        }
         if SessionActionPolicies.lifecycle.contains(operation) && !raw.strings("allowed_actions").contains(operation) {
             let reason = raw.object("action_reasons")?.string(operation) ?? ""
             return reason.isEmpty ? "Native session controls are unavailable for this action." : reason
@@ -97,7 +101,8 @@ extension ConversationModel {
 
     /// A Sessions action opens its exact session; the conversation then confirms it against fresh native details.
     func openWithSessionAction(_ session: Session, _ operation: String) {
-        guard operation == "terminal" || operation == SessionNotificationPreferences.operation || SessionActionPolicies.lifecycle.contains(operation) else { return }
+        guard operation == "terminal" || operation == SessionNotificationPreferences.operation || operation == SessionQuestionRouting.operation
+            || SessionActionPolicies.lifecycle.contains(operation) else { return }
         open(session, preserveProject: true)
         sessionMenuRequest = (session.target, operation, navigationId)
     }
@@ -183,6 +188,7 @@ extension ConversationModel {
                 }
                 var payload = arguments
                 if operation == SessionNotificationPreferences.operation { payload = SessionNotificationPreferences.payload(target,arguments) }
+                else if operation == SessionQuestionRouting.operation { payload = SessionQuestionRouting.payload(target,arguments) }
                 else {
                     payload["request_id"] = .string(action.requestId)
                     payload["expected_run_id"] = .string(target.run)
@@ -258,6 +264,8 @@ extension ConversationModel {
             if action.operation == SessionNotificationPreferences.operation { return }
         }
         if ["archive", "terminate", "restore", "forget", "rename"].contains(action.operation) { app.archive.refresh() }
+        // The computer's listing and inspection show the confirmed switch.
+        if action.operation == SessionQuestionRouting.operation { app.refresh(explicit:true) }
         if action.operation == SessionNotificationPreferences.operation {
             if result.status == "completed" { await app.confirmNotificationPreference(result) }
             app.refresh(explicit:true)

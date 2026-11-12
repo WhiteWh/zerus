@@ -45,12 +45,18 @@
       "operation": "task_done",
       "marker": "task_actions",
       "class": "read"
+    },
+    {
+      "operation": "session_question_routing",
+      "marker": "question_routing",
+      "class": "mutation"
     }
   ],
   "markers": {
     "git_status": "Mobile Git status ABI: git-status-v1",
     "repository": "Mobile repository acquisition ABI: repository-acquisition-v1",
     "task_exchange": "hgs task exchange|digests --json",
-    "task_actions": "hgs task mobile-send|mobile-cancel|mobile-done --json"
+    "task_actions": "hgs task mobile-send|mobile-cancel|mobile-done --json",
+    "question_routing": "session-question-routing-v1"
   }
 }

@@ -61,7 +61,7 @@ fn current(db: &Connection) -> Result<(bool, i64)> {
     Ok((enabled(db)?, revision))
 }
 
-fn canonical(id: &str) -> bool {
+pub(super) fn canonical(id: &str) -> bool {
     uuid::Uuid::parse_str(id).is_ok_and(|v| !v.is_nil() && v.hyphenated().to_string() == id)
 }
 

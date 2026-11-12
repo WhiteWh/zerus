@@ -59,6 +59,9 @@ object SessionActionsMenu {
             if (archived || facts.target.agentId.isNotBlank()) emptyList() else listOf(readItem(facts)),
             listOf(SessionMenuItem(SessionNotificationPreferences.operation,
                 SessionNotificationPreferences.label(SessionNotificationPreferences.parse(facts.row,facts.target)),notificationReason(facts),"Applies to this conversation on all devices.")),
+            // The person's per-child question route switch (zerus-sa9qn.33): live Claude children only.
+            if(SessionQuestionRouting.applies(facts.target,facts.row)) listOf(SessionMenuItem(SessionQuestionRouting.operation,
+                SessionQuestionRouting.label(facts.row),questionRoutingReason(facts),SessionQuestionRouting.hint)) else emptyList(),
             if(archived || facts.target.agentId.isNotBlank()) emptyList() else listOf(SessionMenuItem(SessionProjectProtocol.assign,"Move to project…",projectReason(facts),"Change project grouping; keep the working folder.")),
             buildList {
                 add(if (archived) native("restore","Restore session…") else if (running) native("pause","Pause session…") else native("resume","Resume session…"))
@@ -123,6 +126,14 @@ object SessionActionsMenu {
             else -> SessionControlPresentation.reason(target,operation,facts.row)
         }
     }
+    fun questionRoutingReason(facts: SessionMenuFacts): String = when {
+        facts.blocked.isNotBlank() -> facts.blocked
+        !SessionQuestionRouting.applies(facts.target,facts.row) || facts.archived -> SessionQuestionRouting.notChild
+        !facts.online -> "The machine is offline."
+        SessionQuestionRouting.operation !in facts.supported -> SessionQuestionRouting.unavailable
+        facts.busy.isNotBlank() -> facts.busy
+        else -> SessionQuestionRouting.reason(facts.target,facts.row)
+    }
     fun notificationReason(facts: SessionMenuFacts): String = when {
         facts.blocked.isNotBlank() -> facts.blocked
         facts.target.agentId.isNotBlank() || facts.archived || facts.target.archiveId.isNotBlank() -> "Notification controls belong to the live parent conversation."
@@ -181,6 +192,7 @@ internal fun Modifier.sessionCardGestures(shape: Shape, onOpen: () -> Unit, onAc
 
 private fun menuIcon(id: String): ImageVector = when (id) {
     SessionNotificationPreferences.operation -> Icons.Default.NotificationsOff
+    SessionQuestionRouting.operation -> Icons.Default.QuestionAnswer
     "project_assign" -> Icons.Default.Folder
     "terminal" -> Icons.Default.Terminal
     "mark_read" -> Icons.Default.DoneAll

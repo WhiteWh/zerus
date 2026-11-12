@@ -212,7 +212,7 @@ export function toSession(computer: ComputerId, key: string, v: ViewRow, marks: 
 export function questionRoutingOf(value: unknown): { sendToParent: boolean; revision: number } | undefined {
   if (!value || typeof value !== "object") return undefined;
   const v = value as Record<string, unknown>;
-  if (typeof v.send_to_parent !== "boolean" || typeof v.revision !== "number" || !Number.isInteger(v.revision) || v.revision < 0) return undefined;
+  if (Object.keys(v).length !== 2 || typeof v.send_to_parent !== "boolean" || typeof v.revision !== "number" || !Number.isInteger(v.revision) || v.revision < 0) return undefined;
   return { sendToParent: v.send_to_parent, revision: v.revision };
 }
 

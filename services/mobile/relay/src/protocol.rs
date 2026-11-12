@@ -119,6 +119,7 @@ pub const OPERATIONS: &[&str] = &[
     "launch",
     "mark_read",
     "session_notifications",
+    "session_question_routing",
     "pause",
     "process_output",
     "project_assignment",
@@ -603,6 +604,30 @@ pub fn request(v: &Value) -> Result<()> {
             }
         }
         if !p["muted"].is_boolean() || !p["expected_revision"].as_i64().is_some_and(|r| r >= 0) {
+            return Err(Error::BAD);
+        }
+    } else if op == "session_question_routing" {
+        // The person's per-child switch of the question route (zerus-sa9qn.33):
+        // exact identities, revision and value; the host decides the rest.
+        fields(
+            p,
+            &[
+                "expected_run_id",
+                "expected_conversation_id",
+                "expected_revision",
+                "send_to_parent",
+            ],
+            &[],
+        )?;
+        for (key, maximum) in [("expected_run_id", 128), ("expected_conversation_id", 256)] {
+            let value = text(&p[key], maximum, false)?;
+            if value.len() > maximum {
+                return Err(Error::BAD);
+            }
+        }
+        if !p["send_to_parent"].is_boolean()
+            || !p["expected_revision"].as_i64().is_some_and(|r| r >= 0)
+        {
             return Err(Error::BAD);
         }
     } else if op == "mark_read" {

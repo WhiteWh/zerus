@@ -321,6 +321,7 @@ struct SessionCopyMenu: View {
     static func icon(_ id: String) -> String {
         switch id {
         case SessionNotificationPreferences.operation: "bell.slash"
+        case SessionQuestionRouting.operation: "questionmark.bubble"
         case "terminal": "apple.terminal"
         case "mark_read": "checkmark.circle"
         case "clear_reminder": "bell.slash"

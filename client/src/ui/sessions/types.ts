@@ -246,6 +246,20 @@ export interface ToolEvent {
   detail: () => string;
 }
 
+/** A submitted question route as one Activity line (zerus-sa9qn.33). */
+export interface RouteLine {
+  requestId: string;
+  role: "child" | "parent";
+  /** The child's session name and its `zerus://session?...` reference. */
+  child: string;
+  reference: string;
+  parent: string;
+  /** At most 300 characters of the child's first question, one line. */
+  preview: string;
+  /** The parent's exact received text, kept only when its own message folded into this line. */
+  text?: string;
+}
+
 export interface ActivityItem {
   id: string;
   kind: "user" | "agent" | "tool" | "tools" | "question" | "approval" | "system" | "receipt" | "thinking" | "report" | "voice" | "cleared" | "context" | "warm";
@@ -276,6 +290,8 @@ export interface ActivityItem {
   inherited?: boolean;
   /** A search hit's excerpt of a longer message: no Copy as Markdown of the whole reply. */
   excerpt?: boolean;
+  /** A submitted question route's line (kind `receipt`). */
+  route?: RouteLine;
 }
 
 export type VoiceState =

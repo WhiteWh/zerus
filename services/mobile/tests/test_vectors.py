@@ -118,6 +118,11 @@ class GoldenVectorTests(unittest.TestCase):
         self.assertTrue({"hooks_status", "analytics_read", "history_projection", "project_assignment", "project_assign"} <= operations)
         self.assertNotIn("remove_queued", operations)  # Rust-only table, never Python's.
         self.assertNotIn("git_status", operations)  # Its separate read marker is Rust-only too.
+        # The person's per-child question route switch (zerus-sa9qn.33) is
+        # Rust-only: the legacy connector neither offers nor runs it.
+        self.assertNotIn("session_question_routing", operations)
+        from zerus_mobile.context import OPERATIONS as LIVE
+        self.assertNotIn("session_question_routing", LIVE)
 
     def test_every_operation_has_a_valid_case_and_an_envelope(self):
         operations = set(json.loads(self.files["operations.json"])["sets"]["OPERATIONS"])

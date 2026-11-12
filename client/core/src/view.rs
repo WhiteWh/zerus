@@ -2441,6 +2441,20 @@ mod tests {
             assert_eq!(routed(bad.clone()), None, "{bad}");
         }
         assert_eq!(row(&json!({"name": "claude/b/c"})).question_routing, None);
+        // The shared contract's parse cases.
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../mobile/android/app/src/test/resources/question-routing-contract.json"
+        ))
+        .unwrap();
+        for case in contract["parse"].as_array().unwrap() {
+            let expected = Some(case["routing"].clone()).filter(|v| !v.is_null());
+            assert_eq!(
+                routed(case["question_routing"].clone()),
+                expected,
+                "{}",
+                case["name"]
+            );
+        }
     }
 
     #[test]

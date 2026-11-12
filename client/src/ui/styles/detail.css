@@ -99,6 +99,12 @@
   .act-msg header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: var(--fs-sm); }
   .act-msg header b { color: var(--z-color-accent); }
   .act-msg.k-receipt header b { color: var(--z-color-violet); }
+  /* A submitted question route's line (zerus-sa9qn.33): values apart by layout. */
+  .act-route-line { margin: 0; display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; }
+  .act-route-preview { color: var(--z-color-text-2); overflow-wrap: anywhere; }
+  .act-route-ref { gap: 6px; min-width: 0; }
+  .act-route-ref .ell { flex: 1; min-width: 0; color: var(--z-color-text-3); }
+  .act-route-text { margin: 4px 0 0; color: var(--z-color-text-2); }
   .act-time { color: var(--z-color-dim); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
   .act-receipt { display: inline-flex; align-items: center; gap: 3px; color: var(--z-color-accent-muted); font-size: var(--fs-xs); }
   /* Local message rows (ActivityView.cpp:1053-1068): the stamp in place of the

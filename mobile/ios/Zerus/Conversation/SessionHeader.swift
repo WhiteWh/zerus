@@ -5,6 +5,7 @@ enum ActionText {
     static func label(_ operation: String, _ target: Target? = nil) -> String {
         switch operation {
         case SessionNotificationPreferences.operation: "Shared notification settings"
+        case SessionQuestionRouting.operation: "Questions to parent"
         case "pause": "Pause"
         case "resume": "Resume"
         case "archive": "Archive"
@@ -216,6 +217,15 @@ struct SessionHeaderTools: View {
                 Label(SessionNotificationPreferences.label(preference),systemImage:preference?.muted == true ? "bell" : "bell.slash")
                 if !notificationReason.isEmpty { Text(notificationReason) }
             }.disabled(!notificationReason.isEmpty)
+            // The person's per-child question route switch (zerus-sa9qn.33).
+            let routingRaw = model.activity ?? session.raw
+            if SessionQuestionRouting.applies(target,routingRaw) {
+                let routingReason = model.actionReason(target,SessionQuestionRouting.operation)
+                Button { request = SessionQuestionRouting.operation } label: {
+                    Label(SessionQuestionRouting.label(routingRaw),systemImage:"questionmark.bubble")
+                    if !routingReason.isEmpty { Text(routingReason) }
+                }.disabled(!routingReason.isEmpty)
+            }
             if let evidence {
                 Section {
                     let emptyReminder = model.reviewLater(target) && !evidence.authoritative && evidence.loadedIds.isEmpty

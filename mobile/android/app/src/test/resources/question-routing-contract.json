@@ -1,0 +1,43 @@
+{
+  "description": "The person's per-child switch of the owner-approved question route (zerus-sa9qn.32 and .33): whether a supervised Claude child's blocking questions go to its parent session. Kept on the child's computer (`hgs question-routing`, marker session-question-routing-v1) and shared by every desktop and phone. The desktop (client/core and client/src), the connector, Android and iOS follow this contract. parse: the row's or inspection's `question_routing` value (null when unknown, never a default). availability: whether a session's actions show the switch and whether it can be changed while its computer is online and supports the operation. change: the exact payload that turns the current value the other way at its revision. results: how each platform settles the computer's reply: confirmed, refused (a closed refusal) or uncertain (never retried).",
+  "operation": "session_question_routing",
+  "marker": "session-question-routing-v1",
+  "parse": [
+    {"name": "on by default", "question_routing": {"send_to_parent": true, "revision": 0}, "routing": {"send_to_parent": true, "revision": 0}},
+    {"name": "turned off", "question_routing": {"send_to_parent": false, "revision": 3}, "routing": {"send_to_parent": false, "revision": 3}},
+    {"name": "unknown storage", "question_routing": null, "routing": null},
+    {"name": "a string switch", "question_routing": {"send_to_parent": "false", "revision": 1}, "routing": null},
+    {"name": "a negative revision", "question_routing": {"send_to_parent": true, "revision": -1}, "routing": null},
+    {"name": "a fractional revision", "question_routing": {"send_to_parent": true, "revision": 1.5}, "routing": null},
+    {"name": "no revision", "question_routing": {"send_to_parent": true}, "routing": null},
+    {"name": "an extra key", "question_routing": {"send_to_parent": true, "revision": 1, "muted": true}, "routing": null}
+  ],
+  "availability": [
+    {"name": "a live Claude child", "row": {"name": "claude/project/child", "cmd": "claude", "state": "running", "parent": {"name": "codex/project/lead"}, "question_routing": {"send_to_parent": true, "revision": 0}}, "shown": true, "enabled": true, "parent": "lead"},
+    {"name": "a live Claude child switched off", "row": {"name": "claude/project/child", "cmd": "claude", "state": "running", "parent": {"name": "codex/project/lead"}, "question_routing": {"send_to_parent": false, "revision": 2}}, "shown": true, "enabled": true, "parent": "lead"},
+    {"name": "a paused Claude child", "row": {"name": "claude/project/child", "cmd": "claude", "state": "paused", "parent": {"name": "codex/project/lead"}, "question_routing": {"send_to_parent": true, "revision": 0}}, "shown": true, "enabled": true, "parent": "lead"},
+    {"name": "an unknown switch", "row": {"name": "claude/project/child", "cmd": "claude", "state": "running", "parent": {"name": "codex/project/lead"}, "question_routing": null}, "shown": true, "enabled": false, "parent": "lead"},
+    {"name": "no parent link", "row": {"name": "claude/project/solo", "cmd": "claude", "state": "running", "question_routing": {"send_to_parent": true, "revision": 0}}, "shown": false},
+    {"name": "an archived child", "row": {"name": "claude/project/child", "cmd": "claude", "state": "archived", "parent": {"name": "codex/project/lead"}, "question_routing": {"send_to_parent": true, "revision": 0}}, "shown": false},
+    {"name": "a Codex child", "row": {"name": "codex/project/child", "cmd": "codex", "state": "running", "parent": {"name": "codex/project/lead"}, "question_routing": {"send_to_parent": true, "revision": 0}}, "shown": false}
+  ],
+  "change": {
+    "session": {"run_id": "run-1", "conversation_id": "conversation-1"},
+    "routing": {"send_to_parent": true, "revision": 2},
+    "payload": {"expected_run_id": "run-1", "expected_conversation_id": "conversation-1", "expected_revision": 2, "send_to_parent": false}
+  },
+  "results": [
+    {"name": "applied", "exit": 0, "result": {"ok": true, "applied": true, "run_id": "run-1", "conversation_id": "conversation-1", "question_routing": {"send_to_parent": false, "revision": 3}}, "outcome": "confirmed"},
+    {"name": "already so", "exit": 0, "result": {"ok": true, "applied": false, "run_id": "run-1", "conversation_id": "conversation-1", "question_routing": {"send_to_parent": false, "revision": 2}}, "outcome": "confirmed"},
+    {"name": "another value", "exit": 0, "result": {"ok": true, "applied": true, "run_id": "run-1", "conversation_id": "conversation-1", "question_routing": {"send_to_parent": true, "revision": 3}}, "outcome": "uncertain"},
+    {"name": "another revision", "exit": 0, "result": {"ok": true, "applied": true, "run_id": "run-1", "conversation_id": "conversation-1", "question_routing": {"send_to_parent": false, "revision": 4}}, "outcome": "uncertain"},
+    {"name": "unchanged but bumped", "exit": 0, "result": {"ok": true, "applied": false, "run_id": "run-1", "conversation_id": "conversation-1", "question_routing": {"send_to_parent": false, "revision": 3}}, "outcome": "uncertain"},
+    {"name": "another run", "exit": 0, "result": {"ok": true, "applied": true, "run_id": "run-2", "conversation_id": "conversation-1", "question_routing": {"send_to_parent": false, "revision": 3}}, "outcome": "uncertain"},
+    {"name": "an extra key", "exit": 0, "result": {"ok": true, "applied": true, "run_id": "run-1", "conversation_id": "conversation-1", "question_routing": {"send_to_parent": false, "revision": 3}, "extra": 1}, "outcome": "uncertain"},
+    {"name": "a conflict", "exit": 1, "result": {"ok": false, "error": "conflict", "run_id": "run-1", "conversation_id": "conversation-1", "question_routing": {"send_to_parent": true, "revision": 5}}, "outcome": "refused", "error": "conflict"},
+    {"name": "an agent caller", "exit": 1, "result": {"ok": false, "error": "agent_refused"}, "outcome": "refused", "error": "agent_refused"},
+    {"name": "no durable identity", "exit": 1, "result": {"ok": false, "error": "unsupported"}, "outcome": "refused", "error": "unsupported"},
+    {"name": "an unknown refusal", "exit": 1, "result": {"ok": false, "error": "busy"}, "outcome": "uncertain"},
+    {"name": "a refusal claiming a result", "exit": 1, "result": {"ok": false, "error": "conflict", "applied": false}, "outcome": "uncertain"}
+  ]
+}

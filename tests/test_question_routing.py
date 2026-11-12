@@ -74,6 +74,11 @@ class QuestionRouting(unittest.TestCase):
         self.assertEqual(self.stored()['sessions'][CHILD_ID], {'send_to_parent': False, 'revision': 1})
         self.assertEqual(self.listed()[self.child['name']]['question_routing'],
                          {'send_to_parent': False, 'revision': 1})
+        # The inspection shows the same switch (the phones check against it).
+        inspected = subprocess.run([str(HGS), 'inspect', self.child['name']], env=self.env, capture_output=True,
+                                   text=True, timeout=20)
+        self.assertEqual(inspected.returncode, 0, inspected.stderr)
+        self.assertEqual(json.loads(inspected.stdout)['question_routing'], {'send_to_parent': False, 'revision': 1})
         # Another session keeps the default.
         self.assertEqual(self.listed()[self.parent['name']]['question_routing'],
                          {'send_to_parent': True, 'revision': 0})

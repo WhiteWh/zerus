@@ -1495,3 +1495,263 @@ fn switching_off_during_a_first_read_reads_nothing_more() {
     f.settle();
     assert_eq!((f.reads(), f.sent(), f.routes().len()), (1, 0, 0));
 }
+
+/// The read-only Activity request of `session` (zerus-sa9qn.33).
+fn activity(f: &Fixture, session: &str) -> Value {
+    super::super::activity_request(
+        &f.store.db,
+        &json!({"op": "question_route_activity",
+            "request_id": uuid::Uuid::new_v4().to_string(), "session_id": session}),
+    )
+}
+fn lines(f: &Fixture, session: &str) -> Vec<Value> {
+    let reply = activity(f, session);
+    assert_eq!(reply["accepted"], true, "{reply}");
+    reply["routes"].as_array().unwrap().clone()
+}
+/// A route admitted by the actor at `at` (ms), then settled as `state`.
+fn admitted(f: &mut Fixture, record: &route::Record, at: i64, state: &str) {
+    let scope = f.send.scope().clone();
+    let root = f.config.state.clone();
+    let routed = f.send.route(
+        &mut f.store,
+        intent(&scope, record),
+        Some(f.exclusion.clone()),
+        |tx| ledger::reserve(tx, record, at, &root),
+    );
+    assert_eq!(routed, deferred_send::Routed::Admitted);
+    if state != "reserved" {
+        ledger::settle(&mut f.store.db, &record.identity.key(), state, "").unwrap();
+    }
+}
+fn question(record: &route::Record, n: usize) -> route::Record {
+    let mut other = record.clone();
+    other.identity.question_id = format!("tool:toolu_{n}");
+    other
+}
+
+#[test]
+fn a_submitted_route_is_one_line_for_the_child_and_the_parent() {
+    let mut f = Fixture::new();
+    f.snapshot(vec![child_row(), parent_row()]);
+    f.until("submitted", |f| f.states() == ["submitted"]);
+    let sent = f.sent.lock().unwrap()[0].1["text"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let id = f.routes()[0].0.clone();
+    let child = lines(&f, CHILD_ID);
+    assert_eq!(child.len(), 1);
+    let line = &child[0];
+    let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+    // The child's line: its own reference and the parent, never the text.
+    assert_eq!(
+        keys(line),
+        ["at", "child", "parent", "question", "request_id", "role"]
+    );
+    assert_eq!(
+        (line["request_id"].as_str(), line["role"].as_str()),
+        (Some(id.as_str()), Some("child"))
+    );
+    assert_eq!(
+        line["child"],
+        json!({"name": CHILD, "reference": REFERENCE, "session_id": CHILD_ID})
+    );
+    assert_eq!(
+        line["parent"],
+        json!({"name": PARENT, "session_id": PARENT_ID})
+    );
+    assert_eq!(
+        line["question"],
+        json!({"kind": "single-choice", "questions": 1, "options": 2, "preview": "Which database?"})
+    );
+    assert!(line["at"].as_i64().is_some_and(|at| at > 0));
+    // The parent's line also carries the exact text it received.
+    let parent = lines(&f, PARENT_ID);
+    assert_eq!(parent.len(), 1);
+    assert_eq!(parent[0]["role"], "parent");
+    assert_eq!(parent[0]["text"].as_str(), Some(sent.as_str()));
+    assert_eq!(parent[0]["child"], line["child"]);
+    // Another session has none.
+    assert!(lines(&f, &uuid::Uuid::new_v4().to_string()).is_empty());
+}
+
+#[test]
+fn refused_reserved_and_unknown_routes_have_no_line() {
+    let mut f = Fixture::new();
+    *f.child.lock().unwrap() = Child::NoReceipt;
+    f.snapshot(vec![child_row(), parent_row()]);
+    f.until("unknown", |f| f.states() == ["unknown"]);
+    let mut f2 = Fixture::new();
+    *f2.child.lock().unwrap() = Child::NotStarted;
+    f2.snapshot(vec![child_row(), parent_row()]);
+    f2.until("refused", |f| f.states() == ["refused"]);
+    for f in [&f, &f2] {
+        assert!(lines(f, CHILD_ID).is_empty());
+        assert!(lines(f, PARENT_ID).is_empty());
+    }
+    // Admitted but not yet settled: still nothing.
+    let mut f3 = Fixture::new();
+    admitted(&mut f3, &record(), 1, "reserved");
+    assert_eq!(f3.states(), ["reserved"]);
+    assert!(lines(&f3, CHILD_ID).is_empty());
+}
+
+#[test]
+fn the_activity_request_is_exact_and_names_no_other_route() {
+    let f = Fixture::new();
+    let id = uuid::Uuid::new_v4().to_string();
+    for bad in [
+        json!({"op": "question_route_activity", "request_id": id}),
+        json!({"op": "question_route_activity", "request_id": id, "session_id": CHILD_ID, "limit": 100}),
+        json!({"op": "question_routes_result", "request_id": id, "session_id": CHILD_ID}),
+        json!({"op": "question_route_activity", "request_id": id, "session_id": "0000000A-0000-4000-8000-000000000001"}),
+        json!({"op": "question_route_activity", "request_id": id, "session_id": "00000000-0000-0000-0000-000000000000"}),
+        json!({"op": "question_route_activity", "request_id": id, "session_id": format!("{CHILD_ID}' OR 1=1 --")}),
+        json!({"op": "question_route_activity", "request_id": "x", "session_id": CHILD_ID}),
+        json!({"op": "question_route_activity", "request_id": id, "session_id": 1}),
+        json!([]),
+    ] {
+        let reply = super::super::activity_request(&f.store.db, &bad);
+        assert_eq!(
+            (reply["accepted"].as_bool(), reply["code"].as_str()),
+            (Some(false), Some("invalid_question_route_activity")),
+            "{bad}"
+        );
+        assert!(reply.get("routes").is_none());
+    }
+    // A ledger row whose original is not its route's is never shown.
+    let mut f = Fixture::new();
+    admitted(&mut f, &record(), 1, "submitted");
+    f.store
+        .db
+        .execute(
+            "INSERT INTO desktop_question_routes(key,request_id,child_session_id,parent_session_id,
+             question_id,created,state,code) VALUES(?1,?2,?3,?4,'tool:x',2,'submitted','')",
+            rusqlite::params![
+                "c".repeat(64),
+                uuid::Uuid::new_v4().to_string(),
+                CHILD_ID,
+                PARENT_ID
+            ],
+        )
+        .unwrap();
+    assert_eq!(lines(&f, CHILD_ID).len(), 1);
+}
+
+#[test]
+fn only_the_newest_twenty_lines_of_either_role_are_read() {
+    let mut f = Fixture::new();
+    const HOUR: i64 = 3_600_000;
+    // 15 routes of the child to its parent, then 15 to it as a parent of
+    // its own child, each an hour apart under the per-parent bound.
+    let base = record();
+    let mut grandchild = base.clone();
+    grandchild.identity.session_id = "00000000-0000-4000-8000-000000000003".into();
+    grandchild.child.name = "claude/project/grandchild".into();
+    grandchild.parent = route::Parent {
+        session: CHILD.into(),
+        session_id: CHILD_ID.into(),
+        run_id: "run-1".into(),
+        conversation_id: "conversation-1".into(),
+    };
+    for n in 0..15 {
+        admitted(
+            &mut f,
+            &question(&base, n),
+            (2 * n as i64 + 1) * HOUR,
+            "submitted",
+        );
+        admitted(
+            &mut f,
+            &question(&grandchild, n),
+            (2 * n as i64 + 2) * HOUR,
+            "submitted",
+        );
+    }
+    // A refused and a reserved one are newest, yet never shown.
+    admitted(&mut f, &question(&base, 99), 100 * HOUR, "refused");
+    let shown = lines(&f, CHILD_ID);
+    assert_eq!(shown.len(), super::super::activity::LIMIT);
+    let at: Vec<i64> = shown.iter().map(|l| l["at"].as_i64().unwrap()).collect();
+    let mut newest: Vec<i64> = (11..=30).rev().map(|n| n * HOUR).collect();
+    newest.truncate(20);
+    assert_eq!(at, newest, "newest first, both roles merged");
+    let roles: Vec<&str> = shown.iter().map(|l| l["role"].as_str().unwrap()).collect();
+    assert_eq!(roles.iter().filter(|r| **r == "child").count(), 10);
+    assert!(shown
+        .iter()
+        .all(|l| (l["role"] == "parent") == l.get("text").is_some()));
+    // Each read uses its own partial index.
+    for (sql, index) in [
+        (
+            super::super::activity::CHILD_SQL,
+            "desktop_question_routes_child_submitted",
+        ),
+        (
+            super::super::activity::PARENT_SQL,
+            "desktop_question_routes_parent_submitted",
+        ),
+    ] {
+        let plan: Vec<String> = f
+            .store
+            .db
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .unwrap()
+            .query_map(rusqlite::params![CHILD_ID, 20], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(plan.iter().any(|step| step.contains(index)), "{plan:?}");
+        assert!(
+            !plan.iter().any(|step| step.contains("TEMP B-TREE")),
+            "{plan:?}"
+        );
+    }
+}
+
+#[test]
+fn exact_previous_store_upgrade_adds_only_the_activity_indexes() {
+    assert_eq!(
+        super::super::ACTIVITY_SCHEMA - 1,
+        super::super::POLICY_SCHEMA,
+        "rebase this test onto the actual merge-order predecessor"
+    );
+    let mut f = Fixture::new();
+    admitted(&mut f, &record(), 1, "submitted");
+    let objects = |db: &rusqlite::Connection| -> (i64, i64) {
+        db.query_row(
+            "SELECT count(*) FILTER (WHERE type='table'),count(*) FILTER (WHERE type='index')
+             FROM sqlite_schema",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    super::super::remove_activity_fixture(&f.store.db);
+    f.store
+        .db
+        .pragma_update(None, "user_version", super::super::POLICY_SCHEMA)
+        .unwrap();
+    let (tables, indexes) = objects(&f.store.db);
+    let Fixture {
+        store, location, ..
+    } = f;
+    drop(store);
+    let store = Store::open(&location, &uuid::Uuid::new_v4().to_string()).unwrap();
+    assert_eq!(
+        store
+            .db
+            .query_row::<i64, _, _>("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap(),
+        crate::desktop::store::SCHEMA
+    );
+    assert_eq!(objects(&store.db), (tables, indexes + 2));
+    // The route settled before the upgrade is indexed and shown.
+    let reply = super::super::activity_request(
+        &store.db,
+        &json!({"op": "question_route_activity",
+            "request_id": uuid::Uuid::new_v4().to_string(), "session_id": CHILD_ID}),
+    );
+    assert_eq!(reply["routes"].as_array().map(Vec::len), Some(1), "{reply}");
+}
