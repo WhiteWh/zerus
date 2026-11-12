@@ -130,6 +130,18 @@ thread_local! {
     /// Reads rows as the #1736 and #1748 builds did: with the repair and
     /// their own "derived_*" marks, but without the repair epoch.
     pub(super) static PROOF_WRITER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The time the index reads, held by a test that must not depend on how
+    /// long this host takes to build an index (zerus-iezgx).
+    pub(super) static CLOCK: std::cell::Cell<Option<i64>> = const { std::cell::Cell::new(None) };
+}
+
+/// The wall clock in milliseconds, or the time a test holds.
+fn now() -> i64 {
+    #[cfg(test)]
+    if let Some(at) = CLOCK.with(std::cell::Cell::get) {
+        return at;
+    }
+    super::now()
 }
 
 /// A file's length, modification time and inode, or `-` when it is missing,
@@ -869,7 +881,7 @@ impl<'a> Index<'a> {
             if ours {
                 // Every row is now as this build reads it.
                 tx.execute("INSERT OR REPLACE INTO meta SELECT 'derived_revision', value FROM meta WHERE key = 'revision'", [])?;
-                tx.execute("INSERT OR REPLACE INTO meta VALUES('derived_at', ?1)", [super::now().to_string()])?;
+                tx.execute("INSERT OR REPLACE INTO meta VALUES('derived_at', ?1)", [self::now().to_string()])?;
             }
             if epochs() {
                 // Rows another build changed are pending under the epoch.
