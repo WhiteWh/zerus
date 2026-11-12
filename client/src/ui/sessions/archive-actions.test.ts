@@ -139,17 +139,14 @@ describe("a reloaded page that lists the archive id under another name", () => {
 });
 
 describe("the header and the context menu Restore", () => {
-  it("restore a row whose operations leave out restore, as Qt's header and selected-row menu do", async () => {
-    await loadArchive({ ...archived(12), allowed_actions: ["rename", "forget"] });
+  it("does not offer Restore when the computer leaves restore out, and says why (zerus-wyrqg)", async () => {
+    const empty = "This session ended before its first message, so it saved no conversation to restore";
+    await loadArchive({ ...archived(12), allowed_actions: ["rename", "forget"], action_reasons: { restore: empty } });
     const row = archive.row(key(12))!;
-    expect(actionEntries(row, undefined, { context: true }).change.disabled).toBe(false);
+    expect(actionEntries(row, undefined, { context: true }).change.disabled).toBe(true);
     const header = actionEntries(row);
-    expect([header.change.label, header.change.disabled]).toEqual(["Restore session", false]);
-    mocked.runAction.mockResolvedValueOnce(done());
-    header.change.action!();
-    await flush();
-    expect(mocked.runAction).toHaveBeenCalledTimes(1);
-    expect(mocked.runAction).toHaveBeenCalledWith(expect.objectContaining({ name: "codex/example/r12" }), { kind: "restore", archive_id: uuid(12) });
+    expect([header.change.label, header.change.disabled, header.change.hint]).toEqual(["Restore session", true, empty]);
+    expect(mocked.runAction).not.toHaveBeenCalled();
   });
 });
 

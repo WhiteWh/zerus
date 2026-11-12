@@ -135,10 +135,11 @@ export interface Session {
   sharedRead: boolean;
   /** The operations the host reports as allowed, space separated; undefined when it reports none. */
   allowed?: string;
-  /** The host's reasons for a disallowed archive or terminate. */
+  /** The host's reasons for a disallowed archive, terminate, forget or restore. */
   archiveReason?: string;
   terminateReason?: string;
   forgetReason?: string;
+  restoreReason?: string;
   /** The raw working directory (`cwd` is the folder name). */
   cwdPath: string;
   /** The canonical working directory, "" when the row has none (New session's prefill). */

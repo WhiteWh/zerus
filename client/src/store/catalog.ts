@@ -172,6 +172,7 @@ export function toSession(computer: ComputerId, key: string, v: ViewRow, marks: 
     archiveReason: optional(v.action_reasons?.archive),
     terminateReason: optional(v.action_reasons?.terminate),
     forgetReason: optional(v.action_reasons?.forget),
+    restoreReason: optional(v.action_reasons?.restore),
     cwdPath: text(v.cwd),
     cwdCanonical: text(v.cwd_canonical),
     gitRoot: text(v.git_root),
