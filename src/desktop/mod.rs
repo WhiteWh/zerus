@@ -1553,6 +1553,19 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                             .is_some_and(|v| v["op"] == "question_route_child_status")
                         {
                             question_route::latch_status(&store.db, hello.request.as_ref().unwrap())
+                        } else if hello
+                            .request
+                            .as_ref()
+                            .is_some_and(|v| v["op"] == "question_route_person")
+                        {
+                            // A phone's statement: this service runs the
+                            // connector's verifier itself (zerus-sa9qn.50).
+                            question_route::latch_person(
+                                &mut store.db,
+                                &config.state,
+                                hello.request.as_ref().unwrap(),
+                                |input| crate::phones::verify_route_person(config, input),
+                            )
                         } else if let Some(runtime) = &mut background {
                             let request_value = hello.request.as_ref().unwrap_or(&Value::Null);
                             if matches!(

@@ -77,6 +77,7 @@ pub const IMPLEMENTED: &[&str] = &[
     "mark_read",
     "session_notifications",
     "session_question_routing",
+    "session_question_route_person",
     "process_output",
     "project_assignment",
     "project_assign",
@@ -147,6 +148,8 @@ pub enum Gate {
     Repository,
     /// The person's per-child question route switch (zerus-sa9qn.33).
     QuestionRouting,
+    /// A phone's signed latch statement (zerus-sa9qn.50).
+    QuestionRoutePerson,
 }
 
 impl Gate {
@@ -159,6 +162,7 @@ impl Gate {
             Gate::TaskActions => flags.task_actions,
             Gate::Repository => flags.repository,
             Gate::QuestionRouting => flags.question_routing,
+            Gate::QuestionRoutePerson => flags.question_route_person,
         }
     }
 
@@ -172,6 +176,7 @@ impl Gate {
             Gate::TaskActions => "task_actions",
             Gate::Repository => "repository",
             Gate::QuestionRouting => "question_routing",
+            Gate::QuestionRoutePerson => "question_route_person",
         }
     }
 
@@ -184,6 +189,7 @@ impl Gate {
             Gate::TaskActions => "hgs task mobile-send|mobile-cancel|mobile-done --json",
             Gate::Repository => crate::repositories::HELP_MARKER,
             Gate::QuestionRouting => crate::session_question_routing::HELP_MARKER,
+            Gate::QuestionRoutePerson => crate::session_question_route_person::HELP_MARKER,
         }
     }
 }
@@ -258,6 +264,12 @@ pub const CONNECTOR_ONLY: &[ConnectorOnly] = &[
         gate: Gate::QuestionRouting,
         class: Class::Mutation,
     },
+    // A phone's signed latch statement (zerus-sa9qn.50).
+    ConnectorOnly {
+        operation: "session_question_route_person",
+        gate: Gate::QuestionRoutePerson,
+        class: Class::Mutation,
+    },
 ];
 
 /// Whether only this connector executes the operation.
@@ -328,6 +340,8 @@ pub struct Flags {
     pub session_notifications: bool,
     /// The exact `session-question-routing-v1` line (zerus-sa9qn.33).
     pub question_routing: bool,
+    /// The exact `question-route-person-v1` line (zerus-sa9qn.50).
+    pub question_route_person: bool,
     pub preference: bool,
     pub attachment_read: bool,
     pub file_read: bool,
@@ -389,6 +403,9 @@ impl Flags {
             question_routing: help
                 .lines()
                 .any(|line| line.trim() == crate::session_question_routing::HELP_MARKER),
+            question_route_person: help
+                .lines()
+                .any(|line| line.trim() == crate::session_question_route_person::HELP_MARKER),
             preference: has("swarm preference set mobile_delivery"),
             attachment_read: has("attachment <session> --request ID --index N"),
             file_read: has("file-read <session> --json"),

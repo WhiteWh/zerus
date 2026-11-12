@@ -1928,7 +1928,7 @@ fn the_latch_request_is_exact_kept_and_bounded() {
         &uuid::Uuid::new_v4().to_string(),
         "00000000-0000-4000-8000-00000000000a",
         true,
-        0,
+        Some(0),
         1,
     )
     .unwrap();
@@ -1979,4 +1979,142 @@ fn exact_previous_store_upgrade_adds_only_the_latch_leaf() {
     );
     assert_eq!(tables(&store.db), before + 2);
     assert!(!super::super::latch::latched(&store.db, CHILD_ID).unwrap());
+}
+
+/// A phone's latch statement as the connector forwards it (zerus-sa9qn.50).
+fn person(request_id: &str, person_off: bool) -> Value {
+    json!({"op": "question_route_person", "signature": "c2lnbmF0dXJl",
+        "statement": {"workspace_id": "workspace-fixture", "device_id": "phone-1",
+            "gateway_id": "gateway-1", "session_id": CHILD_ID, "run_id": "run-1",
+            "conversation_id": "conversation-1", "person_off": person_off,
+            "request_id": request_id, "issued_at": 1, "expires_at": 2}})
+}
+/// The verifier's confirmation of exactly this statement.
+fn verified(input: &Value) -> anyhow::Result<Value> {
+    Ok(json!({"ok": true, "verified": input["statement"]}))
+}
+fn host(f: &Fixture) -> Option<bool> {
+    crate::state::question_routing::send_to_parent_at(&f.config.state, CHILD_ID)
+}
+
+#[test]
+fn a_phones_verified_statement_sets_the_latch_once_and_the_host_follows() {
+    let mut f = Fixture::new();
+    f.snapshot(vec![child_row(), parent_row()]);
+    let state = f.config.state.clone();
+    let id = uuid::Uuid::new_v4().to_string();
+    let seen = std::cell::Cell::new(0);
+    let off = super::super::latch_person(&mut f.store.db, &state, &person(&id, true), |input| {
+        seen.set(seen.get() + 1);
+        // The verifier gets exactly the statement and its signature.
+        assert_eq!(
+            input,
+            &json!({"statement": person(&id, true)["statement"], "signature": "c2lnbmF0dXJl"})
+        );
+        verified(input)
+    });
+    assert_eq!(
+        (
+            off["accepted"].clone(),
+            off["person_off"].clone(),
+            off["revision"].clone(),
+            off["host"].clone()
+        ),
+        (json!(true), json!(true), json!(1), json!(true)),
+        "{off}"
+    );
+    assert!(super::super::latch::latched(&f.store.db, CHILD_ID).unwrap());
+    assert_eq!(host(&f), Some(false));
+    // The same statement again returns its receipt, never verified or applied twice.
+    let again = super::super::latch_person(&mut f.store.db, &state, &person(&id, true), |_| {
+        panic!("a replay is never verified again")
+    });
+    assert_eq!(again["revision"], 1);
+    assert_eq!(seen.get(), 1);
+    // Another value under the same request is refused.
+    let reused = super::super::latch_person(&mut f.store.db, &state, &person(&id, false), verified);
+    assert_eq!(reused["accepted"], false);
+    // The phone turns it on again: the latch clears, then the host follows.
+    let on = super::super::latch_person(
+        &mut f.store.db,
+        &state,
+        &person(&uuid::Uuid::new_v4().to_string(), false),
+        verified,
+    );
+    assert_eq!(
+        (on["person_off"].clone(), on["revision"].clone()),
+        (json!(false), json!(2))
+    );
+    assert!(!super::super::latch::latched(&f.store.db, CHILD_ID).unwrap());
+    assert_eq!(host(&f), Some(true));
+}
+
+#[test]
+fn an_unverified_or_mismatched_statement_changes_nothing() {
+    let mut f = Fixture::new();
+    f.snapshot(vec![child_row(), parent_row()]);
+    let state = f.config.state.clone();
+    let mut other_session = person(&uuid::Uuid::new_v4().to_string(), true);
+    other_session["statement"]["session_id"] = json!("00000000-0000-4000-8000-000000000009");
+    let mut other_run = person(&uuid::Uuid::new_v4().to_string(), true);
+    other_run["statement"]["run_id"] = json!("run-2");
+    let fresh = || person(&uuid::Uuid::new_v4().to_string(), true);
+    type Verify = Box<dyn Fn(&Value) -> anyhow::Result<Value>>;
+    let cases: Vec<(&str, Value, Verify, &str)> = vec![
+        (
+            "refused",
+            fresh(),
+            Box::new(|_| anyhow::bail!("not verified")),
+            "not_verified",
+        ),
+        (
+            "not ok",
+            fresh(),
+            Box::new(|_| Ok(json!({"ok": false}))),
+            "not_verified",
+        ),
+        (
+            "another statement",
+            fresh(),
+            Box::new(|input| {
+                let mut other = input["statement"].clone();
+                other["person_off"] = json!(false);
+                Ok(json!({"ok": true, "verified": other}))
+            }),
+            "not_verified",
+        ),
+        ("not found", other_session, Box::new(verified), "not_found"),
+        ("stale", other_run, Box::new(verified), "stale_identity"),
+    ];
+    for (name, request, verify, code) in cases {
+        let reply = super::super::latch_person(&mut f.store.db, &state, &request, verify);
+        assert_eq!(
+            (reply["accepted"].clone(), reply["code"].clone()),
+            (json!(false), json!(code)),
+            "{name}: {reply}"
+        );
+    }
+    // Shapes are exact; nothing is verified for them.
+    let mut extra = fresh();
+    extra["extra"] = json!(1);
+    let mut field = fresh();
+    field["statement"]["extra"] = json!(1);
+    let mut session = fresh();
+    session["statement"]["session_id"] = json!("x");
+    let mut signature = fresh();
+    signature["signature"] = json!(1);
+    for bad in [
+        extra,
+        field,
+        session,
+        signature,
+        json!({"op": "question_route_person"}),
+    ] {
+        let reply = super::super::latch_person(&mut f.store.db, &state, &bad, |_| {
+            panic!("an invalid request is never verified")
+        });
+        assert_eq!(reply["code"], "invalid_request", "{bad}");
+    }
+    assert!(!super::super::latch::latched(&f.store.db, CHILD_ID).unwrap());
+    assert_eq!(host(&f), Some(true));
 }

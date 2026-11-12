@@ -108,15 +108,16 @@ fn receipt(db: &Connection, id: &str) -> Result<Option<Value>> {
 }
 
 /// Sets the child's latch to `person_off` for request `id`, once, at
-/// `expected_revision`. The same request again returns its receipt; another
-/// value or child under a used request is refused. A stale revision is the
-/// closed `conflict` refusal with the current value; it writes nothing.
+/// `expected_revision` (`None`: whatever it is, a phone's statement). The
+/// same request again returns its receipt; another value or child under a
+/// used request is refused. A stale revision is the closed `conflict`
+/// refusal with the current value; it writes nothing.
 pub(super) fn set(
     db: &mut Connection,
     id: &str,
     session_id: &str,
     person_off: bool,
-    expected_revision: i64,
+    expected_revision: Option<i64>,
     at: i64,
 ) -> Result<Value> {
     ensure!(
@@ -132,7 +133,7 @@ pub(super) fn set(
         return Ok(old);
     }
     let (now, revision) = state(&tx, session_id)?;
-    if expected_revision != revision {
+    if expected_revision.is_some_and(|expected| expected != revision) {
         let mut conflict = refusal(id, "conflict");
         conflict["person_off"] = json!(now);
         conflict["revision"] = json!(revision);
@@ -231,7 +232,7 @@ pub(in crate::desktop) fn frontend(
         &id,
         &session_id,
         person_off,
-        expected,
+        Some(expected),
         chrono::Utc::now().timestamp_millis(),
     )
     .unwrap_or_else(|_| refusal(&id, "question_route_store_refused"))
@@ -281,4 +282,102 @@ pub(in crate::desktop) fn status_request(db: &Connection, value: &Value) -> Valu
             "op": STATUS_OP, "session_id": session, "person_off": person_off, "revision": revision}),
         Err(_) => refused("question_route_store_refused"),
     }
+}
+
+pub(super) const PERSON_OP: &str = "question_route_person";
+
+/// A phone's latch statement (zerus-sa9qn.50), as the connector forwards
+/// it. Its fields are the shared crypto crate's `RoutePersonStatement`.
+#[derive(serde::Deserialize, serde::Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct Statement {
+    workspace_id: String,
+    device_id: String,
+    gateway_id: String,
+    session_id: String,
+    run_id: String,
+    conversation_id: String,
+    person_off: bool,
+    request_id: String,
+    issued_at: u64,
+    expires_at: u64,
+}
+
+/// `{"op":"question_route_person","statement":{...},"signature":"..."}`:
+/// a phone's request through the connector. It applies only what this
+/// service's own run of the connector's verifier (`verify`) confirms: a
+/// current phone of this workspace signed exactly this statement for this
+/// computer, unexpired. The latch is set to the statement's value once per
+/// `request_id`, then the child's host file follows (`state`, the CLI state
+/// root), so the phone needs one request. The forwarder grants nothing.
+pub(in crate::desktop) fn person_request(
+    db: &mut Connection,
+    state: &std::path::Path,
+    value: &Value,
+    verify: impl FnOnce(&Value) -> Result<Value>,
+) -> Value {
+    let id = value["statement"]["request_id"]
+        .as_str()
+        .unwrap_or("")
+        .to_owned();
+    let shape = value.as_object().is_some_and(|o| {
+        o.len() == 3 && value["op"] == PERSON_OP && value["signature"].is_string()
+    });
+    let Some(statement) = shape
+        .then(|| serde_json::from_value::<Statement>(value["statement"].clone()).ok())
+        .flatten()
+        .filter(|s| {
+            super::policy::canonical(&s.request_id) && super::policy::canonical(&s.session_id)
+        })
+    else {
+        return refusal(&id, "invalid_request");
+    };
+    // A request already applied returns its receipt.
+    match receipt(db, &id) {
+        Ok(Some(old)) => {
+            return if old["session_id"] == statement.session_id
+                && old["person_off"] == statement.person_off
+            {
+                old
+            } else {
+                refusal(&id, "invalid_request")
+            }
+        }
+        Ok(None) => {}
+        Err(_) => return refusal(&id, "question_route_store_refused"),
+    }
+    let input = json!({"statement": statement, "signature": value["signature"]});
+    match verify(&input) {
+        Ok(reply) if reply["ok"] == true && reply["verified"] == input["statement"] => {}
+        _ => return refusal(&id, "not_verified"),
+    }
+    match super::session_row(db, &statement.session_id) {
+        Ok(Some(row))
+            if row["run_id"] == statement.run_id
+                && row["conversation_id"] == statement.conversation_id => {}
+        Ok(Some(_)) => return refusal(&id, "stale_identity"),
+        Ok(None) => return refusal(&id, "not_found"),
+        Err(_) => return refusal(&id, "question_route_store_refused"),
+    }
+    let mut reply = match set(
+        db,
+        &id,
+        &statement.session_id,
+        statement.person_off,
+        None,
+        chrono::Utc::now().timestamp_millis(),
+    ) {
+        Ok(reply) => reply,
+        Err(_) => return refusal(&id, "question_route_store_refused"),
+    };
+    if reply["accepted"] == true {
+        // Off already holds through the latch; on needs the host as well.
+        reply["host"] = json!(crate::state::question_routing::set_for_person(
+            state,
+            &statement.session_id,
+            !statement.person_off,
+        )
+        .is_ok());
+    }
+    reply
 }

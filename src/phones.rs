@@ -255,6 +255,63 @@ fn protected_call(connection:&Connection,action:&str,input:&Value)->Result<Value
     }
     Ok(result)
 }
+/// The person's latch statement of a phone (zerus-sa9qn.50), verified by
+/// this computer's own connector against its verified membership head: the
+/// desktop service runs it itself, so the statement's forwarder grants
+/// nothing. It reads only; at most 5 s.
+pub(crate) fn verify_route_person(config: &Config, input: &Value) -> anyhow::Result<Value> {
+    use std::time::{Duration, Instant};
+    let Some(connection) = connection(config).map_err(|e| anyhow::anyhow!("{e}"))? else {
+        anyhow::bail!("no mobile connection");
+    };
+    let executable = std::env::current_exe()?;
+    let name = if cfg!(windows) { "zerus-mobile-connector.exe" } else { "zerus-mobile-connector" };
+    let program = match std::env::var_os("ZERUS_CLIENT_MOBILE_CONNECTOR_PATH") {
+        Some(selected) => {
+            let path = std::path::PathBuf::from(selected);
+            anyhow::ensure!(path.is_absolute(), "the selected mobile connector path must be absolute");
+            path
+        }
+        None => executable
+            .parent()
+            .map(|p| p.join(name))
+            .filter(|p| p.is_file())
+            .unwrap_or_else(|| name.into()),
+    };
+    let mut command = Command::new(program);
+    command
+        .args(["--workspace", "verify-question-route-person", "--config"])
+        .arg(&connection.config_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = crate::platform::spawn_service_child(&mut command)?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(input.to_string().as_bytes())?;
+    }
+    let mut stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("no verifier output"))?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = (&mut stdout).take(65_537).read_to_end(&mut bytes);
+        bytes
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("the question route verifier timed out");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let bytes = reader.join().map_err(|_| anyhow::anyhow!("no verifier output"))?;
+    anyhow::ensure!(status.success() && bytes.len() <= 65_536, "the statement was not verified");
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
 fn protected_action(connection:&Connection,action:Action,pin:Option<&str>)->Result<Value> {
     let status=protected_call(connection,"status",&json!({}))?;
     if status["state"]!="active" || status["encrypted"]!=true || status["server_url"]!=connection.server {

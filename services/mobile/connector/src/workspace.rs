@@ -15,8 +15,8 @@ use std::{
 };
 use zerus_mobile_crypto::{
     self as crypto, EnrollmentCandidate, Identity, IdentityRecord, Invitation, MembershipAction,
-    MembershipState, MembershipStatement, Role, SignedEnrollment, SignedMembership,
-    SignedMembershipSnapshot,
+    MembershipState, MembershipStatement, Role, RoutePersonStatement, SignedEnrollment,
+    SignedMembership, SignedMembershipSnapshot,
 };
 
 const ACTIVE: &str = "active.json";
@@ -652,6 +652,44 @@ async fn refresh_locked(store: &Store, mut profile: Profile, relay: &Relay) -> R
     Ok(profile)
 }
 
+/// The person's latch statement on a child's question route
+/// (zerus-sa9qn.50): signed by a current phone of this workspace, for this
+/// computer, and unexpired, verified against this computer's own verified
+/// membership head. It reads only; the desktop service applies the latch,
+/// at most once per request.
+fn verify_route_person(config_path: &Path, input: Value) -> Result<Value> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Input {
+        statement: RoutePersonStatement,
+        signature: String,
+    }
+    let refused =
+        || fail("The question route statement is not a current phone's for this computer");
+    let input: Input = serde_json::from_value(input).map_err(|_| refused())?;
+    let (config, _) = workspace_cli::read_config(config_path)?;
+    if config.get("encrypted_workspace").is_none() {
+        return Err(fail("Create or join an encrypted workspace first"));
+    }
+    let private_dir = private_directory(config_path)?;
+    let profile = load_record(&private_dir)?;
+    validate_config_profile_binding(&config, &private_dir, &profile)?;
+    profile.validate()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| refused())?
+        .as_secs();
+    if input.statement.gateway_id != profile.identity.device.device_id
+        || input
+            .statement
+            .verify(&profile.membership, &input.signature, now)
+            .is_err()
+    {
+        return Err(refused());
+    }
+    Ok(json!({"ok": true, "verified": input.statement}))
+}
+
 pub async fn manage(
     action: &str,
     config_path: &Path,
@@ -660,6 +698,9 @@ pub async fn manage(
 ) -> Result<Value> {
     if action == "status" {
         return public_status(config_path);
+    }
+    if action == "verify-question-route-person" {
+        return verify_route_person(config_path, input);
     }
     let (config, revision) = workspace_cli::read_config(config_path)?;
     if input["expected_revision"].as_str() != Some(&revision) {
@@ -1690,6 +1731,107 @@ mod tests {
         )
         .unwrap();
         (config, private, revision)
+    }
+
+    /// zerus-sa9qn.50: a current phone's latch statement for this computer.
+    #[test]
+    fn only_a_current_phones_unexpired_statement_for_this_computer_verifies() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, private, _) = active(dir.path());
+        let store = Store::lock(&private, true).unwrap();
+        let mut profile = load_record_from_store(&store).unwrap();
+        let computer = Identity::from_record(&profile.identity).unwrap();
+        let phone = Identity::generate(uuid::Uuid::new_v4().to_string(), Role::Phone).unwrap();
+        let add = SignedMembership::sign(
+            MembershipStatement {
+                workspace_id: profile.membership.workspace_id.clone(),
+                revision: profile.membership.revision + 1,
+                previous_head: profile.membership.head.clone(),
+                issuer_device_id: computer.public().device_id.clone(),
+                issuer_key_generation: 1,
+                action: MembershipAction::Add,
+                device: Some(phone.public().clone()),
+                revoked_device_id: None,
+            },
+            &computer,
+        )
+        .unwrap();
+        profile.membership.apply_next(&add).unwrap();
+        profile
+            .historical_heads
+            .insert(profile.membership.revision, profile.membership.head.clone());
+        save(&store, ACTIVE, &profile).unwrap();
+        drop(store);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let statement = |signer: &Identity, gateway: &str, issued_at: u64| RoutePersonStatement {
+            workspace_id: profile.membership.workspace_id.clone(),
+            device_id: signer.public().device_id.clone(),
+            gateway_id: gateway.into(),
+            session_id: "00000000-0000-4000-8000-0000000000c1".into(),
+            run_id: "run-1".into(),
+            conversation_id: "conversation-1".into(),
+            person_off: false,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            issued_at,
+            expires_at: issued_at + 120,
+        };
+        let verify = |statement: &RoutePersonStatement, signer: &Identity| {
+            let input =
+                json!({"statement": statement, "signature": statement.sign(signer).unwrap()});
+            block_on(manage(
+                "verify-question-route-person",
+                &config,
+                input,
+                false,
+            ))
+        };
+        let gateway = computer.public().device_id.clone();
+        let good = statement(&phone, &gateway, now - 10);
+        let verified = verify(&good, &phone).unwrap();
+        assert_eq!(verified, json!({"ok": true, "verified": good}));
+        // Another computer, an expired statement, a computer's signature
+        // and an unknown phone are all refused.
+        let stranger = Identity::generate(uuid::Uuid::new_v4().to_string(), Role::Phone).unwrap();
+        for (statement, signer) in [
+            (
+                statement(&phone, "00000000-0000-4000-8000-000000000009", now - 10),
+                &phone,
+            ),
+            (statement(&phone, &gateway, now - 200), &phone),
+            (statement(&computer, &gateway, now - 10), &computer),
+            (statement(&stranger, &gateway, now - 10), &stranger),
+        ] {
+            assert!(verify(&statement, signer).is_err(), "{statement:?}");
+        }
+        // A signature over other fields, or an extra field, is refused.
+        let mut changed = good.clone();
+        changed.person_off = true;
+        let input = json!({"statement": changed, "signature": good.sign(&phone).unwrap()});
+        assert!(block_on(manage(
+            "verify-question-route-person",
+            &config,
+            input,
+            false
+        ))
+        .is_err());
+        let input = json!({"statement": good, "signature": good.sign(&phone).unwrap(), "extra": 1});
+        assert!(block_on(manage(
+            "verify-question-route-person",
+            &config,
+            input,
+            false
+        ))
+        .is_err());
+    }
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
     }
 
     // zerus-cz3t0: a running connector holds this lock across each relay call.

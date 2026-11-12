@@ -207,6 +207,39 @@ fn update(store: &mut Store, record: &Value, request: &Request) -> (i32, Value, 
     (0, reply(true, None, true, next), true)
 }
 
+/// The service's write after the person's verified latch (zerus-sa9qn.50):
+/// the child's switch at the state root `state` becomes `send_to_parent`,
+/// under the switch's lock. Only the service calls this, after the person's
+/// own request; the latch, not this file, is the person's decision.
+pub(crate) fn set_for_person(state: &Path, session_id: &str, send_to_parent: bool) -> Result<bool> {
+    if !session_id::canonical(session_id) {
+        return Err("invalid question routing session".into());
+    }
+    let _guard = lock(Some(&state.join("question-routing.lock")))?;
+    let mut store = read_store(&path(state))?;
+    let current = store.entry(session_id);
+    if current.send_to_parent == send_to_parent {
+        return Ok(false);
+    }
+    if !store.sessions.contains_key(session_id) && store.sessions.len() >= MAX_ENTRIES {
+        return Err("question routing settings are full".into());
+    }
+    let revision = current
+        .revision
+        .checked_add(1)
+        .filter(|r| *r <= MAX_REVISION)
+        .ok_or("question routing revisions are exhausted")?;
+    store.sessions.insert(
+        session_id.to_owned(),
+        Entry {
+            send_to_parent,
+            revision,
+        },
+    );
+    persist(&path(state), &store)?;
+    Ok(true)
+}
+
 /// `hgs question-routing <session> --json`: one compare-and-swap of the
 /// child's switch from JSON stdin. Refused from an agent's process tree.
 pub(super) fn dispatch(args: &[String]) -> Result<i32> {

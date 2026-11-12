@@ -722,6 +722,102 @@ impl SignedMembership {
     }
 }
 
+/// The domain of the person's latch statement (zerus-sa9qn.50).
+pub const ROUTE_PERSON_DOMAIN: &str = "zerus-question-route-person-v1";
+/// The longest a latch statement stays valid, in seconds.
+pub const ROUTE_PERSON_LIFETIME: u64 = 300;
+/// How far a phone's clock may run ahead of the gateway's, in seconds.
+pub const ROUTE_PERSON_SKEW: u64 = 60;
+
+/// The person's latch on one child's question route (zerus-sa9qn.50): a
+/// phone of the workspace signs it for one gateway, whose desktop service
+/// applies it at most once (by `request_id`) before `expires_at`. It sets
+/// `person_off` to its value; it is not a compare-and-swap.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RoutePersonStatement {
+    pub workspace_id: String,
+    pub device_id: String,
+    pub gateway_id: String,
+    pub session_id: String,
+    pub run_id: String,
+    pub conversation_id: String,
+    pub person_off: bool,
+    pub request_id: String,
+    pub issued_at: u64,
+    pub expires_at: u64,
+}
+impl RoutePersonStatement {
+    pub fn validate(&self) -> Result<()> {
+        for id in [
+            &self.workspace_id,
+            &self.device_id,
+            &self.gateway_id,
+            &self.session_id,
+            &self.request_id,
+        ] {
+            identifier(id)?;
+        }
+        for (value, maximum) in [(&self.run_id, 128), (&self.conversation_id, 256)] {
+            if value.is_empty()
+                || value.len() > maximum
+                || value.chars().any(|c| c < ' ' || c == '\u{7f}')
+            {
+                return Err(Error::Invalid);
+            }
+        }
+        if self.issued_at >= self.expires_at
+            || self.expires_at - self.issued_at > ROUTE_PERSON_LIFETIME
+            || self.expires_at > MAX_WIRE_INTEGER
+        {
+            return Err(Error::Invalid);
+        }
+        Ok(())
+    }
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        frame(
+            ROUTE_PERSON_DOMAIN,
+            &[
+                self.workspace_id.as_bytes(),
+                self.device_id.as_bytes(),
+                self.gateway_id.as_bytes(),
+                self.session_id.as_bytes(),
+                self.run_id.as_bytes(),
+                self.conversation_id.as_bytes(),
+                &[u8::from(self.person_off)],
+                self.request_id.as_bytes(),
+                &self.issued_at.to_be_bytes(),
+                &self.expires_at.to_be_bytes(),
+            ],
+        )
+    }
+    pub fn sign(&self, identity: &Identity) -> Result<String> {
+        Ok(identity.sign(&self.canonical_bytes()?))
+    }
+    /// A current phone member of exactly this workspace signed it, and it is
+    /// valid at `now` (seconds). The gateway checks `gateway_id` itself.
+    pub fn verify(&self, membership: &MembershipState, signature: &str, now: u64) -> Result<()> {
+        membership.validate()?;
+        let signer = membership
+            .members
+            .get(&self.device_id)
+            .ok_or(Error::Authentication)?;
+        if membership.workspace_id != self.workspace_id
+            || signer.role != Role::Phone
+            || now.saturating_add(ROUTE_PERSON_SKEW) < self.issued_at
+            || now >= self.expires_at
+        {
+            return Err(Error::Authentication);
+        }
+        verify(
+            &signer.signing_public_key,
+            &self.canonical_bytes()?,
+            signature,
+        )
+    }
+}
+
 /// Linear, endpoint-owned membership state. Persist the state and consumed
 /// history row in one transaction before acknowledging or using the new head.
 /// A relay snapshot may not replace this pinned state.

@@ -34,7 +34,8 @@ pub(super) use activity::request as activity_request;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod latch;
 pub(super) use latch::{
-    frontend as latch_frontend, result_request as latch_result, status_request as latch_status,
+    frontend as latch_frontend, person_request as latch_person, result_request as latch_result,
+    status_request as latch_status,
 };
 #[cfg(target_os = "linux")]
 mod runtime;
