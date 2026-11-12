@@ -181,6 +181,19 @@ finally:
         self.assertEqual(value['code'], 'revoke_hold_refused')
         self.assertFalse(self.desktop.exists())
 
+    @unittest.skipUnless(sys.platform.startswith(('linux', 'darwin')), 'Unix registration admission')
+    def test_a_hosted_deepseek_call_cannot_change_desktop_mode(self):
+        # zerus-ppd26: a resident DeepSeek host sets HGS_AGENT=dsh on every tool
+        # call, with or without session markers; the caller's own check refuses
+        # it before any ancestry is read.
+        hosted = {key: value for key, value in self.env.items()
+                  if key not in ('HGS_SESSION', 'HGS_SESSION_ID', 'HGS_RUN_ID')}
+        hosted['HGS_AGENT'] = 'dsh'
+        result = subprocess.run([str(HGS), 'desktop', 'registration', 'mode-check', '--json'], env=hosted,
+                                capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('agent session cannot change desktop mode', result.stderr)
+
     def test_notification_controls_are_scoped_reads_and_generic_mutation_is_refused(self):
         self.serve()
         current = self.cli('desktop', 'status', '--json')

@@ -241,6 +241,15 @@ class Hosted:
                 ('add', [hgs, 'task', 'add', '--project', 'orchard', '--title', 'from a hosted call'], 'text'),
                 ('comment', [hgs, 'task', 'comment', ref], 'a hosted comment')]
 
+    def forwarded(self, ref):
+        """A command another computer would forward for its agent (`--agent`)."""
+        agent = str(uuid.uuid4()) + '/claude/elsewhere'
+        return ('forwarded', [str(HGS), 'task', 'send', ref, '--agent', agent], None)
+
+    def assertNotForwarded(self, result):
+        self.assertNotEqual(result['code'], 0, result)
+        self.assertIn('an agent acts as its own session', result['stderr'], result)
+
     def assertNeverThePerson(self, runs, ref):
         for name, result in runs.items():
             self.assertNotEqual(result['code'], 0, (name, result))
@@ -345,8 +354,9 @@ class HostStartedByHgs(Hosted, unittest.TestCase):
                     identity.unlink()
                 else:
                     identity.write_text('{"version":1,"conversation":"' + session['conversation_id'] + '","session":""}')
-                result = self.shell(session, runs=self.person_actions(ref))
+                result = self.shell(session, runs=self.person_actions(ref) + [self.forwarded(ref)])
                 self.assertNoMarkers(result['env'])
+                self.assertNotForwarded(result['runs'].pop('forwarded'))
                 self.assertNeverThePerson(result['runs'], ref)
         # The person outside the host still acts as the person.
         self.call('task', 'comment', ref, input='from the person')
