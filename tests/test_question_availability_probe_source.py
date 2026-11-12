@@ -159,6 +159,30 @@ WORKSPACE_BASE_SHA = {
     "ZerusViewModel.kt": "5932d92ca74ccf37da9595a580bcb1457c93c83951976606c8defa8d1ee83326",
     "MainActivity.kt": "f68902349d1e0ac939582e9e139548663f5763c430a3c566f8823d9f045645f0",
 }
+BOTH_FILES = ("ZerusViewModel.kt", "MainActivity.kt")
+# Every reviewed update, newest first: reverse_reviewed_updates reverses them in
+# this order, and each fixture's duplicated-hunk check reverses the newer ones.
+REVIEWED_CHAIN = (
+    (OUTBOX_RETENTION_UPDATES, OUTBOX_RETENTION_UPDATES_SHA, OUTBOX_RETENTION_FILES),
+    (SEND_RECEIPT_UPDATES, SEND_RECEIPT_UPDATES_SHA, SEND_RECEIPT_FILES),
+    (READABLE_VISIBILITY_UPDATES, READABLE_VISIBILITY_UPDATES_SHA, READABLE_VISIBILITY_FILES),
+    (CURRENT_READ_FLAGS_UPDATES, CURRENT_READ_FLAGS_UPDATES_SHA, BOTH_FILES),
+    (CURRENT_READ_UPDATES, CURRENT_READ_UPDATES_SHA, BOTH_FILES),
+    (QUESTION_PROJECTION_COMPLETE_UPDATES, QUESTION_PROJECTION_COMPLETE_UPDATES_SHA, QUESTION_PROJECTION_COMPLETE_FILES),
+    (QUESTION_PRESENCE_UPDATES, QUESTION_PRESENCE_UPDATES_SHA, QUESTION_PRESENCE_FILES),
+    (SYNC_STATUS_UPDATES, SYNC_STATUS_UPDATES_SHA, BOTH_FILES),
+    (OUTBOX_RELEASE_REASON_UPDATES, OUTBOX_RELEASE_REASON_UPDATES_SHA, BOTH_FILES),
+    (OUTGOING_SEND_UPDATES, OUTGOING_SEND_UPDATES_SHA, OUTGOING_SEND_FILES),
+    (SEND_ATTEMPT_UPDATES, SEND_ATTEMPT_UPDATES_SHA, SEND_ATTEMPT_FILES),
+    (PRESENTATION_UPDATES, PRESENTATION_UPDATES_SHA, BOTH_FILES),
+    (DELIVERY_RECOVERY_UPDATES, DELIVERY_RECOVERY_UPDATES_SHA, BOTH_FILES),
+    (RECENT_ACTIVITY_UPDATES, RECENT_ACTIVITY_UPDATES_SHA, BOTH_FILES),
+    (CHILD_SESSION_UPDATES, CHILD_SESSION_UPDATES_SHA, BOTH_FILES),
+    (VISIBLE_REFRESH_UPDATES, VISIBLE_REFRESH_UPDATES_SHA, BOTH_FILES),
+    (TASK_TRACKER_UPDATES, TASK_TRACKER_UPDATES_SHA, BOTH_FILES),
+    (WORKSPACE_UPDATES, WORKSPACE_UPDATES_SHA, BOTH_FILES),
+    (UPDATES, UPDATES_SHA, BOTH_FILES),
+)
 WRITERS = ["INSTALL_WAIT_PRESENTATION", "INSTALL_PRESENTATION", "PREPARE_PRESENTATION", "TERMINAL_CLOSED",
            "ACTION_RESULT", "CONNECTION_FORGOTTEN", "OPEN_SESSION", "BACK", "CLEAR_UNCONFIRMED", "INSPECT_FAILED"]
 
@@ -212,42 +236,31 @@ def reverse_reviewed_patch(name, source, fixture, fixture_sha,
     return source
 
 
-def reviewed_hunk(fixture, fixture_sha, addition):
-    """The new text of the one reviewed hunk of `fixture` that adds the line
-    `addition`, read as reverse_reviewed_patch reads hunks; a refusal test
-    duplicates it whole."""
+def reviewed_hunk(name, fixture, fixture_sha, addition):
+    """The new text of the one reviewed hunk of `fixture` in `name` whose added
+    lines contain `addition`, read as reverse_reviewed_patch reads hunks; a
+    refusal test places it twice."""
     raw = fixture.read_bytes()
     if hashlib.sha256(raw).hexdigest() != fixture_sha:
         raise AssertionError("reviewed source-update fixture changed")
-    found = [hunk for hunk in re.split(r"(?m)^@@[^\n]*\n", raw.decode())[1:]
-             if "+" + addition in hunk.splitlines(keepends=True)]
+    found = []
+    for section in raw.decode().split("diff --git ")[1:]:
+        header, body = section.split("\n", 1)
+        if header.split()[0].rsplit("/", 1)[-1] != name:
+            continue
+        for hunk in re.split(r"(?m)^@@[^\n]*\n", body)[1:]:
+            lines = hunk.splitlines(keepends=True)
+            if addition in "".join(line[1:] for line in lines if line[0] == "+"):
+                found.append("".join(line[1:] for line in lines if line[0] in " +"))
     if len(found) != 1:
-        raise AssertionError("no single reviewed hunk adds this line")
-    return "".join(line[1:] for line in found[0].splitlines(keepends=True) if line[0] in " +")
+        raise AssertionError("no single reviewed hunk adds this text")
+    return found[0]
 
 
 def reverse_reviewed_updates(name, source):
-    source = reverse_reviewed_patch(name, source, OUTBOX_RETENTION_UPDATES, OUTBOX_RETENTION_UPDATES_SHA,
-                                    OUTBOX_RETENTION_FILES)
-    source = reverse_reviewed_patch(name, source, SEND_RECEIPT_UPDATES, SEND_RECEIPT_UPDATES_SHA, SEND_RECEIPT_FILES)
-    source = reverse_reviewed_patch(name, source, READABLE_VISIBILITY_UPDATES, READABLE_VISIBILITY_UPDATES_SHA,
-                                    READABLE_VISIBILITY_FILES)
-    source = reverse_reviewed_patch(name, source, CURRENT_READ_FLAGS_UPDATES, CURRENT_READ_FLAGS_UPDATES_SHA)
-    source = reverse_reviewed_patch(name, source, CURRENT_READ_UPDATES, CURRENT_READ_UPDATES_SHA)
-    source = reverse_reviewed_patch(name, source, QUESTION_PROJECTION_COMPLETE_UPDATES, QUESTION_PROJECTION_COMPLETE_UPDATES_SHA, QUESTION_PROJECTION_COMPLETE_FILES)
-    source = reverse_reviewed_patch(name, source, QUESTION_PRESENCE_UPDATES, QUESTION_PRESENCE_UPDATES_SHA, QUESTION_PRESENCE_FILES)
-    source = reverse_reviewed_patch(name, source, SYNC_STATUS_UPDATES, SYNC_STATUS_UPDATES_SHA)
-    source = reverse_reviewed_patch(name, source, OUTBOX_RELEASE_REASON_UPDATES, OUTBOX_RELEASE_REASON_UPDATES_SHA)
-    source = reverse_reviewed_patch(name, source, OUTGOING_SEND_UPDATES, OUTGOING_SEND_UPDATES_SHA, OUTGOING_SEND_FILES)
-    source = reverse_reviewed_patch(name, source, SEND_ATTEMPT_UPDATES, SEND_ATTEMPT_UPDATES_SHA, SEND_ATTEMPT_FILES)
-    source = reverse_reviewed_patch(name, source, PRESENTATION_UPDATES, PRESENTATION_UPDATES_SHA)
-    source = reverse_reviewed_patch(name, source, DELIVERY_RECOVERY_UPDATES, DELIVERY_RECOVERY_UPDATES_SHA)
-    source = reverse_reviewed_patch(name, source, RECENT_ACTIVITY_UPDATES, RECENT_ACTIVITY_UPDATES_SHA)
-    source = reverse_reviewed_patch(name, source, CHILD_SESSION_UPDATES, CHILD_SESSION_UPDATES_SHA)
-    source = reverse_reviewed_patch(name, source, VISIBLE_REFRESH_UPDATES, VISIBLE_REFRESH_UPDATES_SHA)
-    source = reverse_reviewed_patch(name, source, TASK_TRACKER_UPDATES, TASK_TRACKER_UPDATES_SHA)
-    source = reverse_reviewed_patch(name, source, WORKSPACE_UPDATES, WORKSPACE_UPDATES_SHA)
-    return reverse_reviewed_patch(name, source, UPDATES, UPDATES_SHA)
+    for fixture, fixture_sha, files in REVIEWED_CHAIN:
+        source = reverse_reviewed_patch(name, source, fixture, fixture_sha, files)
+    return source
 
 
 def reconstructed(name, source):
@@ -263,6 +276,21 @@ def original_source(name, source):
 
 
 class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
+    def assert_refuses_duplicated_hunk(self, name, fixture, addition):
+        """A whole reviewed hunk of `fixture` present twice, at the source state
+        just before that fixture is reversed, is refused by its own reversal,
+        never reversed once. (Duplicating a line inside a hunk only changes it.)"""
+        at = [entry[0] for entry in REVIEWED_CHAIN].index(fixture)
+        source = (MAIN / name).read_text()
+        for newer, newer_sha, newer_files in REVIEWED_CHAIN[:at]:
+            source = reverse_reviewed_patch(name, source, newer, newer_sha, newer_files)
+        _, fixture_sha, files = REVIEWED_CHAIN[at]
+        hunk = reviewed_hunk(name, fixture, fixture_sha, addition)
+        self.assertEqual(source.count(hunk), 1)
+        with self.subTest(source=name, kind="duplicated hunk", fixture=fixture.name):
+            with self.assertRaises(AssertionError):
+                reverse_reviewed_patch(name, source.replace(hunk, hunk + hunk, 1), fixture, fixture_sha, files)
+
     def test_workspace_projection_matches_reviewed_current_main_exactly(self):
         for name, digest in WORKSPACE_BASE_SHA.items():
             with self.subTest(source=name):
@@ -340,14 +368,12 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
         # A whole hunk present twice must be refused too, not reversed once.
         addition = "    private fun retainOutbox() {\n"
         source = (MAIN / "ZerusViewModel.kt").read_text()
-        hunk = reviewed_hunk(OUTBOX_RETENTION_UPDATES, OUTBOX_RETENTION_UPDATES_SHA, addition)
         self.assertEqual(source.count(addition), 1)
-        self.assertEqual(source.count(hunk), 1)
+        self.assert_refuses_duplicated_hunk("ZerusViewModel.kt", OUTBOX_RETENTION_UPDATES, addition)
         for kind, changed in (
                 ("changed", source.replace(addition, addition.rstrip("\n") + " // changed reviewed addition\n", 1)),
                 ("missing", source.replace(addition, "", 1)),
-                ("duplicated line", source.replace(addition, addition + addition, 1)),
-                ("duplicated hunk", source.replace(hunk, hunk + hunk, 1))):
+                ("duplicated line", source.replace(addition, addition + addition, 1))):
             with self.subTest(kind=kind):
                 with self.assertRaises(AssertionError):
                     reverse_reviewed_patch("ZerusViewModel.kt", changed,
@@ -373,14 +399,7 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
                         reverse_reviewed_patch("ZerusViewModel.kt", newer,
                                                SEND_RECEIPT_UPDATES, SEND_RECEIPT_UPDATES_SHA, SEND_RECEIPT_FILES)
                     self.assertFalse(original_source("ZerusViewModel.kt", changed))
-            newer = reverse_reviewed_patch("ZerusViewModel.kt", source,
-                                           OUTBOX_RETENTION_UPDATES, OUTBOX_RETENTION_UPDATES_SHA, OUTBOX_RETENTION_FILES)
-            hunk = reviewed_hunk(SEND_RECEIPT_UPDATES, SEND_RECEIPT_UPDATES_SHA, addition)
-            self.assertEqual(newer.count(hunk), 1)
-            with self.subTest(addition=addition[:40], kind="duplicated hunk"):
-                with self.assertRaises(AssertionError):
-                    reverse_reviewed_patch("ZerusViewModel.kt", newer.replace(hunk, hunk + hunk, 1),
-                                           SEND_RECEIPT_UPDATES, SEND_RECEIPT_UPDATES_SHA, SEND_RECEIPT_FILES)
+            self.assert_refuses_duplicated_hunk("ZerusViewModel.kt", SEND_RECEIPT_UPDATES, addition)
 
     def test_outbox_release_reason_projection_refuses_changed_missing_or_duplicate_reviewed_hunks(self):
         # The release and local-reason delta stays exact: changing, removing or
@@ -392,6 +411,7 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
         for name, addition in additions.items():
             source = (MAIN / name).read_text()
             self.assertEqual(source.count(addition), 1)
+            self.assert_refuses_duplicated_hunk(name, OUTBOX_RELEASE_REASON_UPDATES, addition)
             for replacement in (addition.rstrip("\n") + " // changed reviewed addition\n", "", addition + addition):
                 with self.subTest(source=name, replacement=replacement):
                     self.assertFalse(original_source(name, source.replace(addition, replacement, 1)))
@@ -402,6 +422,7 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
         addition = "                submitOutgoing(api, connection, target, payload, id, evidence)\n"
         source = (MAIN / "ZerusViewModel.kt").read_text()
         self.assertEqual(source.count(addition), 1)
+        self.assert_refuses_duplicated_hunk("ZerusViewModel.kt", OUTGOING_SEND_UPDATES, addition)
         for replacement in (addition.rstrip("\n") + " // changed reviewed addition\n", "", addition + addition):
             with self.subTest(replacement=replacement):
                 self.assertFalse(original_source("ZerusViewModel.kt", source.replace(addition, replacement, 1)))
@@ -421,6 +442,7 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
         source = reverse_reviewed_patch("ZerusViewModel.kt", source,
                                         OUTGOING_SEND_UPDATES, OUTGOING_SEND_UPDATES_SHA, OUTGOING_SEND_FILES)
         self.assertEqual(source.count(addition), 1)
+        self.assert_refuses_duplicated_hunk("ZerusViewModel.kt", SEND_ATTEMPT_UPDATES, addition)
         for replacement in (addition.rstrip("\n") + " // changed reviewed addition\n", "", addition + addition):
             with self.subTest(replacement=replacement):
                 with self.assertRaises(AssertionError):
@@ -435,6 +457,7 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
                 ("MainActivity.kt", "                val ids=ConversationViewport.visibleEventIds(items,start,end,readableHeight,::displayedEventId)\n")):
             source = (MAIN / name).read_text()
             self.assertEqual(source.count(addition), 1)
+            self.assert_refuses_duplicated_hunk(name, READABLE_VISIBILITY_UPDATES, addition)
             for replacement in (addition.replace("\n", " // changed reviewed addition\n", 1), "", addition + addition):
                 with self.subTest(source=name, replacement=replacement[:40]):
                     self.assertFalse(original_source(name, source.replace(addition, replacement, 1)))
@@ -449,6 +472,7 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
                 ("MainActivity.kt", "                model.visibleCurrent(target,viewport.current,viewport.flags)\n")):
             source = (MAIN / name).read_text()
             self.assertEqual(source.count(addition), 1)
+            self.assert_refuses_duplicated_hunk(name, CURRENT_READ_FLAGS_UPDATES, addition)
             for replacement in (addition.replace("\n", " // changed reviewed addition\n", 1), "", addition + addition):
                 with self.subTest(source=name, replacement=replacement[:40]):
                     self.assertFalse(original_source(name, source.replace(addition, replacement, 1)))
@@ -461,6 +485,7 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
                 ("MainActivity.kt", "                model.visibleMessages(target, viewport.ids)\n")):
             source = (MAIN / name).read_text()
             self.assertEqual(source.count(addition), 1)
+            self.assert_refuses_duplicated_hunk(name, CURRENT_READ_UPDATES, addition)
             for replacement in (addition.replace("\n", " // changed reviewed addition\n", 1), "", addition + addition):
                 with self.subTest(source=name, replacement=replacement[:40]):
                     self.assertFalse(original_source(name, source.replace(addition, replacement, 1)))
@@ -476,6 +501,7 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
             for replacement in (addition.replace("\n", " // changed reviewed addition\n", 1), "", addition + addition):
                 with self.subTest(source=name, replacement=replacement[:40]):
                     self.assertFalse(original_source(name, source.replace(addition, replacement, 1)))
+            self.assert_refuses_duplicated_hunk(name, SYNC_STATUS_UPDATES, addition.splitlines(keepends=True)[-1])
 
     def test_question_presence_projection_refuses_changed_missing_or_duplicate_reviewed_hunk(self):
         # The check-age projection stays one exact reviewed hunk: changing,
@@ -483,6 +509,7 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
         addition = "    var questionCheckedAt by mutableStateOf(0L); private set\n"
         source = (MAIN / "ZerusViewModel.kt").read_text()
         self.assertEqual(source.count(addition), 1)
+        self.assert_refuses_duplicated_hunk("ZerusViewModel.kt", QUESTION_PRESENCE_UPDATES, addition)
         for replacement in (addition.rstrip("\n") + " // changed reviewed addition\n", "", addition + addition):
             with self.subTest(replacement=replacement):
                 self.assertFalse(original_source("ZerusViewModel.kt", source.replace(addition, replacement, 1)))
@@ -493,6 +520,7 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
         addition = "    var questionProjectionComplete by mutableStateOf(true); private set\n"
         source = (MAIN / "ZerusViewModel.kt").read_text()
         self.assertEqual(source.count(addition), 1)
+        self.assert_refuses_duplicated_hunk("ZerusViewModel.kt", QUESTION_PROJECTION_COMPLETE_UPDATES, addition)
         for replacement in (addition.rstrip("\n") + " // changed reviewed addition\n", "", addition + addition):
             with self.subTest(replacement=replacement):
                 self.assertFalse(original_source("ZerusViewModel.kt", source.replace(addition, replacement, 1)))
@@ -509,6 +537,7 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
         for name, addition in additions.items():
             source = (MAIN / name).read_text()
             self.assertEqual(source.count(addition), 1)
+            self.assert_refuses_duplicated_hunk(name, VISIBLE_REFRESH_UPDATES, addition)
             for replacement in (addition.rstrip("\n") + " // changed\n", "", addition + addition):
                 with self.subTest(source=name, replacement=replacement):
                     self.assertFalse(original_source(name, source.replace(addition, replacement, 1)))
@@ -521,6 +550,7 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
         for name, addition in additions.items():
             source = (MAIN / name).read_text()
             self.assertEqual(source.count(addition), 1)
+            self.assert_refuses_duplicated_hunk(name, RECENT_ACTIVITY_UPDATES, addition)
             for replacement in (addition.rstrip("\n") + " // changed reviewed addition\n", "", addition + addition):
                 with self.subTest(source=name, replacement=replacement):
                     self.assertFalse(original_source(name, source.replace(addition, replacement, 1)))
@@ -533,6 +563,7 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
         for name, addition in additions.items():
             source = (MAIN / name).read_text()
             self.assertEqual(source.count(addition), 1)
+            self.assert_refuses_duplicated_hunk(name, PRESENTATION_UPDATES, addition)
             for replacement in (addition.rstrip("\n") + " // changed reviewed addition\n", "", addition + addition):
                 with self.subTest(source=name, replacement=replacement):
                     self.assertFalse(original_source(name, source.replace(addition, replacement, 1)))
@@ -545,6 +576,7 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
         for name, addition in additions.items():
             source = (MAIN / name).read_text()
             self.assertEqual(source.count(addition), 1)
+            self.assert_refuses_duplicated_hunk(name, DELIVERY_RECOVERY_UPDATES, addition)
             for replacement in (addition.rstrip("\n") + " // changed reviewed addition\n", "", addition + addition):
                 with self.subTest(source=name, replacement=replacement):
                     self.assertFalse(original_source(name, source.replace(addition, replacement, 1)))
@@ -586,6 +618,7 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
         for name, addition in additions.items():
             source = (MAIN / name).read_text()
             self.assertEqual(source.count(addition), 1)
+            self.assert_refuses_duplicated_hunk(name, CHILD_SESSION_UPDATES, addition)
             for replacement in (addition.rstrip("\n") + " // changed reviewed addition\n", "", addition + addition):
                 with self.subTest(source=name, replacement=replacement):
                     self.assertFalse(original_source(name, source.replace(addition, replacement, 1)))
@@ -598,6 +631,7 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
         for name, addition in additions.items():
             source = (MAIN / name).read_text()
             self.assertEqual(source.count(addition), 1)
+            self.assert_refuses_duplicated_hunk(name, TASK_TRACKER_UPDATES, addition)
             for replacement in (addition.rstrip("\n") + " // changed reviewed addition\n", "", addition + addition):
                 with self.subTest(source=name, replacement=replacement):
                     self.assertFalse(original_source(name, source.replace(addition, replacement, 1)))
@@ -614,6 +648,11 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
                 self.assertFalse(original_source("ZerusViewModel.kt", source.replace(old, new, 1)))
         main = (MAIN / "MainActivity.kt").read_text()
         self.assertFalse(original_source("MainActivity.kt", main.replace("!SharedReadPolicies.canShowReplyBadge(session)", "true", 1)))
+        for name, addition in (("ZerusViewModel.kt", "RepositoryAcquisition.statusPayload(stored,id)"),
+                               ("ZerusViewModel.kt", "        val loaded=loadedReadRows()\n"),
+                               ("ZerusViewModel.kt", "    fun openLaunch() {\n"),
+                               ("MainActivity.kt", "!SharedReadPolicies.canShowReplyBadge(session)")):
+            self.assert_refuses_duplicated_hunk(name, UPDATES, addition)
 
     def test_workspace_projection_refuses_changed_missing_or_duplicate_reviewed_hunks(self):
         model = (MAIN / "ZerusViewModel.kt").read_text()
@@ -624,6 +663,7 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
                 "                        AppTelemetry.encryptedWorkspaceReady(getApplication(),connection)\n",
                 "                        WorkspaceCatalogCache.preserve(connection,computers,\n",
                 "                sessions = preparedSessions; machines = newMachines.map { MachineNames.apply(it,messageState.machineAliases) }; machineOperations = newOperations; machineFeatures = newFeatures\n"):
+            self.assert_refuses_duplicated_hunk("ZerusViewModel.kt", WORKSPACE_UPDATES, addition)
             for changed in (addition.rstrip("\n") + " // changed reviewed addition\n", "", addition + addition):
                 with self.subTest(addition=addition, replacement=changed):
                     self.assertIn(addition, model)
@@ -632,6 +672,7 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
         main = (MAIN / "MainActivity.kt").read_text()
         for addition in ("Messages are encrypted between enrolled devices.",
                          "This erases this phone's connection keys."):
+            self.assert_refuses_duplicated_hunk("MainActivity.kt", WORKSPACE_UPDATES, addition)
             for changed in ("Changed reviewed text.", "", addition + addition):
                 with self.subTest(addition=addition, replacement=changed):
                     self.assertIn(addition, main)
