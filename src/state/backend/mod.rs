@@ -31,6 +31,36 @@ use crate::cli::{Error, Result as CliResult};
 const UNSUPPORTED: &str = crate::platform::LOCAL_SESSIONS_UNSUPPORTED;
 /// What `hgs a --existing --run-id` reports when the session runs another run.
 pub(crate) const RUN_CHANGED: &str = "session run changed; refresh before reconnecting";
+/// Variables an agent sets for the commands it runs (zerus-01sz8). They name
+/// that agent's own session, process or tool call, or switch its command
+/// terminal to plain text. A launch from such a command must not pass them on:
+/// tmux keeps the environment of the client that starts its server for every
+/// pane, so they reached every agent started afterwards. Claude Code's list of
+/// its own (`CLAUDECODE` through `TRACEPARENT`), its messaging channel and
+/// entry point, Codex's thread and tool call, and the native session IDs of
+/// DeepSeek and OpenCode, which `hgs self` reads as a claim. `NO_COLOR` makes
+/// Claude Code draw its prompt placeholder and caret without the styles that
+/// tell them from a draft, so `hgs send` refuses every message while one shows.
+pub(crate) const AGENT_COMMAND_CONTEXT: &[&str] = &[
+    "CLAUDECODE",
+    "AI_AGENT",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_INVOKED_SKILLS",
+    "CLAUDE_PID",
+    "CLAUDE_EFFORT",
+    "TRACEPARENT",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CODEX_THREAD_ID",
+    "CODEX_TOOL_CALL_ID",
+    "DSH_SESSION_ID",
+    "OPENCODE_SESSION_ID",
+    "NO_COLOR",
+];
 
 /// User-visible text that names the session terminal. Where tmux hosts the
 /// sessions (Unix) it keeps tmux's words byte for byte; on Windows it says the
