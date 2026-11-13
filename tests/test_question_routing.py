@@ -180,7 +180,7 @@ class QuestionRouting(unittest.TestCase):
         self.assertIn('ssh', forwarded.stdout)
         code, changed = self.change(False, 0, env=person)
         self.assertEqual(code, 0, changed)
-        self.assertEqual(changed['question_routing'], {'send_to_parent': False, 'revision': 1})
+        self.assertEqual(changed['question_routing'], {'send_to_parent': False, 'revision': 1, 'person_off': False})
 
     def test_the_private_state_entry_refuses_an_agent_too(self):
         # Hooks' private `hgs __state` entry reaches question routing without
@@ -206,7 +206,7 @@ class QuestionRouting(unittest.TestCase):
                 self.assertEqual(self.stored(), before)
         person = private(self.env)
         self.assertEqual(person.returncode, 0, person.stderr)
-        self.assertEqual(json.loads(person.stdout)['question_routing'], {'send_to_parent': False, 'revision': 1})
+        self.assertEqual(json.loads(person.stdout)['question_routing'], {'send_to_parent': False, 'revision': 1, 'person_off': False})
 
     def test_the_gui_and_the_connector_are_not_agents(self):
         # Their hgs runs outside any agent's process tree. A shell that
