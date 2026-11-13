@@ -497,7 +497,11 @@ impl Service {
     }
     /// The person's latch on one child's question route (zerus-sa9qn.50).
     pub async fn question_route_child(self: &Arc<Self>, request: Request) -> Value {
-        submit(self.shared.clone(), Input::QuestionRouteChild(Box::new(request))).await
+        submit(
+            self.shared.clone(),
+            Input::QuestionRouteChild(Box::new(request)),
+        )
+        .await
     }
     pub async fn maintenance_configure(
         self: &Arc<Self>,
