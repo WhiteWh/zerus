@@ -4173,6 +4173,12 @@ class Archive(Harness):
         self.assertInspectionEqual(self.archive_info(name, archive_id), without_history)
         expected = json.loads(json.dumps(before))
         expected["processes"]["notes"] = without_history["processes"]["notes"]
+        # #2162 / zerus-wyrqg: a missing saved conversation also removes the
+        # Restore offer. Failed actions still leave the archive unchanged.
+        self.assertIn("restore", expected["allowed_actions"])
+        expected["allowed_actions"].remove("restore")
+        expected["action_reasons"]["restore"] = (
+            "This session ended before its first message, so it saved no conversation to restore")
         self.assertInspectionEqual(without_history, expected)
         self.assertFalse(self.binding(name))
 
