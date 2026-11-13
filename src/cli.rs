@@ -842,17 +842,24 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
             return Ok(1);
         }
     }
-    // An unmarked send under a recorded DeepSeek host is not the person's: a
-    // live target would receive it without a sender. Refuse it here, before
-    // any reference hop or `@host` forwarding (zerus-ppd26.19). Only a host
-    // actually found refuses: an unverifiable check, such as a sandboxed
-    // agent's sender-less send, keeps working as before.
-    let marked = ["HGS_SESSION", "HGS_RUN_ID"]
-        .iter()
-        .all(|name| env::var(name).is_ok_and(|value| !value.is_empty()));
-    if matches!(routed, Some("send" | "send-now")) && !marked {
+    // A send under a recorded DeepSeek host that is actually found is the
+    // host's own hosted call only when the host bridge's call marker and its
+    // own complete session token pair are there. A marked call without that
+    // proof (for example an older host's inherited markers), partial markers,
+    // or no markers would reach a live target without a sender. Refuse it
+    // here, before any reference hop or `@host` forwarding (zerus-ppd26.22).
+    // Only a host actually found refuses: an unverifiable check, such as a
+    // sandboxed agent's sender-less send, keeps working as before.
+    if matches!(routed, Some("send" | "send-now")) {
+        let proven_hosted = crate::state::session_graph::hosted_agent_call()
+            && ["HGS_SESSION", "HGS_RUN_ID"]
+                .iter()
+                .all(|name| env::var(name).is_ok_and(|value| !value.is_empty()));
         let check = crate::state::dsh::host_check();
-        if check == crate::state::dsh::HostCheck::Under {
+        if check == crate::state::dsh::HostCheck::Under
+            && state::session_graph::send_origin().is_none()
+            && !proven_hosted
+        {
             return Err(Error::new(1, check.sentence().unwrap_or_default()));
         }
     }
