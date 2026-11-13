@@ -197,6 +197,8 @@ pub(super) fn read(_pid: u32) -> Option<Vec<Vec<u8>>> {
     None
 }
 
+/// Linux's NUL-separated vector; the macOS reader parses argc instead.
+#[cfg(any(target_os = "linux", test))]
 fn tokens(bytes: &[u8]) -> Vec<Vec<u8>> {
     bytes
         .split(|byte| *byte == 0)
