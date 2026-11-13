@@ -14,7 +14,8 @@ original_review_fixture = _focus_projection.original_review_fixture
 # Fixture pin includes one-time post-resume live-label preparation; the approval harness retains exact 95ef by reverse projection.
 MAIN = ROOT / "mobile/android/app/src/main/java/app/zerus/mobile"
 # Keep the reviewed 9b217ddd/b9c1e29c reconstruction pins unchanged. The exact
-# fixtures first reverse the outbox-retention and send-receipt additions, then
+# fixtures first reverse question-routing Activity and person-latch additions,
+# then the outbox-retention and send-receipt additions, then
 # the send-entry and transport-evidence additions, then
 # presentation, delivery recovery, recent-Activity, child-session and
 # visible-refresh additions, then the reviewed task-tracker additions to 86aeab6d, then
@@ -155,6 +156,16 @@ SEND_RECEIPT_FILES = ("ZerusViewModel.kt",)
 OUTBOX_RETENTION_UPDATES = ROOT / "tests/fixtures/question-availability-outbox-retention-updates.patch"
 OUTBOX_RETENTION_UPDATES_SHA = "fcf4a926f61bfb059fd4bf1efbcd934dd76b4d6a85ef11ccaed0f0bc3618bebc"
 OUTBOX_RETENTION_FILES = ("ZerusViewModel.kt",)
+# Exact one-file merged delta of #2138 / zerus-sa9qn.33 (14a4d85f7). Reverse newest first;
+# all original question policy, verification-writer and reconstruction pins stay exact.
+QUESTION_ROUTE_ACTIVITY_UPDATES = ROOT / "tests/fixtures/question-availability-question-route-activity-updates.patch"
+QUESTION_ROUTE_ACTIVITY_UPDATES_SHA = "a091ff96ae99ff65c6a646bd437161009e4833c79a18c7108c37139d288c1e32"
+QUESTION_ROUTE_ACTIVITY_FILES = ("ZerusViewModel.kt",)
+# Exact one-file merged delta of #2148 / zerus-sa9qn.50 (8508b5b9c). Reverse newest first;
+# all original question policy, verification-writer and reconstruction pins stay exact.
+QUESTION_ROUTE_PERSON_UPDATES = ROOT / "tests/fixtures/question-availability-question-route-person-updates.patch"
+QUESTION_ROUTE_PERSON_UPDATES_SHA = "ae38ac771fedaae89acc2df2dee19fc331b4d9c3c98c4eda531b40dedb40da23"
+QUESTION_ROUTE_PERSON_FILES = ("ZerusViewModel.kt",)
 WORKSPACE_BASE_SHA = {
     "ZerusViewModel.kt": "5932d92ca74ccf37da9595a580bcb1457c93c83951976606c8defa8d1ee83326",
     "MainActivity.kt": "f68902349d1e0ac939582e9e139548663f5763c430a3c566f8823d9f045645f0",
@@ -163,6 +174,8 @@ BOTH_FILES = ("ZerusViewModel.kt", "MainActivity.kt")
 # Every reviewed update, newest first: reverse_reviewed_updates reverses them in
 # this order, and each fixture's duplicated-hunk check reverses the newer ones.
 REVIEWED_CHAIN = (
+    (QUESTION_ROUTE_PERSON_UPDATES, QUESTION_ROUTE_PERSON_UPDATES_SHA, QUESTION_ROUTE_PERSON_FILES),
+    (QUESTION_ROUTE_ACTIVITY_UPDATES, QUESTION_ROUTE_ACTIVITY_UPDATES_SHA, QUESTION_ROUTE_ACTIVITY_FILES),
     (OUTBOX_RETENTION_UPDATES, OUTBOX_RETENTION_UPDATES_SHA, OUTBOX_RETENTION_FILES),
     (SEND_RECEIPT_UPDATES, SEND_RECEIPT_UPDATES_SHA, SEND_RECEIPT_FILES),
     (READABLE_VISIBILITY_UPDATES, READABLE_VISIBILITY_UPDATES_SHA, READABLE_VISIBILITY_FILES),
@@ -295,6 +308,12 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
         for name, digest in WORKSPACE_BASE_SHA.items():
             with self.subTest(source=name):
                 current = reverse_reviewed_patch(name, (MAIN / name).read_text(),
+                                                QUESTION_ROUTE_PERSON_UPDATES, QUESTION_ROUTE_PERSON_UPDATES_SHA,
+                                                QUESTION_ROUTE_PERSON_FILES)
+                current = reverse_reviewed_patch(name, current,
+                                                QUESTION_ROUTE_ACTIVITY_UPDATES, QUESTION_ROUTE_ACTIVITY_UPDATES_SHA,
+                                                QUESTION_ROUTE_ACTIVITY_FILES)
+                current = reverse_reviewed_patch(name, current,
                                                 OUTBOX_RETENTION_UPDATES, OUTBOX_RETENTION_UPDATES_SHA,
                                                 OUTBOX_RETENTION_FILES)
                 current = reverse_reviewed_patch(name, current,
@@ -361,6 +380,28 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
                            "online && model.activityVerified && !model.contextBlocked(target)"):
             self.assertIn(expression, main)
             self.assertFalse(original_source("MainActivity.kt", main.replace(expression, "true", 1)))
+
+    def test_question_route_projections_refuse_changed_missing_or_duplicate_reviewed_hunks(self):
+        # Each merged routing delta is its own exact fixture. Reverse newer
+        # deltas before testing that fixture; a duplicate whole hunk refuses.
+        for fixture, addition in (
+                (QUESTION_ROUTE_ACTIVITY_UPDATES,
+                 "        if(action.operation == SessionQuestionRouting.operation) refresh(explicit=true)\n"),
+                (QUESTION_ROUTE_PERSON_UPDATES,
+                 "                    else if(operation == SessionQuestionRouting.personOperation) api.signRoutePerson(connection,target.computerId,arguments.getString(\"session_id\"),\n")):
+            at = [entry[0] for entry in REVIEWED_CHAIN].index(fixture)
+            source = (MAIN / "ZerusViewModel.kt").read_text()
+            for newer, newer_sha, newer_files in REVIEWED_CHAIN[:at]:
+                source = reverse_reviewed_patch("ZerusViewModel.kt", source, newer, newer_sha, newer_files)
+            _, fixture_sha, files = REVIEWED_CHAIN[at]
+            self.assertEqual(source.count(addition), 1)
+            self.assert_refuses_duplicated_hunk("ZerusViewModel.kt", fixture, addition)
+            for kind, replacement in (("changed", addition.rstrip("\n") + " // changed reviewed addition\n"),
+                                      ("missing", ""), ("duplicated line", addition + addition)):
+                with self.subTest(fixture=fixture.name, kind=kind):
+                    with self.assertRaises(AssertionError):
+                        reverse_reviewed_patch("ZerusViewModel.kt", source.replace(addition, replacement, 1),
+                                               fixture, fixture_sha, files)
 
     def test_outbox_retention_projection_refuses_changed_missing_or_duplicate_reviewed_hunks(self):
         # The #2118 retention delta stays an exact hunk: changing, removing or
