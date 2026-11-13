@@ -70,7 +70,7 @@ export function createEndActions(port: EndPort, notices: NoticeBus, uuid: () => 
     const key = options.key ?? (captures.length === 1 ? sessionNoticeKey(captures[0].target.computer, captures[0].target.name) : `end-batch:${id}`);
     const reportError = (error: unknown) => {
       const changed = String(error) === "The session state changed. Open its actions again.";
-      notices.notify(changed ? "info" : "error", changed ? tr(cancelled[verb][1]) : String(error), !changed, key);
+      notices.notify(changed ? "info" : "error", changed ? tr(cancelled[verb][1]) : tr(String(error)), !changed, key);
     };
     const [seconds, setSeconds] = createSignal(UNDO_MS / 1000);
     const [note, setNote] = createSignal("");
@@ -103,7 +103,7 @@ export function createEndActions(port: EndPort, notices: NoticeBus, uuid: () => 
       if (options.current) createRoot((d) => { dispose = d; createComputed(() => { if (!options.current!()) cancel(true); }); });
       const ready = await port.wait(id);
       if (!active) return;
-      if (!ready || closed) { finish(); return; }
+      if (!ready || closed) { finish(); await port.cancel(id).catch(() => {}); return; }
       if (options.current && !options.current()) { cancel(true); return; }
       finish(); // Release presentation busy only; native claims still exclude other writers.
       const progress = notices.notify("info", names, true, key,
