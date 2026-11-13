@@ -2199,7 +2199,7 @@ activating the agent's backslash-Enter line continuation. This is verified
 against native history; no second Enter is sent as an automatic retry.
 On Unix, a public send to an existing-ID Claude, Codex or Kimi session can apply
 one exact scheduled Settings change before its message. The same custodian keeps
-the original Root and SID exclusions and the original 15-second deadline across
+the original Root and SID exclusions and one original 25-second deadline across
 both steps. This path keeps the normal 64 KiB text limit and admits at most one attachment
 with at most 1 MiB decoded data. These exact count and byte decisions precede
 selection, receipts and terminal input; larger attachment requests use their
@@ -2219,6 +2219,14 @@ buffer discard after Stage physically settles, within two seconds of the
 original deadline. If Stage remains unsettled beyond that lease, cleanup is
 uncertain and its buffer may remain; original custody lasts until its helpers
 physically settle. This narrow path does not enable general native continuity.
+The deadline is minted once before the keeper handoff; nested Settings borrows
+it. Standalone Settings and Effort retain their 15-second keeper budgets.
+The desktop waits up to 30 seconds for a local Send and 45 seconds for a peer.
+The longer local caller lifetime also applies to ordinary and legacy local
+sends; their command arguments, input, routing and native checks are unchanged.
+The composer keeps its single-send guard until the original call settles.
+A connector operator's `subprocess_timeout` below about 27 seconds would cut
+a pending-Settings Send short; the connector default remains unchanged.
 Codex messages ending in an `@mention` likewise include a final pasted newline
 to move the cursor outside file/mention completion before the single Enter.
 Codex trims that newline on submission; the message and receipt retain the

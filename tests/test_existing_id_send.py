@@ -108,6 +108,11 @@ if args[:1]==['delete-buffer']:
  with (root/'send-cleanup-results.jsonl').open('a') as out:out.write(json.dumps(dict(args=args,returncode=completed.returncode,stderr=completed.stderr.decode()))+'\n')
  result=completed.returncode
 else:result=subprocess.call([REAL_TMUX,'-S',str(root/'socket'),'-f','/dev/null',*args])
+if os.environ.get('SETTINGS_HOLD_READ')=='1' and args[:1]==['capture-pane'] and not (root/'settings-read-held').exists():
+ (root/'settings-read-held').touch()
+ # Retain the original pipe independently of the cancellable helper process.
+ if os.fork()==0:
+  peer=socket.socket(socket.AF_UNIX);peer.connect(str(root/'held-pipes.sock'));peer.sendall(b'ready');assert peer.recv(1)==b'';peer.close();os._exit(0)
 if os.environ.get('SEND_HOLD_NATIVE')=='1' and args[:1]==['list-panes'] and not (root/'hold-fired').exists():
  (root/'hold-fired').touch();peer=socket.socket(socket.AF_UNIX);peer.connect(str(root/'auto-apply.sock'));peer.sendall(b'ready');assert peer.recv(1)==b'';peer.close()
 if os.environ.get('SEND_INDEX_STAGE_LOCK')=='1' and args[:1]==['load-buffer']:
@@ -166,7 +171,7 @@ raise SystemExit(result)
             args = ['--session-id', self.record['session_id']] if selector == 'client-state' else []
         return subprocess.run([str(test_input.HGS), *prefix, 'send', name, *args, '--json'],
                               input=self.raw if raw is None else raw, env=self.case.env,
-                              text=True, capture_output=True, timeout=20)
+                              text=True, capture_output=True, timeout=30)
 
     def start(self, command, payload, env=None):
         child = subprocess.Popen(command, env=self.case.env if env is None else env, stdin=subprocess.PIPE,
@@ -795,15 +800,18 @@ raise SystemExit(result)
         listener.bind(str(self.case.root / 'held-pipes.sock'))
         listener.listen(1)
         listener.settimeout(12)
+        started = time.monotonic()
         sender = self.start([str(test_input.HGS), 'send', self.case.name, '--json'], self.raw,
                             env=dict(self.case.env, SEND_FAULT=fault))
         peer, _ = listener.accept()
         self.addCleanup(peer.close)
         self.assertEqual(peer.recv(5), b'ready')
-        # The frontend's original 15 s expires, independently of the physical
+        # The frontend's original 25 s expires, independently of the physical
         # exchange. Wait through the fixed cleanup tail while keeping its pipes.
-        stdout, stderr = sender.communicate(timeout=20)
+        stdout, stderr = sender.communicate(timeout=30)
         self.assertNotEqual(sender.returncode, 0)
+        self.assertGreaterEqual(time.monotonic() - started, 24, 'the original Send budget expired early')
+        self.assertLess(time.monotonic() - started, 27, 'the original Send budget was renewed')
         self.assertEqual(stderr.lower().count('delivery uncertain'), 1, stderr)
         time.sleep(2.2)
         lock = (self.case.state / '.lock').open('r+b')
@@ -842,6 +850,50 @@ raise SystemExit(result)
         self.case.wait_for(released)
         fcntl.flock(lock, fcntl.LOCK_UN)
         self.assertEqual([row['args'] for row in self.rows() if row['args'][0] == 'delete-buffer'], discards)
+        before_replay = self.rows()
+        replay = self.call()
+        self.assertNotEqual(replay.returncode, 0, replay.stdout)
+        self.assertEqual(self.rows(), before_replay, 'an expired Send replayed a key or paste')
+        self.assertEqual(json.loads(self.receipt_path.read_bytes())['status'], 'in_progress')
+
+    def test_standalone_settings_keeps_its_original_15_second_budget(self):
+        import fcntl
+        import socket
+        self.record.pop('pending_settings')
+        self.case.write_record()
+        listener = socket.socket(socket.AF_UNIX)
+        self.addCleanup(listener.close)
+        listener.bind(str(self.case.root / 'held-pipes.sock'))
+        listener.listen(1)
+        listener.settimeout(12)
+        request = dict(request_id=str(uuid.uuid4()), expected_run_id=self.case.run_id,
+                       expected_conversation_id=self.case.conversation_id,
+                       model='gpt-6-sol', effort='low')
+        started = time.monotonic()
+        sender = self.start([str(test_input.HGS), 'settings', self.case.name, '--json'],
+                            json.dumps(request), env=dict(self.case.env, SETTINGS_HOLD_READ='1'))
+        peer, _ = listener.accept()
+        self.addCleanup(peer.close)
+        self.assertEqual(peer.recv(5), b'ready')
+        stdout, stderr = sender.communicate(timeout=20)
+        self.assertNotEqual(sender.returncode, 0, stdout)
+        self.assertGreaterEqual(time.monotonic() - started, 14, stderr)
+        self.assertLess(time.monotonic() - started, 18, stderr)
+        self.assertEqual(self.rows(), [], 'standalone Settings delivered a key after expiry')
+        lock = (self.case.state / '.lock').open('r+b')
+        self.addCleanup(lock.close)
+        with self.assertRaises(BlockingIOError):
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        peer.close()
+        def released():
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return True
+            except BlockingIOError:
+                return False
+        self.case.wait_for(released)
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        self.assertEqual(self.rows(), [])
 
     def test_unsettled_stage_keeps_root_and_skips_discard_after_cleanup_lease(self):
         self.held_pipe_cleanup('stage-held')

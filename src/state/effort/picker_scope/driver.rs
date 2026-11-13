@@ -136,7 +136,7 @@ fn front_operation(
             operation,
             raw.to_vec(),
             &selector,
-            host::frame::Deadline::after(Duration::from_secs(15))?,
+            host::frame::Deadline::after(operation_budget(operation))?,
         )?;
         let bytes = host::request(frame)?;
         println!("{}", String::from_utf8_lossy(&bytes));
