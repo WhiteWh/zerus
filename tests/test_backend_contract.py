@@ -838,6 +838,46 @@ class Sessions(Contract):
         self.hgs("pause", name)
         self.assertEqual(self.sessions()[name]["parent"]["session_id"], lead_id)
 
+    def test_a_launch_from_an_agent_command_passes_none_of_its_context_on(self):
+        # zerus-01sz8: an agent's command carries that agent's session markers and its
+        # plain-text switch. tmux kept the environment of the client that started its
+        # server for every later pane, so NO_COLOR made Claude Code draw its prompt
+        # placeholder without styles, and hgs send refused it as a draft.
+        context = {"NO_COLOR": "1", "CLAUDECODE": "1", "AI_AGENT": "claude-code_test_agent",
+                   # Above Linux's largest PID: never an ancestor, so no caller check matches it.
+                   "CLAUDE_CODE_SESSION_ID": str(uuid.uuid4()), "CLAUDE_PID": "4194305",
+                   "CLAUDE_CODE_MESSAGING_SOCKET": str(self.root / "cc.sock"),
+                   "CODEX_THREAD_ID": str(uuid.uuid4()), "DSH_SESSION_ID": "session-" + str(uuid.uuid4())}
+        kept = {"ZERUS_TEST_KEPT": "1"}
+
+        def environment(pid):
+            raw = Path(f"/proc/{pid}/environ").read_bytes()
+            return dict(entry.split("=", 1) for entry in raw.decode("utf-8", "replace").split("\0") if "=" in entry)
+
+        def assert_agent_clean(agent):
+            if not sys.platform.startswith("linux"):
+                return  # Only Linux shows another process's environment.
+            seen = environment(agent["pid"])
+            self.assertEqual({key: seen[key] for key in context if key in seen}, {})
+            self.assertEqual(seen.get("ZERUS_TEST_KEPT"), "1")
+
+        # A launch run by an agent's command, which may start the terminal server.
+        self.env.update(context, **kept)
+        _, _, agent = self.launch("from-agent")
+        assert_agent_clean(agent)
+        if BACKEND == "tmux":
+            listing = self.backend.command("show-environment", "-g").stdout.splitlines()
+            server = {line.split("=", 1)[0] for line in listing if "=" in line}
+            self.assertEqual(server & set(context), set())
+        # A server that already holds them, started by something else: the agent still starts without them.
+        for key in context:
+            self.env.pop(key)
+        if BACKEND == "tmux":
+            for key, value in context.items():
+                self.assertEqual(self.backend.command("set-environment", "-g", key, value).returncode, 0)
+        _, _, later = self.launch("later")
+        assert_agent_clean(later)
+
     def test_a_launch_records_a_parent_another_computer_forwarded(self):
         # zerus-sa9qn.7: the peer side of a remote launch. The link names another
         # computer, so this computer lists the parent as missing: never supervised.

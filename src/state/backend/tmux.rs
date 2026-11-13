@@ -69,14 +69,30 @@ fn starting<T>(
 ) -> T {
     #[cfg(target_os = "linux")]
     if let Some(scope) = scope::Scope::new(|| Tmux.server_running()) {
-        let result = run(&mut scope.command(args));
+        let result = run(without_session_context(&mut scope.command(args)));
         if scope.started() || !rerun(&result) {
             return result;
         }
     }
     #[cfg(not(target_os = "linux"))]
     let _ = rerun;
-    run(Command::new("tmux").args(args))
+    run(without_session_context(Command::new("tmux").args(args)))
+}
+
+/// A server keeps the environment of the client that started it as the
+/// global environment of every pane, so a command that may start one leaves
+/// out the session and agent it runs in (zerus-01sz8): a launch sets again
+/// what its own session needs. `TMUX` stays, as it selects the server. A
+/// running server takes none of these from a `new-session` client.
+fn without_session_context(command: &mut Command) -> &mut Command {
+    for name in super::host::SESSION_CONTEXT
+        .iter()
+        .chain(super::AGENT_COMMAND_CONTEXT)
+        .filter(|name| **name != "TMUX")
+    {
+        command.env_remove(name);
+    }
+    command
 }
 
 fn checked(output: io::Result<Output>, check: bool) -> Result<Output> {
