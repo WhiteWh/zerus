@@ -4,6 +4,18 @@ import sys, os, json
 __file__ = FIXTURE_SOURCE
 from pathlib import Path
 root = Path(__file__).absolute().parent
+def retain_output():
+    import time
+    parent = os.getpid()
+    if os.fork() == 0:
+        (root / 'termination-pipe-holder').write_text(json.dumps(dict(
+            parent=parent, pid=os.getpid(), stdout=os.readlink('/proc/self/fd/1'),
+            stderr=os.readlink('/proc/self/fd/2'))))
+        until = time.monotonic() + 20
+        while not (root / 'termination-release').exists() and time.monotonic() < until:
+            time.sleep(.005)
+        (root / 'termination-holder-exited').touch()
+        os._exit(0)
 # Only transport-enabled component controls use this prefix. Actual CLI
 # dispatch/prefix/timeout behavior is tested through the real hgs binary.
 if sys.argv[1:2] == ['--desktop-helper-rendezvous-v1']:
@@ -60,6 +72,8 @@ elif args[:1] in [['inspect'], ['session-action']] or args[:2] in [['desktop', '
     def digest(value):
         return hashlib.sha256(json.dumps(value, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
     if args[:1] == ['inspect']:
+        if config.get('termination_inspect_pipe'):
+            retain_output()
         if offer_case == 'inspect_exit':
             print('private fixture stderr must not reach a diagnostic', file=sys.stderr)
             sys.exit(7)
@@ -85,11 +99,8 @@ elif args[:1] in [['inspect'], ['session-action']] or args[:2] in [['desktop', '
         if config.get('termination_effect_wait'):
             time.sleep(31)
         if config.get('termination_effect_oversize'):
-            if config.get('termination_effect_oversize_pipe') and os.fork() == 0:
-                until = time.monotonic() + 20
-                while not (root / 'termination-release').exists() and time.monotonic() < until:
-                    time.sleep(.005)
-                os._exit(0)
+            if config.get('termination_effect_oversize_pipe'):
+                retain_output()
             sys.stdout.write('x' * 65537)
             sys.stdout.flush()
             sys.exit(0)
@@ -132,11 +143,7 @@ elif args[:1] in [['inspect'], ['session-action']] or args[:2] in [['desktop', '
         if config.get('termination_rpc_lost'):
             sys.exit(1)
         if config.get('termination_pipe'):
-            if os.fork() == 0:
-                until = time.monotonic() + 20
-                while not (root / 'termination-release').exists() and time.monotonic() < until:
-                    time.sleep(.005)
-                os._exit(0)
+            retain_output()
         print(json.dumps(dict(op='termination_outcome', request_id=intent['request_id'], accepted=True, durable=True,
             phase='retained', status=retained, cleanup_authorized=False)), flush=True)
     sys.exit(0)
