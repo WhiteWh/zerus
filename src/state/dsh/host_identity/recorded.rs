@@ -33,8 +33,14 @@
 //! every record atomically (a synced temporary file renamed into place, then
 //! the folder synced), so a crash leaves the previous record or the new one.
 //!
-//! The records are read first: with none recorded there is no host to find,
-//! so the walk does not run and nothing it would refuse applies.
+//! The records are read first: they name a host by process ID, birth and
+//! session mapping. A command's ancestor is also recognized as a live host by
+//! its own command line (zerus-ppd26.21, [`super::argv`]): the writer's exact
+//! `dsh` arguments, with the patch path under this state's `dsh/hosts`, are
+//! evidence a descendant cannot remove from its ancestor. With no record the
+//! walk still looks for that line, but its refusals are not adopted: a
+//! computer that records no host keeps its previous answers. With records the
+//! walk's refusals stand as before.
 //!
 //! The walk is Agent Teams' ancestry rule without its environment reads: from
 //! the command up through processes of the same effective user, at most
@@ -161,36 +167,84 @@ impl Refusal {
 /// The refusal for a command under a recorded DeepSeek host.
 pub(crate) const UNDER_HOST: &str = "This command runs under a DeepSeek agent host, so it can act only as that host's own hosted session, never as another agent's session or as the person.";
 
-/// The recorded DeepSeek host that is an ancestor of this process, `None`
-/// only when the whole walk and every record were read and none is.
+/// The DeepSeek host that is an ancestor of this process, by its record or by
+/// its own command line; `None` only when the whole walk was read and neither
+/// names a host.
 pub(crate) fn hosted_ancestor() -> Result<Option<Host>, Refusal> {
+    let state = crate::state::storage::root();
     decide(
         recorded_hosts,
         || walk(std::process::id(), inspect),
+        |chain| host_by_process(chain, &state, super::argv::read),
         |chain| unchanged(chain, inspect),
     )
 }
 
 /// The records first (zerus-ppd26.18): a computer or account that records no
-/// DeepSeek host is never affected by the walk, so a person in a sandboxed
-/// terminal (a PID namespace of their own) or with a /proc that hides
-/// root's processes is not refused. With records, the walk, the match and,
-/// when no host matched, the chain read again.
+/// DeepSeek host is never refused by the walk, so a person in a sandboxed
+/// terminal (a PID namespace of their own) or with a /proc that hides root's
+/// processes keeps the previous answer. With no record the walk still runs to
+/// look for a live host by its own command line (zerus-ppd26.21), and an
+/// unreadable or changing chain is no evidence either way. With records, the
+/// walk's refusals stand, the host is matched by record or command line and,
+/// when neither matched, the chain is read again.
 pub(super) fn decide(
     records: impl FnOnce() -> Result<Vec<Recorded>, Refusal>,
     walk: impl FnOnce() -> Result<Vec<Ancestor>, Refusal>,
+    process: impl FnOnce(&[Ancestor]) -> Option<Host>,
     recheck: impl FnOnce(&[Ancestor]) -> Result<(), Refusal>,
 ) -> Result<Option<Host>, Refusal> {
-    let hosts = records()?;
+    let hosts = match records() {
+        Ok(hosts) => hosts,
+        Err(refusal) => {
+            // An unreadable record is not the only evidence: a live host
+            // above the command still proves it, and otherwise the record's
+            // own refusal stands. The walk's refusals stay unadopted here.
+            return match walk() {
+                Ok(chain) => match process(&chain) {
+                    Some(host) => Ok(Some(host)),
+                    None => Err(refusal),
+                },
+                Err(_) => Err(refusal),
+            };
+        }
+    };
     if hosts.is_empty() {
-        return Ok(None);
+        return Ok(walk().ok().and_then(|chain| process(&chain)));
     }
     let chain = walk()?;
     let found = hosted(&chain, &hosts)?;
     if found.is_none() {
+        if let Some(host) = process(&chain) {
+            return Ok(Some(host));
+        }
         recheck(&chain)?;
     }
     Ok(found)
+}
+
+/// A live host among the same-user ancestors, recognized by its own argument
+/// vector; an unreadable vector is not evidence either way and the walk keeps
+/// looking above it.
+pub(super) fn host_by_process(
+    chain: &[Ancestor],
+    state: &Path,
+    mut read: impl FnMut(u32) -> Option<Vec<Vec<u8>>>,
+) -> Option<Host> {
+    // Every chain entry is a process of this user; the first process of
+    // another user is what ended the walk and is not on the chain.
+    for ancestor in chain {
+        let Some(tokens) = read(ancestor.pid) else {
+            continue;
+        };
+        if super::argv::host(&tokens, state) {
+            return ancestor.identity.birth.clone().map(|birth| Host {
+                pid: ancestor.pid,
+                birth,
+            });
+        }
+    }
+    None
 }
 
 /// The recorded DeepSeek hosts of this computer, read within their bounds.

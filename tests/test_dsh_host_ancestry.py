@@ -302,5 +302,93 @@ class UnderARecordedHost(unittest.TestCase):
         self.assertEqual(hosted.returncode, 0, hosted.stderr)
 
 
+
+@unittest.skipUnless(sys.platform == 'linux', 'Linux /proc cmdlines and births for a live stand-in host')
+class UnderALiveHostByItsCommandLine(unittest.TestCase):
+    """zerus-ppd26.21: a live host's own argument vector proves it even after
+    its records and its folder are gone; another state root's similar host
+    command line is not this computer's host. The stand-in is started with the
+    exact argv hgs builds (state/dsh.rs's host_command); no real DeepSeek host
+    is started or touched."""
+
+    ID = hashlib.sha256(b'/agent/home').hexdigest()[:16]
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='zerus-host-argv-',
+                                                dir=os.environ.get('ZERUS_TEST_SHORT_TMPDIR'))
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        for name in ('state', 'config', 'home', 'tmux', 'ws'):
+            (self.root / name).mkdir(mode=0o700)
+        self.state = self.root / 'state'
+        self.env = {k: v for k, v in os.environ.items()
+                    if not k.startswith(('HGS_', 'ZERUS_', 'TMUX', 'CLAUDE'))}
+        self.env.update(HOME=str(self.root / 'home'), HGS_CONFIG_DIR=str(self.root / 'config'),
+                        HGS_STATE_DIR=str(self.state), TMUX_TMPDIR=str(self.root / 'tmux'),
+                        HGS_PEERS='', HGS_SELF='test')
+        self.claim = dict(self.env, HGS_SESSION='claude/example/lead', HGS_RUN_ID='run-lead')
+        self.hosts = []
+        self.addCleanup(self.stop_hosts)
+
+    def stop_hosts(self):
+        for host in self.hosts:
+            try:
+                host.stdin.close()
+            except (BrokenPipeError, ValueError):
+                pass
+            host.wait(timeout=10)
+            host.stdout.close()
+
+    def start(self, state):
+        folder = Path(state) / 'dsh/hosts' / self.ID
+        folder.mkdir(parents=True, mode=0o700)
+        patch = folder / 'hgs.patch.json'
+        patch.write_text('[]')
+        host = subprocess.Popen(
+            [sys.executable, '-I', '-c', HOST, '--profile', 'hgs', '--patch', str(patch),
+             '--no-open', '--host', '127.0.0.1', '--port', '0'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.hosts.append(host)
+        return host, folder
+
+    def hosted_self(self, host):
+        host.stdin.write(json.dumps({'argv': [str(HGS), 'self', '--json'], 'env': self.claim,
+                                     'input': None, 'cwd': str(self.root / 'ws')}) + '\n')
+        host.stdin.flush()
+        reply = json.loads(host.stdout.readline())
+        return Result(reply['code'], reply['stdout'], reply['stderr'])
+
+    def record(self, host, folder):
+        (folder / 'host.identity.json').write_text(json.dumps(
+            {'state': 'running', 'version': 1, 'pid': host.pid, 'birth': birth(host.pid),
+             'pid_file': [0, 0, 0, 0]}))
+        (folder / 'host.pid').write_text(str(host.pid))
+
+    def test_records_and_folder_removed_under_a_live_host_still_answer_under(self):
+        host, folder = self.start(self.state)
+        self.record(host, folder)
+        recorded = self.hosted_self(host)
+        self.assertEqual(recorded.returncode, 1, recorded.stdout)
+        self.assertIn(UNDER_HOST, recorded.stderr, 'the records still answer as before')
+        (folder / 'host.identity.json').unlink()
+        (folder / 'host.pid').unlink()
+        without = self.hosted_self(host)
+        self.assertEqual(without.returncode, 1, without.stdout)
+        self.assertIn(UNDER_HOST, without.stderr,
+                      'a live host is proven by its own argument vector without its records')
+        shutil.rmtree(folder)
+        removed = self.hosted_self(host)
+        self.assertEqual(removed.returncode, 1, removed.stdout)
+        self.assertIn(UNDER_HOST, removed.stderr, 'a removed host folder keeps the argument-vector proof')
+
+    def test_another_state_roots_similar_argv_is_not_this_computers_host(self):
+        other = self.root / 'other-state'
+        (other / 'dsh/hosts').mkdir(parents=True, mode=0o700)
+        host, _ = self.start(other)
+        outside = self.hosted_self(host)
+        self.assertNotIn(UNDER_HOST, outside.stdout + outside.stderr,
+                         'the patch path must name this state root')
+
+
 if __name__ == '__main__':
     unittest.main()
