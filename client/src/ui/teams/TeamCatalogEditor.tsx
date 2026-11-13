@@ -376,6 +376,17 @@ function references(editor: CatalogEditorStore, spec: CatalogFieldSpec): [string
   return undefined;
 }
 
+function Select(props: { id: string; value: string; options: [string, string][]; onChange: (value: string) => void }) {
+  let element!: HTMLSelectElement;
+  createEffect(() => {
+    props.options;
+    element.value = props.value;
+  });
+  return <select ref={element} id={props.id} onChange={(event) => props.onChange(event.currentTarget.value)}>
+    <For each={props.options}>{([value, name]) => <option value={value}>{name}</option>}</For>
+  </select>;
+}
+
 /** One field, drawn from its schema type; each change goes to core at once. */
 function Field(props: { editor: CatalogEditorStore; spec: CatalogFieldSpec; value: unknown; onChange: (value: unknown) => Promise<boolean> | void; onEffortChange?: (value: unknown) => Promise<boolean> | void; compact?: boolean;
   /** Task 50: a control drawn instead of the schema's plain one. */
@@ -396,9 +407,7 @@ function Field(props: { editor: CatalogEditorStore; spec: CatalogFieldSpec; valu
     if (refs) {
       const value = str(props.value);
       const options = refs.some(([id]) => id === value) ? refs : [...refs, [value, value] as [string, string]];
-      return <select id={fieldId} value={value} onChange={(event) => void props.onChange(event.currentTarget.value)}>
-        <For each={options}>{([id, name]) => <option value={id}>{name}</option>}</For>
-      </select>;
+      return <Select id={fieldId} value={value} options={options} onChange={(value) => void props.onChange(value)} />;
     }
     switch (spec.type) {
       case "multiline":
@@ -409,9 +418,7 @@ function Field(props: { editor: CatalogEditorStore; spec: CatalogFieldSpec; valu
       case "bool":
         return <input id={fieldId} type="checkbox" checked={props.value === true} onChange={(event) => void props.onChange(event.currentTarget.checked)} />;
       case "choice":
-        return <select id={fieldId} value={str(props.value)} onChange={(event) => void props.onChange(event.currentTarget.value)}>
-          <For each={spec.options ?? []}>{([value, name]) => <option value={value}>{tr(name)}</option>}</For>
-        </select>;
+        return <Select id={fieldId} value={str(props.value)} options={(spec.options ?? []).map(([value, name]) => [value, tr(name)])} onChange={(value) => void props.onChange(value)} />;
       case "words":
         return <TextInput id={fieldId} value={words(props.value)} placeholder={tr("Comma-separated")} onChange={(event) => void props.onChange(splitWords(event.currentTarget.value))} />;
       case "list":

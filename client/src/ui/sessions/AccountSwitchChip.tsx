@@ -76,12 +76,12 @@ export function AccountSwitchChip(props: { session: Session; compact?: boolean; 
       setNotice(across ? moveOutcome(receipt, "", name) : switchOutcome(receipt, "", choice.id));
       close();
       void loadAccounts(true);
+      props.onSwitch?.();
     } catch (error) {
       setNotice(across ? moveOutcome({}, String(error), name) : switchOutcome({}, String(error), choice.id));
       close();
     } finally {
       setBusy(false);
-      props.onSwitch?.();
     }
   };
 
