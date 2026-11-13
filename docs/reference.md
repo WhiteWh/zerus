@@ -5944,9 +5944,50 @@ until it exits on its own; it is never restarted or reloaded for this. Its
 markers stay. The adapter version is unchanged, so this Zerus keeps using such a
 host. Such a host started from a process without session markers, such as the
 desktop or a plain terminal, gives its tool calls neither markers nor
-`HGS_AGENT`: the guards above cannot tell those calls from the person, and only
-a check of recorded host ancestry, such as the Agent Teams caller proof, refuses
-them.
+`HGS_AGENT`: the markers cannot tell those calls from the person, and only the
+check of recorded host ancestry below refuses them.
+
+Under a recorded host, no other identity (zerus-ppd26.15). The process tree and
+the host records decide this, never a marker the caller sets. hgs reads the host
+records first: a computer or account that records no DeepSeek host is never
+affected by the rest of this check. Otherwise hgs walks a command's ancestry
+through processes of the same user, at most 64, up to the first process of
+another user. When that walk contains a DeepSeek host this
+computer records in `dsh/hosts`, matched by process ID and birth, the command is
+never another agent's session and never the person, even when that agent's
+process is also an ancestor, as it is while the `hgs` that started the host
+still runs. The send and `hgs wait begin` origin and the parent link of a launch,
+local and forwarded with `--parent-link`, are left unattributed; `hgs task`,
+`hgs self`, `hgs parent adopt`, question routing (locally and before `@host`
+forwarding) and desktop mode registration refuse. An unmarked `hgs send` or
+`send-now` under a host found is refused too, locally, by reference and before
+`@host` forwarding, because its target would receive it without a sender; an
+unverifiable check refuses no send, so a sandboxed agent's sender-less send
+keeps working. A launch under a host keeps an empty parent. `HGS_AGENT=dsh` stays
+an extra guard. The checks also refuse in both directions, the person's commands and
+task reads included, when:
+- a host record cannot be read or is malformed;
+- there are more than 64 host folders or 1024 entries;
+- a record names an ancestor's process ID without its birth;
+- the walk reaches 64 processes without the top;
+- the birth of a process on the walk cannot be read;
+- a process on the walk cannot be read or changes while it is read;
+- the walk reaches a process of the user whose parent is 0: the first process
+  of a separate process namespace the user owns, such as an agent's sandbox
+  (bubblewrap with its own PID namespace), `unshare --user --pid` or a rootless
+  container. A host outside it cannot be seen, so commands that need the caller
+  proof must run outside that sandbox, or with its private process namespace
+  turned off.
+Each cause has its own refusal. A record's refusal names the exact path and how
+to clear it: close the DeepSeek sessions of that agent home, then remove the
+record. The desktop shows it. Agent Teams' caller proof uses the same check,
+`state::dsh::hosted_ancestor`.
+Records of an earlier boot never block anyone. A host's records are written
+atomically (a synced temporary file renamed into place, then the folder synced),
+so a crash leaves the previous record or the new one. Outside this check:
+- a command that leaves the host's tree (a double fork, setsid, or a background
+  job whose shell exits), which the user's service manager adopts;
+- a host started by an attempt that ended before its running record.
 
 The official minimal composition's persistent `bash` tool keeps one shell per
 agent across calls, which starts with the environment of the call that opened

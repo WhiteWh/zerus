@@ -37,6 +37,11 @@ fn capture(scope: &Scope) -> Result<(&'static str, Process)> {
             && !crate::state::session_graph::hosted_agent_call(),
         "agent session cannot change desktop mode; use Settings or a terminal outside Zerus"
     );
+    // Nor any command under a recorded DeepSeek host, which the process tree
+    // and the host records decide (zerus-ppd26.15).
+    if let Some(refusal) = crate::state::dsh::host_refusal() {
+        anyhow::bail!("{refusal} Change desktop mode from Settings or a terminal outside Zerus.");
+    }
     let until = Instant::now() + WAIT;
     #[cfg(target_os = "macos")]
     let owned = macos_ancestry::inspect(std::process::id(), until)?;

@@ -834,17 +834,27 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
         first
     }
     .map(String::as_str);
-    // A resident DeepSeek host's tool call is an agent's even without a provable
-    // session (zerus-ppd26.1).
-    if routed == Some("question-routing")
-        && (crate::state::session_graph::caller_record().is_some()
-            || crate::state::session_graph::hosted_agent_call())
-    {
-        println!(
-            "{}",
-            serde_json::json!({"ok": false, "error": "agent_refused"})
-        );
-        return Ok(1);
+    // The same agent refusal as a local change, before forwarding
+    // (zerus-ppd26.1, zerus-ppd26.15).
+    if routed == Some("question-routing") {
+        if let Some(refused) = crate::state::question_routing::agent_refusal() {
+            println!("{refused}");
+            return Ok(1);
+        }
+    }
+    // An unmarked send under a recorded DeepSeek host is not the person's: a
+    // live target would receive it without a sender. Refuse it here, before
+    // any reference hop or `@host` forwarding (zerus-ppd26.19). Only a host
+    // actually found refuses: an unverifiable check, such as a sandboxed
+    // agent's sender-less send, keeps working as before.
+    let marked = ["HGS_SESSION", "HGS_RUN_ID"]
+        .iter()
+        .all(|name| env::var(name).is_ok_and(|value| !value.is_empty()));
+    if matches!(routed, Some("send" | "send-now")) && !marked {
+        let check = crate::state::dsh::host_check();
+        if check == crate::state::dsh::HostCheck::Under {
+            return Err(Error::new(1, check.sentence().unwrap_or_default()));
+        }
     }
     // zerus-ucck P1c: a session reference selects the session it names on every
     // session command, through the same checks as `--session-id`. `inspect`

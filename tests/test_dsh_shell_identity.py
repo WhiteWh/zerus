@@ -382,6 +382,92 @@ class HostStartedByHgs(Hosted, unittest.TestCase):
         self.assertEqual(json.loads(person.stdout)['question_routing'], {'send_to_parent': False, 'revision': 1})
 
 
+# The launching agent: a child subreaper that runs the launch itself, so the
+# host it starts stays below it as it does while the launching hgs lives.
+LAUNCHER = r"""
+import ctypes, json, subprocess, sys
+assert ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0  # PR_SET_CHILD_SUBREAPER
+for line in sys.stdin:
+    request = json.loads(line)
+    r = subprocess.run(request['argv'], env=request['env'], text=True, capture_output=True, timeout=120,
+                       cwd=request['cwd'])
+    print(json.dumps({'code': r.returncode, 'stdout': r.stdout, 'stderr': r.stderr}), flush=True)
+"""
+
+
+@unittest.skipUnless(sys.platform == 'linux' and (fixture.required() or DSH and HGS.exists()),
+                     'official dsh, Linux /proc and built hgs required')
+class LaunchingAgentAboveItsHost(Hosted, unittest.TestCase):
+    """zerus-ppd26.15, the no-forgery window: the host is a child of the
+    launching hgs, which is the launching agent's descendant, so the agent is
+    an ancestor of every hosted tool call while that hgs lives. Here the
+    launching agent keeps the host below it for the whole test."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.prepare()
+        try:
+            cls.stand_in.kill()
+            cls.stand_in.wait(timeout=5)
+            cls.stand_in = subprocess.Popen([sys.executable, '-I', '-c', LAUNCHER], stdin=subprocess.PIPE,
+                                            stdout=subprocess.PIPE, text=True)
+            start = subprocess.check_output(['ps', '-p', str(cls.stand_in.pid), '-o', 'lstart='],
+                                            env={'LC_ALL': 'C', 'TZ': 'UTC', 'PATH': '/usr/bin:/bin'},
+                                            text=True).strip()
+            cls.launcher.update(pid=cls.stand_in.pid, process_start=start)
+            (cls.state / (hashlib.sha256(cls.launcher['name'].encode()).hexdigest() + '.json')).write_text(
+                json.dumps(cls.launcher))
+            request = {'argv': [str(HGS), 'dsh', str(cls.root / 'ws'), '--new', '-n', 'window', '-d'],
+                       'env': cls.launcher_env, 'cwd': str(cls.root / 'ws')}
+            cls.stand_in.stdin.write(json.dumps(request) + '\n')
+            cls.stand_in.stdin.flush()
+            launched = json.loads(cls.stand_in.stdout.readline())
+            assert launched['code'] == 0, launched['stderr']
+            cls.first = cls.binding('window')
+        except BaseException:
+            cls.finish()
+            raise
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.finish()
+
+    def ancestors(self, pid):
+        chain = []
+        while pid > 1 and len(chain) < 64:
+            chain.append(pid)
+            pid = int(Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[1])
+        return chain
+
+    def test_a_hosted_call_is_never_the_launching_agent_or_the_person(self):
+        host = json.loads((self.host_dir / 'host.identity.json').read_text())['pid']
+        self.assertIn(self.stand_in.pid, self.ancestors(host), 'the launching agent must stay above the host')
+        ref = self.task()
+        hgs = str(HGS)
+        launcher = [f'HGS_SESSION={self.launcher["name"]}', f'HGS_RUN_ID={self.launcher["run_id"]}',
+                    f'HGS_SESSION_ID={self.launcher["session_id"]}', 'HGS_AGENT=claude']
+        bare = ['-u', 'HGS_AGENT', '-u', 'HGS_SESSION', '-u', 'HGS_RUN_ID', '-u', 'HGS_SESSION_ID',
+                '-u', 'HGS_ACCOUNT_ID']
+        runs = [('self', [hgs, 'self', '--json'], None),
+                ('forged_self', ['/usr/bin/env', *launcher, hgs, 'self', '--json'], None),
+                ('forged_comment', ['/usr/bin/env', *launcher, hgs, 'task', 'comment', ref], 'as the launcher'),
+                ('person_comment', ['/usr/bin/env', *bare, hgs, 'task', 'comment', ref], 'as the person')]
+        result = self.shell(self.first, runs=runs)
+        self.assertOwnMarkers(result['env'], self.first)
+        for name in ('self', 'forged_self'):
+            run = result['runs'][name]
+            if run['code'] == 0:
+                answer = json.loads(run['stdout'])
+                self.assertNotEqual(answer['name'], self.launcher['name'], (name, run))
+                self.assertNotEqual(answer['identity_source'], 'process', (name, run))
+        for name in ('forged_comment', 'person_comment'):
+            run = result['runs'][name]
+            self.assertNotEqual(run['code'], 0, (name, run))
+            self.assertIn('This command runs under a DeepSeek agent host', run['stderr'], (name, run))
+        history = json.loads(self.call('task', 'get', ref, '--history-limit', '20').stdout)['task']['log']
+        self.assertEqual([entry['kind'] for entry in history], ['created'])
+
+
 class DirectlyStarted(Hosted):
     """A host started outside hgs with an old launcher's markers in its environment."""
     LEGACY_BRIDGE = False

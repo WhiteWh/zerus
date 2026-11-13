@@ -3,6 +3,9 @@
 use super::*;
 use std::process::Child;
 
+/// The recorded hosts and the ancestor check (zerus-ppd26.15).
+pub(super) mod recorded;
+
 const FILE: &str = "host.identity.json";
 const UNVERIFIABLE: &str = "The previous DeepSeek host could not be verified; it has been left untouched. Check its private host.log before recovering";
 const STILL_RUNNING: &str = "The previous DeepSeek host is still running but its adapter is unavailable; it has been left running. Reconnect through its native UI instead of starting another host";

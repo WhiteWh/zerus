@@ -353,9 +353,15 @@ fn actor(here: &str, args: &[String], forwardable: bool) -> Result<Actor> {
     // A resident DeepSeek host's tool call is an agent's even without markers
     // it can prove (zerus-ppd26): it never acts as the person.
     let hosted = crate::state::session_graph::hosted_agent_call();
+    // Under a recorded DeepSeek host a command is never the person and never
+    // another agent's session: the process tree and the host records decide
+    // (zerus-ppd26.15). A call that carries the marker keeps its own wording.
     let (Some(claimed), Some(_)) = (var("HGS_SESSION"), var("HGS_RUN_ID")) else {
         if hosted {
             return Err(fail(UNPROVEN_HOSTED_AGENT));
+        }
+        if let Some(refusal) = crate::state::dsh::host_refusal() {
+            return Err(fail(refusal));
         }
         return Ok(Actor::Person);
     };
@@ -364,6 +370,9 @@ fn actor(here: &str, args: &[String], forwardable: bool) -> Result<Actor> {
             return fail(format!(
                 "this command names the DeepSeek session {claimed}, but this computer cannot prove that this tool call belongs to it; {UNPROVEN_HOSTED_AGENT}"
             ));
+        }
+        if let Some(refusal) = crate::state::dsh::host_refusal() {
+            return fail(format!("this command names the agent session {claimed}, but it cannot be proven: {refusal}"));
         }
         fail(format!(
             "this command names the agent session {claimed}, but that run is not live on this computer or does not run it; run hgs task from the agent's own shell, or unset HGS_SESSION and HGS_RUN_ID to act as yourself"
