@@ -1,10 +1,10 @@
-import { For, Index, Match, Show, Switch, createEffect, createMemo, onCleanup, onMount } from "solid-js";
+import { For, Index, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { Icon } from "../lib/icons";
 import { ProviderGlyph } from "../sessions/SessionCard";
 import { agentKind } from "../../store/catalog";
 import { menuItemActivates } from "../sessions/actions-ui";
 import { menu, visibleMenu, setMenu, type MenuEntry } from "../../store/ui";
-import { dismissNotice, notices } from "../../store/notices";
+import { bus, dismissNotice, notices } from "../../store/notices";
 import { tr } from "../../i18n";
 
 /** Context and dropdown menus share one positioned popover. */
@@ -88,26 +88,35 @@ function MenuItem(props: { item: () => MenuEntry }) {
 
 /**
  * The window's one notice bus, in the design's bottom-right corner: copies,
- * action results, updates and refusals. Notices let clicks through to the
- * controls under them; only a sticky notice's Dismiss takes a click.
+ * action results, updates and refusals. Every toast dismisses itself (errors
+ * after 10 s); hovering or focusing one holds its timer, and the close button
+ * and action buttons stay reachable while it is held.
  */
 export function Toasts() {
   return (
     <div class="toasts" aria-live="polite">
       <For each={notices()}>
-        {(n) => (
-          <div class={`toast ${n.tone}`} data-notice-id={n.id} classList={{ sticky: n.sticky }} data-busy={n.busy || undefined} role={n.busy ? "status" : undefined}>
-            <Show when={n.sticky && n.dismissible !== false}><button class="icon-btn dismiss" aria-label={tr("Dismiss")} onClick={() => dismissNotice(n.id)}><Icon name="x" size={14} /></button></Show>
-            <Show when={n.title}><b><Show when={n.busy}><span class="busy-arc" aria-hidden="true" /></Show>{n.title}</b></Show>
-            <span class="note" classList={{ muted: !!n.title }}>{n.text}</span>
-            <Show when={n.note?.()}><div class="note muted">{n.note?.()}</div></Show>
-            <Show when={n.actions?.length}><div class="toast-actions"><For each={n.actions}>{(action) =>
-              <button type="button" class={`btn small ${action.style}`} disabled={action.disabled?.()} onClick={() => { if (!action.disabled?.()) void action.run(); }}>
-                <Show when={action.icon}><Icon name={action.icon!} size={13} /></Show>{typeof action.label === "function" ? action.label() : action.label}
-              </button>
-            }</For></div></Show>
-          </div>
-        )}
+        {(n) => {
+          const [hovered, setHovered] = createSignal(false);
+          const [focused, setFocused] = createSignal(false);
+          createEffect(() => bus.hold(n.id, hovered() || focused()));
+          return (
+            <div class={`toast ${n.tone}`} data-notice-id={n.id} classList={{ sticky: n.sticky }} data-busy={n.busy || undefined} role={n.busy ? "status" : undefined}
+              onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}
+              onFocusIn={() => setFocused(true)}
+              onFocusOut={(event) => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}>
+              <Show when={(n.sticky || n.tone === "error") && n.dismissible !== false}><button class="icon-btn dismiss" aria-label={tr("Dismiss")} onClick={() => dismissNotice(n.id)}><Icon name="x" size={14} /></button></Show>
+              <Show when={n.title}><b><Show when={n.busy}><span class="busy-arc" aria-hidden="true" /></Show>{n.title}</b></Show>
+              <span class="note" classList={{ muted: !!n.title }}>{n.text}</span>
+              <Show when={n.note?.()}><div class="note muted">{n.note?.()}</div></Show>
+              <Show when={n.actions?.length}><div class="toast-actions"><For each={n.actions}>{(action) =>
+                <button type="button" class={`btn small ${action.style}`} disabled={action.disabled?.()} onClick={() => { if (!action.disabled?.()) void action.run(); }}>
+                  <Show when={action.icon}><Icon name={action.icon!} size={13} /></Show>{typeof action.label === "function" ? action.label() : action.label}
+                </button>
+              }</For></div></Show>
+            </div>
+          );
+        }}
       </For>
     </div>
   );
