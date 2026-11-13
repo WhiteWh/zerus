@@ -120,6 +120,102 @@ fn explicit_remove_delay_cannot_borrow_another_target_or_actions_claim() {
 }
 
 #[test]
+fn an_abandoned_undo_window_releases_the_session_lane_for_the_next_end() {
+    // The frontend can lose its pending reference (a reloaded or crashed
+    // webview): the group then never takes or cancels, and without an expiry
+    // its claim blocks every later end for this session until the app exits.
+    let actions = actions();
+    let delays = Delays::default();
+    let c = captured("one");
+    let first = id();
+    delays
+        .begin(&actions, first.clone(), vec![c.clone()])
+        .unwrap();
+    due(&delays, &first);
+    lock(&delays.0).groups.get_mut(&first).unwrap().created =
+        Instant::now() - UNDO_WINDOW - STALE_GRACE - Duration::from_millis(1);
+    let second = id();
+    delays
+        .begin(&actions, second.clone(), vec![c.clone()])
+        .expect("an abandoned undo window must not hold the session lane");
+    assert!(
+        !lock(&delays.0).groups.contains_key(&first),
+        "the abandoned window is discarded"
+    );
+    assert!(
+        actions
+            .begin(Lane::key(&c.target, &Action::Pause), &Action::Pause)
+            .is_none(),
+        "the new end still holds the lane"
+    );
+    delays.cancel(&second);
+    assert!(actions
+        .begin(Lane::key(&c.target, &Action::Pause), &Action::Pause)
+        .is_some());
+}
+
+#[test]
+fn a_refused_end_names_the_running_lane_instead_of_bare_busy() {
+    let actions = actions();
+    let delays = Delays::default();
+    let c = captured("one");
+    let held = actions
+        .begin(Lane::key(&c.target, &Action::Pause), &Action::Pause)
+        .unwrap();
+    let error = delays.begin(&actions, id(), vec![c.clone()]).unwrap_err();
+    assert_ne!(error, "busy");
+    assert!(
+        error.contains("Another action on this session is still running"),
+        "{error}"
+    );
+    drop(held);
+    delays.begin(&actions, id(), vec![c]).unwrap();
+}
+
+#[test]
+fn an_already_submitted_end_says_so() {
+    let actions = actions();
+    let delays = Delays::default();
+    let c = captured("one");
+    let id = id();
+    delays.begin(&actions, id.clone(), vec![c.clone()]).unwrap();
+    let error = delays.begin(&actions, id, vec![c]).unwrap_err();
+    assert_ne!(error, "busy");
+    assert!(error.contains("already submitted"), "{error}");
+}
+
+#[test]
+fn a_closed_delay_list_tells_the_person_to_restart() {
+    let actions = actions();
+    let delays = Delays::default();
+    delays.cancel_all(true);
+    let error = delays
+        .begin(&actions, id(), vec![captured("one")])
+        .unwrap_err();
+    assert_ne!(error, "busy");
+    assert!(error.contains("Restart the app"), "{error}");
+}
+
+#[test]
+fn an_exhausted_pending_id_list_tells_the_person_to_restart() {
+    let actions = actions();
+    let delays = Delays::default();
+    {
+        let mut model = lock(&delays.0);
+        for n in 0..REGISTRATIONS {
+            model
+                .seen
+                .insert(format!("{n:08}-0000-0000-0000-000000000000"));
+        }
+    }
+    let error = delays
+        .begin(&actions, id(), vec![captured("one")])
+        .unwrap_err();
+    assert_ne!(error, "busy");
+    assert!(error.contains("Restart the app"), "{error}");
+}
+
+#[test]
 fn pending_reserves_the_existing_write_lane_without_blocking_messages() {
     let actions = actions();
     let delays = Delays::default();

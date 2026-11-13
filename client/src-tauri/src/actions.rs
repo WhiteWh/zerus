@@ -1775,6 +1775,7 @@ async fn dispatch_reserved_original(
         return match Lane::of(&action) {
             Lane::Send => Ok(failed(ALREADY_SENDING)),
             Lane::Answer => Ok(failed(ALREADY_ANSWERING)),
+            _ if zerus_client_core::end_action::needs_capture(&action) => Err(END_BUSY.into()),
             _ => Err(BUSY.into()),
         };
     };
@@ -2457,6 +2458,11 @@ pub const ACTIVITY_BUSY: &str = "busy";
 /// `dispatch`'s `Err` when the session's lane is taken: refused before any
 /// call ran, so a definite refusal, never an uncertain outcome.
 pub const BUSY: &str = "busy";
+/// The same refusal for an end action, where the person needs to know what
+/// holds the lane and what to do (zerus-ex66o).
+pub const END_BUSY: &str = zerus_client_core::source!(
+    "Another action on this session is still running. Wait for it to finish, or restart the app if it never does."
+);
 
 /// The recorded Activity of one archived session after cursor `after`
 /// (`hgs [@alias] inspect NAME --after N --skip-processes --archive ID`).
