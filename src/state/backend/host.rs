@@ -130,7 +130,7 @@ const STARTUP_POLL: Duration = Duration::from_millis(100);
 /// server's environment, which never holds them. A launch sets those its session
 /// needs again. `CLAUDECODE` is the mark Claude Code sets for the commands it
 /// runs; a Claude Code that finds it refuses to start as one nested in another.
-const SESSION_CONTEXT: &[&str] = &[
+pub(super) const SESSION_CONTEXT: &[&str] = &[
     "CLAUDECODE",
     "HGS_PARENT",
     "TMUX",

@@ -42,6 +42,14 @@ tmux session NAME; use --new -d or open a new tab`; Windows names no tmux). The 
 session gets its own session and run identity, never the caller's. Its account
 comes from the launch (`--account ID` or the computer's default for that agent);
 the account profile that the calling session runs under is not passed on.
+Neither is the calling agent's command context (`AGENT_COMMAND_CONTEXT` in
+`src/state/backend/mod.rs`): Claude Code's and Codex's session, process and tool
+call markers, DeepSeek and OpenCode native session IDs, and `NO_COLOR`. A tmux
+server that a launch starts keeps none of them, nor the caller's session
+variables, in the environment it gives every later pane, and an agent starts
+without them even when a server already holds them. `hgs send` reads the agent's
+styled prompt; under `NO_COLOR` Claude Code's placeholder looks like a draft and
+every send is refused while it shows.
 
 ### Session references
 
