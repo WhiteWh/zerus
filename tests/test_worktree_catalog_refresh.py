@@ -154,9 +154,8 @@ sys.stdout.buffer.write(r.stdout);sys.stderr.buffer.write(r.stderr);sys.exit(r.r
         self.assertEqual(len(self.events("selected", "list")), 1, "hgs did not run the fixture Git")
 
     def test_two_standalone_refreshes_and_one_contended_pair(self):
-        delayed = {"CATALOG_LIST_DELAY": "1.65"}
         for case in ("standalone-a", "standalone-b"):
-            value, elapsed = self.finish(self.begin(case, **delayed))
+            value, elapsed = self.finish(self.begin(case))
             self.assertEqual(value["state"], "ok")
             self.assertLess(elapsed, 3)
         for kind in ("path", "repo"):
@@ -164,6 +163,10 @@ sys.stdout.buffer.write(r.stdout);sys.stderr.buffer.write(r.stderr);sys.exit(r.r
             value = json.loads(path.read_text())
             value["sampled_at"] = time.time() - 3600
             path.write_text(json.dumps(value))
+        # Only the pair needs a held listing to stage contention. Leave room
+        # inside the production three-second deadline for wrapped Git startup
+        # and the selected-checkout queries, including on slower macOS runners.
+        delayed = {"CATALOG_LIST_DELAY": "0.5"}
         first = self.begin("first", **delayed)
         self.wait_for(lambda: self.events("first", "list"))
         second = self.begin("second", **delayed)

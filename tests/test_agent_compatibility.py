@@ -688,6 +688,8 @@ class AgentCompatibility(unittest.TestCase):
         with patch.object(compat, 'install_native', return_value=work / agent / '1.2.3' / 'native'), \
                 patch.object(compat, 'probe', side_effect=probe), \
                 patch.object(compat.subprocess, 'run', side_effect=run), \
+                patch.object(compat, 'run_partitioned_suites',
+                             side_effect=lambda *args, **kwargs: compat.run_suites(*args)), \
                 patch.dict(compat.os.environ, {'HGS_TEST_CONPTY_DIR': 'C:\\fixture\\conpty',
                                                'HGS_SESSION': 'fixture-live-session',
                                                'XDG_STATE_HOME': '/fixture-live-state',
@@ -765,7 +767,7 @@ class AgentCompatibility(unittest.TestCase):
                 row, runs, directory, profiles = self.qualify_fixture('opencode', target)
                 self.assertEqual(row['status'], 'passed', row.get('error'))
                 [(suites, env, timeout)] = runs
-                self.assertEqual((suites, timeout), (['test_opencode_native'], compat.AGENTS['opencode']['timeout']))
+                self.assertEqual((suites, timeout), (['test_opencode_native', 'test_opencode_hint_native'], compat.AGENTS['opencode']['timeout']))
                 self.assertEqual(env['ZERUS_TEST_OPENCODE_NATIVE'], '1')
                 self.assertEqual(Path(env['ZERUS_TEST_OPENCODE_BIN']).name, 'native')
                 # The suite builds its own private folders; the runner's version and help

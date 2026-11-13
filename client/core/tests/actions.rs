@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use zerus_client_core::actions::{change_notifications, classify, invocation};
 use zerus_client_core::attachments::Attachment;
-use zerus_client_core::{run, run_with_env, Action, Exit, Outcome, Target};
+use zerus_client_core::end_action::{Captured, Window, STATE_CHANGED, UNDELAYED, UNDO_WINDOW};
+use zerus_client_core::{run, run_with_env, Action, Exit, Invocation, Outcome, Target};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -59,6 +60,47 @@ fn target() -> Target {
     }
 }
 
+const REQUEST: &str = "6f1c2a4e-3b7d-4c1e-9a2f-5d8e7b6c4a31";
+
+/// A fake that answers the captured metadata read with `state` and echoes a
+/// scoped session-action as its completed receipt, with `stderr`.
+fn end_action_fake(state: &str, stderr: &str) -> Fake {
+    let t = target();
+    Fake::new(
+        &serde_json::json!({"reply": {"exit": 1}, "replies": [
+            {"match": ["inspect"], "exit": 0, "stdout": {"name": t.name, "run_id": t.run_id,
+                "conversation_id": t.conversation_id, "state": state}},
+            {"match": ["session-action"], "exit": 0, "stdout": "echo_session_action", "stderr": stderr}]})
+        .to_string(),
+    )
+}
+
+/// The only route an end action has (zerus-sa9qn.25), as the desktop runs a
+/// delayed one: its undo window elapses, a fresh metadata read must still
+/// match the capture, then the captured scoped envelope runs once and its
+/// exact receipt settles it.
+fn through_the_undo_window(
+    hgs: &Path,
+    captured: &Captured,
+) -> Result<(Invocation, Outcome), String> {
+    let confirmed = std::time::Instant::now();
+    let mut window = Window::new(confirmed);
+    assert!(!window.take_elapsed(confirmed));
+    assert!(window.take_elapsed(confirmed + UNDO_WINDOW));
+    captured.checked_inspection(run(hgs, &captured.inspection()?))?;
+    let inv = captured.invocation(REQUEST)?;
+    let exit = run(hgs, &inv);
+    let outcome = captured.completed(&inv, exit);
+    Ok((inv, outcome))
+}
+
+/// The scoped envelope a captured end action sends: the session's run and
+/// conversation, and nothing else.
+fn envelope(action: &str) -> Value {
+    serde_json::json!({"request_id": REQUEST, "action": action,
+        "expected_run_id": "run-1", "expected_conversation_id": "conv-1"})
+}
+
 #[test]
 fn an_interrupt_through_the_fake_is_done_and_logged_once() {
     let fake = Fake::new(r#"{"reply":{"exit":0,"stdout":"echo_interrupt"}}"#);
@@ -78,17 +120,30 @@ fn an_interrupt_through_the_fake_is_done_and_logged_once() {
 
 #[test]
 fn a_terminate_with_a_cleanup_line_reports_it() {
-    let fake = Fake::new(
-        r#"{"reply":{"exit":0,"stderr":"ZERUS_WORKTREE_CLEANUP {\"status\":\"unconfirmed\",\"path\":\"/home/example/wt\",\"common_dir\":\"/home/example/repo/.git\",\"reason\":\"in use\"}\n"}}"#,
+    let fake = end_action_fake(
+        "running",
+        "ZERUS_WORKTREE_CLEANUP {\"status\":\"unconfirmed\",\"path\":\"/home/example/wt\",\"common_dir\":\"/home/example/repo/.git\",\"reason\":\"in use\"}\n",
     );
-    let t = target();
-    let inv = invocation(&t, &Action::Terminate, "u").unwrap();
-    match classify(&t, &Action::Terminate, &inv, run(&fake.hgs, &inv)) {
+    let captured = Captured {
+        target: target(),
+        action: Action::Terminate,
+        state: "running".into(),
+    };
+    match through_the_undo_window(&fake.hgs, &captured).unwrap().1 {
         Outcome::Done {
             cleanup: Some(c), ..
         } => assert_eq!(c.status, "unconfirmed"),
         other => panic!("{other:?}"),
     }
+    let log = fake.log();
+    assert_eq!(log.len(), 2);
+    assert_eq!(log[0]["argv"][0], "inspect");
+    assert_eq!(
+        log[1]["argv"],
+        serde_json::json!(["session-action", "claude/sample-project/review", "--json"])
+    );
+    let body: Value = serde_json::from_str(log[1]["stdin"].as_str().unwrap()).unwrap();
+    assert_eq!(body, envelope("terminate"));
 }
 
 #[test]
@@ -97,32 +152,56 @@ fn an_untracked_kill_refuses_without_calling_the_fake() {
     let mut t = target();
     t.run_id.clear();
     t.conversation_id.clear();
+    // zerus-sa9qn.25: no end action runs as a direct call, tracked or not ...
+    assert_eq!(invocation(&t, &Action::Kill, "u").unwrap_err(), UNDELAYED);
+    // ... and the undo window never captures a kill without its identified
+    // run: it is refused before the metadata read or any mutation. (The
+    // desktop answers an untracked kill with untracked_shell::UNVERIFIED
+    // before it claims the session; an untracked shell ends only through its
+    // own proof-bound TerminateShell.)
+    let captured = Captured {
+        target: t,
+        action: Action::Kill,
+        state: "running".into(),
+    };
+    assert!(!captured.valid());
     assert_eq!(
-        invocation(&t, &Action::Kill, "u").unwrap_err(),
-        zerus_client_core::untracked_shell::UNVERIFIED
+        through_the_undo_window(&fake.hgs, &captured).unwrap_err(),
+        STATE_CHANGED
     );
+    assert_eq!(captured.invocation(REQUEST).unwrap_err(), STATE_CHANGED);
     assert!(
         fake.log().is_empty(),
         "an untracked kill must never reach the fake"
     );
 }
 
+/// A kill (terminate and forget, as `hgs kill` does) is one scoped mutation
+/// after its undo window's metadata read. Its only input is the scoped
+/// envelope (zerus-sa9qn.25): no name-only `hgs kill NAME` call any more.
 #[test]
 fn a_tracked_kill_through_the_fake_is_one_call_without_input() {
-    let fake = Fake::new(r#"{"reply":{"exit":0}}"#);
+    let fake = end_action_fake("running", "");
     let t = target();
-    let inv = invocation(&t, &Action::Kill, "u").unwrap();
-    assert!(matches!(
-        classify(&t, &Action::Kill, &inv, run(&fake.hgs, &inv)),
-        Outcome::Done { cleanup: None, .. }
-    ));
+    assert_eq!(invocation(&t, &Action::Kill, "u").unwrap_err(), UNDELAYED);
+    let captured = Captured {
+        target: t,
+        action: Action::Kill,
+        state: "running".into(),
+    };
+    let (inv, outcome) = through_the_undo_window(&fake.hgs, &captured).unwrap();
+    assert!(matches!(outcome, Outcome::Done { cleanup: None, .. }));
     let log = fake.log();
-    assert_eq!(log.len(), 1);
-    assert_eq!(
-        log[0]["argv"],
-        serde_json::json!(["kill", "claude/sample-project/review"])
-    );
+    assert_eq!(log.len(), 2);
+    assert_eq!(log[0]["argv"][0], "inspect");
     assert_eq!(log[0]["stdin"], "");
+    assert_eq!(
+        log[1]["argv"],
+        serde_json::json!(["session-action", "claude/sample-project/review", "--json"])
+    );
+    let body: Value = serde_json::from_str(log[1]["stdin"].as_str().unwrap()).unwrap();
+    assert_eq!(body, envelope("forget"));
+    assert_eq!(inv.request_id.as_deref(), Some(REQUEST));
 }
 
 #[test]
@@ -484,32 +563,45 @@ fn a_forget_binding_through_the_fake_sends_one_request_and_reads_the_receipt() {
 
 #[test]
 fn start_fresh_and_forget_run_their_hgs_arguments() {
-    for (action, argv) in [
-        (
-            Action::StartFresh,
-            serde_json::json!([
-                "resume",
-                "claude/sample-project/review",
-                "--fresh",
-                "--expected-run-id",
-                "run-1",
-                "-d"
-            ]),
-        ),
-        (
-            Action::Forget,
-            serde_json::json!(["kill", "claude/sample-project/review"]),
-        ),
-    ] {
-        let fake = Fake::new(r#"{"reply":{"exit":0}}"#);
-        let t = target();
-        let inv = invocation(&t, &action, "r").unwrap();
-        assert!(matches!(
-            classify(&t, &action, &inv, run(&fake.hgs, &inv)),
-            Outcome::Done { .. }
-        ));
-        assert_eq!(fake.log()[0]["argv"], argv);
-    }
+    // Start fresh is no end action: it still runs as its direct call.
+    let fake = Fake::new(r#"{"reply":{"exit":0}}"#);
+    let t = target();
+    let inv = invocation(&t, &Action::StartFresh, "r").unwrap();
+    assert!(matches!(
+        classify(&t, &Action::StartFresh, &inv, run(&fake.hgs, &inv)),
+        Outcome::Done { .. }
+    ));
+    assert_eq!(
+        fake.log()[0]["argv"],
+        serde_json::json!([
+            "resume",
+            "claude/sample-project/review",
+            "--fresh",
+            "--expected-run-id",
+            "run-1",
+            "-d"
+        ])
+    );
+    // Forget is: only through its undo window, as the scoped envelope
+    // (zerus-sa9qn.25), never the name-only `hgs kill NAME` it used to be.
+    let fake = end_action_fake("stopped", "");
+    assert_eq!(invocation(&t, &Action::Forget, "r").unwrap_err(), UNDELAYED);
+    let captured = Captured {
+        target: t,
+        action: Action::Forget,
+        state: "stopped".into(),
+    };
+    let (_, outcome) = through_the_undo_window(&fake.hgs, &captured).unwrap();
+    assert!(matches!(outcome, Outcome::Done { .. }));
+    let log = fake.log();
+    assert_eq!(log.len(), 2);
+    assert_eq!(log[0]["argv"][0], "inspect");
+    assert_eq!(
+        log[1]["argv"],
+        serde_json::json!(["session-action", "claude/sample-project/review", "--json"])
+    );
+    let body: Value = serde_json::from_str(log[1]["stdin"].as_str().unwrap()).unwrap();
+    assert_eq!(body, envelope("forget"));
 }
 
 #[test]

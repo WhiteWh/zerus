@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Two private macOS Claude unittest workers, sharing one original wall end.
+"""Bounded private native unittest workers, sharing one original wall end.
 
 This schedules existing suite subtrees; it never retries a case or changes a
 fixture. A reaped Python worker is not proof that a native daemon has exited.
@@ -24,6 +24,9 @@ CLEANUP_SECONDS = 10
 KILL_RESERVE_SECONDS = 1
 MAX_REPORT_BYTES = 1024 * 1024
 MAX_BINARY_BYTES = 512 * 1024 * 1024
+# Linux's debug CLI exceeds the provider executable bound. Keep provider images
+# at 512 MiB; only the same-byte CLI staging copy gets this separate ceiling.
+MAX_HGS_BYTES = 1024 * 1024 * 1024
 
 
 def case_ids(suite):
@@ -32,17 +35,17 @@ def case_ids(suite):
     return [suite.id()]
 
 
-def partition(inventory):
+def partition(inventory, worker_count=2):
     """Keep each original named suite intact and every occurrence, including duplicates."""
-    if not 2 <= len(inventory) <= 128 or any(
+    if type(worker_count) is not int or worker_count not in (2, 3) or not worker_count <= len(inventory) <= 128 or any(
             not rows or any(not isinstance(name, str) or not name or len(name) > 4096 for name in rows)
             for rows in inventory):
         raise ValueError('Expected at least two nonempty native suite inventories')
     if sum(map(len, inventory)) > 10000:
         raise ValueError('Native suite inventory is too large')
-    assignments, loads = [[], []], [0, 0]
+    assignments, loads = [[] for _ in range(worker_count)], [0] * worker_count
     for index in sorted(range(len(inventory)), key=lambda value: (-len(inventory[value]), value)):
-        worker = min(range(2), key=lambda value: (loads[value], value))
+        worker = min(range(worker_count), key=lambda value: (loads[value], value))
         assignments[worker].append(index)
         loads[worker] += len(inventory[index])
     return [sorted(indexes) for indexes in assignments]
@@ -66,7 +69,7 @@ def read_json(path):
     return json.loads(encoded)
 
 
-def stage_binary(source, destination, end):
+def stage_binary(source, destination, end, *, max_bytes=MAX_BINARY_BYTES):
     """A same-byte, read-only shared copy; no chmod of the caller's build/image."""
     digest, size = hashlib.sha256(), 0
     with Path(source).open('rb') as input_file, destination.open('xb') as output:
@@ -74,7 +77,7 @@ def stage_binary(source, destination, end):
             if time.monotonic() >= end:
                 raise TimeoutError('Native aggregate deadline expired during staging')
             size += len(chunk)
-            if size > MAX_BINARY_BYTES:
+            if size > max_bytes:
                 raise ValueError('Native worker binary exceeds its bound')
             digest.update(chunk)
             output.write(chunk)
@@ -91,7 +94,7 @@ def stage_binary(source, destination, end):
                 size=size, sha256=copied.hexdigest(), mode='0500')
 
 
-def worker_environment(env, root):
+def worker_environment(env, root, temporary=None):
     """Before interpreter startup: short, disjoint roots, no shared bytecode writes.
 
     Do not set CLAUDE_CONFIG_DIR: the existing cases set their own HOME and expect
@@ -104,8 +107,9 @@ def worker_environment(env, root):
                       ('HGS_CONFIG_DIR', 'config'), ('XDG_CONFIG_HOME', 'xdg-config'),
                       ('XDG_DATA_HOME', 'xdg-data'), ('XDG_CACHE_HOME', 'xdg-cache'),
                       ('XDG_STATE_HOME', 'xdg-state'), ('XDG_RUNTIME_DIR', 'runtime'), ('CODEX_HOME', 'codex')):
-        path = root / name
-        path.mkdir(mode=0o700)
+        path = temporary if key == 'TMPDIR' and temporary is not None else root / name
+        if path != temporary:
+            path.mkdir(mode=0o700)
         private[key] = str(path)
     private['PYTHONDONTWRITEBYTECODE'] = '1'
     # Longest selected fixture prefix is hgs-claude-settings-native- + eight
@@ -167,10 +171,11 @@ def worker_main(root, inventory_path, result_path, end, names):
     timer.start()
     assigned, error = [], None
     try:
+        worker_count = int(os.environ.get('ZERUS_NATIVE_WORKER_COUNT', '2'))
         suite = unittest.defaultTestLoader.loadTestsFromNames(names)
         groups = list(suite)
         inventory = [case_ids(group) for group in groups]
-        partition(inventory)  # Refuse empty/import-error discovery before the barrier.
+        partition(inventory, worker_count)  # Refuse empty/import-error discovery before the barrier.
         if unittest.defaultTestLoader.errors:
             raise ValueError('Native suite discovery failed: ' + repr(unittest.defaultTestLoader.errors))
         write_json(inventory_path, dict(names=names, suites=inventory))
@@ -179,7 +184,7 @@ def worker_main(root, inventory_path, result_path, end, names):
             raise ValueError('Native worker assignment is late or too large')
         plan = json.loads(line)
         index = plan['worker']
-        if type(index) is not int or index not in (0, 1) or plan['suites'] != partition(inventory)[index]:
+        if type(index) is not int or index not in range(worker_count) or plan['suites'] != partition(inventory, worker_count)[index]:
             raise ValueError('Native worker assignment disagrees with discovered occurrences')
         indexes = plan['suites']
         assigned = [name for group in indexes for name in inventory[group]]
@@ -194,7 +199,7 @@ def worker_main(root, inventory_path, result_path, end, names):
         traceback.print_exc()
     finally:
         timer.cancel()
-    temporary_entries = sorted(path.name for path in (root / 'tmp').iterdir())
+    temporary_entries = sorted(path.name for path in Path(os.environ['TMPDIR']).iterdir())
     report = dict(assigned=assigned, started=started, completed=completed, canceled=canceled,
                   tests=result.testsRun if result is not None else 0,
                   failures=len(result.failures) if result is not None else 0,
@@ -251,14 +256,19 @@ def drain_workers(workers, end):
     return all(worker['process'].poll() is not None for worker in workers), errors
 
 
-def run_suites(suites, env, timeout, scratch, log):
-    """Exactly two interpreters; setup, discovery, execution and drain share one end."""
+def run_suites(suites, env, timeout, scratch, log, *, native_variable='HGS_CLAUDE_TEST_BIN', worker_count=2):
+    """Two or three interpreters; setup, discovery, execution and drain share one end."""
+    if native_variable not in ('HGS_CLAUDE_TEST_BIN', 'HGS_CODEX_TEST_BIN'):
+        raise ValueError('Unsupported private native worker executable')
+    if type(worker_count) is not int or worker_count not in (2, 3):
+        raise ValueError('Expected two or three native workers')
     end = time.monotonic() + timeout
     work_end = end - CLEANUP_SECONDS
     root = Path(tempfile.mkdtemp(prefix='znw-', dir=env.get('ZERUS_TEST_SHORT_TMPDIR', '/tmp'))).resolve()
     workers, inventory, assignments, problems = [], None, None, []
     record = dict(root=str(root), deadline=end, work_deadline=work_end, timeout=timeout,
-                  cleanup_reserve=CLEANUP_SECONDS, suites=suites, workers=[], binaries={})
+                  cleanup_reserve=CLEANUP_SECONDS, suites=suites, workers=[], binaries={}, temporary_roots=[],
+                  worker_count=worker_count)
     previous_signal = signal.getsignal(signal.SIGTERM)
     canceled = False
 
@@ -273,18 +283,28 @@ def run_suites(suites, env, timeout, scratch, log):
         staged = root / 'staged'
         staged.mkdir(mode=0o700)
         shared_env = dict(env)
-        for key, name in (('HGS_TEST_BIN', 'hgs'), ('HGS_CLAUDE_TEST_BIN', 'claude')):
-            record['binaries'][key] = stage_binary(env[key], staged / name, work_end)
+        native_name = 'codex' if native_variable == 'HGS_CODEX_TEST_BIN' else 'claude'
+        for key, name in (('HGS_TEST_BIN', 'hgs'), (native_variable, native_name)):
+            record['binaries'][key] = stage_binary(env[key], staged / name, work_end,
+                max_bytes=MAX_HGS_BYTES if key == 'HGS_TEST_BIN' else MAX_BINARY_BYTES)
             shared_env[key] = str(staged / name)
-        for index in range(2):
+        for index in range(worker_count):
             if time.monotonic() >= work_end:
                 raise TimeoutError('Native aggregate deadline expired before worker launch')
             private = root / str(index)
             private.mkdir(mode=0o700)
             paths = {kind: log.with_name(log.stem + f'.worker-{index}.' + kind)
                      for kind in ('stdout', 'stderr', 'inventory.json', 'result.json')}
-            worker_env = worker_environment(shared_env, private)
+            temporary = None
+            if native_variable == 'HGS_CODEX_TEST_BIN':
+                # Codex renders absolute fixture paths in strict trust panels
+                # and its bounded title footer. Keep each worker's fixture root
+                # short, private and disjoint before importing tempfile.
+                temporary = Path(tempfile.mkdtemp(prefix='', dir=env.get('ZERUS_TEST_SHORT_TMPDIR', '/tmp'))).resolve()
+                record['temporary_roots'].append(str(temporary))
+            worker_env = worker_environment(shared_env, private, temporary)
             worker_env['ZERUS_NATIVE_DIAGNOSTIC_DEADLINE'] = str(end)
+            worker_env['ZERUS_NATIVE_WORKER_COUNT'] = str(worker_count)
             with paths['stdout'].open('xb') as out, paths['stderr'].open('xb') as err:
                 process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--worker',
                     str(private), str(paths['inventory.json']), str(paths['result.json']), str(end), *suites],
@@ -302,10 +322,10 @@ def run_suites(suites, env, timeout, scratch, log):
                 raise TimeoutError('Native aggregate deadline expired during discovery')
             time.sleep(.02)
         inventories = [read_json(worker['paths']['inventory.json']) for worker in workers]
-        if inventories[0] != inventories[1] or inventories[0]['names'] != suites:
+        if any(value != inventories[0] for value in inventories[1:]) or inventories[0]['names'] != suites:
             raise ValueError('Native workers disagree about original suite discovery')
         inventory = inventories[0]['suites']
-        assignments = partition(inventory)
+        assignments = partition(inventory, worker_count)
         record.update(inventory=inventory, assignments=assignments)
         for worker in workers:
             if time.monotonic() >= work_end:
@@ -373,7 +393,7 @@ def run_suites(suites, env, timeout, scratch, log):
     result = dict(tests=sum(row['observed_result']['tests'] for row in record['workers']
                             if isinstance(row.get('observed_result'), dict)
                             and type(row['observed_result'].get('tests')) is int),
-                  skipped=0, workers=2, qualified=not problems)
+                  skipped=0, workers=worker_count, qualified=not problems)
     stdout = 'ZERUS_NATIVE_RESULT=' + json.dumps(result) + '\n'
     print(stdout, end='', flush=True)
     return int(bool(problems)), stdout

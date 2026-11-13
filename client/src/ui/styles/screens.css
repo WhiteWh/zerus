@@ -200,7 +200,12 @@
   .bc-list li > .ell { flex: 1 1 auto; }
   .bc-files { flex-wrap: wrap; }
   .bc-archive .bc-list { margin-top: 10px; }
+  /* The mockup's danger notice (base.css .notice.danger): icon, then the sentence and its detail. */
+  .bc-load-failed { margin-top: 10px; }
+  .bc-load-failed > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .bc-load-failed p { margin: 0; overflow-wrap: anywhere; }
   .bc-blockers .hint, .bc-other { margin: 0; overflow-wrap: anywhere; }
+  .bc-live { display: flex; align-items: center; gap: 6px; }
   .bc-result b { flex: none; }
   .bc-result[data-outcome="removed"] b, .bc-result[data-outcome="forgotten"] b { color: var(--z-color-accent); }
   .bc-result[data-outcome="unknown"] b { color: var(--z-color-warn); }

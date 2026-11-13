@@ -195,6 +195,23 @@ check "@peer new folder session -> quoted path and name" 0 "--client testhost co
 check "@peer archive -> noninteractive ssh" 0 "^ssh -o BatchMode=yes -o ConnectTimeout=3 nowhere ~/.local/bin/hgs archive claude/p/one --dry-run\$" --dry-run @nowhere archive claude/p/one
 check "@peer rename -> noninteractive ssh" 0 "^ssh -o BatchMode=yes -o ConnectTimeout=3 nowhere ~/.local/bin/hgs rename claude/p/one claude/p/review --dry-run\$" --dry-run @nowhere rename claude/p/one claude/p/review
 check "@peer archived rename forwards identity" 0 "^ssh -o BatchMode=yes -o ConnectTimeout=3 nowhere ~/.local/bin/hgs rename claude/p/one claude/p/review --archive $conversation_id --dry-run\$" --dry-run @nowhere rename claude/p/one claude/p/review --archive "$conversation_id"
+# zerus-sa9qn.39: a pasted peer dry-run line reads the alias back as one word and runs nothing.
+alias_paste() {   # $1 = alias
+  local line got dir="$tmp/alias-paste"
+  line="$("$HGS" "@$1" ls --dry-run 2>&1)"
+  rm -rf "${dir:?}"; mkdir -p "$dir"
+  got="$(cd "$dir" && env -i PATH=/usr/bin:/bin HOME="$dir" sh -c 'ssh() { printf "%s" "$5"; }
+'"$line" 2>&1)"
+  if [ "$got" = "$1" ] && [ ! -e "$dir/pwned" ]; then
+    pass=$((pass+1)); echo "ok   @peer dry-run alias reads back: $1"
+  else
+    fail=$((fail+1)); echo "FAIL @peer dry-run alias reads back: $1"; printf '     line: %s\n     read: %s\n' "$line" "$got"
+    [ -e "$dir/pwned" ] && echo "     the pasted line ran a payload"
+  fi
+}
+for alias in 'x;>pwned' '$(>pwned)' '`>pwned`' "it's" 'a"b;>pwned' "x\\';>pwned;#" "x'\$(>pwned)'\`>pwned\`\"" '~root'; do
+  alias_paste "$alias"
+done
 check_not "@peer rename never decorates calling terminal" "^tab " --dry-run @nowhere rename claude/p/one claude/p/review
 check "rename requires source and destination" 1 "." rename
 check "rename requires destination" 1 "." rename claude/p/one
@@ -919,7 +936,8 @@ check "launch token requires new session" 1 "requires --new" --dry-run sh "$P" -
 check "launch token validates UUID" 1 "needs a UUID" --dry-run sh "$P" --new --launch-id invalid
 check "launch token forwards over interactive SSH" 0 "ssh -t.*--launch-id $launch_id" --dry-run @nowhere sh "$P" --new -n group-test --launch-id "$launch_id"
 # New sessions accept the same tags as rename and fork, so the GUI can create them.
-check "new session accepts inner spaces" 0 "-s sh/sample-project/my plan -c " --dry-run sh "$P" --new -n 'my plan'
+# The dry-run line quotes the name as one shell word (zerus-sa9qn.38).
+check "new session accepts inner spaces" 0 "-s 'sh/sample-project/my plan' -c " --dry-run sh "$P" --new -n 'my plan'
 check "@peer new session quotes a spaced name" 0 "--new -n 'my plan' -d --dry-run\$" --dry-run @nowhere sh "$P" --new -n 'my plan' -d
 for bad in ' plan' 'plan ' 'a/b' 'a.b' 'a:b' "$(printf 'a\tb')"; do
   check "new session rejects tag '$bad'" 1 "new session name" --dry-run sh "$P" --new -n "$bad"

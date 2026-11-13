@@ -44,8 +44,9 @@ fn validate(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// One shell word for every agent shell, never the hostile name (zerus-sa9qn.38).
 pub(super) fn command(project: &str, task: &str, attempt: Option<&str>) -> String {
-    let reference = crate::platform::quote(&format!("{project}/{task}"));
+    let reference = zerus_replica::command_reference(project, task);
     match attempt {
         Some(id) => format!("hgs task report-attempt {reference} --attempt {id}"),
         None => format!("hgs task report {reference}"),
@@ -113,6 +114,158 @@ mod tests {
             args(&["orchard/T-234567", "--attempt", id, "--extra"]),
         ] {
             assert!(validate(&bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// What `/bin/sh` passes to `hgs` for each `hgs task` command written in
+    /// backticks in `text`, each run in an empty folder: a payload that ran
+    /// leaves `pwned` there.
+    #[cfg(unix)]
+    fn shell_calls(text: &str) -> Vec<Vec<String>> {
+        let mut calls = Vec::new();
+        let mut rest = text;
+        while let Some(start) = rest.find("`hgs task ") {
+            let command = &rest[start + 1..];
+            let end = command.find('`').expect("a closed command");
+            let folder = tempfile::tempdir().unwrap();
+            let script = format!("hgs() {{ printf '%s\\0' \"$@\"; }}\n{}", &command[..end]);
+            let out = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(script)
+                .current_dir(folder.path())
+                .env("PATH", "/usr/bin:/bin")
+                .output()
+                .unwrap();
+            assert!(
+                !folder.path().join("pwned").exists(),
+                "{:?} ran a payload",
+                &command[..end]
+            );
+            calls.push(
+                String::from_utf8(out.stdout)
+                    .unwrap()
+                    .split_terminator('\0')
+                    .map(str::to_owned)
+                    .collect(),
+            );
+            rest = &command[end + 1..];
+        }
+        calls
+    }
+
+    /// zerus-sa9qn.38: every `hgs task` command an agent is handed names the
+    /// task as one word its shell reads back exactly, or leaves the hostile
+    /// project name out (the bare ID resolves in the agent's own project).
+    #[cfg(unix)]
+    #[test]
+    fn agent_task_commands_never_carry_a_hostile_project_name() {
+        const ID: &str = "00000000-0000-4000-8000-000000000001";
+        let view = zerus_replica::TaskDoc::create(zerus_replica::NewTask {
+            project: "p1",
+            id: "T-234567",
+            text: "Fix it",
+            stage: zerus_replica::Stage::Todo,
+            target: zerus_replica::Target::Any,
+            author: zerus_replica::Actor::Person,
+            rank: "V",
+            now: 1,
+        })
+        .unwrap()
+        .view()
+        .unwrap();
+        let settings = zerus_replica::Settings {
+            task_template: "[Zerus task {ref}]".into(),
+            ..Default::default()
+        };
+        for project in [
+            "orchard",
+            "my app && touch pwned",
+            "x;touch pwned;#",
+            "$(touch pwned)",
+            "`touch pwned`",
+            "a\" ; touch pwned ; \"b",
+            "a|touch pwned",
+            "x'; touch pwned; '",
+            "x\u{2019}; touch pwned; \u{2019}",
+            "x\\'; touch pwned; #",
+            "x\ntouch pwned;#",
+            "x\u{ff1b}touch pwned",
+            "x\u{202e}; touch pwned",
+            "T-zzzzzz\" --project \"victim\" \"x",
+            "My \"cool\" app",
+        ] {
+            let label = format!("{project}/T-234567");
+            let named = if zerus_replica::command_word(&label).is_some() {
+                label.as_str()
+            } else {
+                "T-234567"
+            };
+            let attempt = |verb: &str| {
+                vec![
+                    "task".to_owned(),
+                    verb.into(),
+                    named.into(),
+                    "--attempt".into(),
+                    ID.into(),
+                ]
+            };
+            let plain = |verb: &str| vec!["task".to_owned(), verb.into(), named.into()];
+            let report = format!("`{}`", command(project, "T-234567", Some(ID)));
+            assert_eq!(
+                shell_calls(&report),
+                [attempt("report-attempt")],
+                "{project:?}"
+            );
+            assert_eq!(
+                shell_calls(&format!("`{}`", command(project, "T-234567", None))),
+                [plain("report")],
+                "{project:?}"
+            );
+            let mut pinned = String::new();
+            super::super::controls::pin_begin(&mut pinned, project, "T-234567", ID);
+            pin(&mut pinned, project, "T-234567", ID);
+            assert_eq!(
+                shell_calls(&pinned),
+                [attempt("begin-attempt"), attempt("report-attempt")],
+                "{project:?}"
+            );
+            let feedback =
+                super::super::messages::prompt(project, "T-234567", "m1", "reopen", "Again", None);
+            assert!(
+                feedback.starts_with(&format!("[Zerus task {label} message m1]")),
+                "{feedback}"
+            );
+            assert_eq!(
+                shell_calls(&feedback),
+                [plain("get"), plain("report")],
+                "{project:?}"
+            );
+            let (dispatched, _) =
+                super::super::dispatch_content(&settings, &view, project, true).unwrap();
+            assert!(
+                dispatched.starts_with(&format!("[Zerus task {label}]")),
+                "{dispatched}"
+            );
+            let mut worker = plain("worker");
+            worker.extend(
+                [
+                    "--subagent",
+                    "CHILD_ID",
+                    "--request-id",
+                    "CURRENT_SENT_REQUEST_ID",
+                ]
+                .map(String::from),
+            );
+            // zerus-sa9qn.42: the start acknowledgement is pinned too.
+            assert_eq!(
+                shell_calls(&dispatched),
+                [plain("start"), plain("get"), worker],
+                "{project:?}"
+            );
+            let (direct, _) =
+                super::super::dispatch_content(&settings, &view, project, false).unwrap();
+            assert_eq!(shell_calls(&direct), [plain("start")], "{project:?}");
+            assert!(direct.contains("\n[Zerus task start]\nAcknowledge this task with `hgs task start "));
         }
     }
 }

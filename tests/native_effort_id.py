@@ -40,7 +40,7 @@ def image_digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def moved_record(case, name, record):
+def moved_record(case, name, record, *, existing_machine=False, kind='moved'):
     """Move this exact saved legacy fixture through the real transition code."""
     image = Path(os.environ['ZERUS_PICKER_EFFORT_SEED_IMAGE']).resolve(strict=True)
     expected = os.environ['ZERUS_PICKER_EFFORT_SEED_SHA256']
@@ -58,7 +58,15 @@ def moved_record(case, name, record):
     source = root / 'native-effort-record.json'
     source.write_text(json.dumps(record))
     env = dict(case.env, ZERUS_PICKER_EFFORT_SEED='1',
-               ZERUS_PICKER_EFFORT_RECORD=str(source), ZERUS_PICKER_EFFORT_KIND='moved')
+               ZERUS_PICKER_EFFORT_RECORD=str(source), ZERUS_PICKER_EFFORT_KIND=kind)
+    if existing_machine:
+        # Public read/initialization before the owner-transfer fixture, shared
+        # verbatim by the base-main CLI. The Send keeper only reads this ID.
+        hello = subprocess.run([str(test_input.HGS), 'swarm', 'hello'], env=case.env,
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+        case.assertEqual(hello.returncode, 0, hello.stdout + hello.stderr)
+        node = json.loads(hello.stdout)['node_id']
+        case.assertEqual(str(uuid.UUID(node)), node)
     seeded = subprocess.run([str(image), '--exact', SEED_METHOD, '--ignored', '--test-threads=1'],
                             env=env, stdin=subprocess.DEVNULL, capture_output=True,
                             text=True, timeout=15)
@@ -80,6 +88,80 @@ def moved_record(case, name, record):
     return current, path, legacy
 
 
+def pending_then_message(case, name, record, path, model, effort, text, attempts):
+    """Seed one exact scheduled intent, then use only the public production send.
+
+    The caller owns this private native record and verifies inference/defaults.
+    This also reaches unprimed Kimi without fabricating or priming its CID.
+    """
+    pending = str(uuid.uuid4())
+    original = {key: record.get(key) for key in (
+        'session_id', 'run_id', 'conversation_id', 'pid', 'process_start',
+        'supervisor', 'terminal_name', 'agent', 'agent_home')}
+    record['pending_settings'] = dict(
+        request_id=pending, run_id=record['run_id'],
+        conversation_id=record.get('conversation_id'), model=model, effort=effort,
+        receipt_name=name, receipt_run_id=record['run_id'])
+    Path(path).write_text(json.dumps(record))
+    directory = Path(case.env['HGS_STATE_DIR']) / 'settings_receipts'
+    directory.mkdir(mode=0o700, exist_ok=True)
+    scheduled = directory / (pending + '.json')
+    scheduled.write_text(json.dumps(dict(
+        request_id=pending, name=name, run_id=record['run_id'],
+        conversation_id=record.get('conversation_id'), status='scheduled',
+        model=model, effort=effort, scope='session')))
+    scheduled.chmod(0o600)
+    request = dict(request_id=str(uuid.uuid4()), expected_run_id=record['run_id'],
+                   expected_conversation_id=record.get('conversation_id') or '', text=text)
+    raw = '{\n ' + json.dumps(request, separators=(',', ':'))[1:-1] + '\n}\n'
+    command = [str(test_input.HGS), 'send', name, '--session-id', record['session_id'], '--json']
+    case.env['ZERUS_PENDING_SEND_RECEIPT'] = str(Path(case.env['HGS_STATE_DIR']) /
+                                               'input_receipts' / (request['request_id'] + '.json'))
+    before = attempts()
+    started = time.monotonic()
+    result = subprocess.run(command, env=case.env, input=raw, text=True, capture_output=True, timeout=30)
+    case.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    receipt = json.loads(result.stdout)
+    case.assertEqual(receipt['status'], 'submitted')
+    case.assertEqual((receipt['request_id'], receipt['digest']),
+                     (request['request_id'], hashlib.sha256(raw.encode()).hexdigest()))
+    case.assertEqual((receipt['text'], receipt['run_id'], receipt['conversation_id']),
+                     (text, request['expected_run_id'], request['expected_conversation_id']))
+    case.assertEqual(json.loads(scheduled.read_bytes())['status'], 'applied')
+    current = json.loads(Path(path).read_bytes())
+    case.assertNotIn('pending_settings', current)
+    case.assertNotIn('settings_unconfirmed_at', current)
+    case.assertEqual((current['model'], current['effort']), (model, effort))
+    for key, value in original.items():
+        if key != 'conversation_id':
+            case.assertEqual(current.get(key), value, key)
+    # The production first-message hook may now establish the real CID.
+    if original['conversation_id']:
+        case.assertEqual(current.get('conversation_id'), original['conversation_id'])
+    after = attempts()
+    case.assertNotEqual(after, before)
+    observed = [json.loads(line) for line in bounded_bytes(
+        Path(case.root) / 'native-pending-outer-receipts.jsonl', 1 << 20).splitlines()]
+    case.assertTrue(observed, 'the native case must enter the new pending Send lane')
+    case.assertEqual(observed[0]['receipt'], dict(
+        status='in_progress', request_id=request['request_id'], digest=hashlib.sha256(raw.encode()).hexdigest()))
+    repeated = subprocess.run(command, env=case.env, input=raw, text=True, capture_output=True, timeout=30)
+    case.assertEqual(repeated.returncode, 0, repeated.stdout + repeated.stderr)
+    case.assertEqual(json.loads(repeated.stdout), receipt)
+    case.assertEqual(attempts(), after, 'replayed pending/message request typed twice')
+    changed = subprocess.run(command, env=case.env, input=raw + ' ', text=True, capture_output=True, timeout=30)
+    case.assertNotEqual(changed.returncode, 0)
+    case.assertIn('already used', changed.stderr)
+    case.assertEqual(attempts(), after)
+    print('ZERUS_NATIVE_PENDING_SEND=' + json.dumps(dict(
+        case=case.id(), agent=record['agent'], request_id=request['request_id'],
+        pending_id=pending, hgs_sha256=image_digest(test_input.HGS),
+        seed_sha256=os.environ['ZERUS_PICKER_EFFORT_SEED_SHA256'],
+        seconds=round(time.monotonic() - started, 3), submitted=True,
+        empty_conversation=not original['conversation_id'], replay_typed=False)), flush=True)
+    return receipt
+
+
 def key_log(case, existing=None):
     """Observe actual attempts while forwarding to the unchanged private tmux."""
     log = Path(existing) if existing is not None else Path(case.root) / 'native-effort-keys.jsonl'
@@ -98,13 +180,24 @@ def key_log(case, existing=None):
     current = Path(case.bin) / 'tmux'
     current.rename(original)
     script = Path(case.root) / 'native-effort-tmux.py'
-    script.write_text('import json,pathlib,subprocess,sys\n'
+    script.write_text('import json,os,pathlib,subprocess,sys\n'
                       'args=sys.argv[1:]\n'
                       "if args[:1]==['send-keys']:\n"
                       ' with pathlib.Path(' + repr(str(log)) + ").open('a') as file:\n"
                       "  file.write(json.dumps(args)+'\\n')\n"
+                      " if os.environ.get('ZERUS_PENDING_SEND_RECEIPT'):\n"
+                      "  path=pathlib.Path(os.environ['ZERUS_PENDING_SEND_RECEIPT'])\n"
+                      "  value=json.loads(path.read_bytes()) if path.exists() else {}\n"
+                      "  receipt={key:value.get(key) for key in ('status','request_id','digest')}\n"
+                      '  with pathlib.Path(' + repr(str(Path(case.root) / 'native-pending-outer-receipts.jsonl')) + ").open('a') as file:\n"
+                      "   file.write(json.dumps(dict(args=args,receipt=receipt))+'\\n')\n"
                       'raise SystemExit(subprocess.call([' + repr(str(original)) + ']+args))\n')
-    case.script('tmux', '#!/bin/sh\nexec ' + shlex.quote(sys.executable) + ' ' +
+    # Only keys need this Python observer. Starting another interpreter for
+    # every capture/probe can consume the keeper's original finite budget on
+    # macOS; preserve the retained wrapper's exact read path and any observer
+    # it already supplies, including its argv and inherited streams.
+    case.script('tmux', '#!/bin/sh\nif [ "$1" != send-keys ]; then exec ' +
+                shlex.quote(str(original)) + ' "$@"; fi\nexec ' + shlex.quote(sys.executable) + ' ' +
                 shlex.quote(str(script)) + ' "$@"\n')
 
     return attempts

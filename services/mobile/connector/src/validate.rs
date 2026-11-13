@@ -366,6 +366,14 @@ pub fn validate(
         .and_then(Value::as_str)
         .filter(|operation| crate::capabilities::implemented(operation))
         .ok_or_else(|| error(UNSUPPORTED))?;
+    if operation == "send_receipt" {
+        crate::send_receipt::validate(request, request_id)?;
+        return Ok(Validated {
+            operation: operation.into(),
+            session: request["session"].as_str().expect("validated").into(),
+            payload: request.get("payload").cloned(),
+        });
+    }
     if crate::media::handles(operation) {
         return crate::media::validate(operation, request, request_id, context);
     }

@@ -44,7 +44,7 @@ fn validate(request: &Request) -> Result<()> {
         return Err("Invalid terminal identity".into());
     }
     match request.action.as_str() {
-        "snapshot"
+        "snapshot" | "composer"
             if request.terminal_binding_id.is_none()
                 && request.text.is_none()
                 && request.enter.is_none()
@@ -92,6 +92,24 @@ fn validate(request: &Request) -> Result<()> {
                 {
                     return Err("Invalid literal terminal text".into());
                 }
+            }
+            Ok(())
+        }
+        // zerus-wkj9l: the exact composer text the person confirmed to discard.
+        "clear-input" => {
+            let binding = request.terminal_binding_id.as_deref().ok_or("Clear input needs a verified binding")?;
+            if binding.len() != 64 || !binding.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
+                return Err("Invalid terminal binding".into());
+            }
+            let expires = request.expires_at.ok_or("Clear input needs a relay deadline")?;
+            if !expires.is_finite() || expires <= 0.0 {
+                return Err("Clear input expired or has an invalid deadline".into());
+            }
+            let text = request.text.as_deref().ok_or("Clear input needs the confirmed text")?;
+            if request.key.is_some() || request.enter.is_some() || text.trim().is_empty()
+                || text.chars().count() > input::settle::RESIDUE_CHARS
+            {
+                return Err("Invalid clear input request".into());
             }
             Ok(())
         }
@@ -223,6 +241,11 @@ fn check_handoff(name: &str, request: &Request) -> Result<Value> {
         return Err("Terminal input expired before native handoff".into());
     }
     let record = checked(name, request)?;
+    // zerus-iitw8.5: a Claude send between its paste and its proof holds no
+    // lock; nothing else may type into that composer meanwhile.
+    if input::input_typing(&record).is_some() {
+        return Err("A message is being entered into this session; try again in a few seconds".into());
+    }
     let metadata = frame(&record)?;
     if metadata["terminal_binding_id"].as_str() != request.terminal_binding_id.as_deref() {
         return Err("Terminal binding changed before input".into());
@@ -240,6 +263,163 @@ fn check_handoff(name: &str, request: &Request) -> Result<Value> {
     }
     Ok(record)
 }
+fn claim(record: &Value) -> backend::InputClaim<'_> {
+    backend::InputClaim {
+        pane: string(record, "pane"),
+        name: terminal_name(record),
+        run_id: string(record, "run_id"),
+        agent: string(record, "agent"),
+        pid: record["pid"].as_u64(),
+    }
+}
+
+/// The composer in one stable frame (the same cursor around the capture).
+fn composer_now(terminal: &dyn backend::TerminalBackend, record: &Value) -> Option<input::composer::Composer> {
+    let (screen, x, y) = input::settle::frame(terminal, &claim(record))?;
+    Some(input::composer::read(record, &screen, x, y))
+}
+
+/// The Terminal tab's read for Clear input (zerus-wkj9l): the composer's text
+/// and whether the person may clear it now, with the reason when not.
+fn composer_state(record: &Value, metadata: &Value) -> Value {
+    use input::composer::Composer;
+    let composer = composer_now(backend::current(), record);
+    let (state, text) = match &composer {
+        Some(Composer::Empty) => ("empty", String::new()),
+        Some(Composer::Text(text)) => ("text", text.clone()),
+        _ => ("unknown", String::new()),
+    };
+    let reason = if !input::composer::supported(string(record, "agent")) {
+        "Clear input is not available for this agent"
+    } else if metadata["input_mode"] != true {
+        "Exit tmux copy mode first"
+    } else if string(record, "activity") == "busy" {
+        "Wait until the agent is idle"
+    } else if input::send_in_flight(record) {
+        IN_FLIGHT
+    } else if state == "unknown" {
+        "The input is not recognized here; clear it in Terminal"
+    } else if state == "empty" {
+        "The input is empty"
+    } else {
+        ""
+    };
+    json!({"state": state, "text": text, "clearable": reason.is_empty(), "reason": reason})
+}
+
+/// A message to this session is still in its proof window (zerus-wkj9l.1).
+const IN_FLIGHT: &str = "A message is still being delivered; wait for its outcome";
+
+/// The composer just before the first key must be exactly the confirmed text:
+/// a changed, empty or unrecognized composer is refused with nothing typed.
+fn admit(composer: Option<input::composer::Composer>, expected: &str) -> Result<()> {
+    use input::composer::Composer;
+    match composer {
+        Some(Composer::Text(text)) if text == expected => Ok(()),
+        Some(Composer::Text(_)) => Err("The input changed; review it again before clearing".into()),
+        Some(Composer::Empty) => Err("The input is already empty".into()),
+        _ => Err("The input is not recognized here; clear it in Terminal".into()),
+    }
+}
+
+/// At most `count` rounds of End and Ctrl+U, each after `handoff` checks the
+/// binding and the deadline again, so no key follows an expired deadline or a
+/// changed binding. Each round is re-read: `Ok` with the round that emptied the
+/// composer, else the reason with the last text read. Never retried.
+fn rounds(
+    count: usize,
+    expected: &str,
+    mut handoff: impl FnMut() -> Result<()>,
+    mut keys: impl FnMut() -> Result<()>,
+    mut reread: impl FnMut() -> Option<input::composer::Composer>,
+) -> std::result::Result<usize, (String, Option<String>)> {
+    use input::composer::Composer;
+    let mut shown = expected.to_owned();
+    for round in 1..=count {
+        handoff().map_err(|error| (error, Some(shown.clone())))?;
+        keys().map_err(|error| (error, Some(shown.clone())))?;
+        match reread() {
+            Some(Composer::Empty) => return Ok(round),
+            Some(Composer::Text(text)) if text != shown => shown = text,
+            Some(Composer::Text(text)) => {
+                return Err(("The input did not change after clearing".into(), Some(text)));
+            }
+            _ => return Err(("The input could not be read after clearing".into(), None)),
+        }
+    }
+    Err(("The input still holds text".into(), Some(shown)))
+}
+
+/// Clears exactly the confirmed composer text (zerus-wkj9l): an explicit person
+/// action, never automatic and never used by a delivery retry. End and Ctrl+U
+/// clear a line in Claude Code, Codex and Kimi and do nothing on an empty
+/// composer (Ctrl+C would quit Codex there), and each round is re-read; it
+/// stops as soon as the composer is empty or stops changing.
+fn clear(name: &str, request: &Request, path: &Path, hash: &str) -> Result<Value> {
+    let _guard = lock(None)?;
+    // zerus-iitw8.7: a send in its proof window refuses Clear input with the
+    // wording `composer_state` shows, before `check_handoff` refuses the same
+    // window by the send's typing marker (zerus-iitw8.5).
+    if input::send_in_flight(&checked(name, request)?) {
+        return Err(IN_FLIGHT.into());
+    }
+    let record = check_handoff(name, request)?;
+    if string(&record, "activity") == "busy" {
+        return Err("The agent is busy; clear its input once it is idle".into());
+    }
+    // Any client's send still in its proof window may have its message in the
+    // composer: never discard it (zerus-wkj9l.1).
+    if input::send_in_flight(&record) {
+        return Err(IN_FLIGHT.into());
+    }
+    let expected = request.text.clone().unwrap_or_default();
+    let terminal = backend::current();
+    admit(composer_now(terminal, &record), &expected)?;
+    let mut answer = identity(request, name, "claimed");
+    answer["request_hash"] = json!(hash);
+    answer["terminal_binding_id"] = json!(request.terminal_binding_id);
+    atomic(path, &answer.to_string())?;
+    let pane = string(&record, "pane");
+    let outcome = rounds(
+        (expected.lines().count() + 2).min(12),
+        &expected,
+        || check_handoff(name, request).map(|_| ()),
+        || {
+            terminal.send(
+                pane,
+                &[backend::Key::Named("End"), backend::Key::Named("C-u")],
+            )?;
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            Ok(())
+        },
+        || composer_now(terminal, &record),
+    );
+    match outcome {
+        Ok(rounds) => {
+            answer["status"] = json!("cleared");
+            answer["discarded"] = json!(expected);
+            answer["rounds"] = json!(rounds);
+            // The person's action, kept with the session: it also settles an
+            // unconfirmed input whose residue this was (input::input_unconfirmed).
+            if let Ok(mut current) = read(name) {
+                if string(&current, "run_id") == string(&record, "run_id") {
+                    current["input_cleared_at"] = json!(now());
+                    current["input_cleared"] = json!({"request_id": request.request_id, "chars": expected.chars().count(),
+                        "sha256": format!("{:x}", Sha256::digest(expected.as_bytes()))});
+                    let _ = write(&mut current);
+                }
+            }
+        }
+        Err((error, residue)) => {
+            answer["status"] = json!("uncertain");
+            answer["error"] = json!(error);
+            answer["composer"] = json!(residue);
+        }
+    }
+    atomic(path, &answer.to_string())?;
+    Ok(answer)
+}
+
 fn input(name: &str, request: &Request, path: &Path, hash: &str) -> Result<Value> {
     let _guard = lock(None)?;
     let record = check_handoff(name, request)?;
@@ -326,7 +506,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     let request: Request = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     validate(&request)?;
     let name = &args[0];
-    let mut answer = if request.action == "snapshot" {
+    let mut answer = if matches!(request.action.as_str(), "snapshot" | "composer") {
         let _guard = lock(None)?;
         let record = checked(name, &request)?;
         let metadata = frame(&record)?;
@@ -347,6 +527,16 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
             != metadata["terminal_binding_id"]
         {
             return Err("Terminal changed during screen capture".into());
+        }
+        if request.action == "composer" {
+            let mut answer = identity(&request, name, "composer");
+            answer["terminal_binding_id"] = metadata["terminal_binding_id"].clone();
+            answer["composer"] = composer_state(&record, &metadata);
+            if frame(&checked(name, &request)?)?["terminal_binding_id"] != metadata["terminal_binding_id"] {
+                return Err("Terminal changed during the composer read".into());
+            }
+            println!("{answer}");
+            return Ok(0);
         }
         answer["input_supported"] = metadata["input_mode"].clone();
         answer["text_supported"] = metadata["input_mode"].clone();
@@ -383,7 +573,12 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
             }
             receipt
         } else {
-            match input(name, &request, &path, &hash) {
+            let attempt = if request.action == "clear-input" {
+                clear(name, &request, &path, &hash)
+            } else {
+                input(name, &request, &path, &hash)
+            };
+            match attempt {
                 Ok(answer) => answer,
                 Err(error) => {
                     let status = if path.exists() { "uncertain" } else { "failed" };
@@ -400,4 +595,133 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     answer.as_object_mut().unwrap().remove("request_hash");
     println!("{answer}");
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use input::composer::Composer;
+
+    /// zerus-wkj9l.4 (M5): only the exact confirmed text admits keys; a
+    /// changed, empty, unrecognized or unreadable composer is refused first.
+    #[test]
+    fn only_the_exact_confirmed_composer_admits_keys() {
+        assert!(admit(Some(Composer::Text("residue".into())), "residue").is_ok());
+        for (composer, error) in [
+            (
+                Some(Composer::Text("other".into())),
+                "The input changed; review it again before clearing",
+            ),
+            (Some(Composer::Empty), "The input is already empty"),
+            (
+                Some(Composer::Unknown),
+                "The input is not recognized here; clear it in Terminal",
+            ),
+            (
+                None,
+                "The input is not recognized here; clear it in Terminal",
+            ),
+        ] {
+            assert_eq!(admit(composer, "residue").unwrap_err(), error);
+        }
+    }
+
+    /// zerus-wkj9l.4 (M4): each round checks the handoff before its keys, so a
+    /// deadline that expires or a binding that changes mid-loop sends no more.
+    #[test]
+    fn every_round_checks_the_handoff_before_its_keys() {
+        use std::cell::{Cell, RefCell};
+        let checks = Cell::new(0);
+        let keys = Cell::new(0);
+        let reads = RefCell::new(vec![Some(Composer::Text("first line".into()))]);
+        let outcome = rounds(
+            4,
+            "first line\nsecond line",
+            || {
+                checks.set(checks.get() + 1);
+                if checks.get() == 2 {
+                    Err("Terminal input expired before native handoff".into())
+                } else {
+                    Ok(())
+                }
+            },
+            || {
+                keys.set(keys.get() + 1);
+                Ok(())
+            },
+            || reads.borrow_mut().remove(0),
+        );
+        assert_eq!(
+            outcome,
+            Err((
+                "Terminal input expired before native handoff".into(),
+                Some("first line".into())
+            ))
+        );
+        assert_eq!(
+            (checks.get(), keys.get()),
+            (2, 1),
+            "no key after the failed check"
+        );
+        // A failed first check sends nothing at all.
+        let keys = Cell::new(0);
+        let outcome = rounds(
+            3,
+            "residue",
+            || Err("Terminal binding changed before input".into()),
+            || {
+                keys.set(keys.get() + 1);
+                Ok(())
+            },
+            || panic!("nothing is read"),
+        );
+        assert_eq!(
+            outcome,
+            Err((
+                "Terminal binding changed before input".into(),
+                Some("residue".into())
+            ))
+        );
+        assert_eq!(keys.get(), 0);
+    }
+
+    #[test]
+    fn rounds_stop_when_the_composer_empties_or_stops_changing() {
+        let script = |reads: Vec<Option<Composer>>| {
+            let reads = std::cell::RefCell::new(reads);
+            rounds(
+                3,
+                "a\nb",
+                || Ok(()),
+                || Ok(()),
+                || reads.borrow_mut().remove(0),
+            )
+        };
+        assert_eq!(
+            script(vec![
+                Some(Composer::Text("a".into())),
+                Some(Composer::Empty)
+            ]),
+            Ok(2)
+        );
+        assert_eq!(
+            script(vec![Some(Composer::Text("a\nb".into()))]),
+            Err((
+                "The input did not change after clearing".into(),
+                Some("a\nb".into())
+            ))
+        );
+        assert_eq!(
+            script(vec![Some(Composer::Unknown)]),
+            Err(("The input could not be read after clearing".into(), None))
+        );
+        assert_eq!(
+            script(vec![
+                Some(Composer::Text("a".into())),
+                Some(Composer::Text("x".into())),
+                Some(Composer::Text("y".into()))
+            ]),
+            Err(("The input still holds text".into(), Some("y".into())))
+        );
+    }
 }

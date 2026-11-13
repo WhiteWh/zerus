@@ -200,7 +200,7 @@ pub(crate) fn hook(root: &Path, record: &Value, event: &Value) {
     );
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Delivery {
     Submitted,
     // Reserved for an authoritative failed receipt; pre-delivery errors do not prove one.
@@ -208,6 +208,38 @@ pub(crate) enum Delivery {
     Failed,
     Uncertain,
 }
+
+/// Metadata only, carried out of the native keeper before any SQLite access.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum DeliveryNotice {
+    IdentityGap,
+    Event { request_id: String, agent: String, conversation: String, child: String, at: f64, outcome: Delivery },
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn describe_delivery(record: &Value, receipt: &Value, outcome: Delivery) -> Option<DeliveryNotice> {
+    let request_id = field(receipt,"request_id")?;
+    let child = field(receipt,"agent_id").unwrap_or("");
+    if source(record,child).is_none() { return Some(DeliveryNotice::IdentityGap); }
+    let at = receipt["submitted_at"].as_f64().filter(|n| n.is_finite() && *n > 0.0)?;
+    Some(DeliveryNotice::Event {
+        request_id:request_id.into(),agent:field(record,"agent")?.into(),
+        conversation:field(record,"conversation_id")?.into(),child:child.into(),at,outcome,
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn emit_delivery_notice(root: &Path, notice: DeliveryNotice) {
+    match notice {
+        DeliveryNotice::IdentityGap => gap(root,Gap::Identity),
+        DeliveryNotice::Event { request_id,agent,conversation,child,at,outcome } => delivery(root,
+            &serde_json::json!({"agent":agent,"conversation_id":conversation}),
+            &serde_json::json!({"request_id":request_id,"agent_id":child,"submitted_at":at}),outcome),
+    }
+}
+
 pub(crate) fn delivery(root: &Path, record: &Value, receipt: &Value, outcome: Delivery) {
     let Some(id) = field(receipt, "request_id") else {
         return;

@@ -33,6 +33,9 @@ METHODS = (
     'test_kimi_native.NativeKimi.test_launch_prompt_waits_for_trust_and_is_not_replayed_on_resume',
     'test_kimi_native.NativeKimi.test_exact_input_reaches_the_model_once',
     'test_kimi_native.NativeKimi.test_busy_attachment_send_is_typed_once_and_delivered_once',
+    'test_kimi_native.NativeKimi.test_clear_input_discards_a_residue_and_kimi_keeps_running',
+    'test_kimi_native.NativeKimi.test_hint_reaches_model_through_real_hgs_hook',
+    'test_kimi_native.NativeKimi.test_manual_compaction_reaches_native_hooks',
     'test_kimi_native.NativeKimi.test_pause_and_resume_keep_the_conversation',
     'test_kimi_native.NativeKimi.test_rolling_window_429_recovers_in_the_same_conversation',
     'test_kimi_questions_native.NativeKimiTrust.test_a_short_unviewed_pane_grows_until_the_whole_prompt_shows_then_trusts_once',
@@ -45,6 +48,7 @@ METHODS = (
     'test_kimi_questions_native.NativeKimiQuestions.test_short_question_explicit_retry_resumes_the_existing_other_editor',
     'test_kimi_questions_native.NativeKimiQuestions.test_short_question_foreign_other_is_preserved_without_submission',
     'test_kimi_native.NativeKimi.test_id_settings_before_first_message_preserves_empty_conversation_and_defaults',
+    'test_kimi_native.NativeKimi.test_id_unprimed_pending_settings_then_message_makes_one_model_call_and_keeps_defaults',
     'test_kimi_native.NativeKimi.test_id_effort_preserves_raw_request_identity_and_shared_defaults',
 )
 LOG_LIMIT = 64 * 1024**2

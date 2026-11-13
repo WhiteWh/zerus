@@ -45,6 +45,32 @@ class SessionActions(test_pause.Harness):
             self.assertEqual(self.binding(name)["run_id"], before["run_id"])
             self.t("has-session", "-t", "=" + name)
 
+    def test_a_session_restarted_since_it_was_listed_is_refused_and_kept(self):
+        # zerus-sa9qn.23: the desktop ends a session, and each chosen child
+        # session, through this envelope with the run it listed. A restart
+        # since then (another run of the same session) is refused and kept,
+        # whether the end is Terminate, Kill (forget) or Move to archive.
+        name = self.start("codex")
+        listed = self.binding(name)
+        self.assertEqual(self.action(name, self.command(name, "pause"))["status"], "completed")
+        resumed = self.action(name, self.command(name, "resume"))
+        self.assertEqual(resumed["status"], "completed")
+        run = resumed["result_target"]["run_id"]
+        self.assertNotEqual(run, listed["run_id"])
+        self.wait(lambda: self.binding(name).get("run_id") == run and not self.binding(name).get("expected_id"))
+        for action in ("terminate", "forget"):
+            result = self.action(name, self.command(name, action, record=listed))
+            self.assertEqual(result["status"], "failed", result)
+            self.assertEqual(self.binding(name)["run_id"], run)
+            self.t("has-session", "-t", "=" + name)
+        self.assertEqual(self.action(name, self.command(name, "pause"))["status"], "completed")
+        result = self.action(name, self.command(name, "archive", record=listed))
+        self.assertEqual(result["status"], "failed", result)
+        self.assertEqual(self.binding(name)["run_id"], run)
+        # The session as it is now still archives.
+        self.assertEqual(self.action(name, self.command(name, "archive"))["status"], "completed")
+        self.assertFalse(self.binding(name))
+
     def test_concurrent_identical_rename_uuid_has_one_mutation_and_durable_receipt(self):
         name = self.start("codex")
         before = self.binding(name)

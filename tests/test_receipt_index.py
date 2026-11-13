@@ -107,6 +107,108 @@ class ReceiptIndex(unittest.TestCase):
                   payload=dict(expected_run_id="wrong", expected_conversation_id=self.fixture.conversation_id),
                   success=False)
 
+    def test_worker_seals_missing_originals_as_explicit_gaps_and_recovers_restoration(self):
+        paths = [self.original(n) for n in range(1, 4)]
+        original = paths[0].read_bytes()
+        kept = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in paths[1:]}
+        self.migrate()
+        paths[0].unlink()
+        self.migrate()
+        projected = self.inspect()
+        coverage = projected["receipt_projection"]
+        self.assertTrue(coverage["migration_complete"], coverage)
+        self.assertEqual(coverage["state"], "partial")
+        self.assertEqual(coverage["unattributed_errors"], 1)
+        self.assertIn(dict(request_id=paths[0].stem, state="missing"), coverage["gaps"])
+        with closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(db.execute("SELECT reason FROM receipt_errors WHERE source='terminal' AND name=?",
+                                        (paths[0].name,)).fetchone(), ("missing",))
+            self.assertEqual(db.execute("SELECT indexed FROM receipt_sources WHERE source='terminal'").fetchone(), (3,))
+        self.assertEqual(self.ids(projected), [paths[2].stem, paths[1].stem])
+        self.assertFalse(coverage["absence_confirmed"])
+        for p, expected in kept.items():
+            self.assertEqual((p.read_bytes(), p.stat().st_mtime_ns), expected)
+        paths[0].write_bytes(original)
+        self.migrate()
+        restored = self.inspect()
+        self.assertEqual(restored["receipt_projection"]["state"], "indexed")
+        self.assertEqual(restored["receipt_projection"]["gaps"], [])
+        self.assertEqual(self.ids(restored), [p.stem for p in reversed(paths)])
+
+    def test_worker_seals_a_disappeared_family_without_dropping_its_bindings(self):
+        paths = [self.original(n) for n in range(1, 3)]
+        self.migrate()
+        for p in paths:
+            p.unlink()
+        self.directory.rmdir()
+        self.migrate()
+        projected = self.inspect()["receipt_projection"]
+        self.assertTrue(projected["migration_complete"], projected)
+        self.assertEqual(projected["state"], "partial")
+        self.assertEqual(projected["unattributed_errors"], 2)
+        exact = [g for g in projected["gaps"] if "request_id" in g]
+        self.assertEqual({g["request_id"] for g in exact}, {p.stem for p in paths})
+        self.assertEqual({g["state"] for g in exact}, {"missing"})
+        with closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM receipt_rows WHERE source='terminal'").fetchone(), (2,))
+        self.assertFalse(self.directory.exists())
+
+    def test_worker_cannot_seal_an_unrestored_cache_scope(self):
+        # id-settings-cx's real-CLI cache-scope probe (zerus-a4mub.42).
+        path = self.original(1)
+        before = path.read_bytes(), path.stat().st_mtime_ns
+        self.migrate()
+        self.assertEqual(self.ids(self.inspect()), [path.stem])
+        with closing(sqlite3.connect(self.database)) as db, db:
+            db.execute("UPDATE receipt_rows SET agent='foreign-child' WHERE request=?", (path.stem,))
+        invalid = self.inspect()["receipt_projection"]
+        self.assertFalse(invalid["catalog_complete_at_snapshot"])
+        self.migrate()
+        restored = self.inspect()
+        self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), before)
+        self.assertEqual(self.ids(restored), [path.stem],
+                         "worker declared complete coverage without restoring the original scope")
+        self.assertTrue(restored["receipt_projection"]["migration_complete"])
+        self.assertEqual(restored["receipt_projection"]["gaps"], [])
+
+    def test_external_first_prompt_pin_is_a_gap_before_reconciliation(self):
+        path = self.original(1, conversation_id="", first_message=True)
+        self.migrate()
+        original = path.read_bytes(), path.stat().st_mtime_ns
+        with closing(sqlite3.connect(self.database)) as db, db:
+            before = db.execute("SELECT value FROM receipt_meta WHERE key='epoch'").fetchone()[0]
+            db.execute("UPDATE receipt_rows SET conversation='foreign-conversation' WHERE request=?", [path.stem])
+        with closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(db.execute("SELECT complete,errors FROM receipt_sources WHERE source='terminal'").fetchone(), (0, 1))
+            self.assertEqual(db.execute("SELECT reason FROM receipt_errors WHERE source='terminal'").fetchone(), ('binding_changed',))
+            self.assertNotEqual(db.execute("SELECT value FROM receipt_meta WHERE key='epoch'").fetchone()[0], before)
+        projection = self.inspect()["receipt_projection"]
+        self.assertFalse(projection["catalog_complete_at_snapshot"])
+        self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), original)
+
+    def test_validated_original_pin_keeps_an_existing_page_chain(self):
+        path = self.original(1, conversation_id="", first_message=True)
+        self.original(2)
+        self.original(3)
+        self.migrate()
+        page = self.page(limit=2)
+        self.assertTrue(page['receipt_projection']['catalog_complete_at_snapshot'])
+        cursor = page['receipt_projection']['next_cursor']
+        self.assertTrue(cursor)
+        with closing(sqlite3.connect(self.database)) as db:
+            epoch = db.execute("SELECT value FROM receipt_meta WHERE key='epoch'").fetchone()[0]
+        record = json.loads(path.read_text())
+        record['resolved_conversation_id'] = self.fixture.conversation_id
+        path.write_text(json.dumps(record))
+        original = path.read_bytes(), path.stat().st_mtime_ns
+        self.migrate()
+        with closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(db.execute("SELECT value FROM receipt_meta WHERE key='epoch'").fetchone()[0], epoch)
+            self.assertEqual(db.execute("SELECT complete,errors FROM receipt_sources WHERE source='terminal'").fetchone(), (1, 0))
+        resumed = self.page(cursor=cursor, limit=3)
+        self.assertEqual(self.ids(resumed), [path.stem])
+        self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), original)
+
     def test_snapshot_pages_survive_backdated_arrivals_and_reject_other_scopes(self):
         originals = [self.original(n) for n in range(1, 13)]
         self.migrate()

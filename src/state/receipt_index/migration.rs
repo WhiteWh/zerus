@@ -27,7 +27,16 @@ pub(super) fn stamp(path: &Path) -> Result<String> {
 }
 fn try_guard(path: &Path) -> Result<Option<Guard>> {
     private_dir(path.parent().ok_or("Invalid index lock")?)?;
-    let file = lock_file(path)?;
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).write(true);
+    crate::platform::private_open(&mut options);
+    crate::platform::no_follow(&mut options);
+    let file = options
+        .open(path)
+        .map_err(|_| "Receipt index worker lock is unavailable")?;
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return Err("Receipt index worker lock is unavailable".into());
+    }
     match file.try_lock_exclusive() {
         Ok(()) => Ok(Some(Guard::held(file))),
         Err(error) if crate::platform::lock_contended(&error) => Ok(None),
@@ -55,8 +64,20 @@ fn request_worker(state: &Path) {
             return Ok(());
         };
         let attempt = state.join("receipt-index-attempt.json");
-        let last = fs::File::open(&attempt)
+        // A corrupt hint must not park the requesting send/inspection. Keep
+        // its existing 4 KiB read bound and refuse links/non-regular objects.
+        let mut options = OpenOptions::new();
+        options.read(true);
+        crate::platform::refuse_link(&mut options);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+        }
+        let last = options
+            .open(&attempt)
             .ok()
+            .filter(|file| file.metadata().is_ok_and(|m| m.is_file()))
             .and_then(|file| serde_json::from_reader::<_, Value>(file.take(4096)).ok())
             .and_then(|value| value["at"].as_f64())
             .unwrap_or(0.0);
@@ -87,10 +108,21 @@ fn request_worker(state: &Path) {
 
 struct Walk {
     source: Source,
-    entries: ReadDir,
+    entries: Option<ReadDir>,
     started: String,
     covered: bool,
+    after: Option<String>,
     indexed: i64,
+    epoch: String,
+    count_at_start: i64,
+}
+fn source_witness(catalog: &Catalog, source: Source) -> Result<(String, i64)> {
+    sql(catalog.db.query_row(
+        "SELECT (SELECT value FROM receipt_meta WHERE key='epoch'),indexed
+           FROM receipt_sources WHERE source=?",
+        [source.key()],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ))
 }
 pub(super) struct Migration {
     catalog: Catalog,
@@ -109,8 +141,14 @@ impl Migration {
         Self::with_sources(state, vec![Source::Question], true)
     }
     fn with_sources(state: &Path, sources: Vec<Source>, force: bool) -> Result<Self> {
+        let catalog = Catalog::open(state, true)?;
+        // Disk-backed SQLite scratch, scoped to this worker connection. A
+        // restart begins a new walk; no in-memory set grows with history.
+        sql(catalog.db.execute_batch(
+            "PRAGMA temp_store=FILE; CREATE TEMP TABLE receipt_walk_seen(request TEXT PRIMARY KEY);",
+        ))?;
         Ok(Self {
-            catalog: Catalog::open(state, true)?,
+            catalog,
             sources,
             force,
             next_source: 0,
@@ -164,97 +202,175 @@ impl Migration {
                     "UPDATE receipt_sources SET complete=0 WHERE source=?",
                     [source.key()],
                 ))?;
-                if started == "absent" {
-                    // An empty fresh namespace is a usable empty snapshot. A
-                    // disappeared store with known receipts is explicitly unknown.
-                    sql(self.catalog.db.execute("UPDATE receipt_sources SET stamp='absent',complete=(indexed=0) WHERE source=?",[source.key()]))?;
-                    continue;
-                }
-                let entries =
-                    fs::read_dir(&directory).map_err(|_| "Receipt source is unavailable")?;
+                sql(self.catalog.db.execute("DELETE FROM receipt_walk_seen", []))?;
+                let entries = if started == "absent" {
+                    None
+                } else {
+                    Some(fs::read_dir(&directory).map_err(|_| "Receipt source is unavailable")?)
+                };
                 let covered = prior.is_some_and(|(stamp, complete)| complete && stamp == started);
+                let (epoch, count_at_start) = source_witness(&self.catalog, source)?;
                 self.walk = Some(Walk {
                     source,
                     entries,
                     started,
                     covered,
+                    after: None,
                     indexed: 0,
+                    epoch,
+                    count_at_start,
                 });
             }
             let walk = self.walk.as_mut().unwrap();
-            match walk.entries.next() {
-                Some(Ok(entry)) => {
-                    examined += 1;
-                    let filename = entry.file_name();
-                    let Some(filename) = filename.to_str().filter(|name| name.ends_with(".json"))
-                    else {
-                        continue;
-                    };
-                    let id = filename.strip_suffix(".json").unwrap();
-                    let known: bool = sql(self.catalog.db.query_row(
+            if let Some(entries) = walk.entries.as_mut() {
+                match entries.next() {
+                    Some(Ok(entry)) => {
+                        examined += 1;
+                        let filename = entry.file_name();
+                        let Some(filename) =
+                            filename.to_str().filter(|name| name.ends_with(".json"))
+                        else {
+                            continue;
+                        };
+                        let id = filename.strip_suffix(".json").unwrap();
+                        let known: bool = sql(self.catalog.db.query_row(
                         "SELECT EXISTS(SELECT 1 FROM receipt_rows WHERE source=? AND request=?)",
                         params![walk.source.key(), id],
                         |row| row.get(0),
                     ))?;
-                    if !known && walk.covered {
-                        // The unchanged directory was previously covered, but
-                        // its row vanished without notification. Reject old
-                        // snapshot cursors and withhold completeness until the
-                        // repair commits, then restore the original.
-                        sql(self.catalog.db.execute(
-                            "UPDATE receipt_meta SET value=? WHERE key='epoch'",
-                            [uuid::Uuid::new_v4().to_string()],
-                        ))?;
-                        sql(self.catalog.db.execute(
-                            "UPDATE receipt_sources SET complete=0 WHERE source=?",
-                            [walk.source.key()],
-                        ))?;
-                    }
-                    let loaded = read_original(&entry.path());
-                    match loaded {
-                        Ok(value) => {
-                            if self
-                                .catalog
-                                .remember(walk.source, &entry.path(), &value)
-                                .is_err()
-                            {
-                                self.catalog.error(walk.source, filename, "corrupt")?;
-                            }
+                        if !known && walk.covered {
+                            // The unchanged directory was previously covered, but
+                            // its row vanished without notification. Reject old
+                            // snapshot cursors and withhold completeness until the
+                            // repair commits, then restore the original.
+                            sql(self.catalog.db.execute(
+                                "UPDATE receipt_meta SET value=? WHERE key='epoch'",
+                                [uuid::Uuid::new_v4().to_string()],
+                            ))?;
+                            sql(self.catalog.db.execute(
+                                "UPDATE receipt_sources SET complete=0 WHERE source=?",
+                                [walk.source.key()],
+                            ))?;
                         }
-                        Err(reason) => self.catalog.error(walk.source, filename, reason)?,
+                        let loaded = read_original(&entry.path());
+                        match loaded {
+                            Ok(value) => {
+                                if self
+                                    .catalog
+                                    .remember(walk.source, &entry.path(), &value)
+                                    .is_err()
+                                {
+                                    self.catalog.error(walk.source, filename, "corrupt")?;
+                                }
+                            }
+                            Err(reason) => self.catalog.error(walk.source, filename, reason)?,
+                        }
+                        sql(self
+                            .catalog
+                            .db
+                            .execute("INSERT OR IGNORE INTO receipt_walk_seen VALUES(?)", [id]))?;
                     }
-                    let indexed: bool = sql(self.catalog.db.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM receipt_rows WHERE source=? AND request=?)",
-                        params![walk.source.key(), id],
-                        |row| row.get(0),
-                    ))?;
-                    walk.indexed += i64::from(indexed);
+                    Some(Err(_)) => {
+                        examined += 1;
+                        self.catalog.error(
+                            walk.source,
+                            "@enumeration",
+                            "enumeration_incomplete",
+                        )?;
+                        self.walk = None;
+                    }
+                    None => {
+                        walk.entries = None;
+                        // Discovery may repair a lost row and rotate the epoch.
+                        // The retained-row count starts only after that repair.
+                        (walk.epoch, walk.count_at_start) =
+                            source_witness(&self.catalog, walk.source)?;
+                    }
                 }
-                Some(Err(_)) => {
-                    examined += 1;
-                    self.catalog
-                        .error(walk.source, "@enumeration", "enumeration_incomplete")?;
-                    self.walk = None;
+                continue;
+            }
+            // The directory walk alone cannot find an original that vanished.
+            // Page the existing binding index as well, using its (source,
+            // request) unique index. Every checked row shares this step's
+            // count/time budget. Present paths were already validated above.
+            let row: Option<(String, bool)> = sql(self.catalog.db.query_row(
+                "SELECT request,EXISTS(SELECT 1 FROM receipt_walk_seen WHERE request=receipt_rows.request)
+                   FROM receipt_rows WHERE source=?1 AND request>?2
+                   ORDER BY request LIMIT 1",
+                params![walk.source.key(), walk.after.as_deref().unwrap_or("")],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).optional())?;
+            if let Some((id, seen)) = row {
+                examined += 1;
+                walk.indexed += 1;
+                walk.after = Some(id.clone());
+                if seen {
+                    continue;
                 }
-                None => {
-                    let source = walk.source;
-                    let current = stamp(&self.catalog.state.join(source.directory()));
-                    let complete = current.as_ref().is_ok_and(|stamp| *stamp == walk.started);
-                    sql(self.catalog.db.execute(
-                        "UPDATE receipt_sources SET stamp=?,complete=?,indexed=? WHERE source=?",
-                        params![walk.started, complete, walk.indexed, source.key()],
-                    ))?;
-                    sql(self.catalog.db.execute(
-                        "DELETE FROM receipt_errors WHERE source=? AND name IN('@source','@enumeration')",
-                        [source.key()],
-                    ))?;
-                    sql(self.catalog.db.execute(
+                if id.is_empty() || !bounded_identity(&id, 128) || id.contains(['/', '\\']) {
+                    return Err("Receipt index is unavailable".into());
+                }
+                let filename = format!("{id}.json");
+                let path = self
+                    .catalog
+                    .state
+                    .join(walk.source.directory())
+                    .join(&filename);
+                match read_original(&path) {
+                    Ok(value) => {
+                        if self.catalog.remember(walk.source, &path, &value).is_err() {
+                            self.catalog.error(walk.source, &filename, "corrupt")?;
+                        }
+                    }
+                    Err(reason) => {
+                        // Keep the original binding and locator. Its absence
+                        // is a durable explicit gap, never an absent send or
+                        // permission to replay. Publish a change so history
+                        // consumers revisit an already imported original too.
+                        self.catalog.error(walk.source, &filename, reason)?;
+                        let stamp = format!("gap:{reason}");
+                        let previous: String = sql(self.catalog.db.query_row(
+                            "SELECT stamp FROM receipt_rows WHERE source=? AND request=?",
+                            params![walk.source.key(), id],
+                            |row| row.get(0),
+                        ))?;
+                        if previous != stamp {
+                            let change = self.catalog.bump()?;
+                            sql(self.catalog.db.execute(
+                                "UPDATE receipt_rows SET stamp=?,change=? WHERE source=? AND request=?",
+                                params![stamp, change, walk.source.key(), id],
+                            ))?;
+                        }
+                    }
+                }
+                continue;
+            }
+            let source = walk.source;
+            let current = stamp(&self.catalog.state.join(source.directory()));
+            let (epoch, count) = source_witness(&self.catalog, source)?;
+            let complete = current.as_ref().is_ok_and(|stamp| *stamp == walk.started)
+                && epoch == walk.epoch
+                && count == walk.count_at_start;
+            // Count each retained binding in the already budgeted indexed
+            // pass, including missing originals and previously seen paths.
+            // A backdated arrival or a changed row set can pass the cursor:
+            // keep the live trigger count until a fresh stable walk finishes.
+            // An insert can also repair an existing file without changing its
+            // directory stamp or epoch. The trigger witness catches that race.
+            sql(self.catalog.db.execute(
+                "UPDATE receipt_sources SET stamp=?1,complete=?2,
+                   indexed=CASE WHEN ?2 THEN ?3 ELSE indexed END WHERE source=?4",
+                params![walk.started, complete, walk.indexed, source.key()],
+            ))?;
+            sql(self.catalog.db.execute(
+                "DELETE FROM receipt_errors WHERE source=? AND name IN('@source','@enumeration')",
+                [source.key()],
+            ))?;
+            sql(self.catalog.db.execute(
                         "INSERT INTO receipt_meta VALUES('verified_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                         [now().to_string()],
                     ))?;
-                    self.walk = None;
-                }
-            }
+            self.walk = None;
         }
         sql(transaction.commit())?;
         Ok(false)
@@ -286,3 +402,6 @@ pub(super) fn worker(state: &Path) -> Result<i32> {
     }
     Ok(0)
 }
+
+#[cfg(test)]
+mod tests;

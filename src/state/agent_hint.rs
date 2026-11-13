@@ -14,7 +14,7 @@ const REVISION: u64 = 1;
 pub(super) const FORK_REVISION_ENV: &str = "HGS_FORK_AGENT_HINT_REVISION";
 
 fn supported(record: &Value) -> bool {
-    ["claude", "codex"].contains(&string(record, "agent"))
+    ["claude", "codex", "kimi"].contains(&string(record, "agent"))
 }
 
 fn marked(record: &Value, conversation: &str) -> bool {
@@ -46,6 +46,25 @@ pub(super) fn inherit_fork(record: &mut Value, revision: Option<&str>) {
     }
 }
 
+/// A host or native session receives the fixed hint unless its account opted out.
+pub(super) fn for_account(account: &str) -> Option<&'static str> {
+    crate::config::configured_agent_hint(account).then_some(HINT)
+}
+
+/// Claim a native-channel attempt after checking policy and exact identity.
+/// The caller persists the mark before any native effect; it is not a receipt.
+pub(super) fn claim(record: &mut Value) -> bool {
+    let conversation = string(record, "conversation_id");
+    if marked(record, conversation) {
+        return false;
+    }
+    if conversation.is_empty() {
+        return false;
+    }
+    record["agent_hint"] = json!({"conversation_id":conversation,"revision":REVISION});
+    true
+}
+
 /// Only the lifecycle's already-verified same-conversation resume calls this.
 /// A new run ID is expected, while provider and conversation must still match.
 pub(super) fn carry_resume(previous: &Value, record: &mut Value) {
@@ -59,8 +78,9 @@ pub(super) fn carry_resume(previous: &Value, record: &mut Value) {
     }
 }
 
-/// The caller has admitted and bound the main SessionStart through the normal
-/// run/pane/provider guards. Optional policy failure cannot break tracking.
+/// The caller has admitted and bound the main native start or prompt event
+/// through the normal run/pane/provider guards. Optional policy failure cannot
+/// break tracking.
 pub(super) fn start(record: &mut Value, event: &Value) -> Option<&'static str> {
     if !admitted(record, event) {
         return None;
@@ -73,8 +93,13 @@ pub(super) fn start(record: &mut Value, event: &Value) -> Option<&'static str> {
 }
 
 fn admitted(record: &Value, event: &Value) -> bool {
+    let expected = if string(record, "agent") == "kimi" {
+        "UserPromptSubmit"
+    } else {
+        "SessionStart"
+    };
     supported(record)
-        && string(event, "hook_event_name") == "SessionStart"
+        && string(event, "hook_event_name") == expected
         && string(event, "agent_id").is_empty()
         && !string(event, "session_id").is_empty()
         && event["session_id"] == record["conversation_id"]
@@ -85,7 +110,8 @@ fn decide(record: &mut Value, event: &Value, enabled: bool) -> Option<&'static s
         return None;
     }
     let conversation = string(record, "conversation_id").to_owned();
-    let replaced = matches!(string(event, "source"), "compact" | "clear");
+    let source = string(event, "source");
+    let replaced = string(record, "agent") != "kimi" && matches!(source, "compact" | "clear");
     let inherited = record
         .as_object_mut()
         .unwrap()
@@ -140,6 +166,23 @@ pub(super) fn output(writer: &mut impl Write, context: &str) -> Result<()> {
         .write_all(&bytes)
         .and_then(|()| writer.flush())
         .map_err(|_| "Could not write SessionStart context; delivery is unknown".into())
+}
+
+pub(super) fn output_for(agent: &str, writer: &mut impl Write, context: &str) -> Result<()> {
+    if agent != "kimi" {
+        return output(writer, context);
+    }
+    #[derive(serde::Serialize)]
+    struct Output<'a> {
+        message: &'a str,
+    }
+    let mut bytes = serde_json::to_vec(&Output { message: context })
+        .map_err(|_| "Could not encode Kimi UserPromptSubmit context")?;
+    bytes.push(b'\n');
+    writer
+        .write_all(&bytes)
+        .and_then(|()| writer.flush())
+        .map_err(|_| "Could not write Kimi UserPromptSubmit context; delivery is unknown".into())
 }
 
 #[cfg(test)]
@@ -282,7 +325,6 @@ mod tests {
         decide(&mut original, &event("one", "startup"), true);
         original["agent_hint_inherited"] = json!({"conversation_id":"parent","revision":1});
         for (agent, conversation, kind, child) in [
-            ("kimi", "one", "SessionStart", ""),
             ("opencode", "one", "SessionStart", ""),
             ("dsh", "one", "SessionStart", ""),
             ("claude", "other", "SessionStart", ""),
@@ -304,6 +346,47 @@ mod tests {
             carry_resume(&original, &mut resumed);
             assert!(resumed.get("agent_hint").is_none());
         }
+    }
+
+    #[test]
+    fn kimi_prompt_hint_is_once_per_conversation_without_compact_reemission() {
+        let prompt = |conversation: &str, source: &str| {
+            let mut event = event(conversation, source);
+            event["hook_event_name"] = json!("UserPromptSubmit");
+            event
+        };
+        let mut run = record("kimi", "one");
+        assert_eq!(
+            decide(&mut run, &prompt("one", "startup"), true),
+            Some(HINT)
+        );
+        for source in ["resume", "startup", "compact", "resume"] {
+            assert_eq!(decide(&mut run, &prompt("one", source), true), None);
+        }
+        let previous = run.clone();
+        let mut resumed = record("kimi", "one");
+        resumed["run_id"] = json!("new-run");
+        carry_resume(&previous, &mut resumed);
+        for kind in ["SessionStart", "PreCompact", "PostCompact"] {
+            let mut lifecycle = event("one", "resume");
+            lifecycle["hook_event_name"] = json!(kind);
+            assert_eq!(decide(&mut resumed, &lifecycle, true), None);
+            assert!(marked(&resumed, "one"));
+        }
+        assert_eq!(decide(&mut resumed, &prompt("one", "resume"), true), None);
+        resumed["conversation_id"] = json!("two");
+        assert_eq!(
+            decide(&mut resumed, &prompt("two", "clear"), true),
+            Some(HINT)
+        );
+        assert_eq!(decide(&mut resumed, &prompt("two", "resume"), true), None);
+        let mut wrong = record("kimi", "one");
+        assert_eq!(decide(&mut wrong, &event("one", "startup"), true), None);
+        let mut bytes = Vec::new();
+        output_for("kimi", &mut bytes, HINT).unwrap();
+        let mut expected = serde_json::to_vec(&json!({"message":HINT})).unwrap();
+        expected.push(b'\n');
+        assert_eq!(bytes, expected);
     }
 
     #[test]
@@ -353,7 +436,8 @@ mod tests {
             include_bytes!("../../tests/fixtures/session-start-context.json")
         );
         assert_eq!(
-            serde_json::from_slice::<Value>(&bytes).unwrap()["hookSpecificOutput"]["additionalContext"],
+            serde_json::from_slice::<Value>(&bytes).unwrap()["hookSpecificOutput"]
+                ["additionalContext"],
             text
         );
         assert_eq!(bytes.last(), Some(&b'\n'));

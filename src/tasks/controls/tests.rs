@@ -136,6 +136,17 @@ fn a_pinned_begin_is_one_acknowledgement_and_does_not_rewrite_user_text() {
     assert!(prompt.contains("do not run both"));
 }
 
+/// zerus-sa9qn.42: the instructions name the start command each dispatched
+/// prompt pins instead of asking the agent to compose it, and managed work
+/// still finds that sentence to replace.
+#[test]
+fn the_instructions_point_to_the_pinned_start_command() {
+    let instructions = super::super::AGENT_INSTRUCTIONS;
+    assert_eq!(instructions.matches(PLAIN_START).count(), 1);
+    assert!(!instructions.contains("Acknowledge a dispatched task with `hgs task start <ref>`"));
+    assert!(PLAIN_START.contains("the `hgs task start` command its prompt pins"));
+}
+
 #[test]
 fn dormant_helpers_keep_instructions_and_existing_report_prompt_bytes() {
     assert!(help_marker().is_none());

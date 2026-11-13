@@ -75,6 +75,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        Desktop task message references: desktop-task-message-reference-v1
        Desktop task message input review: desktop-task-message-input-review-v1
        Desktop deferred send ABI: desktop-deferred-send-v1
+       Desktop question route: route-questions-v1
        Desktop deferred answer ABI: desktop-deferred-answer-v1
        Desktop deferred answer update phase: desktop-deferred-answer-update-phase-v1
        Desktop deferred compact to send ABI: desktop-deferred-compact-to-send-v1
@@ -155,12 +156,14 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        hgs @host download --path REMOTE_PATH --output LOCAL_FILE   download a file through configured SSH
        hgs [@host] answer <session> --json   answer an exact pending question from JSON stdin
        hgs [@host] answer <session> --observe --json   read a pending question's consent identity, changing nothing
+       hgs [@host] delivery receipt <original-session-name> --json   read exact original send evidence from JSON stdin
        hgs [@host] parent <session> --json   read, adopt (as the calling agent), set or clear its parent session from JSON stdin
        hgs [@host] read <session> --json   mark the current reply/attention read (JSON stdin)
        hgs [@host] subagent retire <session> --json   retire an exact stale child record (JSON stdin)
        Subagent retirement ABI: subagent-retire-v1
        hgs [@host] notifications <session> --json   shared mute preference (session-notifications-v1)
        hgs [@host] keep-warm <session> --json   keep the prompt cache warm for 1-7 hours or always (session-keep-warm-v1)
+       hgs [@host] question-routing <session> --json   send this child's questions to its parent, the person's switch (session-question-routing-v1)
        hgs [@host] fork <session> [-n name] [-d] [--archive ID]  branch into a new conversation
        hgs [@host] effort <session> --json   change this agent's effort from JSON stdin
        hgs [@host] settings <session> --json model and effort for this session (JSON stdin)
@@ -232,6 +235,8 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        Mobile clear-context ABI: dismiss-prompt-v1
        session-notifications-v1
        session-keep-warm-v1
+       delivery-receipt-v1
+       session-question-routing-v1
        session-parent-v1
        launch-parent-v1
        claimed-parent-v1
@@ -242,7 +247,8 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        hgs [@host] rename <session> <new-full-name> [--archive <id>]
        hgs [@host] archives --json [--bounded]   date-filtered archive pages (JSON stdin); --bounded caps counts at 10,000 and each scan at 25,000 rows
        archive-bounded-pages-v1
-       hgs [@host] archive <session>          move a stopped conversation to Archive
+       hgs [@host] archive <session> [--with-children]   move a stopped conversation to Archive
+       hgs [@host] terminate <session> [--expected-run-id ID] [--with-children]   stop and keep the conversation in Archive
        hgs [@host] pause <session>|--all       save and gracefully close idle agents
        hgs [@host] resume <session>|--all [-d] [--archive <id>]   restore exact conversations
        hgs [@host] resume <session> --fresh [-d] [--expected-run-id ID]   same settings, new conversation
@@ -282,6 +288,7 @@ Claude/Codex/Kimi install tracking hooks; Codex hooks need trust in /hooks.
 pause refuses untracked/busy sessions. Saved sessions survive reboot; a opens them again.
 Archive holds completed conversations; only explicit resume --archive restores them.
 terminate stops a tracked session and preserves it in Archive; kill explicitly forgets it.
+terminate/archive --with-children then end the session's live child sessions, each by its own rules.
 pause/resume --all covers tracked terminal agents; OpenCode uses exact per-session controls.
 resume --all excludes Archive. kill --archive forgets only that archived entry.
 rename changes the session label while preserving its agent/project, process and conversation.
@@ -300,7 +307,7 @@ fn local_sessions() -> Result<()> {
 // Repository preparation owns only its checkout and receipt. Like the existing
 // configuration/control commands, it does not require or enable a session host.
 fn needs_local_sessions(command: &str) -> bool {
-    !matches!(command, "ls" | "watch" | "machine" | "presence" | "swarm" | "project" | "account" | "speech" | "analytics" | "graph" | "wait" | "mobile" | "hooks" | "repository" | "session-action-status" | "subagent" | "path-info")
+    !matches!(command, "ls" | "watch" | "machine" | "presence" | "swarm" | "project" | "account" | "speech" | "analytics" | "graph" | "wait" | "mobile" | "hooks" | "repository" | "session-action-status" | "delivery" | "subagent" | "path-info")
 }
 
 /// Fails unless this process may run what the processes of a session run:
@@ -521,6 +528,7 @@ fn unix_only_usage(line: &str) -> bool {
         zerus_client_core::desktop::task_message::REFERENCE_HELP_MARKER,
         zerus_client_core::desktop::task_message::review::HELP_MARKER,
         zerus_client_core::desktop::deferred_send::HELP_MARKER,
+        zerus_client_core::desktop::question_route::HELP_MARKER,
         zerus_client_core::desktop::deferred_answer::HELP_MARKER,
         zerus_client_core::desktop::deferred_answer::UPDATE_PHASE_MARKER,
         zerus_client_core::desktop::compact_to_send::HELP_MARKER,
@@ -580,6 +588,7 @@ fn advertised(usage: Cow<'static, str>, linux: bool) -> Cow<'static, str> {
         zerus_client_core::desktop::task_message::REFERENCE_HELP_MARKER,
         zerus_client_core::desktop::task_message::review::HELP_MARKER,
         zerus_client_core::desktop::deferred_send::HELP_MARKER,
+        zerus_client_core::desktop::question_route::HELP_MARKER,
         zerus_client_core::desktop::deferred_answer::HELP_MARKER,
         zerus_client_core::desktop::deferred_answer::UPDATE_PHASE_MARKER,
         zerus_client_core::desktop::compact_to_send::HELP_MARKER,
@@ -655,6 +664,14 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
         && args.get(1).map(String::as_str)==Some("native-picker-custodian-v1") {
         return state::dispatch(&args[1..]).map_err(|e| Error::new(1, e));
     }
+    // A connector read uses the long-lived closed namespace so a downgraded
+    // executable refuses it instead of falling through to a session launch.
+    // This one read needs neither a native session host nor a writer.
+    if args.first().map(String::as_str) == Some("__state")
+        && args.get(1).map(String::as_str) == Some("delivery")
+    {
+        return state::dispatch(&args[1..]).map_err(|e| Error::new(1, e));
+    }
     if crate::desktop::launchd_command(&args) {
         args.pop();
         return dispatch(args).map_err(|mut error| {
@@ -701,7 +718,7 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
             return Err(Error::new(1,"Mobile target identity changed; refresh computers"));
         }
         let guarded_at = if args.get(2).is_some_and(|a| a=="--client") {4} else {2};
-        let actual = if args.get(guarded_at).is_some_and(|a| a=="session-action-status") {
+        let actual = if args.get(guarded_at).is_some_and(|a| a=="session-action-status"||a=="delivery") {
             state::lifecycle_receipt_machine(&config).map_err(|_| Error::new(1,"Native machine identity is unavailable"))?
         } else {
             crate::swarm::local_node_id(&config).map_err(|_| Error::new(1,"Native machine identity is unavailable"))?
@@ -791,6 +808,24 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
         return Ok(1);
     };
     let args = &args[index + 1..];
+    // The per-child question route switch (zerus-sa9qn.32): refuse a change
+    // from an agent's own process tree here, before any `@host` forwarding,
+    // because the peer's hgs cannot see this caller (zerus-sa9qn.47). This is
+    // a guard against accidental agent use, not a security boundary: the
+    // person-only control is the global switch (zerus-sa9qn.49).
+    let routed = if command == "--expect-machine" {
+        args.get(1).map(String::as_str)
+    } else {
+        Some(command.as_str())
+    };
+    if routed == Some("question-routing") && crate::state::session_graph::caller_record().is_some()
+    {
+        println!(
+            "{}",
+            serde_json::json!({"ok": false, "error": "agent_refused"})
+        );
+        return Ok(1);
+    }
     // zerus-ucck P1c: a session reference selects the session it names on every
     // session command, through the same checks as `--session-id`. `inspect`
     // keeps its own read-only reference path below.
@@ -1084,8 +1119,9 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
             }
             state_command(command, &args)
         }
-        "inspect" | "processes" | "worktrees" | "git-status" | "repository" | "dirs" | "send" | "send-now" | "session-action" | "session-action-status" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "read" | "notifications" | "keep-warm"
-        | "attachment" | "file-read" | "recovery" | "voice" | "schedules" | "graph" | "wait" | "parent" => {
+        "inspect" | "processes" | "worktrees" | "git-status" | "repository" | "dirs" | "send" | "send-now" | "session-action" | "session-action-status" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "read" | "notifications" | "keep-warm" | "question-routing"
+        | "attachment" | "file-read" | "recovery" | "voice" | "schedules" | "graph" | "wait" | "parent" | "delivery" => {
+            if command == "delivery" && dry { return Err(Error::new(1,"Delivery receipt reads do not support --dry-run")); }
             if command == "session-action-status" && dry { return Err(Error::new(1,"Lifecycle receipt reads do not support --dry-run")); }
             if command == "repository" && dry { return Err(Error::new(1,"Repository operations do not support --dry-run")); }
             if command == "wait" && dry { return Err(Error::new(1,"Wait operations do not support --dry-run")); }
@@ -1096,7 +1132,7 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
             if command == "worktrees" && args.first().is_some_and(|s| s == "create" || s == "cancel" || s == "remove" || s == "sweep" || s == "policy" && args.get(1).is_some_and(|s|s=="set")) && dry {
                 return Err(Error::new(1, "worktree creation, removal and policy changes do not support --dry-run"));
             }
-            if (matches!(command.as_str(), "processes" | "send" | "send-now" | "session-action" | "terminal" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "recovery" | "read" | "notifications" | "keep-warm" | "voice" | "schedules" | "parent") || (command=="attachment" && has(args,"--stage"))) && dry {
+            if (matches!(command.as_str(), "processes" | "send" | "send-now" | "session-action" | "terminal" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "recovery" | "read" | "notifications" | "keep-warm" | "question-routing" | "voice" | "schedules" | "parent") || (command=="attachment" && has(args,"--stage"))) && dry {
                 return Err(Error::new(1, "message input does not support --dry-run"));
             }
             state_command(command, args)
@@ -1395,6 +1431,7 @@ fn selector_markers(command: &str, args: &[String]) -> Result<Option<Vec<Marker>
     match inner {
         "notifications" => markers.push(Marker::Line("session-notifications-v1")),
         "keep-warm" => markers.push(Marker::Line("session-keep-warm-v1")),
+        "question-routing" => markers.push(Marker::Line("session-question-routing-v1")),
         "hooks" => markers.push(Marker::Text("hooks-health-v1")),
         _ => {}
     }
@@ -1465,7 +1502,7 @@ fn is_reference_call(command: &str, args: &[String]) -> bool {
 const SESSION_COMMANDS: &[&str] = &[
     "inspect", "reference", "processes", "send", "send-now", "history", "history-projection",
     "terminal", "session-action", "session-action-status", "compact-context", "clear-context",
-    "interrupt", "attachment", "file-read", "answer", "read", "notifications", "keep-warm", "fork", "effort",
+    "interrupt", "attachment", "file-read", "answer", "read", "notifications", "keep-warm", "question-routing", "fork", "effort",
     "settings", "schedules", "voice", "hooks", "a", "kill", "rename", "archive", "terminate",
     "pause", "resume", "native-ui", "__dsh-ui-url", "parent",
 ];
@@ -1519,7 +1556,7 @@ fn resolves_label_first(command: &str, args: &[String], here: bool, local: bool)
 const REQUEST_GUARDED: &[&str] = &[
     "send", "send-now", "history", "history-projection", "terminal", "session-action",
     "compact-context", "clear-context", "interrupt", "attachment", "file-read", "answer", "read",
-    "notifications", "keep-warm", "effort", "settings", "schedules", "voice", "parent",
+    "notifications", "keep-warm", "question-routing", "effort", "settings", "schedules", "voice", "parent",
 ];
 /// Its guard is on its command line (`--expected-run-id`, `--run`, `--run-id`,
 /// `--expected-conversation-id`, `--conversation`).
@@ -1702,6 +1739,19 @@ fn account_sign_in(command: &str, args: &[String]) -> bool {
     rest.first().is_some_and(|operation| operation == "login")
 }
 
+/// The SSH line a peer command's dry run prints, for a person to read or
+/// paste: the alias is one word that reads back exactly (zerus-sa9qn.39). An
+/// alias may hold `;`, `$(…)`, backticks and quotes, and `platform::quote`
+/// leaves a leading `~` or `=` bare, which shells expand (tilde, zsh equals),
+/// so such an alias is quoted too. The remote command is already quoted.
+fn dry_run_line(flags: &[String], alias: &str, remote: &str) -> String {
+    let mut word = platform::quote(alias);
+    if word == alias && alias.starts_with(['~', '=']) {
+        word = format!("'{alias}'");
+    }
+    format!("ssh {} {word} {remote}", platform::join(flags))
+}
+
 /// `remote`, optionally as the one verified hop of a session reference: the
 /// peer runs the command guarded by `--expect-machine MACHINE`, with the same
 /// SSH options the command has without it (zerus-ucck P1c).
@@ -1782,7 +1832,7 @@ fn remote_via(
         "--expect-machine" => {
             let expected=require(&args,0,"Missing expected machine identity")?;
             let actual=require(&args,1,"Missing guarded command")?;
-            let terminal=!has(&args,"-d")&&!matches!(actual,"dirs"|"path-info"|"worktrees"|"repository"|"session-action-status"|"--help"|"dsh"|"opencode");
+            let terminal=!has(&args,"-d")&&!matches!(actual,"dirs"|"path-info"|"worktrees"|"repository"|"session-action-status"|"delivery"|"--help"|"dsh"|"opencode");
             flags=vec!["-o".into(),"BatchMode=yes".into(),"-o".into(),"ConnectTimeout=3".into()];
             if terminal { flags.insert(0,"-t".into()); }
             let mut all=vec!["--expect-machine".into(),expected.into(),"--client".into(),config.host().into()];
@@ -1790,7 +1840,7 @@ fn remote_via(
         }
         "session-action-status" if machine.is_none() => return Err(Error::new(2,"A remote lifecycle receipt read requires --expect-machine ID before session-action-status")),
         "archives" | "session-action-status" | "kill" | "terminate" | "pause" | "inspect" | "reference" | "processes" | "worktrees" | "git-status" | "repository" | "dirs" | "project" | "archive" | "rename"
-        | "send" | "send-now" | "session-action" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "schedules" | "graph" | "wait" | "guide" | "dsh" | "opencode" | "attachment" | "file-read" | "recovery" | "swarm" | "read" | "notifications" | "keep-warm" | "speech" | "analytics" | "voice" | "hooks" | "parent" | "path-info" | "--help" => {
+        | "send" | "send-now" | "session-action" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "schedules" | "graph" | "wait" | "guide" | "dsh" | "opencode" | "attachment" | "file-read" | "recovery" | "swarm" | "read" | "notifications" | "keep-warm" | "question-routing" | "speech" | "analytics" | "voice" | "hooks" | "parent" | "delivery" | "path-info" | "--help" => {
             flags = vec![
                 "-o".into(),
                 "BatchMode=yes".into(),
@@ -1873,6 +1923,8 @@ fn remote_via(
         // Probe the same installed executable without consuming JSON stdin.
         // These probes are POSIX scripts; a fish login shell runs them under sh.
         platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qF 'hgs [@host] wait'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to track waits' >&2; exit 1; fi",platform::join(&remote_args)))
+    } else if command == "delivery" {
+        platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*delivery-receipt-v1[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to read original send receipts' >&2; exit 1; fi",platform::join(&remote_args)))
     } else if command == "parent" {
         // An older peer would read an unknown command as an agent launch.
         platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*session-parent-v1[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to change parent sessions' >&2; exit 1; fi",platform::join(&remote_args)))
@@ -1880,6 +1932,8 @@ fn remote_via(
         platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*session-notifications-v1[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to change notification preferences' >&2; exit 1; fi",platform::join(&remote_args)))
     } else if command == "archives" && has(&args, "--bounded") {
         bounded_archive_script(&remote_args, false)
+    } else if command == "question-routing" {
+        platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*session-question-routing-v1[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to change where child questions go' >&2; exit 1; fi",platform::join(&remote_args)))
     } else if command == "keep-warm" {
         platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*session-keep-warm-v1[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to keep the prompt cache warm' >&2; exit 1; fi",platform::join(&remote_args)))
     } else if command == "hooks" {
@@ -1911,13 +1965,16 @@ fn remote_via(
     let remote = if global_dry || has(&args, "--dry-run") { remote } else {
         let mut markers: Vec<(&str, bool)> = match command {
             "--expect-machine" if args.get(1).is_some_and(|v| v == "session-action-status") => vec![("guarded-create-v1", false), ("lifecycle-receipt-status-v1", true)],
+            "--expect-machine" if args.get(1).is_some_and(|v| v == "delivery") => vec![("guarded-create-v1", false), ("delivery-receipt-v1", true)],
             "--expect-machine" if wrapped_path_info => vec![("guarded-create-v1", false), ("hgs [@host] path-info --path", false)],
             "--expect-machine" => vec![("guarded-create-v1", false)],
             "subagent" => vec![("Subagent retirement ABI: subagent-retire-v1", false)],
             "repository" => vec![("repository-clone-v1", false)],
+            "delivery" => vec![("delivery-receipt-v1", true)],
             "wait" => vec![("hgs [@host] wait", false)],
             "notifications" => vec![("session-notifications-v1", true)],
             "keep-warm" => vec![("session-keep-warm-v1", true)],
+            "question-routing" => vec![("session-question-routing-v1", true)],
             "hooks" => vec![("hooks-health-v1", false)],
             "analytics" => vec![("hgs [@host] analytics --json", false)],
             "path-info" => vec![("hgs [@host] path-info --path", false)],
@@ -1950,7 +2007,7 @@ fn remote_via(
                 println!("tab {title} color={}", platform::tab_color(config, target));
             }
         }
-        println!("ssh {} {target} {remote}", platform::join(&flags));
+        println!("{}", dry_run_line(&flags, target, &remote));
         return Ok(0);
     }
     if command == "ls" && has(&args, "--json") {
@@ -3356,6 +3413,57 @@ fn launch(
 
 #[cfg(test)]
 mod tests {
+    /// zerus-sa9qn.39: a pasted peer dry-run line reads the alias back as one
+    /// word and runs nothing, in sh (run) and fish (`fish_words`, modelled).
+    #[cfg(unix)]
+    #[test]
+    fn a_peer_dry_run_prints_the_alias_as_one_inert_word() {
+        let flags = ["-o", "BatchMode=yes"].map(String::from);
+        let remote = "~/.local/bin/hgs ls --local --dry-run";
+        assert_eq!(super::dry_run_line(&flags, "nowhere", remote), format!("ssh -o BatchMode=yes nowhere {remote}"));
+        assert_eq!(super::dry_run_line(&flags, "~root", remote), format!("ssh -o BatchMode=yes '~root' {remote}"));
+        assert_eq!(super::dry_run_line(&flags, "=ls", remote), format!("ssh -o BatchMode=yes '=ls' {remote}"));
+        for alias in [
+            "nowhere",
+            "x;>pwned",
+            "$(>pwned)",
+            "`>pwned`",
+            "it's",
+            "a\"b;>pwned",
+            "x\\';>pwned;#",
+            "x'$(>pwned)'`>pwned`\"",
+            "~root",
+            "~",
+            "=ls",
+        ] {
+            let line = super::dry_run_line(&flags, alias, remote);
+            let head = line.strip_suffix(&format!(" {remote}")).unwrap();
+            assert_eq!(
+                crate::platform::fish_words(head),
+                Ok(["ssh", "-o", "BatchMode=yes", alias].map(String::from).to_vec()),
+                "{line}"
+            );
+            let folder = tempfile::tempdir().unwrap();
+            let out = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!("ssh() {{ printf '%s\\0' \"$@\"; }}\n{line}"))
+                .current_dir(folder.path())
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", folder.path())
+                .output()
+                .unwrap();
+            assert!(!folder.path().join("pwned").exists(), "{line} ran a payload");
+            let words: Vec<String> = String::from_utf8(out.stdout)
+                .unwrap()
+                .split_terminator('\0')
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(words.get(2).map(String::as_str), Some(alias), "{line}: {words:?}");
+            assert_eq!(words.len(), 7, "{line}: {words:?}");
+        }
+    }
+
     #[test]
     fn claude_history_uses_the_released_folder_cap_and_hash() {
         // Golden folder names from VL/Pe/sre in Claude Code 2.1.322. Each
@@ -3792,6 +3900,8 @@ mod tests {
         assert!(USAGE.lines().any(|line| line.trim() == task_marker));
         let send_marker = zerus_client_core::desktop::deferred_send::HELP_MARKER;
         assert!(USAGE.lines().any(|line| line.trim() == send_marker));
+        let route_marker = zerus_client_core::desktop::question_route::HELP_MARKER;
+        assert!(USAGE.lines().any(|line| line.trim() == route_marker));
         let answer_marker = zerus_client_core::desktop::deferred_answer::HELP_MARKER;
         assert!(USAGE.lines().any(|line| line.trim() == answer_marker));
         let phase_marker = zerus_client_core::desktop::deferred_answer::UPDATE_PHASE_MARKER;
@@ -3864,6 +3974,10 @@ mod tests {
                     ""
                 )
                 .replace(
+                    "       Desktop question route: route-questions-v1\n",
+                    ""
+                )
+                .replace(
                     "       Desktop deferred answer ABI: desktop-deferred-answer-v1\n",
                     ""
                 )
@@ -3914,6 +4028,7 @@ mod tests {
         let references = zerus_client_core::desktop::task_message::REFERENCE_HELP_MARKER;
         let review = zerus_client_core::desktop::task_message::review::HELP_MARKER;
         let send = zerus_client_core::desktop::deferred_send::HELP_MARKER;
+        let route = zerus_client_core::desktop::question_route::HELP_MARKER;
         let answer = zerus_client_core::desktop::deferred_answer::HELP_MARKER;
         let phase = zerus_client_core::desktop::deferred_answer::UPDATE_PHASE_MARKER;
         let compact = zerus_client_core::desktop::compact_to_send::HELP_MARKER;
@@ -3927,6 +4042,7 @@ mod tests {
         assert!(!mac.lines().any(|line| line.trim() == references));
         assert!(!mac.lines().any(|line| line.trim() == review));
         assert!(!mac.lines().any(|line| line.trim() == send));
+        assert!(!mac.lines().any(|line| line.trim() == route));
         assert!(!mac.lines().any(|line| line.trim() == answer));
         assert!(!mac.lines().any(|line| line.trim() == phase));
         assert!(!mac.lines().any(|line| line.trim() == compact));
@@ -3954,6 +4070,10 @@ mod tests {
                 )
                 .replace(
                     "       Desktop deferred send ABI: desktop-deferred-send-v1\n",
+                    ""
+                )
+                .replace(
+                    "       Desktop question route: route-questions-v1\n",
                     ""
                 )
                 .replace(

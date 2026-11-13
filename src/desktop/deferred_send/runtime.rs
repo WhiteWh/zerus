@@ -8,7 +8,7 @@
 use super::child;
 use super::child::Ended;
 use super::receipt::{self, Evidence, Observed, Roots};
-use super::{consent::Consent, ledger, target};
+use super::{admitted::Admitted, ledger, target, Reservation};
 use crate::desktop::creation_clone::lease::{Lease, Machine};
 use crate::desktop::custody::Observation;
 use crate::desktop::not_admitted;
@@ -43,6 +43,20 @@ use zerus_desktop_ledger::operations::{
 
 /// The refusal of every macOS original until a qualified child seam exists.
 pub(super) const MAC_UNAVAILABLE: &str = "deferred_send_native_image_unavailable";
+/// What one owner-approved question route admission did (zerus-sa9qn.8).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::desktop) enum Routed {
+    /// The route's reservation and the queued original committed together.
+    Admitted,
+    /// The route's own reservation recorded a final refusal; no original.
+    Refused,
+    /// Nothing was written: the owner, its lease or capacity is unavailable,
+    /// or the request already has an original.
+    Unavailable,
+    /// The person's switch was off at the reservation: nothing was written.
+    Off,
+}
 /// The conservative refusal: the request may have been admitted.
 const UNAVAILABLE: &str = "deferred_send_unavailable";
 /// How far one admission got before it ended (zerus-tlb9q).
@@ -74,18 +88,18 @@ type Hook = Arc<dyn Fn() + Send + Sync>;
 /// arguments and stdin the child would be given, the custody lock and the
 /// original's resources guard.
 #[cfg(test)]
-type Executor = Arc<
+pub(in crate::desktop) type Executor = Arc<
     dyn Fn(&wire::Plan, &[String], &[u8], &Arc<InheritedLock>, &Arc<dyn Send + Sync>) -> Ended
         + Send
         + Sync,
 >;
-/// The original's physical resources: the SAME custody lock and its consent,
+/// The original's physical resources: the SAME custody lock and its live admission,
 /// which holds the lease and with it the serve-owner loan. Every original
 /// pipe keeps a copy until its real end, so neither the custody drain nor a
 /// takeover can pass while a descendant still holds one.
 struct Original {
     _custody: Arc<InheritedLock>,
-    _consent: Arc<Consent>,
+    _live: Arc<Admitted>,
 }
 /// What preparation opens off the actor before any child: the exact custody
 /// and the original receipt store.
@@ -108,13 +122,13 @@ struct Probe {
 enum Work {
     Preparing {
         ticket: Ticket,
-        consent: Arc<Consent>,
+        live: Arc<Admitted>,
         worker: JoinHandle<()>,
         result: mpsc::Receiver<Result<Prepared2>>,
     },
     Running {
         ticket: Ticket,
-        consent: Arc<Consent>,
+        live: Arc<Admitted>,
         worker: JoinHandle<()>,
         result: mpsc::Receiver<Ended>,
         resources: Arc<Original>,
@@ -123,7 +137,7 @@ enum Work {
     },
     Draining {
         id: String,
-        consent: Arc<Consent>,
+        live: Arc<Admitted>,
         roots: Arc<Roots>,
         token: Arc<()>,
         probe: Option<Probe>,
@@ -140,7 +154,7 @@ pub(in crate::desktop) struct Runtime {
     machine: Option<Machine>,
     lease: Option<Arc<Lease>>,
     // Only an original native admission inserts here. Startup/import never does.
-    admitted: BTreeMap<String, Arc<Consent>>,
+    admitted: BTreeMap<String, Arc<Admitted>>,
     work: Option<Work>,
     stopping: bool,
     failed: bool,
@@ -157,7 +171,7 @@ pub(in crate::desktop) struct Runtime {
     image: Option<Arc<Pin>>,
     /// The receipt read's deadline after the drain ([`READ_WAIT`]).
     read_wait: Duration,
-    /// Runs in the final spawn turn, before the consent veto.
+    /// Runs in the final spawn turn, before the admission veto.
     #[cfg(test)]
     spawn_hook: Option<Hook>,
     /// Runs in the drain worker after the receipt bytes are read.
@@ -221,8 +235,8 @@ impl Runtime {
         if let Some(lease) = self.lease.take() {
             lease.invalidate();
         }
-        for consent in self.admitted.values() {
-            consent.stop();
+        for live in self.admitted.values() {
+            live.stop();
         }
     }
     fn refresh(&mut self, store: &Store, exclusion: Option<Arc<HandoffLock>>) {
@@ -336,11 +350,11 @@ impl Runtime {
                 self.machine.as_ref(),
                 self.exclusion.as_ref(),
             )?;
-            let consent = Consent::admitted(verified, lease.clone())?;
+            let live = Admitted::person_consent(verified, lease.clone())?;
             if original.is_none() {
                 // A corrupt or incomplete budget is not a capacity proof.
                 proof = Proof::Unprovable;
-                let capacity = ledger::capacity(&tx, &consent.original)?;
+                let capacity = ledger::capacity(&tx, &live.original)?;
                 proof = Proof::NoRow;
                 ensure!(capacity, "deferred send capacity unavailable");
             }
@@ -348,15 +362,15 @@ impl Runtime {
             proof = Proof::Admitting;
             let row = ledger::admit(
                 &tx,
-                &consent.original,
+                &live.original,
                 &lease.writer_epoch,
                 chrono::Utc::now().timestamp_millis(),
             )?;
             tx.commit()?;
             // The same original again gets only its own receipt; only the
-            // first admission holds live consent.
+            // first admission holds the live admission.
             if original.is_none() {
-                self.admitted.insert(id.clone(), consent);
+                self.admitted.insert(id.clone(), live);
             }
             Ok(wire::Admission {
                 abi: wire::ABI.into(),
@@ -382,6 +396,95 @@ impl Runtime {
             (Err(_), _) => self.refusal(id, UNAVAILABLE),
         }
     }
+    /// Whether an admission can be attempted now: running with a current
+    /// lease, and not fenced.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn ready(&self) -> bool {
+        !self.stopping && !self.failed && !self.mac_fence && self.lease.is_some()
+    }
+    /// This runtime's connection scope: a route's intent names it.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn scope(&self) -> &Scope {
+        &self.scope
+    }
+    /// The one admission of an owner-approved, service-originated question
+    /// route (zerus-sa9qn.8). It takes no UI permit and constructs no
+    /// person's consent: [`Admitted::owner_approved_route`] admits only the
+    /// fixed [`wire::Kind::RouteQuestion`] original that
+    /// [`wire::Intent::verify_route`] re-derives. `reserve` runs in the same
+    /// BEGIN IMMEDIATE transaction, after every actor check and before the
+    /// original row: it writes the route's own ledger row and returns
+    /// whether the route proceeds, was refused as final, or is off by the
+    /// person's switch (nothing written). Any error writes nothing.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn route(
+        &mut self,
+        store: &mut Store,
+        intent: wire::Intent,
+        exclusion: Option<Arc<HandoffLock>>,
+        reserve: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<Reservation>,
+    ) -> Routed {
+        // v1 routes only through the Linux child seam; macOS refuses every
+        // original until its seam is qualified.
+        if self.mac_fence || cfg!(not(target_os = "linux")) {
+            return Routed::Unavailable;
+        }
+        self.refresh(store, exclusion);
+        let id = intent.request_id.clone();
+        let result = (|| -> Result<Routed> {
+            ensure!(
+                !self.stopping && !self.failed && store.creation_recovery_ok(),
+                "question route owner unavailable"
+            );
+            ensure!(
+                self.known_charges(&store.db)?,
+                "deferred send original resources retained"
+            );
+            let lease = self
+                .lease
+                .as_ref()
+                .context("question route lease unavailable")?
+                .clone();
+            ensure!(intent.scope == self.scope, "question route scope changed");
+            let verified = intent.verify_route().map_err(anyhow::Error::msg)?;
+            let tx = store
+                .db
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            // An existing original of this request is never admitted again.
+            if ledger::load(&tx, &id)?.is_some() {
+                return Ok(Routed::Unavailable);
+            }
+            lease.current(
+                &tx,
+                &self.location,
+                self.machine.as_ref(),
+                self.exclusion.as_ref(),
+            )?;
+            let live = Admitted::owner_approved_route(verified, lease.clone())?;
+            if !ledger::capacity(&tx, &live.original)? {
+                return Ok(Routed::Unavailable);
+            }
+            match reserve(&tx)? {
+                // Dropping the transaction rolls back: nothing is written.
+                Reservation::Off => return Ok(Routed::Off),
+                Reservation::Refused => {
+                    tx.commit()?;
+                    return Ok(Routed::Refused);
+                }
+                Reservation::Reserved => {}
+            }
+            ledger::admit(
+                &tx,
+                &live.original,
+                &lease.writer_epoch,
+                chrono::Utc::now().timestamp_millis(),
+            )?;
+            tx.commit()?;
+            self.admitted.insert(id, live);
+            Ok(Routed::Admitted)
+        })();
+        result.unwrap_or(Routed::Unavailable)
+    }
     /// The closed refusal of a request proven never admitted, sealed for the
     /// epoch before the reply; a full fence mints none (zerus-tlb9q).
     fn not_admitted(&self, id: String) -> Value {
@@ -394,7 +497,7 @@ impl Runtime {
     fn check(
         &self,
         db: &rusqlite::Connection,
-        consent: &Consent,
+        live: &Admitted,
         row: &ledger::Row,
         ticket: Option<&Ticket>,
     ) -> Result<()> {
@@ -405,16 +508,16 @@ impl Runtime {
         ensure!(
             self.lease
                 .as_ref()
-                .is_some_and(|lease| Arc::ptr_eq(lease, &consent.lease)),
+                .is_some_and(|lease| Arc::ptr_eq(lease, &live.lease)),
             "deferred send lease replaced"
         );
-        consent.lease.current(
+        live.lease.current(
             db,
             &self.location,
             self.machine.as_ref(),
             self.exclusion.as_ref(),
         )?;
-        consent.check(row, ticket)
+        live.check(row, ticket)
     }
     pub fn poll(&mut self, store: &mut Store, exclusion: Option<Arc<HandoffLock>>) {
         // Also advance exact original custody inside a bounded drain turn;
@@ -432,14 +535,14 @@ impl Runtime {
             match work {
                 Work::Preparing {
                     ticket,
-                    consent,
+                    live,
                     worker,
                     result,
                 } => {
                     if !worker.is_finished() {
                         self.work = Some(Work::Preparing {
                             ticket,
-                            consent,
+                            live,
                             worker,
                             result,
                         });
@@ -465,11 +568,8 @@ impl Runtime {
                             .db
                             .transaction_with_behavior(TransactionBehavior::Immediate)?;
                         let row = ledger::load(&tx, &id)?.context("deferred send disappeared")?;
-                        self.check(&tx, &consent, &row, None)?;
-                        ensure!(
-                            ticket.lease == consent.lease.id,
-                            "deferred send lease changed"
-                        );
+                        self.check(&tx, &live, &row, None)?;
+                        ensure!(ticket.lease == live.lease.id, "deferred send lease changed");
                         ledger::reserve(&tx, &row, &ticket, &record)?;
                         tx.commit()?;
                         Ok(())
@@ -487,11 +587,11 @@ impl Runtime {
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .insert(id.clone(), Arc::downgrade(&token));
                     let (done_send, result) = mpsc::sync_channel(1);
-                    let selected = consent.clone();
+                    let selected = live.clone();
                     let lock = held.clone();
                     let resources = Arc::new(Original {
                         _custody: held,
-                        _consent: consent.clone(),
+                        _live: live.clone(),
                     });
                     let guard: Arc<dyn Send + Sync> = resources.clone();
                     let store_roots = roots.clone();
@@ -506,7 +606,7 @@ impl Runtime {
                             .name("deferred-send".into())
                             .spawn(move || {
                                 // The selected session's actual backend and run;
-                                // the consent veto runs again in the final spawn
+                                // the admission veto runs again in the final spawn
                                 // turn.
                                 let value = if selected.cancel.load(Ordering::Acquire)
                                     || !target::current(&store_roots, &selected.original.plan)
@@ -531,7 +631,7 @@ impl Runtime {
                         Ok(worker) => {
                             self.work = Some(Work::Running {
                                 ticket,
-                                consent,
+                                live,
                                 worker,
                                 result,
                                 resources,
@@ -548,7 +648,7 @@ impl Runtime {
                 }
                 Work::Running {
                     ticket,
-                    consent,
+                    live,
                     worker,
                     result,
                     resources,
@@ -558,7 +658,7 @@ impl Runtime {
                     if !worker.is_finished() {
                         self.work = Some(Work::Running {
                             ticket,
-                            consent,
+                            live,
                             worker,
                             result,
                             resources,
@@ -597,7 +697,7 @@ impl Runtime {
                     drop(resources);
                     self.work = Some(Work::Draining {
                         id: ticket.admission_id,
-                        consent,
+                        live,
                         roots,
                         token,
                         probe: None,
@@ -606,12 +706,12 @@ impl Runtime {
                 }
                 Work::Draining {
                     id,
-                    consent,
+                    live,
                     roots,
                     token,
                     probe,
                     next,
-                } => return self.drain(store, id, consent, roots, token, probe, next),
+                } => return self.drain(store, id, live, roots, token, probe, next),
             }
             return Ok(());
         }
@@ -638,11 +738,11 @@ impl Runtime {
             return Ok(());
         }
         let id = row.verified.plan.request_id.clone();
-        let Some(consent) = self.admitted.get(&id).cloned() else {
+        let Some(live) = self.admitted.get(&id).cloned() else {
             self.retire(store, &id)?;
             return Ok(());
         };
-        self.check(&store.db, &consent, &row, None)?;
+        self.check(&store.db, &live, &row, None)?;
         let ticket = Ticket {
             operation_id: row
                 .verified
@@ -657,12 +757,12 @@ impl Runtime {
                 .binding
                 .fingerprint()
                 .context("invalid send binding")?,
-            writer_epoch: consent.lease.writer_epoch.clone(),
+            writer_epoch: live.lease.writer_epoch.clone(),
             service_epoch: self.scope.service_epoch.clone(),
-            lease: consent.lease.id.clone(),
+            lease: live.lease.id.clone(),
         };
         let original = ticket.clone();
-        let held = consent.clone();
+        let held = live.clone();
         let location = Location {
             root: self.location.root.clone(),
             configuration: self.location.configuration.clone(),
@@ -687,7 +787,7 @@ impl Runtime {
             })?;
         self.work = Some(Work::Preparing {
             ticket,
-            consent,
+            live,
             worker,
             result,
         });
@@ -696,14 +796,14 @@ impl Runtime {
     /// One drain turn of this runtime's own original: the custody probe off
     /// the actor and, after its release, the one bounded read of the CLI's
     /// receipt from the original store. The worker holds the serve-owner and
-    /// the original's consent loans and the ownership token until it
+    /// the original's admission loans and the ownership token until it
     /// physically ends, so neither a stop nor a teardown passes it.
     #[allow(clippy::too_many_arguments)]
     fn drain(
         &mut self,
         store: &mut Store,
         id: String,
-        consent: Arc<Consent>,
+        live: Arc<Admitted>,
         roots: Arc<Roots>,
         token: Arc<()>,
         probe: Option<Probe>,
@@ -712,7 +812,7 @@ impl Runtime {
         let keep = |me: &mut Self, probe: Option<Probe>, next: Instant| {
             me.work = Some(Work::Draining {
                 id: id.clone(),
-                consent: consent.clone(),
+                live: live.clone(),
                 roots: roots.clone(),
                 token: token.clone(),
                 probe,
@@ -782,7 +882,7 @@ impl Runtime {
             root: self.location.root.clone(),
             configuration: self.location.configuration.clone(),
         };
-        let loans = (self.owner.clone(), consent.clone(), token.clone());
+        let loans = (self.owner.clone(), live.clone(), token.clone());
         let store_roots = roots.clone();
         let wait = self.read_wait;
         #[cfg(test)]
@@ -862,7 +962,7 @@ impl Runtime {
             "drained":self.drained(),"admitted":self.admitted.len(),"working":self.work.is_some(),"undrained":self.charges})
     }
     #[cfg(test)]
-    pub(super) fn fixture_executor(&mut self, machine: &str, executor: Executor) {
+    pub(in crate::desktop) fn fixture_executor(&mut self, machine: &str, executor: Executor) {
         self.machine = Some(Machine::fixture(machine));
         self.executor = Some(executor);
     }
@@ -872,12 +972,32 @@ impl Runtime {
     pub(super) fn fixture_machine(&mut self, machine: &str) {
         self.machine = Some(Machine::fixture(machine));
     }
+    /// Constructs a live admission of `original` with this runtime's lease
+    /// under the person's consent (`route` false) or the owner-approved route
+    /// (`route` true), and drops it: each authority admits only its own kind.
+    /// Only the Linux question route tests use it.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(in crate::desktop) fn fixture_admit_as(
+        &self,
+        original: wire::Verified,
+        route: bool,
+    ) -> Result<()> {
+        let lease = self
+            .lease
+            .clone()
+            .context("deferred send lease unavailable")?;
+        if route {
+            Admitted::owner_approved_route(original, lease).map(drop)
+        } else {
+            Admitted::person_consent(original, lease).map(drop)
+        }
+    }
     #[cfg(test)]
-    pub(super) fn fixture_mac_fence(&mut self, on: bool) {
+    pub(in crate::desktop) fn fixture_mac_fence(&mut self, on: bool) {
         self.mac_fence = on;
     }
     /// Runs `hook` in the final spawn turn, after the worker's own checks and
-    /// before the consent veto and the spawn.
+    /// before the admission veto and the spawn.
     #[cfg(all(test, target_os = "linux"))]
     pub(super) fn fixture_spawn_hook(&mut self, hook: Hook) {
         self.spawn_hook = Some(hook);
@@ -898,16 +1018,16 @@ impl Runtime {
 /// stdin. Nothing exists before the spawn, so every refusal here never
 /// started.
 fn send(
-    consent: &Consent,
+    live: &Admitted,
     lock: &Arc<InheritedLock>,
     resources: &Arc<dyn Send + Sync>,
     #[cfg(target_os = "linux")] image: Option<Arc<Pin>>,
     #[cfg(test)] executor: Option<Executor>,
     #[cfg(test)] hook: Option<Hook>,
 ) -> Ended {
-    let plan = &consent.original.plan;
+    let plan = &live.original.plan;
     let args = plan.args().to_vec();
-    let input = consent.original.intent.original.as_bytes();
+    let input = live.original.intent.original.as_bytes();
     // The test executor receives exactly what the child would; it stands in
     // for the spawn turn, so the veto runs before it as in `child::run`.
     #[cfg(test)]
@@ -915,7 +1035,7 @@ fn send(
         if let Some(hook) = &hook {
             hook();
         }
-        if consent.cancel.load(Ordering::Acquire) {
+        if live.cancel.load(Ordering::Acquire) {
             return Ended::NotStarted;
         }
         return executor(plan, &args, input, lock, resources);
@@ -935,9 +1055,9 @@ fn send(
                 if let Some(hook) = &hook {
                     hook();
                 }
-                // Last before the spawn: a consent stopped since the worker
+                // Last before the spawn: an admission stopped since the worker
                 // began (a revoke, a lost source, a stop) starts nothing.
-                if consent.cancel.load(Ordering::Acquire) || !image.current() {
+                if live.cancel.load(Ordering::Acquire) || !image.current() {
                     return Err(std::io::ErrorKind::PermissionDenied.into());
                 }
                 image.inherit(command)

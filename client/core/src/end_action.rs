@@ -13,6 +13,22 @@ pub const UNDO_WINDOW: Duration = Duration::from_secs(3);
 pub const METADATA_LIMIT: usize = 2 * 1024 * 1024;
 const RECEIPT_LIMIT: usize = 64 * 1024;
 pub const STATE_CHANGED: &str = crate::termination_cleanup::STATE_CHANGED;
+/// Why an end action without its undo window's capture never runs
+/// (zerus-sa9qn.25): Archive, Terminate, Kill and Forget reach the CLI only as
+/// the captured scoped envelope ([`Captured::invocation`]) or a confirmed
+/// cleanup, never as a name-only (`archive`, `kill`) or run-only (`terminate`)
+/// call.
+pub const UNDELAYED: &str =
+    "End actions run through the undo window. Open the session's actions again.";
+
+/// Whether `action` runs only from a capture: through its undo window, or a
+/// confirmed cleanup that names its own envelope.
+pub fn needs_capture(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Archive | Action::Terminate | Action::Kill | Action::Forget
+    )
+}
 
 /// The exact confirmation, not an execution permission. Deserialized values
 /// must pass `valid` again at every boundary; a reused name is never a target.

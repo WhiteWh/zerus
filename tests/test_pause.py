@@ -3485,7 +3485,7 @@ class Recipes(Harness):
         # argument, not another shell-encoded copy of the whole runner.
         runner = tmux_command[command_start + 3:]
         expected = ('exec env HGS_AGENT_HINT=1 HGS_AGENT_HINT_OFF= "$0" --run "$@"'
-                    if agent in ('claude', 'codex') else 'exec "$0" --run "$@"')
+                    if agent in ('claude', 'codex', 'kimi') else 'exec "$0" --run "$@"')
         self.assertEqual(runner[2], expected)
         self.assertEqual(runner[4], "0")
         return runner[5:], record["conversation_id"]

@@ -321,6 +321,8 @@ fn unavailable_index_does_not_change_authoritative_receipt_persistence() {
         .path()
         .join("input_receipts")
         .join(format!("{}.json", value["request_id"].as_str().unwrap()));
+    assert!(before_commit(&path).is_none());
+    assert!(!path.parent().unwrap().exists(), "proof capture must never create a receipt namespace");
     persist(&path, &value).unwrap();
     assert_eq!(read_original(&path).unwrap(), value);
     if let Ok(catalog) = Catalog::open(temp.path(), false) {
@@ -330,6 +332,318 @@ fn unavailable_index_does_not_change_authoritative_receipt_persistence() {
     }
 }
 
+#[test]
+fn committed_registration_never_rewrites_originals_and_refreshes_file_stamps() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(temp.path(), true).unwrap();
+    let mut receipt = value(1, "wanted", "run", "", 1.0);
+    receipt["status"] = json!("in_progress");
+    let path = put(&catalog, Source::Terminal, &receipt);
+    for status in ["in_progress", "submitted"] {
+        let stamp = migration::stamp(path.parent().unwrap()).unwrap();
+        catalog
+            .db
+            .execute(
+                "UPDATE receipt_sources SET complete=1,stamp=? WHERE source='terminal'",
+                [&stamp],
+            )
+            .unwrap();
+        receipt["status"] = json!(status);
+        let raw = format!("\n  {}  \n", receipt);
+        // Updating an existing original in place need not change its directory.
+        fs::write(&path, &raw).unwrap();
+        assert_eq!(migration::stamp(path.parent().unwrap()).unwrap(), stamp);
+        let original = crate::platform::FileIdentity::of(&fs::File::open(&path).unwrap()).unwrap();
+        assert!(remember_committed(&path, &receipt, None));
+        assert_eq!(
+            crate::platform::FileIdentity::of(&fs::File::open(&path).unwrap()).unwrap(),
+            original
+        );
+        assert_eq!(fs::read(&path).unwrap(), raw.as_bytes());
+        let page = catalog
+            .page(&scope("wanted", "run", ""), "", 100, true)
+            .unwrap();
+        assert_eq!(page.locators.len(), 1);
+        // Without a pre-commit proof, do not inherit completeness even if a
+        // coarse directory clock reports the same stamp after a file change.
+        assert_eq!(page.metadata["migration_complete"], false);
+        assert_eq!(catalog.original(&page.locators[0]).unwrap(), receipt);
+        let stamp: String = catalog
+            .db
+            .query_row(
+                "SELECT stamp FROM receipt_rows WHERE source='terminal'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stamp, file_stamp(&path).unwrap());
+        assert!(catalog.coverage_verified());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn committed_registration_advances_only_its_exact_directory_delta() {
+    for existing in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(temp.path(), true).unwrap();
+        let directory = temp.path().join("input_receipts");
+        fs::create_dir_all(&directory).unwrap();
+        let mut receipt = value(1, "wanted", "run", "", 1.0);
+        let path = directory.join(format!("{}.json", string(&receipt, "request_id")));
+        put(
+            &catalog,
+            Source::Terminal,
+            &value(2, "wanted", "run", "", 2.0),
+        );
+        if existing {
+            put(&catalog, Source::Terminal, &receipt);
+        }
+        let mut migration = migration::Migration::new(temp.path()).unwrap();
+        while !migration.step().unwrap() {}
+        let epoch = catalog.change_epoch().unwrap();
+        let page = catalog
+            .page(&scope("wanted", "run", ""), "", 1, true)
+            .unwrap();
+        assert_eq!(page.metadata["migration_complete"], true);
+        let before = before_commit(&path).unwrap();
+        receipt["submitted_at"] = json!(3.0);
+        let raw = format!("\n {} \n", receipt);
+        atomic(&path, &raw).unwrap();
+        let original = crate::platform::FileIdentity::of(&fs::File::open(&path).unwrap()).unwrap();
+        remember_committed(&path, &receipt, Some(&before));
+        assert_eq!(fs::read(&path).unwrap(), raw.as_bytes());
+        assert_eq!(
+            crate::platform::FileIdentity::of(&fs::File::open(&path).unwrap()).unwrap(),
+            original
+        );
+        assert!(catalog.coverage_verified());
+        let next = catalog.change_epoch().unwrap();
+        assert!(next.2 > epoch.2);
+        if existing {
+            // Updating ordering metadata retains batch 5's epoch invalidation.
+            assert_ne!(next.0, epoch.0);
+            assert!(catalog
+                .page(
+                    &scope("wanted", "run", ""),
+                    page.metadata["next_cursor"].as_str().unwrap(),
+                    1,
+                    true
+                )
+                .is_err());
+        }
+        let page = catalog
+            .page(&scope("wanted", "run", ""), "", 100, true)
+            .unwrap();
+        assert_eq!(page.metadata["migration_complete"], true);
+        assert_eq!(page.metadata["catalog_complete_at_snapshot"], true);
+        assert_eq!(page.locators.len(), 2);
+        assert_eq!(page.locators[0].id, string(&receipt, "request_id"));
+        let changed = catalog
+            .changed_page(&scope("wanted", "run", ""), "", 100, true)
+            .unwrap();
+        assert_eq!(changed.coverage, Coverage::Complete);
+        assert!(changed
+            .rows
+            .iter()
+            .any(|row| row.locator.id == string(&receipt, "request_id")
+                && row.stamp == file_stamp(&path).unwrap()));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn concurrent_unregistered_original_prevents_complete_stamp_advance() {
+    for existing in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(temp.path(), true).unwrap();
+        let directory = temp.path().join("input_receipts");
+        fs::create_dir_all(&directory).unwrap();
+        let mut receipt = value(1, "wanted", "run", "", 1.0);
+        let path = directory.join(format!("{}.json", string(&receipt, "request_id")));
+        if existing {
+            put(&catalog, Source::Terminal, &receipt);
+        }
+        let mut migration = migration::Migration::new(temp.path()).unwrap();
+        while !migration.step().unwrap() {}
+        let before = before_commit(&path).unwrap();
+        // An older binary publishes this original after S0 without registering
+        // it. Our own successful row must never silently cover that filename.
+        let foreign = value(2, "wanted", "run", "", 2.0);
+        let foreign_path = directory.join(format!("{}.json", string(&foreign, "request_id")));
+        atomic(&foreign_path, &foreign.to_string()).unwrap();
+        receipt["submitted_at"] = json!(3.0);
+        atomic(&path, &receipt.to_string()).unwrap();
+        remember_committed(&path, &receipt, Some(&before));
+        let page = catalog
+            .page(&scope("wanted", "run", ""), "", 100, true)
+            .unwrap();
+        assert_eq!(page.locators.len(), 1);
+        assert_eq!(page.metadata["migration_complete"], false);
+        assert_eq!(page.metadata["catalog_complete_at_snapshot"], false);
+        let mut migration = migration::Migration::new(temp.path()).unwrap();
+        while !migration.step().unwrap() {}
+        let page = catalog
+            .page(&scope("wanted", "run", ""), "", 100, true)
+            .unwrap();
+        assert_eq!(page.locators.len(), 2);
+        assert_eq!(page.metadata["migration_complete"], true);
+        assert_eq!(
+            fs::read_to_string(foreign_path).unwrap(),
+            foreign.to_string()
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn stale_complete_ledger_missing_a_prior_original_cannot_be_restamped() {
+    for existing in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(temp.path(), true).unwrap();
+        let indexed = value(1, "wanted", "run", "", 1.0);
+        let indexed_path = put(&catalog, Source::Terminal, &indexed);
+        let mut migration = migration::Migration::new(temp.path()).unwrap();
+        while !migration.step().unwrap() {}
+        let prior: (String, bool, i64) = catalog.db.query_row(
+            "SELECT stamp,complete,indexed FROM receipt_sources WHERE source='terminal'",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        assert!(prior.1 && catalog.coverage_verified());
+        // An earlier publication lost both registration and invalidation.
+        // Its original predates S0, so this send's exact one-file delta cannot
+        // detect it. A coarse directory clock also kept the old ledger stamp.
+        let hidden = value(2, "wanted", "run", "", 2.0);
+        let hidden_path = indexed_path.with_file_name(format!("{}.json", string(&hidden, "request_id")));
+        let hidden_bytes = hidden.to_string();
+        atomic(&hidden_path, &hidden_bytes).unwrap();
+        let mut own = if existing { indexed.clone() } else { value(3, "wanted", "run", "", 3.0) };
+        let own_path = indexed_path.with_file_name(format!("{}.json", string(&own, "request_id")));
+        let mut before = before_commit(&own_path).unwrap();
+        assert_eq!(before.entries.receipts as i64, prior.2 + 1);
+        before.entries.stamp = prior.0;
+        own["submitted_at"] = json!(4.0);
+        atomic(&own_path, &own.to_string()).unwrap();
+        assert!(remember_committed(&own_path, &own, Some(&before)));
+        let page = catalog.page(&scope("wanted", "run", ""), "", 100, true).unwrap();
+        assert_eq!(page.metadata["migration_complete"], false);
+        assert_eq!(page.metadata["catalog_complete_at_snapshot"], false);
+        assert!(!page.locators.iter().any(|row| row.id == string(&hidden, "request_id")));
+        assert_eq!(fs::read_to_string(&hidden_path).unwrap(), hidden_bytes);
+        let mut migration = migration::Migration::new(temp.path()).unwrap();
+        while !migration.step().unwrap() {}
+        let repaired = catalog.page(&scope("wanted", "run", ""), "", 100, true).unwrap();
+        assert_eq!(repaired.metadata["migration_complete"], true);
+        assert!(repaired.locators.iter().any(|row| row.id == string(&hidden, "request_id")));
+        assert_eq!(fs::read_to_string(hidden_path).unwrap(), hidden_bytes);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn replacing_a_foreign_filename_cannot_inherit_complete_coverage() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(temp.path(), true).unwrap();
+    let receipt = value(1, "wanted", "run", "", 1.0);
+    let path = put(&catalog, Source::Terminal, &receipt);
+    let old = put(
+        &catalog,
+        Source::Terminal,
+        &value(2, "wanted", "run", "", 2.0),
+    );
+    let mut migration = migration::Migration::new(temp.path()).unwrap();
+    while !migration.step().unwrap() {}
+    let mut before = before_commit(&path).unwrap();
+    let foreign = value(3, "wanted", "run", "", 3.0);
+    fs::remove_file(old).unwrap();
+    atomic(
+        &path.with_file_name(format!("{}.json", string(&foreign, "request_id"))),
+        &foreign.to_string(),
+    )
+    .unwrap();
+    atomic(&path, &receipt.to_string()).unwrap();
+    let after = receipt_entries(&path).unwrap();
+    assert_eq!(before.entries.receipts, after.receipts);
+    assert_eq!(before.entries.others, after.others);
+    assert_ne!(before.entries.fingerprint, after.fingerprint);
+    // Model a coarse stamp collision while keeping the exact S0 entry set.
+    // Leaving the old complete flag untouched is insufficient in this case.
+    before.entries.stamp = after.stamp.clone();
+    catalog
+        .db
+        .execute(
+            "UPDATE receipt_sources SET stamp=? WHERE source='terminal'",
+            [&after.stamp],
+        )
+        .unwrap();
+    remember_committed(&path, &receipt, Some(&before));
+    let page = catalog
+        .page(&scope("wanted", "run", ""), "", 100, true)
+        .unwrap();
+    assert_eq!(page.metadata["migration_complete"], false);
+    assert_eq!(page.metadata["catalog_complete_at_snapshot"], false);
+    assert!(!page
+        .locators
+        .iter()
+        .any(|row| row.id == string(&foreign, "request_id")));
+}
+
+#[test]
+fn failed_registration_of_new_and_final_originals_retains_incomplete_coverage() {
+    for existing in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(temp.path(), true).unwrap();
+        let mut receipt = value(1, "wanted", "run", "", 1.0);
+        let directory = temp.path().join("input_receipts");
+        fs::create_dir_all(&directory).unwrap();
+        let filename = format!("{}.json", string(&receipt, "request_id"));
+        let path = directory.join(&filename);
+        if existing {
+            receipt["status"] = json!("in_progress");
+            put(&catalog, Source::Terminal, &receipt);
+            catalog
+                .error(Source::Terminal, &filename, "injected")
+                .unwrap();
+            catalog.db.execute_batch("CREATE TRIGGER refuse_registration BEFORE DELETE ON receipt_errors BEGIN SELECT RAISE(ABORT,'injected final registration failure'); END;").unwrap();
+        } else {
+            catalog.db.execute_batch("CREATE TRIGGER refuse_registration BEFORE INSERT ON receipt_rows BEGIN SELECT RAISE(ABORT,'injected new registration failure'); END;").unwrap();
+        }
+        receipt["status"] = json!("submitted");
+        let raw = format!("\n{}\n", receipt);
+        fs::write(&path, &raw).unwrap();
+        let stamp = migration::stamp(&directory).unwrap();
+        catalog
+            .db
+            .execute(
+                "UPDATE receipt_sources SET complete=1,stamp=? WHERE source='terminal'",
+                [&stamp],
+            )
+            .unwrap();
+        let epoch = catalog.change_epoch().unwrap();
+        assert!(!remember_committed(&path, &receipt, None));
+        // A failed row write must not publish a sequence allocation by itself.
+        assert_eq!(catalog.change_epoch().unwrap().2, epoch.2);
+        assert_eq!(fs::read(&path).unwrap(), raw.as_bytes());
+        let page = catalog
+            .page(&scope("wanted", "run", ""), "", 100, true)
+            .unwrap();
+        assert_eq!(page.metadata["migration_complete"], false);
+        assert_eq!(page.locators.len(), usize::from(existing));
+        catalog
+            .db
+            .execute_batch("DROP TRIGGER refuse_registration")
+            .unwrap();
+        let mut migration = migration::Migration::new(temp.path()).unwrap();
+        while !migration.step().unwrap() {}
+        let repaired = catalog
+            .page(&scope("wanted", "run", ""), "", 100, true)
+            .unwrap();
+        assert_eq!(repaired.locators.len(), 1);
+        assert_eq!(repaired.metadata["migration_complete"], true);
+        assert_eq!(repaired.metadata["unattributed_errors"], 0);
+        assert_eq!(fs::read(path).unwrap(), raw.as_bytes());
+    }
+}
 
 #[test]
 fn a_lost_row_invalidates_cursors_and_is_rediscovered_without_original_changes() {
@@ -394,8 +708,16 @@ fn change_count(catalog: &Catalog) -> i64 {
 fn changed_pages_advance_a_bounded_scope_without_foreign_receipts() {
     let temp = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(temp.path(), true).unwrap();
-    put(&catalog, Source::Terminal, &value(1, "wanted", "run", "", 10.0));
-    put(&catalog, Source::Terminal, &value(2, "wanted", "run", "", 11.0));
+    put(
+        &catalog,
+        Source::Terminal,
+        &value(1, "wanted", "run", "", 10.0),
+    );
+    put(
+        &catalog,
+        Source::Terminal,
+        &value(2, "wanted", "run", "", 11.0),
+    );
     let transaction = catalog.db.unchecked_transaction().unwrap();
     for n in 3..=40 {
         let record = value(n, "foreign", "run", "", n as f64);
@@ -420,14 +742,18 @@ fn changed_pages_advance_a_bounded_scope_without_foreign_receipts() {
     );
     assert!(!first.drained);
     assert_eq!(first.rows[0].change, 1);
-    let second = catalog.changed_page(&scope, &first.cursor, 10, true).unwrap();
+    let second = catalog
+        .changed_page(&scope, &first.cursor, 10, true)
+        .unwrap();
     assert_eq!(second.rows.len(), 1);
     assert_eq!(
         second.rows[0].locator.id,
         uuid::Uuid::from_u128(2).to_string()
     );
     assert!(second.drained);
-    let third = catalog.changed_page(&scope, &second.cursor, 10, true).unwrap();
+    let third = catalog
+        .changed_page(&scope, &second.cursor, 10, true)
+        .unwrap();
     assert!(third.rows.is_empty());
     assert!(third.drained);
 }
@@ -436,7 +762,11 @@ fn changed_pages_advance_a_bounded_scope_without_foreign_receipts() {
 fn an_update_beyond_the_frozen_upper_waits_for_the_next_chain() {
     let temp = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(temp.path(), true).unwrap();
-    put(&catalog, Source::Terminal, &value(1, "wanted", "run", "", 10.0));
+    put(
+        &catalog,
+        Source::Terminal,
+        &value(1, "wanted", "run", "", 10.0),
+    );
     let second = value(2, "wanted", "run", "", 11.0);
     let path = put(&catalog, Source::Terminal, &second);
     assert_eq!(change_count(&catalog), 2);
@@ -450,7 +780,9 @@ fn an_update_beyond_the_frozen_upper_waits_for_the_next_chain() {
     fs::write(&path, updated.to_string()).unwrap();
     catalog.remember(Source::Terminal, &path, &updated).unwrap();
     assert_eq!(change_count(&catalog), 3);
-    let frozen = catalog.changed_page(&scope, &first.cursor, 10, true).unwrap();
+    let frozen = catalog
+        .changed_page(&scope, &first.cursor, 10, true)
+        .unwrap();
     assert!(
         frozen
             .rows
@@ -459,7 +791,9 @@ fn an_update_beyond_the_frozen_upper_waits_for_the_next_chain() {
         "a status update leaked into the frozen chain"
     );
     assert!(frozen.drained);
-    let next = catalog.changed_page(&scope, &frozen.cursor, 10, true).unwrap();
+    let next = catalog
+        .changed_page(&scope, &frozen.cursor, 10, true)
+        .unwrap();
     assert_eq!(next.rows.len(), 1);
     assert_eq!(
         next.rows[0].locator.id,
@@ -476,7 +810,11 @@ fn an_update_beyond_the_frozen_upper_waits_for_the_next_chain() {
 fn change_cursors_are_bound_to_the_index_epoch_and_scope() {
     let temp = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(temp.path(), true).unwrap();
-    put(&catalog, Source::Terminal, &value(1, "wanted", "run", "", 10.0));
+    put(
+        &catalog,
+        Source::Terminal,
+        &value(1, "wanted", "run", "", 10.0),
+    );
     let page = catalog
         .changed_page(&scope("wanted", "run", ""), "", 10, true)
         .unwrap();
@@ -488,7 +826,10 @@ fn change_cursors_are_bound_to_the_index_epoch_and_scope() {
     );
     catalog
         .db
-        .execute("UPDATE receipt_meta SET value='other' WHERE key='epoch'", [])
+        .execute(
+            "UPDATE receipt_meta SET value='other' WHERE key='epoch'",
+            [],
+        )
         .unwrap();
     assert_eq!(
         catalog
@@ -575,16 +916,27 @@ fn a_v1_database_migrates_before_change_indexes_are_created() {
         .collect::<std::result::Result<_, _>>()
         .unwrap();
     for column in ["stamp", "change"] {
-        assert!(columns.iter().any(|value| value == column), "{column} was not added");
+        assert!(
+            columns.iter().any(|value| value == column),
+            "{column} was not added"
+        );
     }
     let change: i64 = catalog
         .db
-        .query_row("SELECT change FROM receipt_rows WHERE request='existing-request'", [], |row| row.get(0))
+        .query_row(
+            "SELECT change FROM receipt_rows WHERE request='existing-request'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(change, 1);
     let sequence: String = catalog
         .db
-        .query_row("SELECT value FROM receipt_meta WHERE key='change_seq'", [], |row| row.get(0))
+        .query_row(
+            "SELECT value FROM receipt_meta WHERE key='change_seq'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(sequence, "1");
     let indexes: i64 = catalog
@@ -600,7 +952,11 @@ fn a_v1_database_migrates_before_change_indexes_are_created() {
     let again = Catalog::open(temp.path(), true).unwrap();
     let change: i64 = again
         .db
-        .query_row("SELECT change FROM receipt_rows WHERE request='existing-request'", [], |row| row.get(0))
+        .query_row(
+            "SELECT change FROM receipt_rows WHERE request='existing-request'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(change, 1);
 }
@@ -621,13 +977,18 @@ fn a_reader_never_sees_a_sequence_before_its_row_commits() {
     let transaction = writer.db.unchecked_transaction().unwrap();
     writer.remember(Source::Terminal, &path, &first).unwrap();
     let during = reader.changed_page(&scope, "", 10, true).unwrap();
-    assert!(during.rows.is_empty(), "an uncommitted change was published");
+    assert!(
+        during.rows.is_empty(),
+        "an uncommitted change was published"
+    );
     // A second writer cannot publish a higher sequence over the held one.
     let second = value(2, "wanted", "run", "", 11.0);
     let second_path = directory.join(format!("{}.json", second["request_id"].as_str().unwrap()));
     fs::write(&second_path, second.to_string()).unwrap();
     assert!(
-        other.remember(Source::Terminal, &second_path, &second).is_err(),
+        other
+            .remember(Source::Terminal, &second_path, &second)
+            .is_err(),
         "a higher sequence committed over an uncommitted lower one"
     );
     let still = reader.changed_page(&scope, "", 10, true).unwrap();
@@ -645,8 +1006,16 @@ fn a_reader_never_sees_a_sequence_before_its_row_commits() {
 fn a_guarded_cache_with_a_cut_change_upgrade_recovers_its_frontier() {
     let temp = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(temp.path(), true).unwrap();
-    put(&catalog, Source::Terminal, &value(1, "wanted", "run", "", 1.0));
-    put(&catalog, Source::Terminal, &value(2, "wanted", "run", "", 2.0));
+    put(
+        &catalog,
+        Source::Terminal,
+        &value(1, "wanted", "run", "", 1.0),
+    );
+    put(
+        &catalog,
+        Source::Terminal,
+        &value(2, "wanted", "run", "", 2.0),
+    );
     let stamp = migration::stamp(&temp.path().join(Source::Terminal.directory())).unwrap();
     catalog
         .db
@@ -681,7 +1050,11 @@ fn a_guarded_cache_with_a_cut_change_upgrade_recovers_its_frontier() {
     assert_eq!(rows, vec![1, 2]);
     let frontier: String = recovered
         .db
-        .query_row("SELECT value FROM receipt_meta WHERE key='change_seq'", [], |row| row.get(0))
+        .query_row(
+            "SELECT value FROM receipt_meta WHERE key='change_seq'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(frontier, "2");
     let indexes: i64 = recovered
@@ -707,8 +1080,9 @@ fn a_guarded_cache_with_a_cut_change_upgrade_recovers_its_frontier() {
 fn a_first_prompt_pin_keeps_coverage_while_a_real_rebind_invalidates() {
     let temp = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(temp.path(), true).unwrap();
-    let record = value(1, "", "run", "", 1.0);
-    put(&catalog, Source::Terminal, &record);
+    let mut record = value(1, "", "run", "", 1.0);
+    record["first_message"] = json!(true);
+    let path = put(&catalog, Source::Terminal, &record);
     let stamp = migration::stamp(&temp.path().join(Source::Terminal.directory())).unwrap();
     catalog
         .db
@@ -728,9 +1102,11 @@ fn a_first_prompt_pin_keeps_coverage_while_a_real_rebind_invalidates() {
             .unwrap();
         let epoch: String = catalog
             .db
-            .query_row("SELECT value FROM receipt_meta WHERE key='epoch'", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT value FROM receipt_meta WHERE key='epoch'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         (complete, indexed, errors, epoch)
     };
@@ -738,15 +1114,10 @@ fn a_first_prompt_pin_keeps_coverage_while_a_real_rebind_invalidates() {
     assert_eq!(before.0, 1);
     assert_eq!(before.1, 1);
     assert_eq!(before.2, 0);
-    // The reviewer's verbatim-SQL probe: the legitimate one-way first-prompt
-    // pin changes only the empty conversation. It must keep coverage and epoch.
-    catalog
-        .db
-        .execute(
-            "UPDATE receipt_rows SET conversation='resolved' WHERE source='terminal' AND request=? AND conversation=''",
-            [uuid::Uuid::from_u128(1).to_string()],
-        )
-        .unwrap();
+    // Only a pin proved by the rewritten original keeps coverage and epoch.
+    record["resolved_conversation_id"] = json!("resolved");
+    fs::write(&path, record.to_string()).unwrap();
+    catalog.remember(Source::Terminal, &path, &record).unwrap();
     assert_eq!(coverage(), before);
     // Any other identity rebind still invalidates coverage and rotates the
     // epoch, so old cursors cannot pass the missing row.
@@ -767,8 +1138,16 @@ fn a_first_prompt_pin_keeps_coverage_while_a_real_rebind_invalidates() {
 fn a_lost_witness_or_stale_verification_turns_coverage_incomplete_and_the_walk_repairs_it() {
     let temp = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(temp.path(), true).unwrap();
-    put(&catalog, Source::Terminal, &value(1, "wanted", "run", "", 1.0));
-    put(&catalog, Source::Terminal, &value(2, "wanted", "run", "", 2.0));
+    put(
+        &catalog,
+        Source::Terminal,
+        &value(1, "wanted", "run", "", 1.0),
+    );
+    put(
+        &catalog,
+        Source::Terminal,
+        &value(2, "wanted", "run", "", 2.0),
+    );
     let stamp = migration::stamp(&temp.path().join(Source::Terminal.directory())).unwrap();
     catalog
         .db
@@ -786,7 +1165,10 @@ fn a_lost_witness_or_stale_verification_turns_coverage_incomplete_and_the_walk_r
     // witness ahead of the rows. A pinned read must not claim completion.
     catalog
         .db
-        .execute("UPDATE receipt_sources SET indexed=5 WHERE source='terminal'", [])
+        .execute(
+            "UPDATE receipt_sources SET indexed=5 WHERE source='terminal'",
+            [],
+        )
         .unwrap();
     let page = catalog.page(&scope, "", 100, true).unwrap();
     assert_eq!(page.metadata["migration_complete"], false);
@@ -801,7 +1183,10 @@ fn a_lost_witness_or_stale_verification_turns_coverage_incomplete_and_the_walk_r
     // complete and only schedules the re-verification walk.
     catalog
         .db
-        .execute("UPDATE receipt_meta SET value='0' WHERE key='verified_at'", [])
+        .execute(
+            "UPDATE receipt_meta SET value='0' WHERE key='verified_at'",
+            [],
+        )
         .unwrap();
     assert!(catalog.verification_due());
     assert_eq!(
@@ -821,8 +1206,16 @@ fn a_lost_witness_or_stale_verification_turns_coverage_incomplete_and_the_walk_r
 fn a_stale_but_consistent_verification_stays_complete() {
     let temp = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(temp.path(), true).unwrap();
-    put(&catalog, Source::Terminal, &value(1, "wanted", "run", "", 1.0));
-    put(&catalog, Source::Terminal, &value(2, "wanted", "run", "", 2.0));
+    put(
+        &catalog,
+        Source::Terminal,
+        &value(1, "wanted", "run", "", 1.0),
+    );
+    put(
+        &catalog,
+        Source::Terminal,
+        &value(2, "wanted", "run", "", 2.0),
+    );
     let stamp = migration::stamp(&temp.path().join(Source::Terminal.directory())).unwrap();
     catalog
         .db
@@ -833,7 +1226,10 @@ fn a_stale_but_consistent_verification_stays_complete() {
         .unwrap();
     catalog
         .db
-        .execute("UPDATE receipt_meta SET value='0' WHERE key='verified_at'", [])
+        .execute(
+            "UPDATE receipt_meta SET value='0' WHERE key='verified_at'",
+            [],
+        )
         .unwrap();
     let scope = scope("wanted", "run", "");
     assert!(catalog.verification_due());
@@ -857,8 +1253,16 @@ fn a_stale_but_consistent_verification_stays_complete() {
 fn unseeded_rows_or_a_behind_frontier_are_not_complete_and_repair_restarts_cursors() {
     let temp = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(temp.path(), true).unwrap();
-    put(&catalog, Source::Terminal, &value(1, "wanted", "run", "", 1.0));
-    put(&catalog, Source::Terminal, &value(2, "wanted", "run", "", 2.0));
+    put(
+        &catalog,
+        Source::Terminal,
+        &value(1, "wanted", "run", "", 1.0),
+    );
+    put(
+        &catalog,
+        Source::Terminal,
+        &value(2, "wanted", "run", "", 2.0),
+    );
     let stamp = migration::stamp(&temp.path().join(Source::Terminal.directory())).unwrap();
     catalog
         .db
@@ -871,7 +1275,11 @@ fn unseeded_rows_or_a_behind_frontier_are_not_complete_and_repair_restarts_curso
     let epoch = |catalog: &Catalog| -> String {
         catalog
             .db
-            .query_row("SELECT value FROM receipt_meta WHERE key='epoch'", [], |row| row.get(0))
+            .query_row(
+                "SELECT value FROM receipt_meta WHERE key='epoch'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap()
     };
     let initial_epoch = epoch(&catalog);
@@ -901,7 +1309,11 @@ fn unseeded_rows_or_a_behind_frontier_are_not_complete_and_repair_restarts_curso
     assert_eq!(rows, vec![1, 2]);
     let frontier: String = repaired
         .db
-        .query_row("SELECT value FROM receipt_meta WHERE key='change_seq'", [], |row| row.get(0))
+        .query_row(
+            "SELECT value FROM receipt_meta WHERE key='change_seq'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(frontier, "2");
     assert!(repaired.coverage_verified());
@@ -914,7 +1326,10 @@ fn unseeded_rows_or_a_behind_frontier_are_not_complete_and_repair_restarts_curso
     // G: only the frontier is behind MAX(change); rows and indexes are intact.
     repaired
         .db
-        .execute("UPDATE receipt_meta SET value='0' WHERE key='change_seq'", [])
+        .execute(
+            "UPDATE receipt_meta SET value='0' WHERE key='change_seq'",
+            [],
+        )
         .unwrap();
     assert!(!repaired.coverage_verified());
     let broken = repaired.page(&scope, "", 1, true).unwrap();
@@ -925,7 +1340,11 @@ fn unseeded_rows_or_a_behind_frontier_are_not_complete_and_repair_restarts_curso
     let repaired = Catalog::open(temp.path(), true).unwrap();
     let frontier: String = repaired
         .db
-        .query_row("SELECT value FROM receipt_meta WHERE key='change_seq'", [], |row| row.get(0))
+        .query_row(
+            "SELECT value FROM receipt_meta WHERE key='change_seq'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(frontier, "2");
     assert!(repaired.coverage_verified());
@@ -938,3 +1357,128 @@ fn unseeded_rows_or_a_behind_frontier_are_not_complete_and_repair_restarts_curso
 
 #[path = "path_tests.rs"]
 mod paths;
+
+#[test]
+fn reconciliation_keeps_missing_bindings_and_publishes_gaps_for_every_source() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(temp.path(), true).unwrap();
+    let mut paths = Vec::new();
+    for source in Source::ALL {
+        let path = put(&catalog, source, &value(1, "wanted", "run", "", 1.0));
+        put(&catalog, source, &value(2, "wanted", "run", "", 2.0));
+        paths.push((source, path));
+    }
+    let migrate = || {
+        let mut migration = migration::Migration::new(temp.path()).unwrap();
+        while !migration.step().unwrap() {}
+    };
+    migrate();
+    let mut cursors = Vec::new();
+    for (source, path) in &paths {
+        let mut target = scope("wanted", "run", "");
+        target.source = *source;
+        let page = catalog.changed_page(&target, "", 10, false).unwrap();
+        assert_eq!(page.coverage, Coverage::Complete);
+        cursors.push((target, page.cursor));
+        fs::remove_file(path).unwrap();
+    }
+    migrate();
+    assert!(catalog.coverage_verified());
+    for (target, cursor) in cursors {
+        let page = catalog.changed_page(&target, &cursor, 10, false).unwrap();
+        assert!(page.ready && page.drained);
+        assert_eq!(page.coverage, Coverage::Gap);
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(page.rows[0].stamp, "gap:missing");
+        assert_eq!(catalog.original(&page.rows[0].locator), Err("missing"));
+        let state: (i64, bool, i64) = catalog
+            .db
+            .query_row(
+                "SELECT indexed,complete,errors FROM receipt_sources WHERE source=?",
+                [target.source.key()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(state, (2, true, 1));
+        // Repeated reconciliation does not mint changes for the same gap.
+        migrate();
+        let unchanged = catalog
+            .changed_page(&target, &page.cursor, 10, false)
+            .unwrap();
+        assert!(unchanged.rows.is_empty());
+        let path = temp
+            .path()
+            .join(target.source.directory())
+            .join(format!("{}.json", uuid::Uuid::from_u128(1)));
+        fs::write(&path, value(1, "wanted", "run", "", 1.0).to_string()).unwrap();
+        migrate();
+        let restored = catalog
+            .changed_page(&target, &unchanged.cursor, 10, false)
+            .unwrap();
+        assert_eq!(restored.coverage, Coverage::Complete);
+        assert_eq!(restored.rows.len(), 1);
+        assert!(catalog.original(&restored.rows[0].locator).is_ok());
+    }
+}
+
+#[test]
+fn restarting_reconciliation_preserves_present_originals_and_heals_lost_rows() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(temp.path(), true).unwrap();
+    let mut paths = Vec::new();
+    for n in 1..=140 {
+        paths.push(put(
+            &catalog,
+            Source::Terminal,
+            &value(n, "wanted", "run", "", n as f64),
+        ));
+    }
+    let kept = fs::read(&paths[1]).unwrap();
+    fs::remove_file(&paths[0]).unwrap();
+    catalog
+        .db
+        .execute(
+            "DELETE FROM receipt_rows WHERE source='terminal' AND request=?",
+            [uuid::Uuid::from_u128(2).to_string()],
+        )
+        .unwrap();
+    {
+        let mut migration = migration::Migration::new(temp.path()).unwrap();
+        assert!(!migration.step().unwrap());
+    }
+    let mut migration = migration::Migration::new(temp.path()).unwrap();
+    while !migration.step().unwrap() {}
+    assert_eq!(fs::read(&paths[1]).unwrap(), kept);
+    assert!(!paths[0].exists());
+    assert!(catalog.coverage_verified());
+    let page = catalog
+        .page(&scope("wanted", "run", ""), "", 100, false)
+        .unwrap();
+    assert_eq!(page.metadata["migration_complete"], true);
+    assert_eq!(page.metadata["unattributed_errors"], 1);
+    assert_eq!(page.metadata["indexed"], 140);
+    let row: String = catalog
+        .db
+        .query_row(
+            "SELECT binding FROM receipt_rows WHERE source='terminal' AND request=?",
+            [uuid::Uuid::from_u128(2).to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        Binding::parse(
+            Source::Terminal,
+            &value(2, "wanted", "run", "", 2.0),
+            paths[1].file_name().unwrap().to_str().unwrap()
+        )
+        .unwrap()
+        .fingerprint
+    );
+}
+
+#[path = "scope_tests.rs"]
+mod scope_restore;
+
+#[path = "pin_tests.rs"]
+mod proven_pin;

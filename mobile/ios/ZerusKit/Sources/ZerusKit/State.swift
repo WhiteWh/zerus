@@ -182,9 +182,13 @@ public struct OutgoingMessage: Codable, Hashable, Sendable {
     public var submittedText: String
     public var error: String
     public var deliveryDismissed: Bool
+    public var sendIntent: SendIntent?
+    public var sendReceiptProof: SendReceiptProof?
+    public var sendCorrelation: SendCorrelation?
+    public var coverage: OutgoingCoverage?
 
     public init(requestId: String, target: Target, text: String, attachments: [Attachment], createdAt: Double, status: String = "sending",
-                submittedAt: Double = 0, submittedText: String = "", error: String = "", deliveryDismissed: Bool = false) {
+                submittedAt: Double = 0, submittedText: String = "", error: String = "", deliveryDismissed: Bool = false, sendIntent: SendIntent? = nil, sendReceiptProof: SendReceiptProof? = nil, sendCorrelation: SendCorrelation? = nil, coverage: OutgoingCoverage? = nil) {
         self.requestId = requestId
         self.target = target
         self.text = text
@@ -195,10 +199,14 @@ public struct OutgoingMessage: Codable, Hashable, Sendable {
         self.submittedText = submittedText
         self.error = error
         self.deliveryDismissed = deliveryDismissed
+        self.sendIntent = sendIntent
+        self.sendReceiptProof = sendReceiptProof
+        self.sendCorrelation = sendCorrelation
+        self.coverage = coverage
     }
 
     private enum CodingKeys: String, CodingKey {
-        case requestId, target, text, attachments, createdAt, status, submittedAt, submittedText, error, deliveryDismissed
+        case requestId, target, text, attachments, createdAt, status, submittedAt, submittedText, error, deliveryDismissed, sendIntent, sendReceiptProof, sendCorrelation, coverage
     }
 
     public init(from decoder: Decoder) throws {
@@ -213,6 +221,10 @@ public struct OutgoingMessage: Codable, Hashable, Sendable {
         submittedText = try values.decode(String.self, forKey: .submittedText)
         error = try values.decode(String.self, forKey: .error)
         deliveryDismissed = try values.decodeIfPresent(Bool.self, forKey: .deliveryDismissed) ?? false
+        sendIntent = try values.decodeIfPresent(SendIntent.self, forKey: .sendIntent)
+        sendReceiptProof = try values.decodeIfPresent(SendReceiptProof.self, forKey: .sendReceiptProof)
+        sendCorrelation = try values.decodeIfPresent(SendCorrelation.self, forKey: .sendCorrelation)
+        coverage = try values.decodeIfPresent(OutgoingCoverage.self, forKey: .coverage)
     }
 
     public func recover() -> OutgoingMessage {
@@ -493,7 +505,7 @@ public struct MessageState: Codable, Hashable, Sendable {
         return copy
     }
 
-    public func enqueue(_ draft: Draft, requestId: String, at: Double) throws -> MessageState {
+    public func enqueue(_ draft: Draft, requestId: String, at: Double, sendIntent: SendIntent? = nil) throws -> MessageState {
         guard draft.target.archiveId.isEmpty else { throw ZerusError.invalid("Archived conversations are read-only.") }
         guard draft.detachedId.isEmpty, draft.questionId.isEmpty, draft.status == "editing" else {
             throw ZerusError.invalid("Review this draft before sending.")
@@ -517,7 +529,8 @@ public struct MessageState: Codable, Hashable, Sendable {
             throw ZerusError.invalid("The draft changed. Review it before sending.")
         }
         try AttachmentPolicy.selection(draft.attachments)
-        let message = OutgoingMessage(requestId: requestId, target: draft.target, text: draft.text, attachments: draft.attachments, createdAt: at)
+        let message = OutgoingMessage(requestId: requestId, target: draft.target, text: draft.text, attachments: draft.attachments, createdAt: at, sendIntent: sendIntent)
+        guard sendIntent == nil || SendReceiptRecovery.matches(message, sendIntent!) else { throw ZerusError.invalid("The saved message details changed before sending.") }
         var cleared = draft
         cleared.text = ""
         cleared.attachments = []

@@ -2,9 +2,9 @@
 //! `hgs send` child and its actual custody (zerus-5wmh.66.4.4, slice 3, its
 //! first kind). Its records stay separate from every other leaf.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-mod child;
+mod admitted;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-mod consent;
+mod child;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod receipt;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -13,10 +13,15 @@ mod recovery;
 mod runtime;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use child::adopt_custody;
+// Only the Linux question route tests drive this actor's fixture child.
+#[cfg(all(test, target_os = "linux"))]
+pub(in crate::desktop) use child::Ended;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) use recovery::{Owned, Recovery};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod target;
+#[cfg(target_os = "linux")]
+pub(super) use runtime::Routed;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) use runtime::Runtime;
 #[cfg_attr(windows, allow(dead_code))]
@@ -24,6 +29,19 @@ pub(super) use runtime::Runtime;
 mod ledger;
 
 use anyhow::{ensure, Context};
+
+/// What a route's own reservation decided, inside the admission transaction.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::desktop) enum Reservation {
+    /// The route ledger reserved the question: admit the original.
+    Reserved,
+    /// The route ledger recorded a final refusal: commit it, no original.
+    Refused,
+    /// The person's switch is off: roll back, nothing is written.
+    Off,
+}
+
 use zerus_client_core::desktop::deferred_send as wire;
 
 // Merge-order allocation: the next free Store version when this lands. A
@@ -49,6 +67,16 @@ pub(super) fn summary(db: &rusqlite::Connection) -> anyhow::Result<serde_json::V
 }
 pub(super) fn startup(db: &mut rusqlite::Connection) -> anyhow::Result<()> {
     ledger::startup(db)
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+/// The saved receipt of one original, read-only: the question route settles
+/// its own ledger from it (zerus-sa9qn.8). It grants nothing.
+pub(super) fn receipt(
+    db: &rusqlite::Connection,
+    request_id: &str,
+) -> anyhow::Result<Option<wire::Receipt>> {
+    Ok(ledger::load(db, request_id)?.map(|row| row.receipt))
 }
 
 /// The scoped read-only lookup of one original's receipt

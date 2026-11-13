@@ -1278,6 +1278,8 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         assert!(command_row("claude","❯\u{a0}/clear",8,"/clear"));
         assert!(command_row("kimi"," │ > /clear       │",11,"/clear"));
         assert!(command_row("kimi"," │ > /compact  <instruction>          │",13,"/compact"));
+        assert!(command_row("kimi"," │ > /compact                        │",15,"/compact"));
+        assert!(!command_row("kimi"," │ > /compact extra                  │",15,"/compact"));
         for row in [" │ > /compact extra  │"," │ > /compact  <a> <b> │"," │ > /compact  <instruction"] {assert!(!command_row("kimi",row,13,"/compact"));}
         for row in ["› /clear extra","› draft /clear","» /clear extra","» draft /clear","shell$ /clear"] {assert!(!command_row("codex",row,8,"/clear"));}
     }

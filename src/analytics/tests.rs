@@ -1078,3 +1078,41 @@ fn unknown_record_error_keeps_the_batch_poisoned_after_successful_cleanup() {
     batch.commit().unwrap();
     assert_eq!(total(&summary(&db), "turn_completed"), 3);
 }
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn send_delivery_description_is_private_pure_and_emission_keeps_observer_dedup() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let now = Utc::now().timestamp_millis();
+    let record = json!({"agent":"codex","conversation_id":"synthetic-send-conversation",
+        "prompt":"PRIVATE_NATIVE_BODY","pending_settings":{"model":"PRIVATE_CHOICE"}});
+    let receipt = json!({"request_id":"00000000-0000-4000-8000-000000000001",
+        "submitted_at":now as f64 / 1000.0,"text":"PRIVATE_MESSAGE_BODY",
+        "attachments":[{"path":"PRIVATE_ATTACHMENT_PATH"}]});
+    let notice = adapters::describe_delivery(&record, &receipt, adapters::Delivery::Submitted).unwrap();
+    assert!(!root.join("analytics").exists());
+    let wire = serde_json::to_string(&notice).unwrap();
+    assert!(!wire.contains("PRIVATE_"));
+    let mut db = Store::open(&root.join("analytics"), true, true).unwrap().unwrap();
+    db.configure(NIL_EPOCH, true, 90, now - 5000).unwrap();
+    drop(db);
+    let raw = rusqlite::Connection::open(root.join("analytics/analytics.sqlite3")).unwrap();
+    raw.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    // Neither pure description nor best-effort emission may wait on a writer.
+    let held = adapters::describe_delivery(&record, &receipt, adapters::Delivery::Submitted).unwrap();
+    adapters::emit_delivery_notice(root, held);
+    raw.execute_batch("ROLLBACK").unwrap();
+    adapters::emit_delivery_notice(root, notice);
+    adapters::delivery(root, &record, &receipt, adapters::Delivery::Submitted);
+    let uncertain = adapters::describe_delivery(&record, &receipt, adapters::Delivery::Uncertain).unwrap();
+    adapters::emit_delivery_notice(root, uncertain);
+    let db = Store::open(&root.join("analytics"), false, false).unwrap().unwrap();
+    let today = Utc::now().date_naive();
+    let value = db.summary(MACHINE, &(today - chrono::Days::new(1)).to_string(),
+                           &today.to_string(), now).unwrap();
+    assert_eq!(total(&value, "delivery_submitted"), 1);
+    assert_eq!(total(&value, "delivery_uncertain"), 1);
+    assert!(!std::fs::read(root.join("analytics/analytics.sqlite3")).unwrap()
+        .windows(b"PRIVATE_".len()).any(|part| part == b"PRIVATE_"));
+}

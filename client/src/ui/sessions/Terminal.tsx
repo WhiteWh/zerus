@@ -2,7 +2,9 @@ import { Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import type { Terminal as XTerm } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import { Icon } from "../lib/icons";
-import { contentScale, setMenu, toast } from "../../store/ui";
+import { contentScale, selected, setMenu, toast } from "../../store/ui";
+import { composer } from "../../store/composer";
+import { clearInput, clearableText, composerTarget } from "../../store/clearInput";
 import { copyVerbatim, pasteText } from "../../bridge";
 import { platform } from "../../store/shortcuts";
 import { clipboardKeyHandler, normalizeTerminalImage, terminalMenu } from "./terminal-clipboard";
@@ -146,6 +148,29 @@ export function TerminalTab() {
     term.focus();
   });
 
+  // zerus-wkj9l: Clear input, for text left in the agent's own composer. It
+  // shows only for a recognized non-empty composer with nothing being sent,
+  // and clears only after the person confirms the exact text.
+  createEffect(() => {
+    const s = selected();
+    clearInput.follow(s?.key, composerTarget(s));
+  });
+  const reading = setInterval(() => { if (!document.hidden) void clearInput.refresh(); }, 2500);
+  onCleanup(() => { clearInterval(reading); clearInput.follow(undefined); });
+  const clearable = () => clearableText(clearInput.state(), selected(), composer.view(), clearInput.clearing());
+  const [confirming, setConfirming] = createSignal<{ key: string; text: string; origin: HTMLElement }>();
+  const confirmClear = async (key: string, text: string) => {
+    setConfirming(undefined);
+    const outcome = await clearInput.clear(key, text, clearable);
+    if (!outcome) {
+      toast(tr("Terminal"), tr("Input not cleared: %1", tr("The input changed or a message is being sent.")), "error");
+      return;
+    }
+    if (outcome.status === "cleared") toast(tr("Terminal"), tr("Input cleared."));
+    else if (outcome.status === "failed") toast(tr("Terminal"), tr("Input not cleared: %1", outcome.error), "error");
+    else toast(tr("Terminal"), tr("Clearing the input is not confirmed: %1 Check Terminal.", outcome.error), "error", true);
+  };
+
   const connected = () => terminal.connected();
   // Qt's updateButtons tooltips; unavailable shows the reason.
   const reason = () => terminal.texts()?.reason ?? "";
@@ -157,6 +182,12 @@ export function TerminalTab() {
       <div class="term-bar">
         <span class="ell" title={terminal.status()}>{terminal.status()}</span>
         <span class="grow" />
+        <Show when={clearable()}>{(text) => (
+          <button class="icon-btn term-clear-input" data-tip={tr("Clear input")} aria-label={tr("Clear input")}
+            onClick={(event) => { const s = selected(); if (s) setConfirming({ key: s.key, text: text(), origin: event.currentTarget }); }}>
+            <Icon name="eraser" size={15} />
+          </button>
+        )}</Show>
         <button class="icon-btn" data-tip={reconnectTip()} aria-label={tr("Reconnect terminal")} disabled={!terminal.ready()} onClick={() => { void terminal.reconnect(); }}>
           <Icon name="refresh-cw" size={15} />
         </button>
@@ -172,6 +203,32 @@ export function TerminalTab() {
         </div>
       </Show>
       <div class="term-host" data-shortcut-context="terminal" ref={host} onContextMenu={onContextMenu} />
+      <Show when={confirming()}>{(item) => <ClearInputConfirm text={item().text} origin={item().origin}
+        cancel={() => setConfirming(undefined)} confirm={() => void confirmClear(item().key, item().text)} />}</Show>
     </div>
   );
+}
+
+/** The exact text Clear input discards, confirmed before any key is sent. */
+export function ClearInputConfirm(props: { text: string; origin: HTMLElement; cancel(): void; confirm(): void }) {
+  // Read once: after the parent's <Show> unmounts this, its props are stale.
+  const text = props.text, origin = props.origin;
+  let dialog!: HTMLDialogElement, cancel!: HTMLButtonElement;
+  onMount(() => { dialog.showModal(); cancel.focus(); });
+  onCleanup(() => {
+    if (dialog.open) dialog.close();
+    queueMicrotask(() => { if (origin.isConnected) origin.focus(); });
+  });
+  return <dialog ref={dialog} class="dlg" style={{ width: "520px" }} aria-labelledby="clear-input-title"
+    onCancel={(event) => { event.preventDefault(); props.cancel(); }} onClose={props.cancel}>
+    <div class="dlg-head"><h2 id="clear-input-title">{tr("Clear input")}</h2></div>
+    <div class="dlg-body"><div class="confirm-body">
+      <p>{tr("Discard this text from the agent's input? It is not sent.")}</p>
+      <pre class="clear-input-text">{text}</pre>
+    </div></div>
+    <div class="dlg-foot"><span class="spacer" />
+      <button type="button" class="btn solid-danger" onClick={props.confirm}>{tr("Clear input")}</button>
+      <button ref={cancel} type="button" class="btn primary" onClick={props.cancel}>{tr("Cancel")}</button>
+    </div>
+  </dialog>;
 }

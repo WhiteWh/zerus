@@ -14,6 +14,8 @@ type Session = (typeof catalog.rows)[string];
 
 export function CleanupBlockersPanel(props: {
   blockers: Blockers;
+  /** The fresh read of this folder's blockers; the recorded groups show meanwhile. */
+  live?: "loading" | "ready" | "failed";
   /** The live session uniquely matched on this folder's computer, if any. */
   session: (name: string) => Session | undefined;
   open: (name: string) => void;
@@ -41,13 +43,17 @@ export function CleanupBlockersPanel(props: {
       case "none": return "";
     }
   };
-  const any = () => unknown() || b().sessions.length || b().programCount || b().hidden || b().untracked || b().changes || b().other.length || props.notes.length;
+  const checking = () => !unknown() && (props.live === "loading" || props.live === "failed");
+  const any = () => unknown() || checking() || b().sessions.length || b().programCount || b().hidden || b().untracked || b().changes || b().other.length || props.notes.length;
   return <Show when={any()}>
     <section class="bc-blockers" aria-label={tr("Why this folder was kept")}>
       <Show when={next()}>
         <div class="notice" classList={{ warn: unknown() }} role="status"><Icon name={unknown() ? "triangle-alert" : "info"} size={14} /><span class="bc-next">{next()}</span>
           <Show when={b().next.kind === "archive" && b().sessions.length > 1}><button class="btn small" disabled={props.disabled} onClick={() => props.archive(b().sessions)}>{tr("Archive these %1 sessions…", b().sessions.length)}</button></Show>
         </div>
+      </Show>
+      <Show when={checking()}>
+        <p class="hint bc-live" role="status"><Show when={props.live === "loading"} fallback={tr("Could not check what uses this folder now. The recorded result is shown.")}><Icon name="loader-circle" size={12} class="su-spin" />{tr("Checking what uses this folder…")}</Show></p>
       </Show>
       <Show when={props.archived}><p class="hint" role="status">{tr("Archive requested for %1 sessions. Choose Check again when they are archived.", props.archived ?? 0)}</p></Show>
       <Show when={!unknown()}>
@@ -94,7 +100,11 @@ export function ArchiveSessionsDialog(props: { names: string[]; session: (name: 
       return { name, machine: row?.machine ?? "", item, reason: !row ? tr("Open the session list to find this session.") : !item ? tr("This session cannot be archived.") : item.disabled ? item.hint ?? tr("This session cannot be archived now.") : "" };
     });
   });
-  const archivable = () => (entries() ?? []).filter((e) => e.item && !e.item.disabled);
+  // Loading and error first: a pending entries() read would suspend the review,
+  // and a failed import would throw from the read.
+  const archivable = () => entries.loading || entries.error ? [] : (entries() ?? []).filter((e) => e.item && !e.item.disabled);
+  // Until the list is known the disabled button names the requested count.
+  const count = () => entries.loading || entries.error ? props.names.length : archivable().length;
   const confirm = () => {
     const ready = archivable(); if (!ready.length || busy()) return;
     setBusy(true);
@@ -107,13 +117,13 @@ export function ArchiveSessionsDialog(props: { names: string[]; session: (name: 
     <div class="dlg-head"><Icon name="archive" size={18} class="accent" /><h2 id="bc-archive-title">{props.names.length === 1 ? tr("Archive this session?") : tr("Archive these %1 sessions?", props.names.length)}</h2></div>
     <div class="dlg-body">
       <p>{tr("Archiving stops each session and moves it to the archive. Conversations are kept and can be restored. The folder is removed only after you check it again and confirm removal.")}</p>
-      <Show when={!entries.loading} fallback={<p role="status">{tr("Loading…")}</p>}>
+      <Show when={!entries.loading} fallback={<p role="status">{tr("Loading…")}</p>}><Show when={!entries.error} fallback={<div role="alert" class="notice danger bc-load-failed"><Icon name="circle-alert" size={14} /><div><p>{tr("Zerus could not load the session actions. Close this dialog and choose Archive again. If it keeps failing, restart Zerus.")}</p><p class="hint">{String(entries.error)}</p></div></div>}>
         <ul class="bc-list"><For each={entries()}>{(entry) => <li><span class="ell" title={entry.name}>{entry.name}</span><span class="hint">{entry.machine}</span><Show when={entry.reason}><span class="hint warn">{entry.reason}</span></Show></li>}</For></ul>
-      </Show>
+      </Show></Show>
     </div>
     <div class="dlg-foot"><span class="grow" />
       <button class="btn" disabled={busy()} onClick={props.close}>{tr("Cancel")}</button>
-      <button class="btn solid-danger" disabled={busy() || entries.loading || !archivable().length} onClick={confirm}>{archivable().length === 1 ? tr("Archive session") : tr("Archive %1 sessions", archivable().length)}</button>
+      <button class="btn solid-danger" disabled={busy() || !archivable().length} onClick={confirm}>{count() === 1 ? tr("Archive session") : tr("Archive %1 sessions", count())}</button>
     </div>
   </dialog>;
 }

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { createComponent, Show, type Accessor } from "solid-js";
+import { createComponent, ErrorBoundary, Show, Suspense, type Accessor } from "solid-js";
 import { render } from "solid-js/web";
 const native = vi.hoisted(() => ({ clear: vi.fn(), offer: vi.fn(), cancel: vi.fn(), confirm: vi.fn(), sync: vi.fn(), dismiss: vi.fn(), remove: vi.fn(), inspect: vi.fn(), restore: vi.fn(), manual: vi.fn(), manualCancel: vi.fn(), check: vi.fn() }));
 vi.mock("../../bridge", () => ({ inTauri: () => false, terminationCleanupKeep: native.clear, terminationCleanupDismiss: native.dismiss, terminationCleanupRemove: native.remove, terminationCleanupInspect: native.inspect, terminationCleanupManualOffer: native.manual, terminationCleanupManualCancel: native.manualCancel,
@@ -12,11 +12,12 @@ vi.mock("../../store/ui", () => ({ setPage: navigation.page, setSelectedKey: nav
 vi.mock("../../store/cleanupNotices", () => ({ anyCleanupRestore: () => false, cleanupRestoring: () => false, restoreCleanupRow: native.restore, syncCleanupNotices: native.sync }));
 vi.mock("../../store/actions", () => ({ notify: vi.fn() }));
 vi.mock("../../i18n", () => ({ tr: (s: string, ...args: unknown[]) => s.replace(/%(\d+)/g, (_, n) => String(args[Number(n) - 1])), trNoop: (s: string) => s }));
-vi.mock("../lib/icons", () => ({ Icon: () => null }));
+// An empty marker naming the icon: no text, so the copy assertions are unchanged.
+vi.mock("../lib/icons", () => ({ Icon: (props: { name: string }) => { const marker = document.createElement("i"); marker.dataset.icon = props.name; return marker; } }));
 vi.mock("../components/MachineLabel", () => ({ MachineLabel: () => null }));
-const archiveCalls = vi.hoisted(() => ({ calls: [] as string[], disabled: new Set<string>() }));
-vi.mock("../sessions/ActionDialogs", () => ({ actionEntries: (row: { name: string }) => ({ archive: { label: "Move to archive", disabled: archiveCalls.disabled.has(row.name), hint: "Busy", action: () => { archiveCalls.calls.push(row.name); } } }) }));
-import WorktreeCleanup from "./WorktreeCleanup";
+const archiveCalls = vi.hoisted(() => ({ calls: [] as string[], disabled: new Set<string>(), fail: false }));
+vi.mock("../sessions/ActionDialogs", () => ({ actionEntries: (row: { name: string }) => { if (archiveCalls.fail) throw new Error("Session actions are unavailable."); return { archive: { label: "Move to archive", disabled: archiveCalls.disabled.has(row.name), hint: "Busy", action: () => { archiveCalls.calls.push(row.name); } } }; } }));
+import WorktreeCleanup, { CleanupInspection } from "./WorktreeCleanup";
 import { CleanupChip, CleanupReviewButton } from "./CleanupChip";
 import { applyCleanup, cleanup, cleanupDialog, closeCleanup, emptyCleanup, openCleanup, type CleanupRow, groupCleanupRows } from "../../store/terminationCleanup";
 const row = (over: Partial<CleanupRow> = {}): CleanupRow => ({ id: "original", label: "worktree-fixture", path: "/srv/example/work", machine: "this computer", computer: "", branch: "kept-branch", size: "Not measured", status: "kept", reason: "Some programs are still running.", details: "", can_check: false, can_force: true, ready: false, ...over });
@@ -278,4 +279,190 @@ it("offers no blocker action for an unknown removal result (zerus-l1ryn)", async
   expect(panel.querySelector("button")).toBeNull();
   expect(button(host, "Check again").disabled).toBe(true);
   expect(archiveCalls.calls).toEqual([]); expect(native.remove).not.toHaveBeenCalled();
+});
+
+// App.tsx renders the review inside a Suspense boundary; these tests mount it the same way.
+function mountSuspended() {
+  const host = document.createElement("div"); document.body.append(host);
+  dispose = render(() => [createComponent(CleanupReviewButton, {}), Show({ get when() { return cleanupDialog(); }, children: (_current: Accessor<NonNullable<ReturnType<typeof cleanupDialog>>>) =>
+    createComponent(Suspense, { get children() { return createComponent(WorktreeCleanup, {}); } }) })], host);
+  return host;
+}
+function deferred<T>() { let resolve!: (value: T) => void, reject!: (error: unknown) => void; const promise = new Promise<T>((ok, fail) => { resolve = ok; reject = fail; }); return { promise, resolve, reject }; }
+const keptFolder = (id: string, over: Partial<CleanupRow> = {}) => row({ id, folder_key: id, label: `folder-${id}`, path: `/srv/example/${id}`, can_force: false, can_check: true, can_dismiss: true, processes: [], reason: "Uncommitted changes need review.", ...over });
+const live = (host: HTMLElement) => host.querySelector(".bc-live")?.textContent ?? "";
+const select = async (host: HTMLElement, id: string) => { host.querySelector<HTMLTableRowElement>(`tr[title="/srv/example/${id}"]`)!.click(); await flush(); };
+const reviewOf = (path: string, sessions: string[]) => ({ path, common_dir: "/srv/example/.git", review: { sessions, processes: [], reasons: [{ code: "sessions", message: "Zerus sessions use this folder." }] } });
+
+it("keeps the review visible and usable while the selected row's blocker inspection loads (zerus-nq26a)", async () => {
+  const pending = deferred<unknown>(); native.inspect.mockReturnValue(pending.promise);
+  applyCleanup({ ...emptyCleanup(), revision: ++revision, rows: [keptFolder("a", { processes: [{ pid: 7, label: "codex" }] }), keptFolder("b")], kept: 2 });
+  const host = mountSuspended(); review(host).click(); await flush();
+  expect(host.querySelector("dialog.worktree-cleanup[open]")).not.toBeNull();
+  expect(button(host, "Check again").disabled).toBe(false);
+  expect(live(host)).toContain("Checking what uses this folder…");
+  // The recorded blockers stay visible while the fresh read is pending.
+  expect(host.querySelector(".bc-blockers")!.textContent).toContain("codex (PID 7)");
+  await select(host, "b");
+  expect(host.querySelector("dialog.worktree-cleanup[open]")).not.toBeNull();
+  expect(host.querySelector("tr.on")?.getAttribute("title")).toBe("/srv/example/b");
+  expect(live(host)).toContain("Checking what uses this folder…");
+  // One read at a time: the second row waits for the first read to settle.
+  expect(native.inspect).toHaveBeenCalledTimes(1); expect(native.inspect).toHaveBeenCalledWith("a");
+});
+
+it("never lets a late inspection of another row overwrite the selected row (zerus-nq26a)", async () => {
+  const first = deferred<unknown>(), second = deferred<unknown>();
+  native.inspect.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+  applyCleanup({ ...emptyCleanup(), revision: ++revision, rows: [keptFolder("a"), keptFolder("b")], kept: 2 });
+  const host = mountSuspended(); review(host).click(); await flush();
+  await select(host, "b");
+  first.resolve(reviewOf("/srv/example/a", ["codex/late-a"])); await flush();
+  expect(host.querySelector(".bc-blockers")?.textContent ?? "").not.toContain("codex/late-a");
+  expect(live(host)).toContain("Checking what uses this folder…");
+  // The selected row's own read starts only after the late one settled.
+  expect(native.inspect).toHaveBeenCalledTimes(2); expect(native.inspect).toHaveBeenLastCalledWith("b");
+  second.resolve(reviewOf("/srv/example/b", ["codex/fresh-b"])); await flush();
+  expect(host.querySelector(".bc-blockers")!.textContent).toContain("codex/fresh-b");
+  expect(host.querySelector(".bc-blockers")!.textContent).not.toContain("codex/late-a");
+  expect(live(host)).toBe("");
+  // Going back to the first row reads it again rather than reusing the late reply.
+  await select(host, "a");
+  expect(native.inspect).toHaveBeenCalledTimes(3); expect(native.inspect).toHaveBeenLastCalledWith("a");
+});
+
+it("shows the recorded blockers and a failure note when the inspection fails (zerus-nq26a)", async () => {
+  native.inspect.mockRejectedValue("A folder inspection is already running. Try again after it finishes.");
+  applyCleanup({ ...emptyCleanup(), revision: ++revision, rows: [keptFolder("a", { processes: [{ pid: 7, label: "codex" }] })], kept: 1 });
+  const host = mountSuspended(); review(host).click(); await flush();
+  expect(host.querySelector("dialog.worktree-cleanup[open]")).not.toBeNull();
+  expect(host.querySelector(".bc-blockers")!.textContent).toContain("codex (PID 7)");
+  expect(live(host)).toContain("Could not check what uses this folder now. The recorded result is shown.");
+  expect(button(host, "Check again").disabled).toBe(false);
+  expect(native.remove).not.toHaveBeenCalled(); expect(native.check).not.toHaveBeenCalled();
+});
+
+it("ignores a reply that arrives after the review closed (zerus-nq26a)", async () => {
+  const pending = deferred<unknown>();
+  native.inspect.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(reviewOf("/srv/example/a", ["codex/reopened"]));
+  applyCleanup({ ...emptyCleanup(), revision: ++revision, rows: [keptFolder("a"), keptFolder("b")], kept: 2 });
+  const host = mountSuspended(); review(host).click(); await flush();
+  await select(host, "b"); // b waits behind a's read
+  button(host, "Close").click(); await flush(); expect(cleanupDialog()).toBeUndefined();
+  pending.resolve(reviewOf("/srv/example/a", ["codex/after-close"])); await flush();
+  expect(host.querySelector("dialog.worktree-cleanup")).toBeNull();
+  // A closed review starts no further read.
+  expect(native.inspect).toHaveBeenCalledTimes(1);
+  // Reopening reads afresh; the closed review's reply never reaches it.
+  review(host).click(); await flush();
+  expect(native.inspect).toHaveBeenCalledTimes(2); expect(native.inspect).toHaveBeenLastCalledWith("a");
+  expect(host.querySelector(".bc-blockers")!.textContent).toContain("codex/reopened");
+  expect(host.querySelector(".bc-blockers")!.textContent).not.toContain("codex/after-close");
+});
+
+it("keeps the inspection visible while its local file page loads (zerus-nq26a)", async () => {
+  const page = deferred<unknown>();
+  const read = vi.fn((_id: string, file?: string) => file ? page.promise : Promise.resolve({ path: "/srv/example/a", files: [], changes: { text: "" }, commits: { text: "" } }));
+  const host = document.createElement("div"); document.body.append(host);
+  dispose = render(() => createComponent(Suspense, { get children() { return createComponent(CleanupInspection, { row: keptFolder("a"), close: () => {}, read: read as never }); } }), host);
+  await flush(); expect(host.querySelector("dialog.worktree-inspection")).not.toBeNull();
+  button(host, "Local").click(); await flush();
+  expect(read).toHaveBeenLastCalledWith("a", ".", 0);
+  expect(host.querySelector("dialog.worktree-inspection")).not.toBeNull();
+  expect(button(host, "Next").disabled).toBe(true);
+  page.resolve({ path: "/srv/example/a", file: { path: ".", entries: [{ path: "notes.txt", directory: false, symlink: false }], offset: 0 } }); await flush();
+  expect(host.textContent).toContain("notes.txt");
+});
+
+it("treats a reply for another path as a failed check, never as this folder's blockers (zerus-nq26a)", async () => {
+  native.inspect.mockResolvedValue(reviewOf("/srv/example/elsewhere", ["codex/elsewhere"]));
+  applyCleanup({ ...emptyCleanup(), revision: ++revision, rows: [keptFolder("a")], kept: 1 });
+  const host = mountSuspended(); review(host).click(); await flush();
+  expect(host.querySelector(".bc-blockers")!.textContent).not.toContain("codex/elsewhere");
+  expect(live(host)).toContain("Could not check what uses this folder now.");
+});
+
+// The reviewer's probe: a MutationObserver records any moment the review leaves the DOM, even if it comes back.
+function detachProbe(host: HTMLElement) {
+  const review = host.querySelector("dialog.worktree-cleanup")!; expect(review).not.toBeNull();
+  // Records-based: a removal that is undone a microtask later still counts.
+  let detached = false;
+  const scan = (records: MutationRecord[]) => { for (const record of records) for (const node of record.removedNodes) if (node === review || node.contains(review)) detached = true; };
+  const observer = new MutationObserver(scan);
+  observer.observe(host, { childList: true, subtree: true });
+  return { detached: () => { scan(observer.takeRecords()); return detached || !review.isConnected; }, stop: () => observer.disconnect() };
+}
+
+it("keeps the review attached while the Remove anyway offer is pending (zerus-nq26a.2)", async () => {
+  const offer = deferred<unknown>(); native.manual.mockReturnValue(offer.promise);
+  applyCleanup({ ...emptyCleanup(), revision: ++revision, rows: [keptFolder("a", { can_remove_anyway: true })], kept: 1 });
+  const host = mountSuspended(); review(host).click(); await flush();
+  const probe = detachProbe(host);
+  button(host, "Remove anyway…").click(); await flush();
+  expect(probe.detached()).toBe(false);
+  const manual = document.querySelector<HTMLElement>("dialog[aria-labelledby=manual-remove-title]")!;
+  expect(manual.textContent).toContain("Checking the folder…");
+  expect(button(manual, "Remove working folder").disabled).toBe(true);
+  expect(probe.detached()).toBe(false);
+  offer.resolve({ confirmation: "native-manual", path: "/srv/example/a", computer: "this computer", branch: "kept-branch", size: "1 KB", changes: 0, untracked: 0, reason: "Not created by Zerus.", sessions: [], processes: [], ready: false,
+    required: { local_files: false, discard_changes: false, unchecked_processes: false, merged_branches: false } });
+  await flush();
+  expect(manual.textContent).toContain("Not created by Zerus.");
+  expect(button(manual, "Remove working folder").disabled).toBe(true);
+  expect(probe.detached()).toBe(false); probe.stop();
+  expect(native.remove).not.toHaveBeenCalled();
+});
+
+it("keeps the review attached while the archive confirmation loads its sessions (zerus-nq26a.2)", async () => {
+  archiveCalls.calls = []; archiveCalls.disabled = new Set();
+  const names = ["codex/one", "codex/two"];
+  names.forEach((name, i) => { catalogState.rows[name] = { key: `run:${i}`, computer: "", name }; });
+  native.inspect.mockResolvedValue(reviewOf("/srv/example/a", names));
+  applyCleanup({ ...emptyCleanup(), revision: ++revision, rows: [keptFolder("a", { sessions: names })], kept: 1 });
+  const host = mountSuspended(); review(host).click(); await flush();
+  const probe = detachProbe(host);
+  button(host, "Archive these 2 sessions…").click();
+  // Same tick as the click: the review is still attached and the confirmation is loading.
+  expect(probe.detached()).toBe(false);
+  const confirmation = document.querySelector<HTMLElement>("dialog.bc-archive")!;
+  expect(confirmation).not.toBeNull();
+  expect(button(confirmation, "Archive 2 sessions").disabled).toBe(true);
+  await vi.waitFor(() => expect(confirmation.textContent).toContain("codex/two"));
+  expect(button(confirmation, "Archive 2 sessions").disabled).toBe(false);
+  expect(probe.detached()).toBe(false); probe.stop();
+  expect(archiveCalls.calls).toEqual([]);
+});
+
+it("shows why the archive confirmation cannot list sessions instead of throwing (zerus-nq26a.2)", async () => {
+  archiveCalls.calls = []; archiveCalls.disabled = new Set(); archiveCalls.fail = true;
+  try {
+    const names = ["codex/one", "codex/two"];
+    names.forEach((name, i) => { catalogState.rows[name] = { key: `run:${i}`, computer: "", name }; });
+    native.inspect.mockResolvedValue(reviewOf("/srv/example/a", names));
+    applyCleanup({ ...emptyCleanup(), revision: ++revision, rows: [keptFolder("a", { sessions: names })], kept: 1 });
+    // An error boundary owns the A2 case: a read of the errored resource throws,
+    // and that must fail this test by assertion, not only as an unhandled error.
+    const caught: unknown[] = [];
+    const host = document.createElement("div"); document.body.append(host);
+    dispose = render(() => createComponent(ErrorBoundary, { fallback: (error: unknown) => { caught.push(error); return "boundary caught an error"; }, get children() {
+      return [createComponent(CleanupReviewButton, {}), Show({ get when() { return cleanupDialog(); }, children: (_current: Accessor<NonNullable<ReturnType<typeof cleanupDialog>>>) =>
+        createComponent(Suspense, { get children() { return createComponent(WorktreeCleanup, {}); } }) })];
+    } }), host);
+    review(host).click(); await flush();
+    const probe = detachProbe(host);
+    button(host, "Archive these 2 sessions…").click();
+    const confirmation = document.querySelector<HTMLElement>("dialog.bc-archive")!;
+    await vi.waitFor(() => expect(confirmation.querySelector("[role=alert]")).not.toBeNull());
+    const alert = confirmation.querySelector<HTMLElement>("[role=alert]")!;
+    // The mockup's danger notice: its tone and the circle-alert icon (zerus-nq26a.5).
+    expect([...alert.classList]).toEqual(expect.arrayContaining(["notice", "danger"]));
+    expect(alert.querySelector(":scope > [data-icon]")?.getAttribute("data-icon")).toBe("circle-alert");
+    // A plain sentence with a next step first; the raw detail only as secondary text.
+    expect(alert.querySelector("p:not(.hint)")?.textContent).toBe("Zerus could not load the session actions. Close this dialog and choose Archive again. If it keeps failing, restart Zerus.");
+    expect(alert.querySelector("p.hint")?.textContent).toContain("Session actions are unavailable.");
+    expect(button(confirmation, "Archive 2 sessions").disabled).toBe(true);
+    expect(caught).toEqual([]);
+    expect(probe.detached()).toBe(false); probe.stop();
+    expect(archiveCalls.calls).toEqual([]);
+  } finally { archiveCalls.fail = false; }
 });

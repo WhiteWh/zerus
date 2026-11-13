@@ -19,6 +19,7 @@ pub mod push;
 #[cfg(feature = "server")]
 pub mod registry;
 pub mod repositories;
+pub mod send_receipt;
 mod speech_config;
 #[cfg(feature = "server")]
 pub mod store;

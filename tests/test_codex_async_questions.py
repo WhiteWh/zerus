@@ -266,6 +266,64 @@ class CodexAsync(unittest.TestCase):
         self.assertNotEqual(attempt.returncode,0,attempt.stdout)
         self.assertEqual(self.received(),b'')
 
+    def test_a_missing_original_is_a_known_gap_after_reconciliation_not_permanent_indexing(self):
+        card,_=self.warm_with_old_marker()
+        request=str(uuid.uuid4())
+        receipt=dict(status='submitted',request_id=request,name=self.name,run_id=self.run_id,conversation_id=self.conversation_id,
+            question_id=card['question_id'],question_hash=card['question_hash'],digest='f'*64,submitted_at=time.time(),
+            answers=[dict(question_id='q_0',text='Already submitted')])
+        folder=self.state/'question_receipts';folder.mkdir(exist_ok=True)
+        path=folder/(request+'.json');original=json.dumps(receipt);path.write_text(original)
+        with self.receipt_worker() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM receipt_rows WHERE source='question'").fetchone()[0],1)
+        path.unlink()
+        with self.receipt_worker() as db:
+            self.assertEqual(db.execute("SELECT indexed,complete,errors FROM receipt_sources WHERE source='question'").fetchone(),(1,1,1))
+            self.assertEqual(db.execute("SELECT reason FROM receipt_errors WHERE source='question'").fetchone(),('missing',))
+        current=self.inspect_once()
+        self.assertIs(current['pending_questions_complete'],False)
+        self.assertEqual(current['pending_questions'],[])
+        self.assertIn('cannot all be checked',current['pending_questions_error'])
+        self.assertNotIn('still being indexed',current['pending_questions_error'])
+        attempt,_=self.answer(card,answer=dict(question_id='q_0',text='Accepted answer'))
+        self.assertNotEqual(attempt.returncode,0,attempt.stdout)
+        self.assertEqual(self.received(),b'')
+        path.write_text(original)
+        with self.receipt_worker() as db:
+            self.assertEqual(db.execute("SELECT indexed,complete,errors FROM receipt_sources WHERE source='question'").fetchone(),(1,1,0))
+        restored=self.inspect()['pending_questions'][0]
+        self.assertFalse(restored['can_answer'])
+        self.assertEqual(restored['answer_delivery']['request_id'],request)
+        self.assertEqual(self.received(),b'')
+
+    def test_cached_name_repair_never_hides_submitted_answer_evidence(self):
+        card,_=self.warm_with_old_marker()
+        request=str(uuid.uuid4())
+        folder=self.state/'question_receipts';folder.mkdir(exist_ok=True)
+        path=folder/(request+'.json')
+        receipt=dict(status='submitted',request_id=request,name=self.name,run_id=self.run_id,
+            conversation_id=self.conversation_id,question_id=card['question_id'],
+            question_hash=card['question_hash'],digest='f'*64,submitted_at=time.time(),
+            answers=[dict(question_id='q_0',text='Already submitted')])
+        path.write_text(json.dumps(receipt));original=path.read_bytes(),path.stat().st_mtime_ns
+        with self.receipt_worker() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM receipt_rows WHERE source='question'").fetchone()[0],1)
+        import sqlite3
+        from contextlib import closing
+        with closing(sqlite3.connect(self.state/'delivery-receipts-v1.sqlite3')) as db,db:
+            db.execute("UPDATE receipt_rows SET name='codex/foreign/cache-only' WHERE source='question' AND request=?",[request])
+        with self.receipt_worker() as db:
+            cached_name=db.execute("SELECT name FROM receipt_rows WHERE source='question'").fetchone()[0]
+        current=self.inspect()['pending_questions'][0]
+        self.assertFalse(current['can_answer'],'a cache-only name change hid the original submission')
+        self.assertEqual(cached_name,self.name)
+        self.assertEqual(current['answer_delivery']['request_id'],request)
+        attempt,payload=self.answer(card,answer=dict(question_id='q_0',text='Accepted answer'))
+        self.assertNotEqual(payload['request_id'],request)
+        self.assertNotEqual(attempt.returncode,0,attempt.stdout)
+        self.assertEqual(self.received(),b'')
+        self.assertEqual((path.read_bytes(),path.stat().st_mtime_ns),original)
+
     def test_answer_from_normal_prompt_has_native_identity_and_removes_only_that_question(self):
         card=self.request();self.assertTrue(card['optional']);self.assertTrue(card['can_answer']);self.assertTrue(card['can_skip'])
         result,payload=self.answer(card);self.assertEqual(result.returncode,0,result.stderr)

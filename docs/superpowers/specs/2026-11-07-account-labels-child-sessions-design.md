@@ -379,6 +379,22 @@ amber badge and edge.
   `hgs parent SESSION --json` with `clear` does it.
 * **Open parent**: the from-PARENT chip opens it; a menu entry is part of the desktop follow-up.
 * Mute and Unmute stay independent of supervision.
+* **Terminate** and **Move to archive** of a session with live child sessions on
+  its computer list them and offer **Also end N child sessions** (Archive:
+  **Also archive N child sessions**), off by default (zerus-sa9qn.17). Children
+  the action does not apply to now are listed as staying. The count and the
+  list cover every level, not only the direct children; Terminate marks and
+  counts children without an HGS archive (they are killed, as by their own
+  Terminate) and notes that a stopped or paused child it keeps is archived by
+  `hgs terminate --with-children`. Only that choice ends
+  children: each one runs after the parent's own outcome is done, through its
+  own guarded action and never with the parent's Remove working folder choice,
+  one at a time, rechecked as the same instance and never retried; one notice
+  counts done, failed or changed, and unknown outcomes. A parent that failed or
+  whose outcome is unknown keeps every child. Move to archive asks only for such
+  a session; any other archives at once, as before. The command-line form is
+  `hgs terminate|archive SESSION --with-children`. Nothing propagates
+  implicitly: the link names the children, the person's choice is the authority.
 
 ### 3.6 Keyboard and screen readers
 
