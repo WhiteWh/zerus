@@ -137,7 +137,8 @@ describe("the queue", () => {
       vi.advanceTimersByTime(60_000);
       await flush();
       expect(mocked.runAction).toHaveBeenCalledTimes(4);
-      expect(a.texts()).toEqual(["Pause: 2 of 4 completed. 2 failed or changed; refresh before retrying.\npause claude/p/b: boom\npause claude/p/c: hgs exited"]);
+      // The error toast dismissed itself; nothing retried the batch.
+      expect(a.texts()).toEqual([]);
       dispose();
     });
   });

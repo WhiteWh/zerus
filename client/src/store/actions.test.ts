@@ -3,6 +3,7 @@ import { createRoot } from "solid-js";
 import { createCatalog, toSession } from "./catalog";
 import { createActions, withArchived, type Followed, type Selection } from "./actions";
 import { createMarks, type MarksPort } from "./marks";
+import { ERROR_NOTICE_MS } from "./notices";
 import { notificationsState, snapshotOf } from "../ui/sessions/actions-ui";
 import * as bridge from "../bridge";
 import { emptyBatch, type Action, type Batch, type Details, type Outcome, type RowOut, type ViewRow } from "../types";
@@ -163,13 +164,16 @@ describe("perform", () => {
     });
   });
 
-  it("keeps a failure as a sticky error", async () => {
+  it("shows a failure as an error notice that dismisses itself after its longer time", async () => {
     await createRoot(async (dispose) => {
       const a = setup();
       mocked.runAction.mockResolvedValue({ outcome: "failed", detail: "hgs pause failed" });
       await a.perform(session(), { kind: "pause" });
-      vi.advanceTimersByTime(60_000);
       expect(a.notices()).toMatchObject([{ tone: "error", text: "hgs pause failed", sticky: true }]);
+      vi.advanceTimersByTime(ERROR_NOTICE_MS - 1);
+      expect(a.notices()).toHaveLength(1);
+      vi.advanceTimersByTime(1);
+      expect(a.notices()).toEqual([]);
       dispose();
     });
   });
