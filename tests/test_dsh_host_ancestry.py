@@ -221,33 +221,54 @@ class UnderARecordedHost(unittest.TestCase):
         return json.dumps({'request_id': str(uuid.uuid4()), 'expected_run_id': self.lead['run_id'],
                            'expected_conversation_id': self.lead['conversation_id'], 'text': 'probe'})
 
-    def test_an_unmarked_send_under_a_recorded_host_is_refused(self):
-        # zerus-ppd26.19: a live target would receive it without a sender. Every
-        # form is refused before anything is sent or forwarded: send, send-now,
-        # a zerus:// reference and @host.
+    def test_a_send_under_a_recorded_host_needs_a_proven_call_token(self):
+        # zerus-ppd26.22: under a found host only the host's own proven hosted
+        # call may send: the bridge's HGS_AGENT marker and its own complete
+        # session token pair. Unmarked calls, an older host's inherited markers
+        # (no HGS_AGENT) and partial markers are refused before anything is
+        # sent or forwarded: send, send-now, a zerus:// reference and @host.
         uri = json.loads(self.call('self', '--json', env=self.claim).stdout)['uri']
+        forms = (('send', self.lead['name'], '--json'),
+                 ('send-now', self.lead['name'], '--json'),
+                 ('send', uri, '--json'),
+                 ('--dry-run', '@peerx', 'send', 'claude/p/s', '--json'))
+        for env in (self.env, self.claim):
+            for args in forms:
+                call_env = dict(env, HGS_PEERS='peerx') if '@peerx' in args else env
+                hosted = self.hosted(*args, env=call_env, input=self.send_request())
+                self.assertNotEqual(hosted.returncode, 0, (args, hosted.stdout))
+                self.assertIn(UNDER_HOST, hosted.stderr, args)
+                self.assertNotIn('ssh', hosted.stdout, args)
+        # Partial markers never prove a hosted call: each half alone is refused.
+        for partial in ({'HGS_SESSION': self.lead['name']}, {'HGS_RUN_ID': self.lead['run_id']}):
+            hosted = self.hosted('send', self.lead['name'], '--json',
+                                 env=dict(self.env, HGS_AGENT='dsh', **partial),
+                                 input=self.send_request())
+            self.assertNotEqual(hosted.returncode, 0, partial)
+            self.assertIn(UNDER_HOST, hosted.stderr, partial)
+        # The host's own proven call (its call marker and complete pair) sends.
+        proven = dict(self.env, HGS_AGENT='dsh', HGS_SESSION=self.lead['name'],
+                      HGS_RUN_ID=self.lead['run_id'])
+        hosted = self.hosted('send', self.lead['name'], '--json', env=proven,
+                             input=self.send_request())
+        self.assertNotIn(UNDER_HOST, hosted.stdout + hosted.stderr)
+        # Outside a found host the proof is unchanged: the person's @host send
+        # is forwarded, and a marked call is not refused by this gate.
         peer = dict(self.env, HGS_PEERS='peerx')
-        forms = ((('send', self.lead['name'], '--json'), self.env),
-                 (('send-now', self.lead['name'], '--json'), self.env),
-                 (('send', uri, '--json'), self.env),
-                 (('--dry-run', '@peerx', 'send', 'claude/p/s', '--json'), peer))
-        for args, env in forms:
-            hosted = self.hosted(*args, env=env, input=self.send_request())
-            self.assertNotEqual(hosted.returncode, 0, (args, hosted.stdout))
-            self.assertIn(UNDER_HOST, hosted.stderr, args)
-            self.assertNotIn('ssh', hosted.stdout, args)
-            outside = self.call(*args, env=env, input=self.send_request(), ok=False)
-            self.assertNotIn(UNDER_HOST, outside.stdout + outside.stderr, args)
-        forwarded = self.call('--dry-run', '@peerx', 'send', 'claude/p/s', '--json', env=peer, input='{}', ok=False)
-        self.assertIn('ssh', forwarded.stdout, 'the person\'s @host send is forwarded')
-        # Only unmarked commands: a marked call keeps today's unattributed send.
-        marked = self.hosted('send', self.lead['name'], '--json', env=self.claim, input=self.send_request())
-        self.assertNotIn(UNDER_HOST, marked.stdout + marked.stderr)
-        # Only a host actually found: an unverifiable check refuses no send.
+        forwarded = self.call('--dry-run', '@peerx', 'send', 'claude/p/s', '--json', env=peer,
+                              input='{}', ok=False)
+        self.assertIn('ssh', forwarded.stdout, "the person's @host send is forwarded")
+        outside = self.call('send', self.lead['name'], '--json', env=self.claim,
+                            input=self.send_request(), ok=False)
+        self.assertNotIn(UNDER_HOST, outside.stdout + outside.stderr)
+        # Only a host actually found refuses: an unverifiable check refuses no send.
         self.record.write_text('{')
-        unverified = self.hosted('send', self.lead['name'], '--json', env=self.env, input=self.send_request())
-        self.assertNotIn(UNDER_HOST, unverified.stdout + unverified.stderr)
-        self.assertNotIn('Cannot verify the DeepSeek agent host record', unverified.stdout + unverified.stderr)
+        for env in (self.env, self.claim):
+            unverified = self.hosted('send', self.lead['name'], '--json', env=env,
+                                     input=self.send_request())
+            self.assertNotIn(UNDER_HOST, unverified.stdout + unverified.stderr)
+            self.assertNotIn('Cannot verify the DeepSeek agent host record',
+                             unverified.stdout + unverified.stderr)
 
     def test_an_unreadable_host_record_refuses_both_directions_and_names_it(self):
         self.record.write_text('{')
