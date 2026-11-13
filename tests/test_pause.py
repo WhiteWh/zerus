@@ -2952,8 +2952,9 @@ class GitContext(Harness):
         for key in list(self.env):
             if key.startswith("GIT_"):
                 self.env.pop(key)
+        # The private non-repository folder must not discover a containing checkout.
         self.env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
-                        GIT_TERMINAL_PROMPT="0")
+                        GIT_TERMINAL_PROMPT="0", GIT_CEILING_DIRECTORIES=str(self.root))
         self.git("init", "-b", "main", str(self.project))
         self.git("commit", "--allow-empty", "-m", "Private fixture commit", cwd=self.project)
 
