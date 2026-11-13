@@ -1,9 +1,5 @@
 use super::*;
-use std::{
-    fs,
-    os::unix::fs::{DirBuilderExt, PermissionsExt},
-    path::Path,
-};
+use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
 /// zerus-obif: a run's Operations charge is released only once its child's
 /// pipe readers finish, which can trail the run's return. A fixture that
@@ -31,9 +27,7 @@ pub(super) struct Fixture {
 }
 impl Fixture {
     pub(super) fn new(mode: &str) -> Self {
-        let root =
-            std::env::temp_dir().join(format!("zerus-retained-report-{}", uuid::Uuid::new_v4()));
-        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        let root = crate::desktop_service::tests::private_root(&std::env::temp_dir());
         let root = root.canonicalize().unwrap();
         let cli = root.join("hgs");
         fs::copy(
