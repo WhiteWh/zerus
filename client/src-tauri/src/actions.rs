@@ -1779,8 +1779,9 @@ async fn dispatch_reserved_original(
             _ => Err(BUSY.into()),
         };
     };
-    // The service case moves this SAME native claim into its I/O resources.
-    // Dropping the async future cannot release it while a helper/pipe survives.
+    // The service case moves this SAME native claim into a revocable hold.
+    // The bounded worker owns it even if the async future drops; later pipe
+    // custody can outlive that worker without keeping the session lane busy.
     let (_running, native_hold): (Option<Running>, Option<Arc<dyn Send + Sync>>) =
         if native.is_some() {
             (None, Some(Arc::new(running)))
