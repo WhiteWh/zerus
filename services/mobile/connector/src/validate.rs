@@ -366,6 +366,14 @@ pub fn validate(
         .and_then(Value::as_str)
         .filter(|operation| crate::capabilities::implemented(operation))
         .ok_or_else(|| error(UNSUPPORTED))?;
+    if operation == "send_receipt" {
+        crate::send_receipt::validate(request, request_id)?;
+        return Ok(Validated {
+            operation: operation.into(),
+            session: request["session"].as_str().expect("validated").into(),
+            payload: request.get("payload").cloned(),
+        });
+    }
     if crate::media::handles(operation) {
         return crate::media::validate(operation, request, request_id, context);
     }
@@ -441,6 +449,22 @@ pub fn validate(
         }
         let payload = request.get("payload").unwrap_or(&Value::Null);
         crate::session_notifications::validate(payload).map_err(error)?;
+        return Ok(validated(session, Some(payload.clone())));
+    }
+    if operation == crate::session_question_routing::OPERATION {
+        if !context.sessions.contains(session) {
+            return Err(error(NONARCHIVED));
+        }
+        let payload = request.get("payload").unwrap_or(&Value::Null);
+        crate::session_question_routing::validate(payload).map_err(error)?;
+        return Ok(validated(session, Some(payload.clone())));
+    }
+    if operation == crate::session_question_route_person::OPERATION {
+        if !context.sessions.contains(session) {
+            return Err(error(NONARCHIVED));
+        }
+        let payload = request.get("payload").unwrap_or(&Value::Null);
+        crate::session_question_route_person::validate(payload).map_err(error)?;
         return Ok(validated(session, Some(payload.clone())));
     }
     if operation == "mark_read" {

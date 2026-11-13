@@ -13,9 +13,18 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::time::Duration;
 
+pub(crate) mod composer;
 mod diagnostic;
-mod settle;
+pub(crate) mod settle;
 pub(crate) mod task_refusal;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::state) mod native_send;
+
+/// Only this module's public dispatch constructs this provenance. Internal
+/// submit* callers, including those using Origin::Person, cannot mint it.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::state) struct PublicSend(());
 
 const MAX_TEXT: usize = 64 * 1024;
 const MAX_FILE: usize = 10 * 1024 * 1024;
@@ -322,9 +331,72 @@ pub(crate) fn resumed_readiness(record: &Value) -> Readiness {
 /// `input_seen_at` and keeps the event rule it was written under.
 pub(crate) fn input_unconfirmed(record: &Value) -> bool {
     let seen = if record.get("input_seen_at").is_some() { "input_seen_at" } else { "last_event_at" };
-    record["input_pending_at"]
-        .as_f64()
-        .is_some_and(|pending| record[seen].as_f64().unwrap_or(0.0) <= pending)
+    record["input_pending_at"].as_f64().is_some_and(|pending| {
+        record[seen].as_f64().unwrap_or(0.0) <= pending
+            // The person cleared the composer since (Terminal's Clear input,
+            // zerus-wkj9l): what was typed is gone from it, by their choice.
+            && record["input_cleared_at"].as_f64().unwrap_or(0.0) <= pending
+    })
+}
+
+/// How long after `input_pending_at` a send may still hold its proof window:
+/// the paste, `settle::WINDOW` and the wait for the lock to record its outcome.
+/// An `in_progress` receipt older than this belongs to a sender that ended
+/// without recording one; its input is stuck, and the person may clear it.
+pub(crate) const PROOF_LIMIT: Duration = Duration::from_secs(40);
+
+/// Whether a send to this run, from any client, is still in its proof window
+/// (zerus-wkj9l.1): its input is unconfirmed, recent, and its receipt is
+/// `in_progress` with no delivery outcome yet. Clear input refuses then: the
+/// message being delivered may sit in the composer, and clearing it would
+/// discard it and settle the send's pending gate. A send that ended uncertain
+/// (its receipt names a `delivery`), was submitted or is older than
+/// [`PROOF_LIMIT`] never blocks: an uncertain or stuck input stays clearable.
+///
+/// The window is measured on the wall clock (`now()` against
+/// `input_pending_at`); the record keeps no monotonic or boot-time stamp of
+/// its input. A backward clock step therefore keeps a crashed sender's
+/// `in_progress` receipt in flight for longer, until the clock passes
+/// `input_pending_at` + [`PROOF_LIMIT`] again: by at most the size of the
+/// step, and only for a sender that never recorded an outcome. That errs
+/// toward refusing Clear input, never toward discarding a message being
+/// delivered (zerus-wkj9l.5 item 3).
+pub(crate) fn send_in_flight(record: &Value) -> bool {
+    let root = absolute_root().ok();
+    in_flight(record, now(), |request| {
+        let path = root.as_ref()?.join("input_receipts").join(format!("{request}.json"));
+        serde_json::from_slice(&fs::read(path).ok()?).ok()
+    })
+}
+
+fn in_flight(record: &Value, at: f64, receipt: impl FnOnce(&str) -> Option<Value>) -> bool {
+    if !input_unconfirmed(record) {
+        return false;
+    }
+    let pending = record["input_pending_at"].as_f64().unwrap_or(0.0);
+    if at - pending > PROOF_LIMIT.as_secs_f64() {
+        return false;
+    }
+    let request = string(record, "input_pending_request");
+    // A send recorded before this field names no receipt: its recent pending
+    // input decides, as does a receipt that cannot be read yet.
+    let Some(request) = uuid::Uuid::parse_str(request).ok().map(|id| id.to_string()).filter(|id| id == request) else {
+        return true;
+    };
+    match receipt(&request) {
+        // The named receipt decides only when it is this pending input's own:
+        // submit_core writes its `submitted_at` as `input_pending_at`. Another
+        // writer of `input_pending_at` (the ready-send keeper's `mark_input`)
+        // leaves an earlier send's request beside a newer time; that receipt
+        // says nothing about this input, so the recent pending input decides,
+        // as for a receipt that cannot be read (zerus-wkj9l.5 item 2).
+        Some(receipt) if receipt["submitted_at"].as_f64() == Some(pending) => {
+            receipt["status"] == "in_progress"
+                && receipt.get("delivery").is_none_or(Value::is_null)
+                && string(&receipt, "run_id") == string(record, "run_id")
+        }
+        _ => true,
+    }
 }
 
 fn checked_input(
@@ -337,6 +409,14 @@ fn checked_input(
     // share the label.
     expect(name, run_id, conversation_id)?;
     let record = read(name)?;
+    checked_bound_record(record, run_id, conversation_id, allow_working)
+}
+
+/// The keeper already holds the exact record, Root and SID. Reuse the native
+/// gates without selecting a label, repairing an index or reacquiring input.
+pub(in crate::state) fn checked_bound_record(
+    record: Value, run_id: &str, conversation_id: &str, allow_working: bool,
+) -> Result<Value> {
     terminating::check_mutation(&record)?;
     if string(&record, "run_id") != run_id || string(&record, "conversation_id") != conversation_id
     {
@@ -419,6 +499,10 @@ fn checked_input(
     if !allow_working {
         idle_only(&record)?;
     }
+    // zerus-iitw8.5: another send is still entering its message.
+    if input_typing(&record).is_some() {
+        return Err(TYPING_REFUSAL.into());
+    }
     if !input_confirmed(&record) {
         return Err(UNCONFIRMED.into());
     }
@@ -433,6 +517,9 @@ fn checked_input(
 }
 
 pub(super) const UNCONFIRMED: &str = "previous input has not been confirmed by the agent; inspect Terminal before sending again";
+
+/// zerus-iitw8.5: another send's `input_typing` marker still holds the session.
+pub(super) const TYPING_REFUSAL: &str = "previous input has not been confirmed yet: another message is being entered into this session; try again in a few seconds";
 
 /// U35: the agent has taken the previous input. An input-acceptance event after
 /// it confirms it (`input_unconfirmed`, zerus-iitw8): UserPromptSubmit at once for an
@@ -479,6 +566,10 @@ pub(super) fn settings_unconfirmed(record: &Value) -> bool {
             Ok(false) => {},
         }
     }
+    settings_unconfirmed_metadata(record)
+}
+
+fn settings_unconfirmed_metadata(record: &Value) -> bool {
     record["settings_unconfirmed_at"]
         .as_f64()
         .is_some_and(|at| record["last_event_at"].as_f64().unwrap_or(0.0) <= at)
@@ -915,7 +1006,7 @@ pub(super) fn checked_terminal(record: &Value, empty: bool) -> Result<()> {
     terminal_check(record, empty, false)
 }
 
-fn checked_send_terminal(record: &Value) -> Result<()> {
+pub(in crate::state) fn checked_send_terminal(record: &Value) -> Result<()> {
     terminal_check(record, true, true)
 }
 
@@ -1215,6 +1306,11 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     super::teams::wait_loops::lead_send_check(&args[0], &text).map_err(|error| error.to_string())?;
     super::teams::decisions::lead_send_check(&args[0], &text).map_err(|error| error.to_string())?;
     let check = super::teams::shadow::lead_send(&args[0], &text, task).map_err(|error| error.to_string())?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Some(result) = native_send::front(&PublicSend(()), &args[0], &input) {
+        println!("{}", result?);
+        return Ok(0);
+    }
     let receipt = submit(&args[0], &input, None)?;
     super::teams::shadow::record(&check.bindings, &text, "hgs send");
     if let Some(note) = super::teams::shadow::reference_note(&check.references) {
@@ -1640,6 +1736,16 @@ fn existing(receipt_path: &Path, digest: &str, name: &str, held: bool) -> Existi
         Ok(receipt) => receipt,
         Err(error) => return Existing::Unknown(error),
     };
+    existing_value_for(receipt, digest, name, held)
+}
+
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+fn existing_value(receipt: Value, digest: &str, name: &str) -> Existing {
+    existing_value_for(receipt, digest, name, false)
+}
+
+/// U35: `held` is the held-message deliverer's own read.
+fn existing_value_for(receipt: Value, digest: &str, name: &str, held: bool) -> Existing {
     if string(&receipt, "digest") != digest || string(&receipt, "name") != name {
         return Existing::Unknown("request ID was already used for different content".into());
     }
@@ -1669,6 +1775,70 @@ fn before_input(typed: bool, witness: NotOffered) -> Failure {
     }
 }
 
+/// zerus-iitw8.5: a Claude send releases the state lock while it waits for its
+/// paste to settle and for Claude's proof. Its marker on the record keeps every
+/// other input to that session out meanwhile: sends and session actions
+/// (`checked_input`), Terminal input and Clear input (`terminal::check_handoff`).
+/// It lasts the send's window plus slack, so a crash never blocks for long. The
+/// window starts after the paste, and so does the marker's last term
+/// (zerus-iitw8.8): slow work before the paste never lets it lapse inside it.
+const TYPING: &str = "input_typing";
+const TYPING_SECONDS: f64 = settle::WINDOW.as_secs_f64() + 4.0;
+
+/// The request ID of the send typing into this session now, if any.
+pub(crate) fn input_typing(record: &Value) -> Option<&str> {
+    let marker = &record[TYPING];
+    let left = marker["until"].as_f64()? - now();
+    // Expired, or further ahead than any send's window: a clock stepped back.
+    (left > 0.0 && left <= TYPING_SECONDS).then(|| marker["request_id"].as_str()).flatten()
+}
+
+/// Whether `current` still carries this send's live marker on the same run.
+fn typing_ours(current: &Value, request_id: &str, run_id: &str) -> bool {
+    string(current, "run_id") == run_id && input_typing(current) == Some(request_id)
+}
+
+/// Starts this send's marker term again when its window starts, after the
+/// paste (zerus-iitw8.8). The send has held the state lock since it wrote the
+/// marker, so the marker is still its own however long the paste took; the
+/// term stays one window plus slack.
+fn typing_from_paste(name: &str, request_id: &str, run_id: &str) -> Result<()> {
+    let mut current = read(name)?;
+    if string(&current, "run_id") != run_id || current[TYPING]["request_id"] != request_id {
+        return Err("the session changed while the message was pasted; no Enter was pressed".into());
+    }
+    current[TYPING]["until"] = json!(now() + TYPING_SECONDS);
+    write(&mut current)
+}
+
+/// Ends this send's marker, under the state lock. Claude's own record of the
+/// message, in its transcript or queue, also confirms the input
+/// (zerus-iitw8.6): its UserPromptSubmit hook may be missing or late, and a
+/// queued prompt has none until it is dequeued. An emptied composer alone
+/// never does (zerus-iitw8.8). Only this send's own pending input is
+/// confirmed, never a later one.
+fn end_typing(name: &str, record: &Value, request_id: &str, submitted_at: f64, recorded: bool) {
+    let Ok(mut current) = read(name) else {
+        return;
+    };
+    if string(&current, "run_id") != string(record, "run_id") {
+        return;
+    }
+    let ours = current[TYPING]["request_id"] == request_id;
+    if ours {
+        if let Some(fields) = current.as_object_mut() {
+            fields.remove(TYPING);
+        }
+    }
+    let seen = recorded && current["input_pending_at"].as_f64() == Some(submitted_at);
+    if seen {
+        current["input_seen_at"] = json!(now());
+    }
+    if ours || seen {
+        let _ = write(&mut current);
+    }
+}
+
 fn submit_core(
     name: &str,
     input: &[u8],
@@ -1688,7 +1858,7 @@ fn submit_core(
     let receipt_path = root
         .join("input_receipts")
         .join(format!("{request_id}.json"));
-    let guard = lock(None).map_err(unknown)?;
+    let mut guard = Some(lock(None).map_err(unknown)?);
     match existing(&receipt_path, &digest, name, matches!(origin, Origin::Held)) {
         Existing::Absent => {}
         Existing::Submitted(receipt) => return Ok(receipt),
@@ -1727,7 +1897,7 @@ fn submit_core(
         checked_record(name, &request)
     };
     let record = match checked {
-        Err(error) if opted && error == UNCONFIRMED => {
+        Err(error) if opted && (error == UNCONFIRMED || error == TYPING_REFUSAL) => {
             let record = read(name).map_err(|e| refused(typed, e))?;
             if string(&record, "run_id") != request.expected_run_id
                 || string(&record, "conversation_id") != request.expected_conversation_id
@@ -1833,6 +2003,7 @@ fn submit_core(
         "conversation_id":string(&record,"conversation_id"),"first_message":string(&record,"conversation_id").is_empty(),"digest":digest,"status":"in_progress",
         "submitted_at":submitted_at,"submitted_text":text,"text":request.text.trim(),"attachments":paths,"transport":"terminal"});
     if let Some(target) = session_graph::target_receipt(&record) {
+        delivery::bind(&mut receipt, &record, &target);
         receipt["graph_target"] = target;
     }
     if let Origin::KeepWarm(id) = origin {
@@ -1857,6 +2028,12 @@ fn submit_core(
     if record.get("input_seen_at").is_none() {
         record["input_seen_at"] = json!(0.0);
     }
+    // zerus-iitw8: Claude needs native proof, and its waits release the state
+    // lock (zerus-iitw8.5): this send's marker keeps other input out until then.
+    let native = settle::applies(string(&record, "agent"));
+    if native {
+        record[TYPING] = json!({"request_id": request_id, "until": submitted_at + TYPING_SECONDS});
+    }
     if let Err(error) = write(&mut record) {
         cleanup();
         return Err(unknown(error));
@@ -1865,9 +2042,10 @@ fn submit_core(
     // Task 98: the composer's draft right after our own paste. When the Enter
     // does not go, this hash is how Zerus later knows the leftover is its own.
     let mut pasted_draft: Option<String> = None;
-    // zerus-iitw8: Claude needs native proof; its transcript is read from here.
-    let native = settle::applies(string(&record, "agent"));
-    let transcript = native.then(|| settle::transcript(&record)).flatten();
+    // Claude's transcript is read from here.
+    let mut transcript = native.then(|| settle::Transcript::of(&record)).flatten();
+    // Where a later proof starts (`confirm_late`).
+    let transcript_offset = transcript.as_ref().map(settle::Transcript::position);
     let claim = backend::InputClaim {
         pane,
         name: terminal_name(&record),
@@ -1878,15 +2056,38 @@ fn submit_core(
     // One window for the settle and the proof, set once after the paste.
     let mut deadline = std::time::Instant::now() + settle::WINDOW;
     let mut residue: Option<String> = None;
+    let mut pasted_at = now();
     let result: Result<()> = (|| {
+        pasted_at = now();
         terminal.paste(&buffer, pane, backend::Paste::Composer)?;
         deadline = std::time::Instant::now() + settle::WINDOW;
         if native {
+            // Still under the lock: the marker's term starts with the window.
+            typing_from_paste(name, &request_id, string(&record, "run_id"))?;
             // Enter only once the composer shows the paste settled: an Enter
-            // while Claude still processes pasted images submits nothing.
-            if let Err(composer) = settle::settle(terminal, &claim, deadline) {
-                residue = composer;
-                return Err("Claude's composer never showed the pasted message settled; no Enter was pressed".into());
+            // while Claude still processes pasted images submits nothing. The
+            // wait reads only the terminal and holds no lock, so every other
+            // session's hooks run meanwhile (zerus-iitw8.5).
+            guard = None;
+            loop {
+                let shown = settle::settle(terminal, &claim, deadline).map_err(|composer| {
+                    residue = composer;
+                    "Claude's composer never showed the pasted message settled; no Enter was pressed".to_string()
+                })?;
+                guard = writer_until(deadline)?;
+                if guard.is_none() {
+                    return Err("the state lock stayed busy until the window ended; no Enter was pressed".into());
+                }
+                // Under the lock again: still this send's marker on the same
+                // run, and the composer still shows exactly what settled.
+                if !typing_ours(&read(name)?, &request_id, string(&record, "run_id")) {
+                    return Err("the session changed while the message settled; no Enter was pressed".into());
+                }
+                if settle::still(terminal, &claim, &shown) {
+                    break;
+                }
+                // It changed meanwhile: settle again, unlocked, in the same window.
+                guard = None;
             }
         } else {
             // Let bracketed-paste handlers finish before Enter.
@@ -1940,6 +2141,10 @@ fn submit_core(
         Ok(())
     })();
     cleanup();
+    // The receipt and the record are written under the state lock again.
+    if result.is_err() && guard.is_none() {
+        guard = Some(lock(None).map_err(unknown)?);
+    }
     let uncertain = |receipt: &mut Value, error: String, residue: Option<String>| {
         // The receipt stays `in_progress` (never resent) and names why and
         // what the composer held, bounded text only.
@@ -1947,7 +2152,7 @@ fn submit_core(
         receipt["uncertain_reason"] = json!(error);
         receipt["composer"] = json!(residue);
         // Where a later proof starts (`confirm_late`).
-        if let Some((_, offset)) = &transcript {
+        if let Some(offset) = transcript_offset {
             receipt["transcript_offset"] = json!(offset);
         }
         let _ = receipt_index::persist(&receipt_path, receipt);
@@ -1964,32 +2169,24 @@ fn submit_core(
         if let Some(hash) = &pasted_draft {
             record_unsent_paste(name, &receipt_path, &mut receipt, &request_id, hash);
         }
+        if native {
+            end_typing(name, &record, &request_id, submitted_at, false);
+        }
         return Err(uncertain(&mut receipt, error, residue));
     }
     if native {
         // Claude runs its UserPromptSubmit hook, which takes this lock, before
         // it records the message: wait for the proof without holding it. The
-        // record's unconfirmed input keeps other sends out meanwhile.
-        drop(guard);
-        let proof = settle::confirm(terminal, &claim, transcript.as_ref(), &text, deadline);
+        // typing marker keeps other input out meanwhile.
+        drop(guard.take());
+        let proof = settle::confirm(terminal, &claim, transcript.as_mut(), &text, pasted_at, deadline);
         let _guard = lock(None).map_err(unknown)?;
+        end_typing(name, &record, &request_id, submitted_at, matches!(proof, Ok(proof) if proof.recorded()));
         match proof {
             Ok(proof) => {
                 receipt["status"] = json!("submitted");
                 receipt["native"] = json!(proof.name());
                 receipt_index::persist(&receipt_path, &receipt).map_err(unknown)?;
-                // A submitted row follows Claude's UserPromptSubmit hook, which
-                // already marked the input accepted; a busy queue has no hook
-                // until it is dequeued, so its enqueue confirms the input here
-                // (`input_unconfirmed`).
-                if proof == settle::Proof::Queued {
-                    if let Ok(mut current) = read(name) {
-                        if string(&current, "run_id") == string(&record, "run_id") {
-                            current["input_seen_at"] = json!(now());
-                            let _ = write(&mut current);
-                        }
-                    }
-                }
             }
             Err(composer) => {
                 return Err(uncertain(
@@ -2923,5 +3120,136 @@ mod tests {
         let refusal = terminal_check_on(&record, true, false, &frames).unwrap_err().to_string();
         assert!(refusal.contains("redrew"), "{refusal}");
         assert_eq!(frames.counts(), (6, 5));
+    }
+}
+
+#[cfg(test)]
+mod clear_input_tests {
+    use super::*;
+
+    /// zerus-wkj9l.4 (M1): the person's Clear input settles exactly the
+    /// unconfirmed input typed before it, never a newer one.
+    #[test]
+    fn a_clear_settles_only_the_input_pending_before_it() {
+        let pending = |cleared: Option<f64>| {
+            let mut record = json!({"input_pending_at": 10.0, "input_seen_at": 0.0});
+            if let Some(at) = cleared {
+                record["input_cleared_at"] = json!(at);
+            }
+            input_unconfirmed(&record)
+        };
+        assert!(pending(None));
+        assert!(!pending(Some(11.0)), "a clear after the input settles it");
+        assert!(pending(Some(10.0)), "a clear at the same time does not");
+        assert!(pending(Some(9.0)), "an earlier clear never settles a newer input");
+    }
+
+    /// zerus-wkj9l.1: only a send whose receipt is still `in_progress` without a
+    /// delivery outcome, recent and for this run, holds Clear input back.
+    #[test]
+    fn only_a_send_still_in_its_proof_window_holds_clear_input_back() {
+        let request = "6f9a1b2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c";
+        let record = json!({"run_id": "run", "input_pending_at": 100.0, "input_seen_at": 0.0,
+            "input_pending_request": request});
+        let receipt = |status: &str, delivery: Option<&str>| {
+            let mut receipt = json!({"request_id": request, "run_id": "run", "status": status, "submitted_at": 100.0});
+            if let Some(delivery) = delivery {
+                receipt["delivery"] = json!(delivery);
+            }
+            receipt
+        };
+        let at = 105.0;
+        let mut asked = Vec::new();
+        assert!(in_flight(&record, at, |id| { asked.push(id.to_owned()); Some(receipt("in_progress", None)) }));
+        assert_eq!(asked, [request]);
+        // Ended uncertain or submitted: the input stays clearable.
+        assert!(!in_flight(&record, at, |_| Some(receipt("in_progress", Some("uncertain")))));
+        assert!(!in_flight(&record, at, |_| Some(receipt("submitted", None))));
+        // Another run's receipt under this ID is not this send.
+        assert!(!in_flight(&record, at, |_| Some(json!({"run_id": "other", "status": "in_progress", "submitted_at": 100.0}))));
+        // An unreadable receipt within the window holds back, as does a send
+        // recorded before the request field; after the limit nothing does.
+        assert!(in_flight(&record, at, |_| None));
+        let mut older = record.clone();
+        older.as_object_mut().unwrap().remove("input_pending_request");
+        assert!(in_flight(&older, at, |_| panic!("no receipt is named")));
+        let late = 100.0 + PROOF_LIMIT.as_secs_f64() + 1.0;
+        assert!(!in_flight(&record, late, |_| Some(receipt("in_progress", None))));
+        // A confirmed or cleared input is no longer in flight.
+        let mut seen = record.clone();
+        seen["input_seen_at"] = json!(101.0);
+        assert!(!in_flight(&seen, at, |_| Some(receipt("in_progress", None))));
+        let mut cleared = record.clone();
+        cleared["input_cleared_at"] = json!(101.0);
+        assert!(!in_flight(&cleared, at, |_| Some(receipt("in_progress", None))));
+        // A malformed request field never names a path.
+        let mut odd = record.clone();
+        odd["input_pending_request"] = json!("../../etc/passwd");
+        assert!(in_flight(&odd, at, |_| panic!("no path is read for a malformed ID")));
+    }
+
+    /// zerus-wkj9l.5 item 2: the ready-send keeper's `mark_input` writes a newer
+    /// `input_pending_at` without `input_pending_request`, so an earlier send's
+    /// request stays beside it. That earlier receipt, even submitted or ended
+    /// uncertain, never settles the newer input's window; only the receipt
+    /// whose `submitted_at` is this `input_pending_at` decides.
+    #[test]
+    fn an_earlier_sends_receipt_never_decides_a_newer_pending_input() {
+        let request = "6f9a1b2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c";
+        let record = json!({"run_id": "run", "input_pending_at": 200.0, "input_seen_at": 0.0,
+            "input_pending_request": request});
+        let earlier = |status: &str, delivery: Option<&str>| {
+            let mut receipt = json!({"request_id": request, "run_id": "run", "status": status, "submitted_at": 100.0});
+            if let Some(delivery) = delivery {
+                receipt["delivery"] = json!(delivery);
+            }
+            receipt
+        };
+        let at = 205.0;
+        assert!(in_flight(&record, at, |_| Some(earlier("submitted", None))));
+        assert!(in_flight(&record, at, |_| Some(earlier(
+            "in_progress",
+            Some("uncertain")
+        ))));
+        assert!(in_flight(&record, at, |_| Some(
+            json!({"run_id": "other", "status": "submitted", "submitted_at": 100.0})
+        )));
+        // The conservative rule still ends with the window.
+        let late = 200.0 + PROOF_LIMIT.as_secs_f64() + 1.0;
+        assert!(!in_flight(&record, late, |_| Some(earlier(
+            "submitted",
+            None
+        ))));
+        // This input's own receipt still decides.
+        let own = json!({"request_id": request, "run_id": "run", "status": "submitted", "submitted_at": 200.0});
+        assert!(!in_flight(&record, at, |_| Some(own.clone())));
+    }
+
+    /// zerus-wkj9l.5 item 3: the window is on the wall clock. After a backward
+    /// step a crashed sender's `in_progress` receipt stays in flight until the
+    /// clock passes `input_pending_at` + PROOF_LIMIT again: Clear input is
+    /// refused a little longer, never allowed during a send.
+    #[test]
+    fn a_backward_clock_step_keeps_an_unfinished_send_in_flight_until_the_window_passes_again() {
+        let request = "6f9a1b2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c";
+        let record = json!({"run_id": "run", "input_pending_at": 1000.0, "input_seen_at": 0.0,
+            "input_pending_request": request});
+        let crashed = json!({"request_id": request, "run_id": "run", "status": "in_progress", "submitted_at": 1000.0});
+        for stepped_back_to in [999.0, 900.0, 1000.0 - 3600.0] {
+            assert!(
+                in_flight(&record, stepped_back_to, |_| Some(crashed.clone())),
+                "{stepped_back_to}"
+            );
+        }
+        assert!(in_flight(
+            &record,
+            1000.0 + PROOF_LIMIT.as_secs_f64(),
+            |_| Some(crashed.clone())
+        ));
+        assert!(!in_flight(
+            &record,
+            1000.0 + PROOF_LIMIT.as_secs_f64() + 1.0,
+            |_| Some(crashed.clone())
+        ));
     }
 }

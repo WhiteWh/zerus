@@ -140,7 +140,7 @@ class NativeHarness(unittest.TestCase):
         sid = 'session-' + str(uuid.uuid4())
         name = 'dsh/test/' + str(uuid.uuid4())[:8]
         self.rpc('create', {'sessionId': sid, 'cwd': str(self.workspace), 'title': name, **native})
-        binding = {'backend': 'dsh', 'name': name, 'session_id': str(uuid.uuid4()), 'conversation_id': sid, 'run_id': str(uuid.uuid4()),
+        binding = {'backend': 'dsh', 'agent': 'dsh', 'name': name, 'session_id': str(uuid.uuid4()), 'conversation_id': sid, 'run_id': str(uuid.uuid4()),
                    'agent_home': str(self.home), 'cwd': str(self.workspace), 'created': time.time()}
         directory = self.state / 'dsh/bindings'; directory.mkdir(exist_ok=True)
         (directory / (hashlib.sha256(name.encode()).hexdigest() + '.json')).write_text(json.dumps(binding))
@@ -240,6 +240,8 @@ class NativeHarness(unittest.TestCase):
         request = self.payload(b, text=text, attachments=[])
         receipt = self.cli('send', b, request)
         self.assertEqual(receipt['status'], 'submitted')
+        from delivery_receipt_checks import check_delivery_lookup
+        check_delivery_lookup(self, HGS, self.env, b, receipt, 'dsh')
         data = self.wait(lambda: (d if d.get('reply_id') and any(e['type'] == 'AgentMessage' for e in d['events']) else None)
                          if (d := self.cli('inspect', b)) else None)
         self.assertEqual([e['detail'] for e in data['events'] if e['type'] == 'UserPromptSubmit'], [text])
@@ -275,6 +277,13 @@ class NativeHarness(unittest.TestCase):
         b=self.create()
         self.cli('send',b,self.payload(b,text='SHELL_BACKGROUND_FIXTURE',attachments=[]))
         data=self.wait(lambda: (d if d['phase']=='idle' and d.get('processes',{}).get('active_count')==1 else None) if (d:=self.cli('inspect',b)) else None)
+        # zerus-yj7ef: the listing itself reports the running background job (Background),
+        # from the bridge's bounded listJobs summary, without an inspection.
+        self.assertIs(self.rpc('ping').get('listJobs'),True)
+        def listed():
+            return next(r for r in json.loads(subprocess.check_output([str(HGS),'ls','--local','--json'],env=self.env,text=True))['sessions'] if r['name']==b['name'])
+        row=listed()
+        self.assertEqual((row['activity'],row['phase'],row['process_work']['count']),('idle','idle',1),row)
         light=subprocess.run([str(HGS),'inspect',b['name'],'--skip-processes'],env=self.env,text=True,capture_output=True,timeout=15)
         self.assertEqual(light.returncode,0,light.stderr);self.assertNotIn('processes',json.loads(light.stdout))
         self.assertNotIn('jobs',self.rpc('inspect',{'sessionId':b['conversation_id'],'includeProcesses':False}))
@@ -300,6 +309,9 @@ class NativeHarness(unittest.TestCase):
         stopped=process('--stop');self.assertEqual(stopped.returncode,0,stopped.stderr)
         final=self.wait(lambda: (d if any(j['status']=='stopped' for j in d['processes']['items']) else None) if (d:=self.cli('inspect',b)) else None)
         self.assertEqual(final['processes']['active_count'],0)
+        # A settled job is no background work: a count of 0, not unknown.
+        row=self.wait(lambda: (r if r['phase']=='idle' else None) if (r:=listed()) else None)
+        self.assertEqual(row['process_work']['count'],0,row)
 
     def test_foreground_shell_failure_keeps_output_after_registry_removal(self):
         b=self.create();self.cli('send',b,self.payload(b,text='SHELL_FOREGROUND_FIXTURE',attachments=[]))
@@ -876,6 +888,11 @@ class NativeHarness(unittest.TestCase):
                 # A cold restart reuses the native profile rather than trying
                 # to create it a second time with --from-default-profile.
                 pidfile=next((root/'state/dsh/hosts').glob('*/host.pid'))
+                overlay=json.loads((pidfile.parent/'hgs.patch.json').read_text())
+                bridge=next(entry for patch in overlay for entry in patch.get('insert',[])
+                            if entry.get('id')=='hgs-native-dsh')
+                self.assertEqual(bridge['config'].get('agentHint'),
+                    'This agent runs in a Zerus session: the hgs CLI reads, messages, launches and stops other agent sessions on this and other computers. Run hgs guide before using it.')
                 pid=int(pidfile.read_text())
                 original=host_process(pid)
                 self.assertIsNotNone(original)

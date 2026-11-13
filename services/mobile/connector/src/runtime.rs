@@ -302,6 +302,27 @@ impl<N: Native + 'static> Connector<N> {
         if self.stopping.is_set() {
             return Err(NativeError::Stopping);
         }
+        if call
+            .argv
+            .get(..2)
+            .is_some_and(|v| v == ["__state", "delivery"])
+        {
+            // This read checks its physical machine inside the closed entry,
+            // using the read-only catalog path. Do not wrap an older executable
+            // in --expect-machine: its old guard could initialize that catalog.
+            let machine = LOCAL_MACHINE
+                .try_with(Clone::clone)
+                .ok()
+                .or_else(|| ENCRYPTED_LOCAL_MACHINE.try_with(Clone::clone).ok());
+            if machine.is_some_and(|m| {
+                call.payload
+                    .as_ref()
+                    .is_none_or(|p| p["expected_machine_id"] != m)
+            }) {
+                return Err(NativeError::Failed(crate::fleet::LOCAL_CHANGED));
+            }
+            return self.native.call(call).await;
+        }
         // WhiteWh fork: a Windows gateway names folders as `/D:/...` to the
         // phone and as `D:\...` to hgs (windows_paths.rs).
         if self.flags.get().windows_gateway && !self.peer {
@@ -477,6 +498,7 @@ impl<N: Native + 'static> Connector<N> {
         }
         let mut flags = self.flags.get();
         flags.history_projection = false;
+        flags.send_receipt = false;
         flags.session_labels = false;
         self.flags.set(flags);
         if let Ok(Output::Text(help)) = self

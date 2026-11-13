@@ -829,6 +829,7 @@ impl<N: Native + 'static> Engine<'_, N> {
         }
         let operation = body["operation"].as_str().unwrap_or("");
         if h.operation_class == OperationClass::Control
+            || (operation == "send_receipt" && h.operation_class != OperationClass::Read)
             || (h.operation_class == OperationClass::Read
                 && !zerus_relay::protocol::READS.contains(&operation))
         {
@@ -1042,6 +1043,24 @@ mod tests {
     impl Native for NativeFixture {
         async fn call(&self, call: Call) -> NativeResult {
             self.calls.borrow_mut().push(call.argv.clone());
+            if call.argv
+                == [
+                    "__state",
+                    "delivery",
+                    "receipt",
+                    "codex/fixture/main",
+                    "--json",
+                ]
+            {
+                let q = call.payload.as_ref().unwrap();
+                return Ok(Output::Json(
+                    json!({"schema":1,"request_id":q["request_id"],"message_request_id":q["message_request_id"],
+                    "name":"codex/fixture/main","machine_id":q["expected_machine_id"],"session_id":q["expected_session_id"],
+                    "run_id":q["expected_run_id"],"conversation_id":q["expected_conversation_id"],"provider":q["provider"],
+                    "agent_id":q["agent_id"],"native_digest":q["native_digest"],"status":"submitted","proof":"original_receipt",
+                    "submitted_at":1.0,"queued":false}),
+                ));
+            }
             if let Some(observation) = self.observation.borrow_mut().as_mut() {
                 let argv = if call.argv.first().map(String::as_str) == Some("--expect-machine") {
                     if call.argv.get(1) != Some(&observation.machine) {
@@ -1306,6 +1325,107 @@ mod tests {
     #[tokio::test]
     async fn authenticated_native_dispatch_is_guarded_and_every_read_identity_is_permanent() {
         assert_authenticated_native_dispatch(cfg!(windows)).await;
+    }
+    #[tokio::test]
+    async fn encrypted_send_receipt_is_an_authenticated_read_and_keeps_the_original_uncertain() {
+        for windows in [false, true] {
+            let f = Fixture::new();
+            let mut flags = crate::capabilities::Flags::from_help(crate::send_receipt::HELP_MARKER);
+            flags.windows_gateway = windows;
+            f.connector.flags.set(flags);
+            let mut intent: Value = serde_json::from_str::<Value>(include_str!(
+                "../../vectors/send_receipt/intents.json"
+            ))
+            .unwrap()["vectors"][0]["intent"]
+                .clone();
+            intent["computer_id"] = json!(MACHINE);
+            intent["machine_id"] = json!(MACHINE);
+            intent["session"] = json!("codex/fixture/main");
+            let original = intent["payload"]["request_id"].as_str().unwrap();
+            let old =
+                crate::request::receipt("uncertain", Value::Null, Some("lost original result"));
+            f.connector
+                .journal
+                .claim(original, "send", Some("original-hash"), crate::now())
+                .unwrap();
+            f.connector
+                .journal
+                .finish(original, &old, crate::now())
+                .unwrap();
+            let before = f.connector.journal.pending().unwrap();
+            f.connector
+                .state
+                .borrow_mut()
+                .session_ids
+                .insert("run".into(), intent["session_id"].as_str().unwrap().into());
+            let engine = f.engine();
+            let profile = workspace::load_active(&f.private_dir).unwrap();
+            let me = &profile.identity.device;
+            let header = f.request(&profile, REQUEST, &me.device_id, "").header;
+            let body = json!({"request_id":REQUEST,"computer_id":MACHINE,"session":"codex/fixture/main","operation":"send_receipt",
+                "payload":{"schema":1,"request_id":REQUEST,"intent_sha256":zerus_relay::send_receipt::intent_digest(&intent).unwrap(),"intent":intent},
+                "encrypted_transport":{"gateway_id":me.device_id,"route_id":me.device_id,"machine_id":MACHINE}});
+            let envelope = crypto::seal(
+                &f.phone,
+                me,
+                header.clone(),
+                &serde_json::to_vec(&body).unwrap(),
+            )
+            .unwrap();
+            let value = serde_json::to_value(&envelope).unwrap();
+            engine.receive(&profile, value.clone()).await.unwrap();
+            engine.receive(&profile, value).await.unwrap();
+            let stored = f
+                .connector
+                .journal
+                .encrypted_native_receipt(REQUEST)
+                .unwrap()
+                .unwrap();
+            let result: Value = serde_json::from_str(&stored).unwrap();
+            assert_eq!(result["state"], "completed", "{result}");
+            assert_eq!(result["result"]["status"], "submitted");
+            assert_eq!(f.connector.native.calls.borrow().len(), 1);
+            assert_eq!(
+                f.connector
+                    .journal
+                    .pending()
+                    .unwrap()
+                    .iter()
+                    .find(|(id, _)| id == original),
+                before.iter().find(|(id, _)| id == original)
+            );
+            let sealed = engine.seal_receipt(&profile, &header, result).unwrap();
+            let sealed: EncryptedEnvelope = serde_json::from_str(&sealed).unwrap();
+            assert_eq!(sealed.header.operation_class, OperationClass::Read);
+            let opened = crypto::open(&f.phone, me, &sealed.header, &sealed).unwrap();
+            let proof: Value = serde_json::from_slice(&opened).unwrap();
+            assert_eq!(proof["result"]["message_request_id"], original);
+            let bad_id = uuid::Uuid::new_v4().to_string();
+            let mut bad_body = body.clone();
+            bad_body["request_id"] = json!(bad_id);
+            bad_body["payload"]["request_id"] = json!(bad_id);
+            let mut wrong_class = header.clone();
+            wrong_class.request_id = bad_id.clone();
+            wrong_class.operation_class = OperationClass::Mutation;
+            let wrong_class = crypto::seal(
+                &f.phone,
+                me,
+                wrong_class,
+                &serde_json::to_vec(&bad_body).unwrap(),
+            )
+            .unwrap();
+            engine
+                .receive(&profile, serde_json::to_value(wrong_class).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(f.connector.native.calls.borrow().len(), 1);
+            assert!(f
+                .connector
+                .journal
+                .encrypted_native_receipt(&bad_id)
+                .unwrap()
+                .is_none());
+        }
     }
     #[tokio::test]
     async fn windows_gateway_authenticated_dispatch_checks_provider_before_execution() {

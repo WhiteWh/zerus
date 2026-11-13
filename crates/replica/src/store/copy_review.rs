@@ -96,6 +96,9 @@ impl ProjectStore {
                 Err(error) => return Err(error.into()),
             }
         }
+        let lock = OwnedLock::acquired(lock);
+        #[cfg(test)]
+        lock_acquired(&dir.join(".lock"));
         // Recheck the named directories and identity after waiting for a writer.
         directory(root)?;
         directory(&dir)?;

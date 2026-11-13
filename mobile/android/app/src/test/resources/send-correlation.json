@@ -1,0 +1,1759 @@
+{
+  "schema": 1,
+  "max_settled_rows": 100,
+  "max_settled_bytes": 1048576,
+  "vectors": [
+    {
+      "id": "ascii-codex-compact",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "compact",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"compact\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "codex",
+          "native_encoding": "compact",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "ca8ad1b4f72a60820fbf8318025abd815ee4be9e302e12a5926ed864f94b585f",
+        "native_digest": "31cbbac7f636249908176b21e6fc7522532ebede24527a24c89b881f475f4fb3",
+        "row_sha256": "ecb0fb9442ac48ea4b88621572b83202e9244732a047f99ec4354ae5d863a8da"
+      }
+    },
+    {
+      "id": "ascii-codex-python_default",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "codex",
+          "native_encoding": "python_default",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "eb6768419a6cda6159a70e96189edb1dcaecfaec3787185f3bf508942c79d896",
+        "native_digest": "ba1dffcbbcae50091162cccc6a68aea6b7f67a5ca9cc33b84f1aa24602543adb",
+        "row_sha256": "ecb0fb9442ac48ea4b88621572b83202e9244732a047f99ec4354ae5d863a8da"
+      }
+    },
+    {
+      "id": "ascii-opencode-compact",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "opencode",
+        "native_encoding": "compact",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"compact\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"opencode\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "opencode",
+          "native_encoding": "compact",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "3f0fe2694aaacd5650d9465237624904a05139981947038feefcd6a97b957b40",
+        "native_digest": "3bcbeaac4daabbcb3caea51fad422f894cd7bb4ce27316f02899d4e53d5bfbc6",
+        "row_sha256": "ecb0fb9442ac48ea4b88621572b83202e9244732a047f99ec4354ae5d863a8da"
+      }
+    },
+    {
+      "id": "ascii-opencode-python_default",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "opencode",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"opencode\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "opencode",
+          "native_encoding": "python_default",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "6ccfb7af6c1b846f024f32b5617e8b30c1ad19c64e6a36d0836e72eaab748940",
+        "native_digest": "3bcbeaac4daabbcb3caea51fad422f894cd7bb4ce27316f02899d4e53d5bfbc6",
+        "row_sha256": "ecb0fb9442ac48ea4b88621572b83202e9244732a047f99ec4354ae5d863a8da"
+      }
+    },
+    {
+      "id": "nfc-codex-compact",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "compact",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "café",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"compact\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"caf\\u00e9\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "codex",
+          "native_encoding": "compact",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "31fbe8d2787c88c2d3033b5f54e6b7818a86c9ce60f12b208527bd34e565f2f7",
+        "native_digest": "9097d541f773358d06ed21f16b043612dbd2f3e8e96980e6def65e55e67aed91",
+        "row_sha256": "83a3791427c43b36c8cd1136e4e30c8fb85dd878097a32b52d60266bc1f700c6"
+      }
+    },
+    {
+      "id": "nfc-codex-python_default",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "café",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"caf\\u00e9\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "codex",
+          "native_encoding": "python_default",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "4926ec272d44de8f0c6de27324eead27f1ded3781336059e5f652bef9d73c4b9",
+        "native_digest": "a6a0dbcb56f1de3f90baf9463942d9e4a2a791cc44bfc6729924eb950c336b01",
+        "row_sha256": "83a3791427c43b36c8cd1136e4e30c8fb85dd878097a32b52d60266bc1f700c6"
+      }
+    },
+    {
+      "id": "nfc-opencode-compact",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "opencode",
+        "native_encoding": "compact",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "café",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"compact\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"caf\\u00e9\"},\"provider\":\"opencode\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "opencode",
+          "native_encoding": "compact",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "5bcf7a3aab62b6ef3e389fc7b6132b1e884561a4bd385c7b0e0bc28eb0b4c02c",
+        "native_digest": "d035dfeaab5e8bd26594df984b8ddf44be7503935043bf6c816a773d62301e80",
+        "row_sha256": "83a3791427c43b36c8cd1136e4e30c8fb85dd878097a32b52d60266bc1f700c6"
+      }
+    },
+    {
+      "id": "nfc-opencode-python_default",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "opencode",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "café",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"caf\\u00e9\"},\"provider\":\"opencode\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "opencode",
+          "native_encoding": "python_default",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "e9f357b3f1559c9aa54d45ef6c86b08a576d88b276721bf21edabb29b7980563",
+        "native_digest": "d035dfeaab5e8bd26594df984b8ddf44be7503935043bf6c816a773d62301e80",
+        "row_sha256": "83a3791427c43b36c8cd1136e4e30c8fb85dd878097a32b52d60266bc1f700c6"
+      }
+    },
+    {
+      "id": "nfd-codex-compact",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "compact",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "café",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"compact\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"cafe\\u0301\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "codex",
+          "native_encoding": "compact",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "24e38b6ce8e180cddec128ef860899c73b5165e41da2cb2853afed1aca966b2d",
+        "native_digest": "3448dda6a9fc6b362f72853acb852c636e4468395d6c043b606b5903afd3d7b3",
+        "row_sha256": "20e08875be0217b21cdbb390c93b554cbdb0cbdcca0ec1024b50dbe0afe3728c"
+      }
+    },
+    {
+      "id": "nfd-codex-python_default",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "café",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"cafe\\u0301\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "codex",
+          "native_encoding": "python_default",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "378f1336e05f8afc0e277753498b93280ac6d56296be51d47a8fb3008ffd18c4",
+        "native_digest": "b6ecb63c765cd93ecbbcf3cde21a8c41502d458425abbc640de4e1f0fb6a165e",
+        "row_sha256": "20e08875be0217b21cdbb390c93b554cbdb0cbdcca0ec1024b50dbe0afe3728c"
+      }
+    },
+    {
+      "id": "nfd-opencode-compact",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "opencode",
+        "native_encoding": "compact",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "café",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"compact\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"cafe\\u0301\"},\"provider\":\"opencode\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "opencode",
+          "native_encoding": "compact",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "48e0cdc20e07643cf72c89888f5230a5d309fd393168bfd600c23dec712bb94e",
+        "native_digest": "4d9e8ea88c20144ed21471f51c4e6ba93ec66904d1b0e01158dc5c5d1a02f95f",
+        "row_sha256": "20e08875be0217b21cdbb390c93b554cbdb0cbdcca0ec1024b50dbe0afe3728c"
+      }
+    },
+    {
+      "id": "nfd-opencode-python_default",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "opencode",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "café",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"cafe\\u0301\"},\"provider\":\"opencode\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "opencode",
+          "native_encoding": "python_default",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "7f50c56c3d789a1355d2b5f21a0a639ff9468727b180ee2545a56fc8b5dd14e4",
+        "native_digest": "4d9e8ea88c20144ed21471f51c4e6ba93ec66904d1b0e01158dc5c5d1a02f95f",
+        "row_sha256": "20e08875be0217b21cdbb390c93b554cbdb0cbdcca0ec1024b50dbe0afe3728c"
+      }
+    },
+    {
+      "id": "unicode-codex-compact",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "compact",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "界😀  ",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"compact\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"\\u754c\\ud83d\\ude00\\u2028\\u2029\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "codex",
+          "native_encoding": "compact",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "07dc0bfe8d2825c4f9581a4d61c904a5bf3cd83741008aa76beb9062a93bd290",
+        "native_digest": "6afa1ee00096686223b37b30c94967cacf50136fa5c15da6062e570f94c61304",
+        "row_sha256": "3f7f292ca6027cbb9c4ba4653854b4af6e8b0b45c90d36117ff6f227a9140809"
+      }
+    },
+    {
+      "id": "unicode-codex-python_default",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "界😀  ",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"\\u754c\\ud83d\\ude00\\u2028\\u2029\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "codex",
+          "native_encoding": "python_default",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "bdee5f331543b8679a7ba5d4f059e0bee6660b64e9972996c4dcd6e8dc198451",
+        "native_digest": "5dbc734e8e207a45f7a4104903c772c3a871d7bf3ba1dcd5871e2cb7f6e027e4",
+        "row_sha256": "3f7f292ca6027cbb9c4ba4653854b4af6e8b0b45c90d36117ff6f227a9140809"
+      }
+    },
+    {
+      "id": "unicode-opencode-compact",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "opencode",
+        "native_encoding": "compact",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "界😀  ",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"compact\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"\\u754c\\ud83d\\ude00\\u2028\\u2029\"},\"provider\":\"opencode\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "opencode",
+          "native_encoding": "compact",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "bb2f4294a7a12c2cd94bd59745d0b0f2c3082dcd4ad6660d2418cddf2cb24b2e",
+        "native_digest": "4df702d2b3a0a6bc93d0cc4e741aa4ebe2d841da544990d0da193b0648104384",
+        "row_sha256": "3f7f292ca6027cbb9c4ba4653854b4af6e8b0b45c90d36117ff6f227a9140809"
+      }
+    },
+    {
+      "id": "unicode-opencode-python_default",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "opencode",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "界😀  ",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"\\u754c\\ud83d\\ude00\\u2028\\u2029\"},\"provider\":\"opencode\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "opencode",
+          "native_encoding": "python_default",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "f3ab3e4b31f720757eff03c03fbd1a3292daf3a9c65bf0fe7fb16dc882f13e0f",
+        "native_digest": "4df702d2b3a0a6bc93d0cc4e741aa4ebe2d841da544990d0da193b0648104384",
+        "row_sha256": "3f7f292ca6027cbb9c4ba4653854b4af6e8b0b45c90d36117ff6f227a9140809"
+      }
+    },
+    {
+      "id": "trailing-codex-compact",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "compact",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "  text\t \n  ",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"compact\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"  text\\t \\n  \"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "codex",
+          "native_encoding": "compact",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "40e70a719aa48c2b09dcafe427f7ca9f2566706038ce76b363afa97794dcad8f",
+        "native_digest": "02162a979ab137164f81cf6a90686c09d974f3eceaa68bf6c4310d27cf6f3d7a",
+        "row_sha256": "0eba4a537c399a3c0fac6be5c5549324af0b92c7fc4456cfe098bab3e7aba2c1"
+      }
+    },
+    {
+      "id": "trailing-codex-python_default",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "  text\t \n  ",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"  text\\t \\n  \"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "codex",
+          "native_encoding": "python_default",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "e9180dfda6fea842b098e791e69c43934042986b83adf7316d8d587778695383",
+        "native_digest": "1824b47cd040c510b77b48b4663aeefed129357b94a1b84ac5789e987803a349",
+        "row_sha256": "0eba4a537c399a3c0fac6be5c5549324af0b92c7fc4456cfe098bab3e7aba2c1"
+      }
+    },
+    {
+      "id": "trailing-opencode-compact",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "opencode",
+        "native_encoding": "compact",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "  text\t \n  ",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"compact\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"  text\\t \\n  \"},\"provider\":\"opencode\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "opencode",
+          "native_encoding": "compact",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "2cebd23f25d58a4bfc0511a97415878ea712cd9264c4c5467516c5dc1cd77b2c",
+        "native_digest": "e03891f015ffe4a1cc20a3b6fccece34d46298d54c515ffec1d6017b12a11a87",
+        "row_sha256": "0eba4a537c399a3c0fac6be5c5549324af0b92c7fc4456cfe098bab3e7aba2c1"
+      }
+    },
+    {
+      "id": "trailing-opencode-python_default",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "opencode",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "  text\t \n  ",
+          "attachments": []
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"  text\\t \\n  \"},\"provider\":\"opencode\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "opencode",
+          "native_encoding": "python_default",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": []
+          }
+        },
+        "intent_sha256": "c8b8d7e6fbf82f26381bae3339e3ca54e7743f371cc5b46e1801dde4aef844dc",
+        "native_digest": "e03891f015ffe4a1cc20a3b6fccece34d46298d54c515ffec1d6017b12a11a87",
+        "row_sha256": "0eba4a537c399a3c0fac6be5c5549324af0b92c7fc4456cfe098bab3e7aba2c1"
+      }
+    },
+    {
+      "id": "options-codex-compact",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "compact",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": [],
+          "expected_compaction_id": "55555555-5555-4555-8555-555555555555"
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"compact\",\"payload\":{\"attachments\":[],\"expected_compaction_id\":\"55555555-5555-4555-8555-555555555555\",\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "codex",
+          "native_encoding": "compact",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": [],
+            "expected_compaction_id": "55555555-5555-4555-8555-555555555555"
+          }
+        },
+        "intent_sha256": "f35be5898f4125843d368540f8c71d69b938170f867ac042abe7b0eeee2d4ab7",
+        "native_digest": "9b00fdc706fd8f0c7e04a5cbffeb032cf9cfcacad7f47aee64bb9f714e4d559d",
+        "row_sha256": "ecb0fb9442ac48ea4b88621572b83202e9244732a047f99ec4354ae5d863a8da"
+      }
+    },
+    {
+      "id": "options-codex-python_default",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": [],
+          "expected_compaction_id": "55555555-5555-4555-8555-555555555555"
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_compaction_id\":\"55555555-5555-4555-8555-555555555555\",\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "codex",
+          "native_encoding": "python_default",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": [],
+            "expected_compaction_id": "55555555-5555-4555-8555-555555555555"
+          }
+        },
+        "intent_sha256": "d8adede79a8a8c5c3771c4bd9b14f791720f023d7ce565a9afbb15e8afd77c12",
+        "native_digest": "dfc31f17494f8f70761f6ca8072b608e1f60914e3ea02655abc6dcd342f36a0b",
+        "row_sha256": "ecb0fb9442ac48ea4b88621572b83202e9244732a047f99ec4354ae5d863a8da"
+      }
+    },
+    {
+      "id": "options-opencode-compact",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "opencode",
+        "native_encoding": "compact",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": [],
+          "expected_compaction_id": "55555555-5555-4555-8555-555555555555"
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"compact\",\"payload\":{\"attachments\":[],\"expected_compaction_id\":\"55555555-5555-4555-8555-555555555555\",\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"opencode\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "opencode",
+          "native_encoding": "compact",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": [],
+            "expected_compaction_id": "55555555-5555-4555-8555-555555555555"
+          }
+        },
+        "intent_sha256": "23fb008df0212459d415ccf5dd04686c877e3c684c5397f2d407298a17f91ae3",
+        "native_digest": "f90e924c78804d651b15ced0125429df5916d6d2d93c40f43c6cb0a3ad6f2d8c",
+        "row_sha256": "ecb0fb9442ac48ea4b88621572b83202e9244732a047f99ec4354ae5d863a8da"
+      }
+    },
+    {
+      "id": "options-opencode-python_default",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "opencode",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": [],
+          "expected_compaction_id": "55555555-5555-4555-8555-555555555555"
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_compaction_id\":\"55555555-5555-4555-8555-555555555555\",\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"opencode\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "opencode",
+          "native_encoding": "python_default",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": [],
+            "expected_compaction_id": "55555555-5555-4555-8555-555555555555"
+          }
+        },
+        "intent_sha256": "66b6f864d504c3200e77cd5b6eccd94c91f36552e16e49f7b156c0577f0d03b0",
+        "native_digest": "f90e924c78804d651b15ced0125429df5916d6d2d93c40f43c6cb0a3ad6f2d8c",
+        "row_sha256": "ecb0fb9442ac48ea4b88621572b83202e9244732a047f99ec4354ae5d863a8da"
+      }
+    },
+    {
+      "id": "empty-option-codex-compact",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "compact",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": [],
+          "expected_compaction_id": ""
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"compact\",\"payload\":{\"attachments\":[],\"expected_compaction_id\":\"\",\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "codex",
+          "native_encoding": "compact",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": [],
+            "expected_compaction_id": ""
+          }
+        },
+        "intent_sha256": "4288a748265667a059219034f61ff1a611a1ca48c72b748946994c71be7015ee",
+        "native_digest": "6cb0d0840cd315f25565f0e9178e142cbf8100434e1a53be8b764db235a6c5c1",
+        "row_sha256": "ecb0fb9442ac48ea4b88621572b83202e9244732a047f99ec4354ae5d863a8da"
+      }
+    },
+    {
+      "id": "empty-option-codex-python_default",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": [],
+          "expected_compaction_id": ""
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_compaction_id\":\"\",\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "codex",
+          "native_encoding": "python_default",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": [],
+            "expected_compaction_id": ""
+          }
+        },
+        "intent_sha256": "a8b2af3d63a141b17ac90589639486acf634c3a645b3eab6224d40dc9c7b712b",
+        "native_digest": "f431d7ec51cf20dd4990cb6d4c3657cdaa8143d3e001e54f5098cd0faa0385aa",
+        "row_sha256": "ecb0fb9442ac48ea4b88621572b83202e9244732a047f99ec4354ae5d863a8da"
+      }
+    },
+    {
+      "id": "empty-option-opencode-compact",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "opencode",
+        "native_encoding": "compact",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": [],
+          "expected_compaction_id": ""
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"compact\",\"payload\":{\"attachments\":[],\"expected_compaction_id\":\"\",\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"opencode\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "opencode",
+          "native_encoding": "compact",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": [],
+            "expected_compaction_id": ""
+          }
+        },
+        "intent_sha256": "8588c211bc8dcfd335671526eafe9d5c6f96b619b9f3e90cc616406b4dd3dd27",
+        "native_digest": "30dae819d9f67e8ab0202f8633df9fcbe094b7e81fdcd911958b82b241450bcb",
+        "row_sha256": "ecb0fb9442ac48ea4b88621572b83202e9244732a047f99ec4354ae5d863a8da"
+      }
+    },
+    {
+      "id": "empty-option-opencode-python_default",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "opencode",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": [],
+          "expected_compaction_id": ""
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"attachments\":[],\"expected_compaction_id\":\"\",\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"opencode\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "opencode",
+          "native_encoding": "python_default",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": [],
+            "expected_compaction_id": ""
+          }
+        },
+        "intent_sha256": "89b5c5f14b3666d9838e86f2c963ed0221fcec9d2d9bef96c5ed5ec4032e8990",
+        "native_digest": "30dae819d9f67e8ab0202f8633df9fcbe094b7e81fdcd911958b82b241450bcb",
+        "row_sha256": "ecb0fb9442ac48ea4b88621572b83202e9244732a047f99ec4354ae5d863a8da"
+      }
+    },
+    {
+      "id": "child-codex-compact",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "compact",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": [],
+          "agent_id": "child"
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "child-conversation",
+        "agent": "child",
+        "parent_conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"compact\",\"payload\":{\"agent_id\":\"child\",\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "codex",
+          "native_encoding": "compact",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": [],
+            "agent_id": "child"
+          }
+        },
+        "intent_sha256": "40f98d576fcd28d07a6a819b78071dd6fd2a1a6021179a12650776914aed58b8",
+        "native_digest": "cb09cb1e0b06476e29bf392f5fcf293aea4b52b9f115a2f79465f39920f37592",
+        "row_sha256": "12f4a5123e515de03cd552c0b62d5b849e8f2feb664b1c02ea59509bba5c44fe"
+      }
+    },
+    {
+      "id": "child-codex-python_default",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": [],
+          "agent_id": "child"
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "child-conversation",
+        "agent": "child",
+        "parent_conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"agent_id\":\"child\",\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "codex",
+          "native_encoding": "python_default",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": [],
+            "agent_id": "child"
+          }
+        },
+        "intent_sha256": "057c6dba3716891b34c5e9331430c79bfb12e4d5a65562f5aa2d8ab9c005bdd8",
+        "native_digest": "c9ca72f7fad36e080959b46076650cd01449980924b89e2fa3e92856c11fcb86",
+        "row_sha256": "12f4a5123e515de03cd552c0b62d5b849e8f2feb664b1c02ea59509bba5c44fe"
+      }
+    },
+    {
+      "id": "child-opencode-compact",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "opencode",
+        "native_encoding": "compact",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": [],
+          "agent_id": "child"
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "child-conversation",
+        "agent": "child",
+        "parent_conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"compact\",\"payload\":{\"agent_id\":\"child\",\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"opencode\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "opencode",
+          "native_encoding": "compact",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": [],
+            "agent_id": "child"
+          }
+        },
+        "intent_sha256": "60e2953d0303679e560414f43dc1983059a0995e6a7dbecbb39519003f98fb8f",
+        "native_digest": "51abc432869f2ee9a133889b5071572cf9d6f40c7b55f6757fac2d38a41213d6",
+        "row_sha256": "12f4a5123e515de03cd552c0b62d5b849e8f2feb664b1c02ea59509bba5c44fe"
+      }
+    },
+    {
+      "id": "child-opencode-python_default",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "opencode",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text",
+          "attachments": [],
+          "agent_id": "child"
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "child-conversation",
+        "agent": "child",
+        "parent_conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"agent_id\":\"child\",\"attachments\":[],\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"opencode\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "opencode",
+          "native_encoding": "python_default",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation",
+            "attachments": [],
+            "agent_id": "child"
+          }
+        },
+        "intent_sha256": "18c5403bd639b54638c8fb1a77a1278758089ada3ddffa71984b4dbbae6b2749",
+        "native_digest": "51abc432869f2ee9a133889b5071572cf9d6f40c7b55f6757fac2d38a41213d6",
+        "row_sha256": "12f4a5123e515de03cd552c0b62d5b849e8f2feb664b1c02ea59509bba5c44fe"
+      }
+    },
+    {
+      "id": "no-attachments-field-codex-compact",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "compact",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text"
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"compact\",\"payload\":{\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "codex",
+          "native_encoding": "compact",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation"
+          }
+        },
+        "intent_sha256": "afe85e9ac90bf7fe28e282c31f9b91d3af13f1d850245231281aac4e75cfdd76",
+        "native_digest": "fdd493abd6e5ac7b69a803a0245c0c24e96d36489b504770dda32d371bea2fe3",
+        "row_sha256": "ecb0fb9442ac48ea4b88621572b83202e9244732a047f99ec4354ae5d863a8da"
+      }
+    },
+    {
+      "id": "no-attachments-field-codex-python_default",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "codex",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text"
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"codex\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "codex",
+          "native_encoding": "python_default",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation"
+          }
+        },
+        "intent_sha256": "f8aee9321c3e713e36bf20b957d0df84a9285e2bf1cc1e5f4279749134f0de98",
+        "native_digest": "30b3b89abd648c2bc928dc3e379d19f642d691ffde3949c79157ff30b99cf127",
+        "row_sha256": "ecb0fb9442ac48ea4b88621572b83202e9244732a047f99ec4354ae5d863a8da"
+      }
+    },
+    {
+      "id": "no-attachments-field-opencode-compact",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "opencode",
+        "native_encoding": "compact",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text"
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"compact\",\"payload\":{\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"opencode\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "opencode",
+          "native_encoding": "compact",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation"
+          }
+        },
+        "intent_sha256": "4282bdbd3b122cf3e93b1919aef05b9ba87a8d3467f2eac870db457d5fe96252",
+        "native_digest": "3ddd58aea2900c7317ac96bae0fb1c59ead46197155f6e1fc769c18706d91947",
+        "row_sha256": "ecb0fb9442ac48ea4b88621572b83202e9244732a047f99ec4354ae5d863a8da"
+      }
+    },
+    {
+      "id": "no-attachments-field-opencode-python_default",
+      "intent": {
+        "schema": 1,
+        "computer_id": "33333333-3333-4333-8333-333333333333",
+        "machine_id": "33333333-3333-4333-8333-333333333333",
+        "session_id": "44444444-4444-4444-8444-444444444444",
+        "session": "codex/example/send",
+        "provider": "opencode",
+        "native_encoding": "python_default",
+        "payload": {
+          "request_id": "22222222-2222-4222-8222-222222222222",
+          "expected_run_id": "run",
+          "expected_conversation_id": "conversation",
+          "text": "exact text"
+        }
+      },
+      "target": {
+        "connection": "gateway",
+        "computer": "33333333-3333-4333-8333-333333333333",
+        "session": "codex/example/send",
+        "run": "run",
+        "conversation": "conversation"
+      },
+      "canonical": "{\"computer_id\":\"33333333-3333-4333-8333-333333333333\",\"machine_id\":\"33333333-3333-4333-8333-333333333333\",\"native_encoding\":\"python_default\",\"payload\":{\"expected_conversation_id\":\"conversation\",\"expected_run_id\":\"run\",\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"text\":\"exact text\"},\"provider\":\"opencode\",\"schema\":1,\"session\":\"codex/example/send\",\"session_id\":\"44444444-4444-4444-8444-444444444444\"}",
+      "correlation": {
+        "schema": 1,
+        "header": {
+          "schema": 1,
+          "computer_id": "33333333-3333-4333-8333-333333333333",
+          "machine_id": "33333333-3333-4333-8333-333333333333",
+          "session_id": "44444444-4444-4444-8444-444444444444",
+          "session": "codex/example/send",
+          "provider": "opencode",
+          "native_encoding": "python_default",
+          "payload": {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "expected_run_id": "run",
+            "expected_conversation_id": "conversation"
+          }
+        },
+        "intent_sha256": "37007242655ec5f8b720183ad7dfbad1e02033c1b5a5ca613d42ca3ed33f2e9e",
+        "native_digest": "3ddd58aea2900c7317ac96bae0fb1c59ead46197155f6e1fc769c18706d91947",
+        "row_sha256": "ecb0fb9442ac48ea4b88621572b83202e9244732a047f99ec4354ae5d863a8da"
+      }
+    }
+  ]
+}

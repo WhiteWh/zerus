@@ -2952,8 +2952,9 @@ class GitContext(Harness):
         for key in list(self.env):
             if key.startswith("GIT_"):
                 self.env.pop(key)
+        # The private non-repository folder must not discover a containing checkout.
         self.env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
-                        GIT_TERMINAL_PROMPT="0")
+                        GIT_TERMINAL_PROMPT="0", GIT_CEILING_DIRECTORIES=str(self.root))
         self.git("init", "-b", "main", str(self.project))
         self.git("commit", "--allow-empty", "-m", "Private fixture commit", cwd=self.project)
 
@@ -3485,7 +3486,7 @@ class Recipes(Harness):
         # argument, not another shell-encoded copy of the whole runner.
         runner = tmux_command[command_start + 3:]
         expected = ('exec env HGS_AGENT_HINT=1 HGS_AGENT_HINT_OFF= "$0" --run "$@"'
-                    if agent in ('claude', 'codex') else 'exec "$0" --run "$@"')
+                    if agent in ('claude', 'codex', 'kimi') else 'exec "$0" --run "$@"')
         self.assertEqual(runner[2], expected)
         self.assertEqual(runner[4], "0")
         return runner[5:], record["conversation_id"]
@@ -4173,6 +4174,12 @@ class Archive(Harness):
         self.assertInspectionEqual(self.archive_info(name, archive_id), without_history)
         expected = json.loads(json.dumps(before))
         expected["processes"]["notes"] = without_history["processes"]["notes"]
+        # #2162 / zerus-wyrqg: a missing saved conversation also removes the
+        # Restore offer. Failed actions still leave the archive unchanged.
+        self.assertIn("restore", expected["allowed_actions"])
+        expected["allowed_actions"].remove("restore")
+        expected["action_reasons"]["restore"] = (
+            "This session ended before its first message, so it saved no conversation to restore")
         self.assertInspectionEqual(without_history, expected)
         self.assertFalse(self.binding(name))
 

@@ -29,10 +29,13 @@ def refuse_reachable_guard() -> None:
                          'gui_sandbox.sandboxed().')
 
 
-def sandboxed(command, keep=()) -> list:
+def sandboxed(command, keep=(), read_only=()) -> list:
     """`command` inside bwrap: the host file system, but a private /tmp,
-    /run/user/<uid>, network and IPC. Each existing path in `keep` stays
-    shared, including one below /tmp, so the outer process sees its output."""
+    /run/user/<uid>, network and IPC. Each existing path in `read_only` is
+    bound read-only, so an absolute or passwd-derived write there fails loudly
+    instead of reaching the person's files (zerus-2ldeb.4). Each existing path
+    in `keep` stays shared and writable, including one below /tmp or below a
+    read-only path, so the outer process sees its output."""
     if sys.platform != 'linux':
         raise SystemExit('GUI smokes start apps only on Linux, inside bwrap')
     bwrap = shutil.which('bwrap')
@@ -42,6 +45,10 @@ def sandboxed(command, keep=()) -> list:
     runtime = pathlib.Path(f'/run/user/{os.geteuid()}')
     if runtime.is_dir():
         wrapped += ['--tmpfs', str(runtime)]
+    # Read-only first: a later `keep` bind below one stays writable.
+    for path in read_only:
+        path = pathlib.Path(path).resolve(strict=True)
+        wrapped += ['--ro-bind', str(path), str(path)]
     for path in keep:
         path = pathlib.Path(path).resolve(strict=True)
         wrapped += ['--bind', str(path), str(path)]

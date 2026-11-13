@@ -108,6 +108,11 @@ pub struct ViewRow {
     /// The host's Keep cache warm state (`keep_warm` of the listing), as reported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_warm: Option<Value>,
+    /// The host's per-child switch of the owner-approved question route
+    /// (`question_routing` of the listing, zerus-sa9qn.32): exactly
+    /// `send_to_parent` and its `revision`; None when the host does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question_routing: Option<Value>,
     /// When an archived row was archived (epoch seconds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<f64>,
@@ -1455,6 +1460,10 @@ pub fn row(value: &Value) -> ViewRow {
         summary: simplified(&session.summary()),
         updated_at: number(value, "last_event_at").filter(|at| *at > 0.0),
         keep_warm: object(value, "keep_warm").map(|warm| Value::Object(warm.clone())),
+        question_routing: value
+            .get("question_routing")
+            .filter(|routing| crate::question_routing::shaped(routing))
+            .cloned(),
         archived_at: number(value, "archived_at"),
         turn_started: session.turn_started(),
         launch_id: some(text(value, "launch_id")),
@@ -2189,6 +2198,16 @@ mod tests {
             status(json!({"tracked": true, "phase": "idle", "activity": "idle"})),
             s("ready", "Ready")
         );
+        // zerus-yj7ef: an idle DeepSeek listing row, with the count its bridge's
+        // listJobs summary gives (null from an older bridge: unknown).
+        let dsh = |count: Value| {
+            json!({"tracked": true, "backend": "dsh", "account_id": "native-dsh", "state": "running",
+                "phase": "idle", "activity": "idle",
+                "process_work": {"count": count, "started_at": null, "command": "", "sampled_at": 1.0}})
+        };
+        assert_eq!(status(dsh(json!(1))), s("background", "Background"));
+        assert_eq!(status(dsh(json!(0))), s("ready", "Ready"));
+        assert_eq!(status(dsh(Value::Null)), s("ready", "Ready"));
         assert_eq!(
             status(json!({"tracked": true, "activity": "unknown"})),
             s("ready", "Status unknown")
@@ -2589,6 +2608,42 @@ mod tests {
         row(
             &json!({"name": "a/b/c", "conversation_id": "c", "notification_preferences": preferences}),
         )
+    }
+
+    #[test]
+    fn a_question_routing_switch_is_shown_only_in_its_exact_shape() {
+        let routed = |routing: Value| {
+            row(&json!({"name": "claude/b/c", "conversation_id": "c", "question_routing": routing}))
+                .question_routing
+        };
+        assert_eq!(
+            routed(json!({"send_to_parent": false, "revision": 2})),
+            Some(json!({"send_to_parent": false, "revision": 2}))
+        );
+        for bad in [
+            Value::Null,
+            json!({"send_to_parent": "no", "revision": 2}),
+            json!({"send_to_parent": true, "revision": -1}),
+            json!({"send_to_parent": true}),
+            json!({"send_to_parent": true, "revision": 1, "extra": 1}),
+        ] {
+            assert_eq!(routed(bad.clone()), None, "{bad}");
+        }
+        assert_eq!(row(&json!({"name": "claude/b/c"})).question_routing, None);
+        // The shared contract's parse cases.
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../mobile/android/app/src/test/resources/question-routing-contract.json"
+        ))
+        .unwrap();
+        for case in contract["parse"].as_array().unwrap() {
+            let expected = Some(case["routing"].clone()).filter(|v| !v.is_null());
+            assert_eq!(
+                routed(case["question_routing"].clone()),
+                expected,
+                "{}",
+                case["name"]
+            );
+        }
     }
 
     #[test]

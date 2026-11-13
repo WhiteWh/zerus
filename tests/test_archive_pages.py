@@ -64,6 +64,30 @@ class ArchivePages(unittest.TestCase):
         self.assertEqual([r['run_id'] for r in rest['sessions']],['run-4','run-2','run-1','run-0'])
         self.assertEqual(self.run_query({'query':'new title'})['total'],1)
         self.assertEqual(self.run_query()['total'],8)
+    def test_restore_is_offered_only_for_a_saved_conversation(self):
+        # zerus-wyrqg: a Claude or Codex session that exited before its first
+        # message reported a conversation ID but wrote no transcript. Its
+        # archive does not offer Restore and says why; a saved one does.
+        launch=self.root/'project';launch.mkdir()
+        transcripts=self.root/'transcripts';transcripts.mkdir()
+        (transcripts/'empty.jsonl').write_text('');(transcripts/'saved.jsonl').write_text('{}\n')
+        cases={}
+        for index,(agent,kind) in enumerate((a,k) for a in ('claude','codex') for k in ('missing','empty','saved')):
+            ident=str(uuid.uuid4())
+            value=dict(version=1,name=f'{agent}/example/{kind}',agent=agent,run_id=f'run-{index}',conversation_id=f'conversation-{index}',
+                       state='archived',archive_id=ident,archived_at=100+index,created=1,cwd=str(launch),launch_dir=str(launch),
+                       base=[agent],transcript=str(transcripts/f'{kind}.jsonl'))
+            (self.archives/(ident+'.json')).write_text(json.dumps(value),encoding='utf-8')
+            cases[ident]=(agent,kind)
+        rows={row['archive_id']:row for row in self.run_query({'limit':50})['sessions']}
+        for ident,(agent,kind) in cases.items():
+            with self.subTest(agent=agent,kind=kind):
+                row=rows[ident]
+                if kind=='saved':
+                    self.assertIn('restore',row['allowed_actions'])
+                else:
+                    self.assertNotIn('restore',row['allowed_actions'])
+                    self.assertIn('ended before its first message',row['action_reasons']['restore'])
     def test_cursor_rejects_other_catalog_and_database_rebuild(self):
         self.record(0);self.record(1);first=self.run_query({'limit':1})
         (self.state/'archive-catalog-v1.sqlite3').unlink()

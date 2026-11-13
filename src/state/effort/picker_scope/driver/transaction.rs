@@ -91,6 +91,9 @@ pub(super) fn own_marker(record: &Value) -> Result<bool> {
         return Ok(false);
     };
     owner.actor()?;
+    if owner.control.frame().operation == host::frame::Operation::Send {
+        return send::own_marker(&owner,record);
+    }
     let reservation = owner
         .reservation
         .lock()
@@ -137,6 +140,9 @@ pub(super) fn own_marker(record: &Value) -> Result<bool> {
 }
 
 pub(super) fn key_ready(owner: &Arc<owner::Owner>) -> Result<()> {
+    if owner.control.frame().operation == host::frame::Operation::Send {
+        return send::settings_key_ready(owner);
+    }
     let raw = owner.snapshot()?.0;
     if !own_marker(&raw)? {
         return owner.refuse("Effort key has no original settled reservation".into());

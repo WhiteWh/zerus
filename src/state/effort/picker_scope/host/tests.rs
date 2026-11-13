@@ -9,6 +9,53 @@ const KEEPER: &str = "state::effort::picker_scope::host::tests::keeper";
 const FRONTEND: &str = "state::effort::picker_scope::host::tests::frontend";
 const FIXTURE: &str = "state::effort::picker_scope::host::tests::private_fixture";
 
+#[test]
+fn pending_send_has_25_seconds_while_standalone_pickers_keep_15() {
+    for (operation, seconds) in [
+        (Operation::Send, 25),
+        (Operation::Settings, 15),
+        (Operation::Effort, 15),
+    ] {
+        assert_eq!(
+            super::super::operation_budget(operation),
+            Duration::from_secs(seconds)
+        );
+    }
+}
+
+#[test]
+fn send_binary_segment_handles_backpressure_eof_and_its_original_deadline() {
+    let (writer, reader) = UnixStream::pair().unwrap();
+    writer.set_nonblocking(true).unwrap();
+    reader.set_nonblocking(true).unwrap();
+    let small = 4096 as libc::c_int;
+    assert_eq!(unsafe {
+        libc::setsockopt(writer.as_raw_fd(), libc::SOL_SOCKET, libc::SO_SNDBUF,
+            (&small as *const libc::c_int).cast(), std::mem::size_of_val(&small) as libc::socklen_t)
+    }, 0);
+    let bytes = vec![0xa7; 2 << 20];
+    let expected = bytes.clone();
+    let deadline = Deadline::after(Duration::from_secs(3)).unwrap();
+    let sender = std::thread::spawn(move || write_blob(&writer, &bytes, deadline, 2 << 20));
+    std::thread::sleep(Duration::from_millis(25));
+    assert_eq!(read_blob(&reader, deadline, 2 << 20).unwrap(), expected);
+    sender.join().unwrap().unwrap();
+
+    let (peer, reader) = UnixStream::pair().unwrap();
+    reader.set_nonblocking(true).unwrap();
+    let deadline = Deadline::after(Duration::from_millis(30)).unwrap();
+    assert!(read_blob(&reader, deadline, 1024).unwrap_err().contains("deadline expired"));
+    drop(peer);
+    assert!(read_blob(&reader, Deadline::after(Duration::from_secs(1)).unwrap(), 1024)
+        .unwrap_err().contains("endpoint closed"));
+
+    let (mut writer, reader) = UnixStream::pair().unwrap();
+    reader.set_nonblocking(true).unwrap();
+    writer.write_all(&1025u32.to_be_bytes()).unwrap();
+    assert!(read_blob(&reader, Deadline::after(Duration::from_secs(1)).unwrap(), 1024)
+        .unwrap_err().contains("exceeds its bound"));
+}
+
 pub(super) fn entry_arguments(command: &mut Command) {
     command.args(["--exact", KEEPER, "--ignored", "--test-threads=1"]);
 }

@@ -21,6 +21,7 @@ pub mod cache_keepalive;
 pub mod catalog_cache;
 pub mod child_environment;
 pub mod claude_app;
+pub mod clear_input;
 #[cfg(windows)]
 mod conpty;
 pub mod content_search;
@@ -72,6 +73,7 @@ pub mod processes;
 #[cfg(unix)]
 mod pty;
 pub mod qt_lock;
+pub mod question_routing;
 pub mod questions;
 pub mod quit_journal;
 pub mod quit_origin;
@@ -540,3 +542,7 @@ mod hgs_tests {
         assert_eq!(find_hgs(Some(path), None), Some(bin.join(HGS)));
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "../../../tests/support/executable.rs"]
+pub(crate) mod test_executable;

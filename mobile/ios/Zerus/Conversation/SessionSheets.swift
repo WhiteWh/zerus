@@ -9,15 +9,19 @@ struct SessionActionSheet: View {
     let operation: String
     @State private var tag = ""
     @State private var notificationPreference: SessionNotificationPreference?
+    @State private var questionRouting: QuestionRouting?
+    @State private var routingRaw: JSONObject?
 
     var body: some View {
         let model = app.conversation!
         let target = session.target
         let parts = target.session.components(separatedBy: "/")
         let args: JSONObject = operation == SessionNotificationPreferences.operation ? ["muted":.bool(notificationPreference?.muted != true),"expected_revision":.int(notificationPreference?.revision ?? -1)]
+            : operation == SessionQuestionRouting.operation ? SessionQuestionRouting.toggle(questionRouting)
             : operation == "rename" ? ["new_name": .string(parts.prefix(2).joined(separator: "/") + "/" + tag)]
             : operation == "fork" ? ["tag": .string(tag)] : [:]
-        let label = operation == SessionNotificationPreferences.operation ? SessionNotificationPreferences.label(notificationPreference) : ActionText.label(operation,target)
+        let label = operation == SessionNotificationPreferences.operation ? SessionNotificationPreferences.label(notificationPreference)
+            : operation == SessionQuestionRouting.operation ? SessionQuestionRouting.label(routingRaw ?? session.raw) : ActionText.label(operation,target)
         let reason: String = model.actionReason(target, operation).nonEmpty ?? SessionControlPresentation.reason(target, operation, model.activity).nonEmpty ?? {
             do {
                 _ = try SessionActionPolicies.arguments(operation, args)
@@ -38,7 +42,7 @@ struct SessionActionSheet: View {
                     if !reason.isEmpty { Text(reason) }
                 }
             }
-            .navigationTitle(operation == SessionNotificationPreferences.operation ? "\(label) / \(session.title)" : "\(label) \(session.title)?")
+            .navigationTitle(operation == SessionNotificationPreferences.operation || operation == SessionQuestionRouting.operation ? "\(label) / \(session.title)" : "\(label) \(session.title)?")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
@@ -59,12 +63,14 @@ struct SessionActionSheet: View {
         }
         .onChange(of:model.revision,initial:true) {
             if notificationPreference == nil && model.activityVerified { notificationPreference = SessionNotificationPreferences.parse(model.activity,target) }
+            if questionRouting == nil && model.activityVerified { questionRouting = SessionQuestionRouting.parse(model.activity);routingRaw = model.activity }
         }
     }
 
     static func explanation(_ operation: String, _ target: Target) -> String {
         switch operation {
         case SessionNotificationPreferences.operation: "Applies to this conversation on all devices. Unread replies and pending requests stay unchanged. Unmuting does not replay earlier notifications."
+        case SessionQuestionRouting.operation: "Applies to this child session on all devices. A blocking question is sent once to its parent session, which can answer it or ask you. Turning this off never cancels or resends a question already sent."
         case "pause": "Pause keeps the exact native conversation for Resume. Open network connections, child processes and unsent terminal input are not kept."
         case "resume": "Start the agent again with its saved native conversation."
         case "archive": "Move this saved session to Archive. Your private drafts stay on this phone."

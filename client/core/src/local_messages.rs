@@ -140,6 +140,29 @@ fn files_value(files: &[StoredFile]) -> Vec<Value> {
         .collect()
 }
 
+/// Claude Code records a pasted tab as four spaces: inside its
+/// `<pasted_content id=...>` wrapper in the transcript and in its
+/// UserPromptSubmit hook detail.  Comparison only: fold every run of spaces
+/// and tabs inside a line to one space, so a local row is matched by the
+/// message the agent recorded, not its whitespace rendering.  The row's text
+/// is stored and sent unchanged.
+fn comparison(text: &str) -> String {
+    let mut folded = String::with_capacity(text.len());
+    let mut whitespace = false;
+    for ch in text.chars() {
+        if ch == ' ' || ch == '\t' {
+            whitespace = true;
+        } else {
+            if whitespace {
+                folded.push(' ');
+                whitespace = false;
+            }
+            folded.push(ch);
+        }
+    }
+    folded
+}
+
 impl LocalMessages {
     pub fn rows(&self, key: &str) -> &[LocalMessage] {
         self.rows.get(key).map_or(&[], Vec::as_slice)
@@ -350,18 +373,13 @@ impl LocalMessages {
             if !row.attachments.is_empty() {
                 return true;
             }
-            let submitted = row
-                .submitted_text
-                .as_deref()
-                .unwrap_or(&row.text)
-                .trim()
-                .to_owned();
+            let submitted = comparison(row.submitted_text.as_deref().unwrap_or(&row.text).trim());
             if submitted.is_empty() {
                 return true;
             }
             let prefix: String = submitted.chars().take(1000).collect();
             let shown = events.iter().any(|event| {
-                let detail = event["detail"].as_str().unwrap_or("").trim();
+                let detail = comparison(event["detail"].as_str().unwrap_or("").trim());
                 matches!(
                     event["type"].as_str(),
                     Some("UserPromptSubmit" | "UserPromptQueued" | "TurnStarted")
@@ -767,6 +785,47 @@ mod tests {
             .map(|row| row.id.as_str())
             .collect();
         assert_eq!(left, ["5"]);
+    }
+
+    #[test]
+    fn claude_four_space_tabs_match_failed_and_sent_rows() {
+        let details = json!({"run_id": "run-1", "conversation_id": "conv-1"});
+        // A failed row leaves when the detail recorded the same message with
+        // four spaces for each tab.
+        let mut messages = LocalMessages::default();
+        send(&mut messages, "1", "a\tb\tc", &[]);
+        messages.finished(KEY, "1", &Outcome::Failed { detail: "x".into() });
+        let events = [json!({"type": "UserPromptSubmit", "detail": "a    b    c", "at": 101.0})];
+        let reconciled = messages.reconcile(KEY, &details, &events);
+        assert_eq!(reconciled.removed, 1);
+        assert_eq!(reconciled.delivered, vec!["a\tb\tc".to_string()]);
+        assert!(messages.rows(KEY).is_empty());
+        // A different word or an added line still keeps the failed row.
+        let mut messages = LocalMessages::default();
+        send(&mut messages, "2", "a\tb\tc", &[]);
+        messages.finished(KEY, "2", &Outcome::Failed { detail: "x".into() });
+        let events = [
+            json!({"type": "UserPromptSubmit", "detail": "a    b    d", "at": 101.0}),
+            json!({"type": "UserPromptSubmit", "detail": "a    b    c\nadded", "at": 101.0}),
+        ];
+        assert_eq!(messages.reconcile(KEY, &details, &events).removed, 0);
+        // A sent row is removed when the detail starts with the normalized
+        // text (the prefix is taken after the fold).
+        let mut messages = LocalMessages::default();
+        send(&mut messages, "3", "a\tb\tc", &[]);
+        messages.finished(
+            KEY,
+            "3",
+            &Outcome::Done {
+                receipt: json!({"request_id": "m3"}),
+                cleanup: None,
+            },
+        );
+        let events =
+            [json!({"type": "UserPromptSubmit", "detail": "a    b    c and more", "at": 101.0})];
+        let reconciled = messages.reconcile(KEY, &details, &events);
+        assert_eq!(reconciled.removed, 1);
+        assert!(messages.rows(KEY).is_empty());
     }
 
     #[test]

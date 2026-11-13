@@ -12,7 +12,7 @@ import { tr, trNoop } from "../../i18n";
 /** The session fields the action rules read: a catalog row, or a snapshot of one. */
 export type ActionRow = Pick<Session,
   | "key" | "computer" | "name" | "machine" | "cmd" | "state" | "tracked" | "resumable" | "activity" | "processState"
-  | "archiveId" | "attention" | "unread" | "sharedRead" | "allowed" | "archiveReason" | "terminateReason" | "forgetReason" | "phase"
+  | "archiveId" | "attention" | "unread" | "sharedRead" | "allowed" | "archiveReason" | "terminateReason" | "forgetReason" | "restoreReason" | "phase"
   | "runId" | "conversationId" | "replyId" | "attentionSignature" | "created" | "fingerprint" | "sessionId"
   | "cwdPath" | "terminalSupported" | "terminalReported" | "terminalAttachSupported" | "terminalAttachReported"
   | "muted" | "sharedNotifications" | "notificationRevision" | "notificationConflict" | "gitWorktree">;
@@ -23,6 +23,7 @@ export function snapshotOf(s: ActionRow): ActionRow {
     key: s.key, computer: s.computer, name: s.name, machine: s.machine, cmd: s.cmd, state: s.state, tracked: s.tracked,
     resumable: s.resumable, activity: s.activity, processState: s.processState, archiveId: s.archiveId, attention: s.attention,
     unread: s.unread, sharedRead: s.sharedRead, allowed: s.allowed, archiveReason: s.archiveReason, terminateReason: s.terminateReason, forgetReason: s.forgetReason,
+    restoreReason: s.restoreReason,
     phase: s.phase, runId: s.runId, conversationId: s.conversationId, replyId: s.replyId, attentionSignature: s.attentionSignature,
     created: s.created, fingerprint: s.fingerprint, sessionId: s.sessionId,
     cwdPath: s.cwdPath, terminalSupported: s.terminalSupported, terminalReported: s.terminalReported,
@@ -119,8 +120,10 @@ export function allowedOp(s: Pick<ActionRow, "allowed" | "cmd">, op: string, det
   return s.cmd !== "opencode" || op === "rename" || op === "forget";
 }
 
-const reasonFor = (s: ActionRow, op: "archive" | "terminate" | "forget", details?: Details) =>
-  details?.action_reasons?.[op] || (op === "archive" ? s.archiveReason : op === "terminate" ? s.terminateReason : s.forgetReason) || NO_REASON;
+const reasonFor = (s: ActionRow, op: "archive" | "terminate" | "forget" | "restore", details?: Details) =>
+  details?.action_reasons?.[op]
+  || (op === "archive" ? s.archiveReason : op === "terminate" ? s.terminateReason : op === "restore" ? s.restoreReason : s.forgetReason)
+  || NO_REASON;
 
 /** An OpenCode session that allows forget and not terminate: Forget removes only its Zerus binding. */
 export const forgetsBindingOnly = (s: Pick<ActionRow, "allowed" | "cmd">, details?: Details) =>
@@ -143,9 +146,12 @@ export function menuState(s: ActionRow, online: boolean, updating: boolean, deta
     || (s.resumable && idle && (!details || details.expected_id === "" || details.resume_message_can_send)));
   // Restore (Qt canChange 5302-5304). The client's right-click selects the row
   // first, so its context menu is Qt's selected-row case, which reuses the
-  // header's m_changeAction (5360): neither reads allowed(restore) (3897-3898).
+  // header's m_changeAction (5360). It also follows the computer's restore
+  // decision, as batch Restore does: an archive that ended before its first
+  // message saved no conversation (zerus-wyrqg).
+  const restorable = allowedOp(s, "restore", details);
   const change = archived
-    ? available && s.resumable && !!s.archiveId && !options.occupied
+    ? available && s.resumable && !!s.archiveId && !options.occupied && restorable
     : available && ((canPause && allowedOp(s, "pause", details)) || (!running && s.resumable && allowedOp(s, "resume", details)));
   const [agent, project] = s.name.split("/", 2);
 
@@ -170,7 +176,7 @@ export function menuState(s: ActionRow, online: boolean, updating: boolean, deta
     change: {
       label: updating || (options.batchRunning && !options.context) ? trNoop("Updating…") : archived ? trNoop("Restore session") : running ? trNoop("Pause session") : trNoop("Resume session"),
       enabled: change,
-      reason: undefined,
+      reason: archived && !restorable ? reasonFor(s, "restore", details) : undefined,
     },
     rename: allowedOp(s, "rename", details) && available && !!agent && !!project && (!archived || !!s.archiveId),
     archive: {
@@ -436,7 +442,7 @@ export type DialogKind = "rename" | "terminate" | "fresh" | "forget" | "batch" |
 export interface ForgetScope { binding: boolean; run: string; conversation: string }
 export type DialogOpen =
   | { kind: "fork"; row: ActionRow; details: Details }
-  | { kind: "rename" | "terminate" | "fresh"; row: ActionRow }
+  | { kind: "rename" | "terminate" | "fresh" | "archive"; row: ActionRow }
   | { kind: "forget"; row: ActionRow; bound: ForgetScope }
   /** A selection's Forget or Terminate: `answer` gets true for the confirm button, false otherwise. */
   | { kind: "batch"; copy: BatchConfirmation; answer: (confirmed: boolean) => void }

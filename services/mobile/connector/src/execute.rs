@@ -177,7 +177,7 @@ impl<N: Native + 'static> Connector<N> {
                 })
             });
             if matches {
-                self.resolve(route).await
+                self.resolve(route, true).await
             } else {
                 Err(Failure::text(
                     if zerus_relay::repositories::OPERATIONS.contains(&journal_operation.as_str()) {
@@ -185,6 +185,21 @@ impl<N: Native + 'static> Connector<N> {
                     } else {
                         "project assignment computer does not match its immutable route"
                     },
+                ))
+            }
+        } else if journal_operation == "send_receipt" && request.contains_key("gateway_route") {
+            let route = &request["gateway_route"];
+            let intent = request
+                .get("payload")
+                .and_then(|p| p.get("intent"))
+                .unwrap_or(&Value::Null);
+            if route["computer_id"] == intent["computer_id"]
+                && route["machine_id"] == intent["machine_id"]
+            {
+                self.resolve(route, false).await
+            } else {
+                Err(Failure::text(
+                    "original send computer does not match its immutable route",
                 ))
             }
         } else if journal_operation == "directory_create" && request.contains_key("gateway_route") {
@@ -195,14 +210,14 @@ impl<N: Native + 'static> Connector<N> {
                 })
             });
             if matches {
-                self.resolve(route).await
+                self.resolve(route, true).await
             } else {
                 Err(Failure::text(
                     "directory creation computer does not match its immutable route",
                 ))
             }
         } else if let Some(route) = request.get("gateway_route") {
-            self.resolve(route).await
+            self.resolve(route, true).await
         } else {
             if zerus_relay::repositories::OPERATIONS.contains(&journal_operation.as_str()) {
                 match validate::checked_uuid(
@@ -240,7 +255,7 @@ impl<N: Native + 'static> Connector<N> {
     /// `Fleet.resolve`: an exact route to this computer or a direct peer,
     /// checked against the current inventory without waiting on any other
     /// peer.
-    async fn resolve(&self, envelope: &Value) -> Result<Target, Failure> {
+    async fn resolve(&self, envelope: &Value, discover: bool) -> Result<Target, Failure> {
         let (route, machine) = crate::fleet::route_target(envelope).map_err(Failure::text)?;
         let fleet = match &self.fleet {
             Some(fleet) if self.gateway_available() => fleet,
@@ -260,6 +275,11 @@ impl<N: Native + 'static> Connector<N> {
             return Err(Failure::Generic);
         };
         if !context.snapshot_ready.is_set() {
+            if !discover {
+                return Err(Failure::text(
+                    "original send session binding is unavailable",
+                ));
+            }
             context.snapshot().await.map_err(Failure::Connector)?;
         }
         Ok(Target::Peer(context))
@@ -318,6 +338,7 @@ impl<N: Native + 'static> Connector<N> {
             // Refuse unsupported commands before native delivery can become uncertain.
             if validated.session.starts_with("external/")
                 || (self.flags.get().windows_gateway
+                    && validated.operation != "send_receipt"
                     && !validated.session.is_empty()
                     && !validated
                         .payload
@@ -402,8 +423,24 @@ impl<N: Native + 'static> Connector<N> {
         request: &Map<String, Value>,
         request_id: &str,
     ) -> Result<Validated, String> {
-        let (request, request_id, context) =
-            (request.clone(), request_id.to_owned(), self.context());
+        let receipt_read = request.get("operation").and_then(Value::as_str) == Some("send_receipt");
+        let context = if receipt_read {
+            validate::Context::default()
+        } else {
+            self.context()
+        };
+        let (mut request, request_id) = (request.clone(), request_id.to_owned());
+        // v1 Claim::decode removes computer_id after freezing its gateway route;
+        // v2 retains the authenticated physical computer. Rebuild only the read
+        // validator's route field, never the journal fingerprint or send intent.
+        if receipt_read && !request.contains_key("computer_id") {
+            let computer = request
+                .get("gateway_route")
+                .and_then(|r| r.get("computer_id"))
+                .cloned()
+                .unwrap_or_else(|| json!(self.settings.binding));
+            request.insert("computer_id".into(), computer);
+        }
         tokio::task::spawn_blocking(move || validate::validate(&request, &request_id, &context))
             .await
             .unwrap_or_else(|_| Err(GENERIC.into()))
@@ -584,6 +621,9 @@ impl<N: Native + 'static> Connector<N> {
                 "operation is unavailable on a Windows local gateway",
             ));
         }
+        if operation == "send_receipt" && !flags.send_receipt {
+            return Err(Failure::text(crate::send_receipt::UNAVAILABLE));
+        }
         if operation == "clear_context"
             && payload.is_some_and(|payload| payload.get("dismiss_prompt").is_some())
             && !flags.clear_context_dismiss
@@ -628,6 +668,16 @@ impl<N: Native + 'static> Connector<N> {
         if operation == crate::session_notifications::OPERATION && !flags.session_notifications {
             return Err(Failure::text(
                 "native shared notification ABI is unavailable",
+            ));
+        }
+        if operation == crate::session_question_routing::OPERATION && !flags.question_routing {
+            return Err(Failure::text(crate::session_question_routing::UNAVAILABLE));
+        }
+        if operation == crate::session_question_route_person::OPERATION
+            && !flags.question_route_person
+        {
+            return Err(Failure::text(
+                crate::session_question_route_person::UNAVAILABLE,
             ));
         }
         if operation == "mark_read" && !flags.read {
@@ -682,6 +732,7 @@ impl<N: Native + 'static> Connector<N> {
         let session = validated.session.as_str();
         let payload = validated.payload.as_ref();
         match validated.operation.as_str() {
+            "send_receipt" => self.send_receipt(payload.expect("validated")).await,
             operation if zerus_relay::repositories::OPERATIONS.contains(&operation) => {
                 let payload = payload.expect("validated");
                 if operation == "repository_clone" {
@@ -732,6 +783,41 @@ impl<N: Native + 'static> Connector<N> {
                 if !crate::session_notifications::result_valid(&result, payload) {
                     return Err(Failure::text(
                         "native notification preference acknowledgement did not match",
+                    ));
+                }
+                Ok(result)
+            }
+            "session_question_routing" => {
+                let payload = payload.expect("validated");
+                let result = self
+                    .call(
+                        Call::new(["question-routing", session, "--json"])
+                            .payload(payload.clone())
+                            .failure_json(),
+                    )
+                    .await?;
+                if !crate::session_question_routing::result_valid(&result, payload) {
+                    return Err(Failure::text(
+                        "native question routing acknowledgement did not match",
+                    ));
+                }
+                Ok(result)
+            }
+            crate::session_question_route_person::OPERATION => {
+                let payload = payload.expect("validated");
+                if self.peer {
+                    return Err(Failure::text(crate::session_question_route_person::PEER));
+                }
+                let result = self
+                    .call(
+                        Call::new(["desktop", "request", "--json"])
+                            .payload(crate::session_question_route_person::request(payload))
+                            .failure_json(),
+                    )
+                    .await?;
+                if !crate::session_question_route_person::result_valid(&result, payload) {
+                    return Err(Failure::text(
+                        "native person question route acknowledgement did not match",
                     ));
                 }
                 Ok(result)

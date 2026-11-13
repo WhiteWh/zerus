@@ -78,6 +78,10 @@ pub(super) fn background_session() -> Option<Value> {
     if !runs_under(claude) {
         return None;
     }
+    // Nor through a recorded DeepSeek host (zerus-ppd26.15).
+    if super::dsh::host_check() != super::dsh::HostCheck::Outside {
+        return None;
+    }
     let job = registry(claude)
         .filter(|entry| entry["kind"] == "bg")
         .map(|entry| string(&entry, "jobId").to_owned())

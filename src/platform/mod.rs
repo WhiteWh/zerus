@@ -311,30 +311,68 @@ pub fn lock_contended(error: &io::Error) -> bool {
 /// Windows frees a closed handle's lock only when system resources allow, and a
 /// forked child can keep a Unix descriptor open until exec, so closing the file
 /// alone can leave the next process waiting.
-pub struct FileLock(File);
+pub struct FileLock {
+    file: File,
+    owner_pid: u32,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Every unlock_owner call that reached the actual unlock (owner matched).
+    pub(crate) static UNLOCK_ATTEMPTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Tests only: make the next unlock_owner attempts fail without unlocking.
+    pub(crate) static FAIL_UNLOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 impl FileLock {
     pub fn exclusive(file: File) -> io::Result<Self> {
         fs2::FileExt::lock_exclusive(&file)?;
-        Ok(Self(file))
+        Ok(Self::held(file))
     }
 
     /// Takes ownership of a file whose lock this process has just acquired.
     pub fn held(file: File) -> Self {
-        Self(file)
+        Self {
+            file,
+            owner_pid: std::process::id(),
+        }
+    }
+
+    /// Preserve a caller's fallible normal release without retrying it in Drop.
+    /// Error exits still use the acquisition-owner guard's ordinary Drop.
+    pub(crate) fn release(mut self) -> io::Result<()> {
+        let result = self.unlock_owner();
+        self.owner_pid = 0;
+        result
+    }
+
+    fn unlock_owner(&self) -> io::Result<()> {
+        if self.owner_pid == std::process::id() {
+            #[cfg(test)]
+            {
+                UNLOCK_ATTEMPTS.with(|attempts| attempts.set(attempts.get() + 1));
+                if FAIL_UNLOCK.with(std::cell::Cell::get) {
+                    return Err(io::Error::other("injected unlock failure"));
+                }
+            }
+            fs2::FileExt::unlock(&self.file)
+        } else {
+            Ok(())
+        }
     }
 
     /// The identity of the exact file object this lock is held on.
     #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     pub fn identity(&self) -> io::Result<FileIdentity> {
-        FileIdentity::of(&self.0)
+        FileIdentity::of(&self.file)
     }
 }
 
 impl Drop for FileLock {
     fn drop(&mut self) {
         // Rust 1.89+ File::unlock would shadow the trait method; name fs2 explicitly.
-        let _ = fs2::FileExt::unlock(&self.0);
+        // An inherited copy must not unlock its parent's still-live scope.
+        let _ = self.unlock_owner();
     }
 }
 
@@ -512,29 +550,18 @@ pub enum RunError {
     Unsupported,
 }
 
+/// One POSIX shell word, bare when nothing in it needs quoting. Quoted words
+/// also read the same in fish, a person's or SSH peer's shell: fish reads
+/// `\\` and `\'` even inside single quotes, so every backslash and quote
+/// stays outside them (`'a'\\'b'`), which POSIX shells read identically
+/// (zerus-sa9qn.43).
 pub fn quote(word: &str) -> String {
     if !word.is_empty()
         && word
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || b"_./:=@%+,~-".contains(&c))
     {
-        word.into()
-    } else {
-        format!("'{}'", word.replace('\'', "'\\''"))
-    }
-}
-pub fn join<S: AsRef<str>>(args: &[S]) -> String {
-    args.iter()
-        .map(|s| quote(s.as_ref()))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-/// Quotes a word for an SSH peer's login shell, which may be fish. fish also
-/// reads `\\` and `\'` inside single quotes, so every backslash stays outside
-/// them; a word without one keeps the `quote` form.
-pub fn remote_quote(word: &str) -> String {
-    if !word.contains('\\') {
-        return quote(word);
+        return word.into();
     }
     let mut quoted = String::from("'");
     for c in word.chars() {
@@ -546,6 +573,17 @@ pub fn remote_quote(word: &str) -> String {
     }
     quoted.push('\'');
     quoted
+}
+pub fn join<S: AsRef<str>>(args: &[S]) -> String {
+    args.iter()
+        .map(|s| quote(s.as_ref()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+/// Quotes a word for an SSH peer's login shell, which may be fish: `quote`,
+/// which is fish-safe for every word now.
+pub fn remote_quote(word: &str) -> String {
+    quote(word)
 }
 pub fn remote_join<S: AsRef<str>>(args: &[S]) -> String {
     args.iter()
@@ -697,6 +735,90 @@ pub fn restore_terminal() {
     }
 }
 
+/// How fish reads one command line, modelled on fish's documented quoting
+/// (fish is not installed on the build machines; zerus-sa9qn.43): inside
+/// single quotes only `\'` and `\\` are escapes and every other character is
+/// literal; outside quotes a backslash escapes the next character, whitespace
+/// separates words, and anything fish would act on (`;`, `&`, `|`, `<`, `>`,
+/// `(`, `)`, `$`, `*`, `?`, `{`, `}`, a double quote, a newline, or `~` and
+/// `#` at the start of a word) is reported instead of read. A newline
+/// outside quotes ends a command.
+#[cfg(test)]
+pub(crate) fn fish_commands(line: &str) -> std::result::Result<Vec<Vec<String>>, String> {
+    let (mut commands, mut words, mut word, mut started) =
+        (Vec::new(), Vec::new(), String::new(), false);
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\n' => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                }
+                started = false;
+                commands.push(std::mem::take(&mut words));
+                continue;
+            }
+            ' ' | '\t' => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                }
+                started = false;
+                continue;
+            }
+            '\'' => loop {
+                match chars.next() {
+                    None => return Err(format!("an unterminated quote in {line:?}")),
+                    Some('\'') => break,
+                    Some('\\') if matches!(chars.peek(), Some('\'' | '\\')) => {
+                        word.push(chars.next().expect("peeked"));
+                    }
+                    Some(c) => word.push(c),
+                }
+            },
+            '\\' => match chars.next() {
+                Some(
+                    c @ ('a'
+                    | 'b'
+                    | 'e'
+                    | 'f'
+                    | 'n'
+                    | 'r'
+                    | 't'
+                    | 'v'
+                    | 'x'
+                    | 'X'
+                    | 'u'
+                    | 'U'
+                    | 'c'
+                    | '0'..='7'),
+                ) => return Err(format!("the escape \\{c} in {line:?}")),
+                Some(c) => word.push(c),
+                None => return Err(format!("a trailing backslash in {line:?}")),
+            },
+            '~' | '#' if !started => return Err(format!("{c:?} starts a word in {line:?}")),
+            ';' | '&' | '|' | '<' | '>' | '(' | ')' | '$' | '*' | '?' | '{' | '}' | '"' => {
+                return Err(format!("fish acts on {c:?} in {line:?}"))
+            }
+            c => word.push(c),
+        }
+        started = true;
+    }
+    if started {
+        words.push(word);
+    }
+    commands.push(words);
+    Ok(commands)
+}
+
+/// The words of one fish command line (`fish_commands`), refusing a second.
+#[cfg(test)]
+pub(crate) fn fish_words(line: &str) -> std::result::Result<Vec<String>, String> {
+    match fish_commands(line)?.as_slice() {
+        [words] => Ok(words.clone()),
+        _ => Err(format!("more than one command in {line:?}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,13 +834,89 @@ mod tests {
     #[test]
     fn remote_commands_keep_posix_quoting_for_windows_paths() {
         assert_eq!(quote("~/.local/bin/hgs"), "~/.local/bin/hgs");
-        assert_eq!(quote(r"C:\Users\a b"), r"'C:\Users\a b'");
+        // The peer's sh reads `C:\Users\a b`; the backslashes stay outside the
+        // quotes for fish (zerus-sa9qn.43).
+        assert_eq!(quote(r"C:\Users\a b"), r"'C:'\\'Users'\\'a b'");
         assert_eq!(quote("it's"), r"'it'\''s'");
         assert_eq!(quote(""), "''");
         assert_eq!(
             join(&["inspect", "zerus://session?a=1&b=2", "--local"]),
             "inspect 'zerus://session?a=1&b=2' --local"
         );
+    }
+
+    /// Words a person pastes (dry-run lines, `machine ssh` prints) or a fish
+    /// login shell reads; `x\'; touch pwned; #` is the #2127 review's folder.
+    const HOSTILE: &[&str] = &[
+        "x\\'; touch pwned; #",
+        "claude/p/x\\'; touch pwned; #",
+        "a\\b",
+        "x\\",
+        "\\'",
+        "\\\\'",
+        "a\\\\'b; touch pwned",
+        "it's",
+        "'\\''",
+        "$(touch pwned)",
+        "`touch pwned`",
+        "a\"b; touch pwned",
+        "x;touch pwned",
+        "x/~root",
+        "#x",
+        "x\u{2019}; touch pwned",
+        "x\ntouch pwned",
+        "",
+    ];
+
+    /// zerus-sa9qn.43: every word `quote` writes reads back exactly in fish
+    /// (modelled, `fish_words`) and in sh (run), alone and joined.
+    #[test]
+    fn quoted_words_read_back_exactly_in_fish_and_sh() {
+        for word in HOSTILE.iter().copied() {
+            assert_eq!(
+                fish_words(&quote(word)),
+                Ok(vec![word.to_owned()]),
+                "{word:?} -> {}",
+                quote(word)
+            );
+            assert_eq!(remote_quote(word), quote(word));
+        }
+        let all: Vec<String> = HOSTILE.iter().map(|word| word.to_string()).collect();
+        assert_eq!(fish_words(&join(&all)), Ok(all.clone()));
+        #[cfg(unix)]
+        {
+            let folder = tempfile::tempdir().unwrap();
+            let out = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!("printf '%s\\0' {}", join(&all)))
+                .current_dir(folder.path())
+                .env("PATH", "/usr/bin:/bin")
+                .output()
+                .unwrap();
+            assert!(!folder.path().join("pwned").exists());
+            let read: Vec<String> = String::from_utf8(out.stdout)
+                .unwrap()
+                .split_terminator('\0')
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(read, all);
+        }
+    }
+
+    /// The model itself: what fish documents for single quotes.
+    #[test]
+    fn the_fish_model_reads_quotes_as_fish_documents() {
+        assert_eq!(fish_words(r"'a\'b'"), Ok(vec!["a'b".to_owned()]));
+        assert_eq!(fish_words(r"'a\\b'"), Ok(vec![r"a\b".to_owned()]));
+        assert_eq!(fish_words(r"'a\b'"), Ok(vec![r"a\b".to_owned()]));
+        assert_eq!(
+            fish_words(r"'a'\''b' c"),
+            Ok(vec!["a'b".to_owned(), "c".to_owned()])
+        );
+        // The old form of `x\'; touch pwned; #`: fish ends the quote late.
+        assert!(fish_words(r"'x\'\''; touch pwned; #'")
+            .unwrap_err()
+            .contains("';'"));
     }
 
     #[test]
@@ -884,3 +1082,8 @@ mod console_allocation_tests {
         );
     }
 }
+
+#[cfg(all(test, unix))]
+pub(crate) mod lock_tests;
+#[cfg(all(test, unix))]
+pub(crate) mod residual_lock_tests;

@@ -24,7 +24,8 @@ class GitStatus(unittest.TestCase):
         self.remote = self.root / 'remote.git'
         self.env = {k: v for k, v in os.environ.items() if not k.startswith(('HGS_', 'GIT_'))}
         self.env.update(HOME=str(self.root / 'home'), HGS_STATE_DIR=str(self.root / 'state'),
-                        HGS_SELF='fixture', HGS_PEERS='', GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null')
+                        HGS_SELF='fixture', HGS_PEERS='', GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null',
+                        GIT_CEILING_DIRECTORIES=str(self.root))
         self.git('init', '-q', '-b', 'main', str(self.repo))
         self.git('init', '--bare', '-q', str(self.remote))
         (self.repo / 'tracked').write_text('initial\n')

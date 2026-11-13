@@ -292,7 +292,8 @@ pub(crate) fn rows(wanted: &BTreeSet<String>) -> Result<Option<(Vec<Value>, u64)
     let marks = read_marks::load();
     let preferences = notifications::load();
     let keep_warm_settings = keep_warm::load();
-    let shared = Shared { marks: &marks, preferences: preferences.as_ref(), keep_warm: keep_warm_settings.as_ref(), budget: read_marks::question_budget() };
+    let question_routing = question_routing::load();
+    let shared = Shared { marks: &marks, preferences: preferences.as_ref(), keep_warm: keep_warm_settings.as_ref(), question_routing: question_routing.as_ref(), budget: read_marks::question_budget() };
     let mut process_work = processes::WorkSample::default();
     let mut rows = Vec::with_capacity(records.len());
     for record in records {

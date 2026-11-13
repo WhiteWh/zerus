@@ -83,7 +83,11 @@ fn exact_previous_store_upgrade_adds_only_the_independent_message_leaf() {
     );
     // Its own two tables, the task message input leaf's two, then the
     // deferred send, deferred answer and compact-to-send leaves' two each.
-    assert_eq!(tables(&store.db), before + 2 + 2 + 2 + 2 + 2 + 2);
+    // ... and the question route leaves' tables (zerus-sa9qn.8, .32, .50 and .36).
+    assert_eq!(
+        tables(&store.db),
+        before + 2 + 2 + 2 + 2 + 2 + 2 + 1 + 2 + 2 + 1
+    );
     assert_eq!(ledger::undrained(&store.db).unwrap(), 0);
 }
 
@@ -102,7 +106,8 @@ fn the_input_upgrade_adds_only_its_two_tables_with_no_charge() {
     let store = Store::open(&location, &uuid::Uuid::new_v4().to_string()).unwrap();
     // Its own two tables, then the deferred send, deferred answer and
     // compact-to-send leaves' two each.
-    assert_eq!(tables(&store.db), before + 2 + 2 + 2 + 2 + 2);
+    // ... and the question route leaves' tables (zerus-sa9qn.8, .32, .50 and .36).
+    assert_eq!(tables(&store.db), before + 2 + 2 + 2 + 2 + 2 + 1 + 2 + 2 + 1);
     assert_eq!(inputs::totals(&store.db).unwrap(), (0, 0));
 }
 

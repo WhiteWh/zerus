@@ -12,7 +12,8 @@ vi.mock("../../store/actions", () => ({
   pendingNotifications: () => ({ total: 0, conversation: false }), toggleMute: vi.fn(), updating: () => false,
   targetOf: (row: ActionRow) => ({ computer: row.computer, name: row.name, run_id: row.runId ?? "", conversation_id: row.conversationId ?? "" }),
 }));
-vi.mock("../../store/batch", () => ({ bindBatchConfirm: vi.fn(), running: () => false }));
+vi.mock("../../store/batch", () => ({ bindBatchConfirm: vi.fn(), endAfter: vi.fn(), running: () => false }));
+vi.mock("../../store/endChildren", () => ({ childOfferFor: () => ({ ending: [], staying: [] }) }));
 vi.mock("../../store/settings", () => ({ setSetting: vi.fn(), settings: {} }));
 vi.mock("../../store/sessionForks", () => ({ sessionForks: {} }));
 vi.mock("../../store/restores", () => ({ cancelRestoreFollow: vi.fn(), forgetArchived: vi.fn(), refreshArchiveWhenDone: vi.fn(), restoreSession: vi.fn() }));

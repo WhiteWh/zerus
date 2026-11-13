@@ -53,6 +53,32 @@ class Adapter extends LlmAdapter {
       yield {type:'block-end',index:0,block:{type:'tool-call',id:'self-call',name:'bash',arguments:args}};
       yield {type:'finish',reason:{kind:'tool-calls'}};return;
     }
+    // zerus-ppd26: the same identity command as a background job, promoted
+    // after a short foreground timeout, or run by a child agent. Once per
+    // prompt: a later job or child notice must not start it again.
+    const shellPath = [['HGS_IDENTITY_BACKGROUND_FIXTURE ', {run_in_background:true}],
+      ['HGS_IDENTITY_PROMOTED_FIXTURE ', {timeoutMs:1000}], ['HGS_IDENTITY_CHILD_FIXTURE ', null]]
+      .find(([mark]) => text.startsWith(mark));
+    if (shellPath && !options.messages.slice(options.messages.indexOf(prompt) + 1).some(m => m.role === 'tool')) {
+      const [mark, extra] = shellPath, command = text.slice(mark.length);
+      const [name, args] = extra
+        ? ['bash', JSON.stringify({command, description:'Shell identity path fixture', ...extra})]
+        : ['subagent', JSON.stringify({description:'Shell identity child fixture', prompt:'HGS_IDENTITY_CHILD_CALL '+command})];
+      yield {type:'block-start',index:0,blockType:'tool-call'};
+      yield {type:'tool-call-delta',index:0,id:'identity-path-call',name,argumentsDelta:args};
+      yield {type:'block-end',index:0,block:{type:'tool-call',id:'identity-path-call',name,arguments:args}};
+      yield {type:'finish',reason:{kind:'tool-calls'}};return;
+    }
+    // The child's own call: the native harness appends its parent instructions
+    // as a later text block, so only the first block is the command.
+    const childCall = prompt?.content?.find(block => block.type === 'text')?.text ?? '';
+    if (childCall.startsWith('HGS_IDENTITY_CHILD_CALL ') && last?.role !== 'tool') {
+      const args=JSON.stringify({command:childCall.slice('HGS_IDENTITY_CHILD_CALL '.length),description:'Shell identity child call'});
+      yield {type:'block-start',index:0,blockType:'tool-call'};
+      yield {type:'tool-call-delta',index:0,id:'identity-child-call',name:'bash',argumentsDelta:args};
+      yield {type:'block-end',index:0,block:{type:'tool-call',id:'identity-child-call',name:'bash',arguments:args}};
+      yield {type:'finish',reason:{kind:'tool-calls'}};return;
+    }
     if ((text.includes('SHELL_BACKGROUND_FIXTURE') || text.includes('SHELL_FOREGROUND_FIXTURE')) && last?.role !== 'tool') {
       const background=text.includes('SHELL_BACKGROUND_FIXTURE');
       const args=JSON.stringify({command:background?"printf 'independent-output\\n'; sleep 30":"printf 'foreground-output\\n'; exit 7",description:'Shell process test',run_in_background:background});

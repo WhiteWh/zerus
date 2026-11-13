@@ -509,7 +509,7 @@ fn read_registration() -> RegistrationRead {
 }
 
 /// Read with the same bound the parser enforces.
-fn read_registration_at(path: &Path) -> RegistrationRead {
+pub(super) fn read_registration_at(path: &Path) -> RegistrationRead {
     let file = match fs::File::open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return RegistrationRead::Missing,
@@ -772,6 +772,9 @@ pub(super) fn ensure_started() -> Result<Service> {
     )? {
         return Ok(service);
     }
+    // Optional launch-only overlay: never edit the user's config or add a
+    // plugin to a service already running. Inline caller overrides stay dropped.
+    let overlay = super::context_hint::overlay().filter(super::context_hint::starting);
     let mut command = Command::new("opencode");
     #[cfg(target_os = "linux")]
     let mut runtime_dir = None;
@@ -802,16 +805,26 @@ pub(super) fn ensure_started() -> Result<Service> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    if let Some(overlay) = &overlay {
+        command.env("OPENCODE_CONFIG_CONTENT", &overlay.content);
+    }
     #[cfg(target_os = "linux")]
     if let Some(runtime) = runtime_dir {
         command.env("XDG_RUNTIME_DIR", runtime);
     }
-    let mut child = crate::platform::spawn_detached(&mut command)
-        .map_err(|_| "OpenCode could not be started; install OpenCode 2".to_owned())?;
+    let mut child = crate::platform::spawn_detached(&mut command).map_err(|_| {
+        if let Some(overlay) = &overlay {
+            super::context_hint::spawn_failed(overlay);
+        }
+        "OpenCode could not be started; install OpenCode 2".to_owned()
+    })?;
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut failed = false;
     while Instant::now() < deadline {
         if let Ok(service) = connect() {
+            if let Some(overlay) = &overlay {
+                super::context_hint::started(&service, overlay);
+            }
             reap(child);
             return Ok(service);
         }
@@ -822,6 +835,9 @@ pub(super) fn ensure_started() -> Result<Service> {
             }
         }
         std::thread::sleep(Duration::from_millis(200));
+    }
+    if let Some(overlay) = &overlay {
+        super::context_hint::observe(overlay);
     }
     reap(child);
     if failed {

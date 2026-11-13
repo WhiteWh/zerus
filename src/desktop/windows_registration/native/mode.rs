@@ -10,6 +10,7 @@ use crate::{
     platform,
 };
 use policy::mode::{Budget, Mode, Phase, Record, RECORD_BYTES};
+use policy::mode::timing::{self, Step, Timing};
 mod recovery;
 mod refresh;
 pub(super) mod stop;
@@ -394,6 +395,7 @@ struct Fence<'a> {
     grant: Option<ownership::RegistrationGrant>,
     exclusion: Option<Exclusion>,
     until: Instant,
+    stop_timing: Option<&'a Timing>,
     source: std::fs::File,
     identity: platform::FileIdentity,
     image: &'a Path,
@@ -403,6 +405,12 @@ impl Fence<'_> {
         self.until = phase.deadline(Instant::now());
     }
     fn check(&mut self) -> Result<()> {
+        match self.stop_timing {
+            Some(timing) => timing.measure(Step::NativeRechecks, || self.check_inner()),
+            None => self.check_inner(),
+        }
+    }
+    fn check_inner(&mut self) -> Result<()> {
         ensure!(
             Instant::now() < self.until,
             "Mode transition deadline reached; retain its original UUID."
@@ -581,6 +589,7 @@ fn effect(
         } else { None },
         exclusion: None,
         until,
+        stop_timing: None,
         source,
         identity,
         image: Path::new(&new.argv[0]),
@@ -722,42 +731,54 @@ fn effect(
     }
     save(location, passive, &record, &mut || fence.check())?;
     fence.phase(Budget::Stop);
-    // Debug builds only: the hosted fixture's bounded hold of an exact first
-    // choice at Held. It consumes the Stop deadline just started, so the
-    // unchanged StopOffered save below refuses an expired wait at Held.
-    #[cfg(debug_assertions)]
-    if first.is_some() {
-        held_pause::wait(config, &id);
-    }
-    if let Some(original) = &mut original {
-        let until = fence.until;
-        let shape = wanted(old)?;
-        stop::offer(
-            &mut record,
-            original,
-            &mut || fence.check(),
-            |original, check| {
-                instances::check_original_selection(native, old, &shape, original, until, check)
-            },
-            |record, check| save(location, passive, record, check),
-        )?;
-        instances::stop_original(
-            native,
-            old,
-            &wanted(old)?,
-            original,
-            fence.until,
-            &mut || fence.check(),
-        )?;
-        while !instances::stopped(native, old, &wanted(old)?, original, fence.until)? {
-            fence.check()?;
-            std::thread::sleep(Duration::from_millis(50));
+    let timing = Timing::new();
+    fence.stop_timing = Some(&timing);
+    let stopped = (|| -> Result<()> {
+        // Debug builds only: the hosted fixture's bounded hold of an exact first
+        // choice at Held. It consumes the Stop deadline just started, so the
+        // unchanged StopOffered save below refuses an expired wait at Held.
+        #[cfg(debug_assertions)]
+        if first.is_some() {
+            held_pause::wait(config, &id);
         }
-        record.advance(Phase::StopOffered, Phase::Stopped)?;
-    } else {
-        record.advance(Phase::Held, Phase::Stopped)?;
-    }
-    save(location, passive, &record, &mut || fence.check())?;
+        if let Some(original) = &mut original {
+            let until = fence.until;
+            let shape = wanted(old)?;
+            stop::offer(
+                &mut record,
+                original,
+                &mut || fence.check(),
+                |original, check| {
+                    timing.measure(Step::NativeRechecks, || {
+                        instances::check_original_selection(native, old, &shape, original, until, check)
+                    })
+                },
+                |record, check| timing.measure(Step::MetadataSync, || save(location, passive, record, check)),
+            )?;
+            instances::stop_original(
+                native,
+                old,
+                &wanted(old)?,
+                original,
+                fence.until,
+                &mut || fence.check(),
+                &timing,
+            )?;
+            timing.measure(Step::PhysicalExit, || -> Result<()> {
+                while !instances::stopped(native, old, &wanted(old)?, original, fence.until)? {
+                    fence.check()?;
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Ok(())
+            })?;
+            record.advance(Phase::StopOffered, Phase::Stopped)?;
+        } else {
+            record.advance(Phase::Held, Phase::Stopped)?;
+        }
+        timing.measure(Step::MetadataSync, || save(location, passive, &record, &mut || fence.check()))
+    })();
+    fence.stop_timing = None;
+    stopped.map_err(|error| timing.failure(error))?;
     fence.phase(Budget::Update);
     record.advance(Phase::Stopped, Phase::UpdateOffered)?;
     save(location, passive, &record, &mut || fence.check())?;
@@ -1020,7 +1041,11 @@ pub(in crate::desktop::windows_registration) fn serve(args: &[String]) -> i32 {
     let value = match operation(args) {
         Ok(value) => value,
         Err(error) => {
-            json!({"abi":MODE_ABI,"schema":1,"code":"mode_transition_unconfirmed","error":format!("{error:#}")})
+            let mut value = timing::error_detail(&error);
+            value["abi"] = MODE_ABI.into();
+            value["schema"] = 1.into();
+            value["code"] = "mode_transition_unconfirmed".into();
+            value
         }
     };
     // An error receipt is data; callers inspect the retained transition. A

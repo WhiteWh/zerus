@@ -88,6 +88,8 @@ pub enum Lane {
     Notifications,
     /// A Keep cache warm change.
     KeepWarm,
+    /// A change of where a child's questions go (zerus-sa9qn.32).
+    QuestionRouting,
     Send,
     Process,
     Queue,
@@ -1211,6 +1213,9 @@ pub async fn run_action(
     delay: Option<crate::action_delay::Reference>,
 ) -> Result<ActionReply, String> {
     use tauri::Manager;
+    // Without a delay reference an Archive, Terminate, Kill or Forget is
+    // refused at the dispatcher's entry, before any lane, probe or hgs call
+    // (`uncaptured_end`, zerus-sa9qn.25).
     let ending = matches!(action, Action::Archive | Action::Terminate);
     let machine = if ending {
         crate::worktree_cleanup::machine(&source, &target.computer).unwrap_or_default()
@@ -1231,8 +1236,6 @@ pub async fn run_action(
             None,
         )
         .await?
-    } else if ending && !machine.is_empty() {
-        dispatch_guarded_end(&state, target.clone(), action, machine.clone()).await?
     } else {
         (dispatch(&state, target.clone(), action).await?, false)
     };
@@ -1245,28 +1248,42 @@ pub async fn run_action(
     })
 }
 
-async fn dispatch_guarded_end(
-    state: &Actions,
-    target: Target,
-    action: Action,
-    machine: String,
-) -> Result<(Outcome, bool), String> {
-    dispatch_end_with(state, target, action, machine, run).await
+/// zerus-sa9qn.25: Archive, Terminate, Kill and Forget run only from a
+/// capture: their undo window's, a confirmed worktree cleanup's or a native
+/// termination confirmation's. Without one the dispatcher refuses them at its
+/// entry, for run_action and every other caller alike: no lane, probe, hgs
+/// call or cleanup observation. `actions::invocation` refuses them as well.
+fn uncaptured_end(action: &Action) -> Option<Outcome> {
+    zerus_client_core::end_action::needs_capture(action)
+        .then(|| failed(zerus_client_core::end_action::UNDELAYED))
 }
 
-/// Legacy peers retain their original end action. Only a successful probe
-/// explicitly lacking the marker permits that fallback; transport failures
-/// never authorize a second attempt or a weaker Restore.
-pub(crate) async fn dispatch_end_with(
+/// A captured end through the reserved lane, as its undo window runs it, for
+/// the guard-probe fixtures. A legacy peer keeps its original call without
+/// `--expect-machine` only when a successful probe explicitly lacks the
+/// marker; transport failures never authorize a second attempt or a weaker
+/// Restore.
+#[cfg(test)]
+pub(crate) async fn dispatch_captured_end_with(
     state: &Actions,
-    target: Target,
-    action: Action,
+    captured: zerus_client_core::end_action::Captured,
     machine: String,
     runner: impl Fn(&std::path::Path, &zerus_client_core::Invocation) -> zerus_client_core::Exit
         + Send
         + 'static,
 ) -> Result<(Outcome, bool), String> {
-    dispatch_end_reserved_with(state, target, action, machine, runner, None, None).await
+    let claim = state.reserve_end(&captured.target).ok_or(BUSY)?;
+    let (target, action) = (captured.target.clone(), captured.action.clone());
+    dispatch_end_reserved_with(
+        state,
+        target,
+        action,
+        machine,
+        runner,
+        Some((captured, claim)),
+        None,
+    )
+    .await
 }
 
 async fn dispatch_end_reserved_with(
@@ -1497,7 +1514,11 @@ pub(crate) async fn terminal_image_test_dispatch(
 }
 
 /// `dispatch_as` past its replay guard, with the runner that starts `hgs`:
-/// the core's `run`, or in tests a stand-in that starts no process.
+/// the core's `run`, or in tests a stand-in that starts no process. Archive,
+/// Terminate, Kill and Forget run only from a capture (zerus-sa9qn.25), so
+/// they run here as their undo window runs them: the stand-in's own answer
+/// to the fresh metadata read is the captured source, and its successful
+/// exit becomes the exact completed receipt of the scoped call.
 #[cfg(test)]
 async fn dispatch_with(
     state: &Actions,
@@ -1508,6 +1529,48 @@ async fn dispatch_with(
         + Send
         + 'static,
 ) -> Result<Outcome, String> {
+    if zerus_client_core::end_action::needs_capture(&action) {
+        use zerus_client_core::Exit;
+        let lifecycle = if matches!(action, Action::Terminate | Action::Kill) {
+            "running"
+        } else {
+            "paused"
+        };
+        let captured = zerus_client_core::end_action::Captured {
+            target: target.clone(),
+            action,
+            state: lifecycle.into(),
+        };
+        let source = target;
+        return dispatch_captured_end_with(state, captured, String::new(), move |hgs, inv| {
+            if inv.args.iter().any(|s| s == "inspect") {
+                let value = serde_json::json!({"name":source.name,"run_id":source.run_id,
+                    "conversation_id":source.conversation_id,"state":lifecycle});
+                return Exit::Code {
+                    code: 0,
+                    stdout: serde_json::to_vec(&value).unwrap(),
+                    stderr: String::new(),
+                };
+            }
+            match runner(hgs, inv) {
+                Exit::Code { code: 0, stderr, .. } => {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(inv.stdin.as_deref().unwrap_or_default())
+                            .unwrap_or_default();
+                    let receipt = serde_json::json!({"request_id":body["request_id"],"name":source.name,
+                        "run_id":source.run_id,"conversation_id":source.conversation_id,"status":"completed"});
+                    Exit::Code {
+                        code: 0,
+                        stdout: serde_json::to_vec(&receipt).unwrap(),
+                        stderr,
+                    }
+                }
+                other => other,
+            }
+        })
+        .await
+        .map(|(outcome, _)| outcome);
+    }
     dispatch_with_plan(
         state,
         target,
@@ -1714,6 +1777,11 @@ async fn dispatch_reserved_original(
     if let Some(refusal) = refused_before_claim(&target, &action) {
         return Ok(failed(refusal));
     }
+    if delayed.is_none() && cleanup.is_none() && native.is_none() {
+        if let Some(refused) = uncaptured_end(&action) {
+            return Ok(refused);
+        }
+    }
     // Pause all and Resume all are computer-wide: one per computer at a time,
     // whatever session name the caller sent.
     let mut key = Lane::key(&target, &action);
@@ -1740,11 +1808,13 @@ async fn dispatch_reserved_original(
         return match Lane::of(&action) {
             Lane::Send => Ok(failed(ALREADY_SENDING)),
             Lane::Answer => Ok(failed(ALREADY_ANSWERING)),
+            _ if zerus_client_core::end_action::needs_capture(&action) => Err(END_BUSY.into()),
             _ => Err(BUSY.into()),
         };
     };
-    // The service case moves this SAME native claim into its I/O resources.
-    // Dropping the async future cannot release it while a helper/pipe survives.
+    // The service case moves this SAME native claim into a revocable hold.
+    // The bounded worker owns it even if the async future drops; later pipe
+    // custody can outlive that worker without keeping the session lane busy.
     let (_running, native_hold): (Option<Running>, Option<Arc<dyn Send + Sync>>) =
         if native.is_some() {
             (None, Some(Arc::new(running)))
@@ -1981,6 +2051,37 @@ pub async fn set_keep_warm(
     .map_err(|error| error.to_string())?
 }
 
+/// Sets where a child's blocking questions go (zerus-sa9qn.32): to its parent
+/// session or not. The person's switch, kept on the child's host; one change
+/// per session at a time, in its own lane (`Err("busy")` otherwise). The core
+/// probes `hgs --help` first and returns the host's confirmed value.
+#[tauri::command]
+pub async fn set_question_routing(
+    state: State<'_, Actions>,
+    target: Target,
+    send_to_parent: bool,
+    expected_revision: i64,
+) -> Result<serde_json::Value, String> {
+    if blocked() {
+        return Err(REPLAY_NEEDS_HGS.into());
+    }
+    let Some(_claim) = state.claim_lane(&target.computer, &target.name, Lane::QuestionRouting)
+    else {
+        return Err("busy".into());
+    };
+    let hgs = default_hgs();
+    tauri::async_runtime::spawn_blocking(move || {
+        zerus_client_core::question_routing::change(
+            &hgs,
+            &target,
+            send_to_parent,
+            expected_revision,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 /// Sets or clears a session's parent link (zerus-sa9qn.9) after the person
 /// confirmed it. The host verifies the exact session, the chosen parent and
 /// cycles; the listing shows the result.
@@ -2029,6 +2130,59 @@ pub async fn inspect_session(target: Target, archive_id: Option<String>) -> Opti
         .await
         .ok()?;
     parse_details(&target, exit)
+}
+
+/// Terminal's Clear input read (zerus-wkj9l): the composer of the session's
+/// live terminal, or None when it could not be read.
+#[tauri::command]
+pub async fn composer_state(
+    target: Target,
+) -> Option<zerus_client_core::clear_input::ComposerState> {
+    if blocked() {
+        return None;
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let inv = zerus_client_core::clear_input::composer_invocation(&target, &id)?;
+    let hgs = default_hgs();
+    let exit = tauri::async_runtime::spawn_blocking(move || run(&hgs, &inv))
+        .await
+        .ok()?;
+    zerus_client_core::clear_input::parse_composer(&exit, &target, &id)
+}
+
+/// Clears exactly the text the person confirmed (zerus-wkj9l): their explicit
+/// action, never automatic and never retried. A lost answer is uncertain.
+#[tauri::command]
+pub async fn clear_input(
+    target: Target,
+    binding: String,
+    text: String,
+) -> zerus_client_core::clear_input::ClearOutcome {
+    use zerus_client_core::clear_input::{clear_invocation, parse_clear, ClearOutcome};
+    let outcome = |status: &str, error: &str| ClearOutcome {
+        status: status.into(),
+        error: error.into(),
+        composer: None,
+    };
+    if blocked() {
+        return outcome("failed", "Clear input is not available here.");
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs_f64())
+        .unwrap_or(0.0);
+    let Some(inv) = clear_invocation(&target, &id, &binding, &text, now) else {
+        return outcome("failed", "Read the input again before clearing.");
+    };
+    let hgs = default_hgs();
+    match tauri::async_runtime::spawn_blocking(move || run(&hgs, &inv)).await {
+        Ok(exit) => parse_clear(&exit, &target, &id),
+        Err(_) => outcome(
+            "uncertain",
+            "The clear did not report its outcome. Check Terminal.",
+        ),
+    }
 }
 
 /// Read once on opening a child; no timer or separate subscription.
@@ -2338,6 +2492,11 @@ pub const ACTIVITY_BUSY: &str = "busy";
 /// `dispatch`'s `Err` when the session's lane is taken: refused before any
 /// call ran, so a definite refusal, never an uncertain outcome.
 pub const BUSY: &str = "busy";
+/// The same refusal for an end action, where the person needs to know what
+/// holds the lane and what to do (zerus-ex66o).
+pub const END_BUSY: &str = zerus_client_core::source!(
+    "Another action on this session is still running. Wait for it to finish, or restart the app if it never does."
+);
 
 /// The recorded Activity of one archived session after cursor `after`
 /// (`hgs [@alias] inspect NAME --after N --skip-processes --archive ID`).
@@ -2713,6 +2872,104 @@ mod tests {
                 matches!(out, Outcome::Done { cleanup: None, .. }),
                 scenario == "exact"
             );
+        }
+    }
+
+    /// zerus-sa9qn.25: an end action without its capture runs nothing. The
+    /// dispatcher refuses it at its entry, before any lane, probe or hgs call,
+    /// and the core builds no call for it either. This computer's sessions
+    /// are refused there as a peer's are (zerus-sa9qn.30).
+    #[test]
+    fn an_end_action_without_its_capture_runs_nothing() {
+        use zerus_client_core::{end_action::UNDELAYED, Exit};
+        let local = Target {
+            computer: String::new(),
+            ..review()
+        };
+        let ends = [
+            Action::Archive,
+            Action::Terminate,
+            Action::Kill,
+            Action::Forget,
+        ];
+        for (target, action) in [local, review()]
+            .into_iter()
+            .flat_map(|target| ends.clone().map(|action| (target.clone(), action)))
+        {
+            let computer = target.computer.clone();
+            assert_eq!(
+                uncaptured_end(&action),
+                Some(failed(UNDELAYED)),
+                "{action:?}"
+            );
+            // Refused at the dispatcher's entry, before its lane: a lane another
+            // call holds still reads as refused, not busy.
+            let held = Actions::new(std::env::temp_dir().join(format!(
+                "zerus-undelayed-held-{}.json",
+                uuid::Uuid::new_v4()
+            )));
+            let holder = held.begin(Lane::key(&target, &action), &action).unwrap();
+            let refused = tauri::async_runtime::block_on(dispatch_with_plan(
+                &held,
+                target.clone(),
+                action.clone(),
+                uuid::Uuid::new_v4().to_string(),
+                |_, _, _| unreachable!("an uncaptured end runs nothing"),
+                None,
+            ));
+            assert_eq!(
+                refused,
+                Ok(failed(UNDELAYED)),
+                "{action:?} on {computer:?}: refused before the lane"
+            );
+            drop(holder);
+            let actions = Actions::new(
+                std::env::temp_dir()
+                    .join(format!("zerus-undelayed-end-{}.json", uuid::Uuid::new_v4())),
+            );
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let c = Arc::clone(&calls);
+            let out = tauri::async_runtime::block_on(dispatch_with_plan(
+                &actions,
+                target.clone(),
+                action.clone(),
+                uuid::Uuid::new_v4().to_string(),
+                move |_, _, _| {
+                    c.fetch_add(1, Ordering::Relaxed);
+                    Exit::Code {
+                        code: 0,
+                        stdout: Vec::new(),
+                        stderr: String::new(),
+                    }
+                },
+                None,
+            ))
+            .unwrap();
+            assert_eq!(out, failed(UNDELAYED), "{action:?} on {computer:?}");
+            assert_eq!(
+                calls.load(Ordering::Relaxed),
+                0,
+                "{action:?} on {computer:?}: no probe and no hgs call"
+            );
+            assert!(
+                actions
+                    .begin(Lane::key(&target, &action), &action)
+                    .is_some(),
+                "{action:?} on {computer:?}: no lane is left held"
+            );
+        }
+        // The other actions keep their own calls, delayed or not.
+        for action in [
+            Action::Pause,
+            Action::ForgetBinding,
+            Action::ForgetArchive {
+                archive_id: "20000000-0000-4000-8000-000000000001".into(),
+            },
+            Action::ClearContext {
+                dismiss_prompt: false,
+            },
+        ] {
+            assert_eq!(uncaptured_end(&action), None, "{action:?}");
         }
     }
 

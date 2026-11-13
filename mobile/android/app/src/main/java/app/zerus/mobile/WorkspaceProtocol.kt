@@ -10,7 +10,7 @@ internal object WorkspaceProtocol {
     const val MAX_PAYLOAD = 30_408_704
     fun encryptedInvitationCode(value:String)=value.startsWith("ze") && value.contains('.')
     // Service scheduling hints only. Every request still owns a permanent endpoint identity.
-    private val reads=setOf("analytics_read","archive_list","speech_config","speech_config_status","inspect","history","history_projection",
+    private val reads=setOf("send_receipt","analytics_read","archive_list","speech_config","speech_config_status","inspect","history","history_projection",
         "hooks_status","git_status","process_output","project_assignment","terminal_snapshot","catalog","dirs","worktrees","mark_read",
         "attachment_read","file_read","speech_profiles","speech_stats","speech_status","voice_profiles","voice_status")
     fun operationClass(operation:String)=if(operation in reads) "read" else "mutation"

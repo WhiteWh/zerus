@@ -5,6 +5,7 @@ import { runningCommandsEntry } from "../../store/processes";
 import { computerFresh } from "../../store/catalog";
 import { flag } from "../../store/settings";
 import { tr } from "../../i18n";
+import { routingEntry } from "../../store/questionRouting";
 
 /** The original confirmed parent-link actions, now in Session actions. */
 export function parentEntries(s: Session): MenuEntry[] {
@@ -14,6 +15,9 @@ export function parentEntries(s: Session): MenuEntry[] {
   const entries: MenuEntry[] = [{ label: tr("Set parent…"), icon: "git-branch", disabled: !linked, hint: why, action: () => setParentDialog({ kind: "set", child: s }) }];
   if (s.parent) entries.push({ label: tr("Detach from %1…", s.parent.name.split("/").pop() || s.parent.name), icon: "git-branch", disabled: !linked, hint: why,
     action: () => setParentDialog({ kind: "detach", child: s }) });
+  // The person's switch of the owner-approved question route (zerus-sa9qn.32).
+  const routing = routingEntry(s);
+  if (routing) entries.push(routing);
   return entries;
 }
 

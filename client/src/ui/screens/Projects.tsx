@@ -163,7 +163,11 @@ export function ProjectsScreen() {
   // Read again only for another folder or once this computer's identity arrives; the last answer shows meanwhile.
   const launchPlace = () => `${launchFolder().machine}\n${launchFolder().path}\n${machineCards[""]?.host ?? ""}`;
   const [launchExists] = createResource(launchPlace, () => folderExists(untrack(launchFolder)));
-  const launchButton = () => folderButton(folderLaunch(launchFolder(), launchExists.latest), launchFolder().machine);
+  // .latest still suspends before the first answer: read it only once resolved,
+  // so the page (inside App's Suspense) never detaches; unknown meanwhile, as for
+  // other computers, and New session re-checks the folder when it opens.
+  const launchKnown = () => launchExists.state === "ready" || launchExists.state === "refreshing" ? launchExists.latest : undefined;
+  const launchButton = () => folderButton(folderLaunch(launchFolder(), launchKnown()), launchFolder().machine);
   const launchReason = () => launchButton().disabled ? launchButton().tip : undefined;
   const launchSelected = () => { const p = project(), f = selected(); if (p && f) void newSessionInFolder(p.id, f); };
   // N6 (Qt ProjectsDialog): the project's sessions with their states, the

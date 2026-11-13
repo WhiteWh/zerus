@@ -168,7 +168,13 @@ wire_api="responses"
         self.native_home = native_home
         # Suites reusing this setUp are not subclasses: call this class's launch.
         NativeCodexClear.launch(self, self.root, 'resume', self.conversation_id)
-        self.wait_for(lambda: 'Previous fixture answer' in self.tmux('capture-pane', '-p', '-t', self.pane))
+        # Resume is a native event a loaded runner reaches late; wait_for's
+        # 100 polls (about 2 s plus tmux time) are too short a budget for it.
+        # Called through the class: suites reusing this setUp borrow methods
+        # rather than inherit InputTransport.
+        test_input.InputTransport.wait_until(
+            self, lambda: 'Previous fixture answer' in self.tmux('capture-pane', '-p', '-t', self.pane),
+            30, lambda: 'native resume did not show the previous answer')
         self.record.update(transcript=str(path), last_message='Previous fixture answer')
         self.write_record()
 
@@ -571,7 +577,8 @@ wire_api="responses"
         receipt = test_input.InputTransport.send(self, test_input.InputTransport.payload(self, text=message))
         self.assertEqual(receipt['status'], 'submitted')
         fresh = self.settle(lambda: (value if (value := test_clear_context.ClearContext.inspect(self)).get('conversation_id') != self.conversation_id
-                            and value.get('phase') == 'idle' else None), 'The native successor did not finish its first turn')
+                            and value.get('phase') == 'idle' and value.get('prompt') == message else None),
+                            'The native successor did not finish its first turn')
         self.assertEqual(fresh['conversation_state'], 'active')
         self.assertEqual(fresh['run_id'], self.run_id)
         self.assertEqual(fresh['prompt'], message)

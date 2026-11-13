@@ -90,6 +90,10 @@ pub struct Snapshot {
     /// Shared host presentation only. Null and incomplete counts stay unknown.
     pub attention_counts: Option<Value>,
     pub automatic_approvals: Option<bool>,
+    /// The person's global switch of the owner-approved question route
+    /// (zerus-sa9qn.32); null where the service does not route.
+    #[serde(default)]
+    pub question_routes: Option<bool>,
     /// The approval categories the service's committed policy keeps on, by
     /// ID (zerus-sz42x); None from an older service or without a policy.
     #[serde(default)]
@@ -240,6 +244,7 @@ impl Default for Snapshot {
             fleet_retry_delays: None,
             attention_counts: None,
             automatic_approvals: None,
+            question_routes: None,
             automatic_approval_categories: None,
             task_message_inputs: None,
             details_available: false,
@@ -381,6 +386,7 @@ impl State {
             fleet_retry_delays: checked_retry_delays(&value["background_runtime"]["retry_delays"]),
             attention_counts: counts,
             automatic_approvals: value["automatic_approvals"].as_bool(),
+            question_routes: value["question_routes"].as_bool(),
             automatic_approval_categories: value["automatic_approval_categories"]
                 .as_array()
                 .and_then(|ids| {

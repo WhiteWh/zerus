@@ -145,10 +145,11 @@ export interface Session {
   sharedRead: boolean;
   /** The operations the host reports as allowed, space separated; undefined when it reports none. */
   allowed?: string;
-  /** The host's reasons for a disallowed archive or terminate. */
+  /** The host's reasons for a disallowed archive, terminate, forget or restore. */
   archiveReason?: string;
   terminateReason?: string;
   forgetReason?: string;
+  restoreReason?: string;
   /** The raw working directory (`cwd` is the folder name). */
   cwdPath: string;
   /** The canonical working directory, "" when the row has none (New session's prefill). */
@@ -198,6 +199,8 @@ export interface Session {
   notificationRevision?: number;
   /** The host's Keep cache warm state, when it reports one. */
   keepWarm?: import("../../types").KeepWarmState;
+  /** Whether this child's blocking questions go to its parent (zerus-sa9qn.32). */
+  questionRouting?: { sendToParent: boolean; revision: number; personOff: boolean };
 }
 
 /** A file of a message, as Qt's attachment card shows it (ActivityView.cpp:759-782). */
@@ -256,6 +259,20 @@ export interface ToolEvent {
   detail: () => string;
 }
 
+/** A submitted question route as one Activity line (zerus-sa9qn.33). */
+export interface RouteLine {
+  requestId: string;
+  role: "child" | "parent";
+  /** The child's session name and its `zerus://session?...` reference. */
+  child: string;
+  reference: string;
+  parent: string;
+  /** At most 300 characters of the child's first question, one line. */
+  preview: string;
+  /** The parent's exact received text, kept only when its own message folded into this line. */
+  text?: string;
+}
+
 export interface ActivityItem {
   id: string;
   kind: "user" | "agent" | "tool" | "tools" | "question" | "approval" | "system" | "receipt" | "thinking" | "report" | "voice" | "cleared" | "context" | "folded" | "warm";
@@ -295,6 +312,8 @@ export interface ActivityItem {
   notice?: import("./notices").SystemNotice;
   /** A search hit's excerpt of a longer message: no Copy as Markdown of the whole reply. */
   excerpt?: boolean;
+  /** A submitted question route's line (kind `receipt`). */
+  route?: RouteLine;
 }
 
 export type VoiceState =

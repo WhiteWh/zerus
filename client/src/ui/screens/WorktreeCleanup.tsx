@@ -1,7 +1,7 @@
 import { Dropdown } from "../lib/Dropdown";
 import { catalog } from "../../store/catalog";
 import { setPage, setSelectedKey, setDetailTab } from "../../store/ui";
-import { For, Show, createEffect, createMemo, createResource, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createResource, createSignal, onCleanup, onMount, untrack } from "solid-js";
 import { MachineLabel } from "../components/MachineLabel";
 import { Icon } from "../lib/icons";
 import type { Inspection } from "../../store/terminationCleanup";
@@ -33,15 +33,36 @@ export default function WorktreeCleanup() {
   const currentFolder = () => folders().find((folder) => folder.rows.some((row) => row.id === selected())) ?? folders()[0];
   const current = () => currentFolder()?.primary;
   // Read-only current blocker evidence never updates native removal fingerprints.
-  const [blockerDetails] = createResource(() => {
+  // A plain signal, not a resource: a pending read must never suspend the
+  // review (App.tsx wraps it in Suspense). One read runs at a time; a reply
+  // lands only while its exact row, revision and path are still selected.
+  const liveKey = createMemo(() => {
     const row = current();
-    return row && !row.busy && ["kept", "review"].includes(row.status) ? { id: row.id, revision: cleanup().revision } : undefined;
-  }, async ({ id, revision }) => ({ id, revision, inspection: await terminationCleanupInspect(id) }));
-  const liveReview = () => {
-    if (blockerDetails.error) return undefined;
-    const data = blockerDetails();
-    return data?.id === current()?.id && data?.revision === cleanup().revision && data?.inspection.path === current()?.path ? data.inspection.review : undefined;
+    return row && !row.busy && ["kept", "review"].includes(row.status) ? JSON.stringify([row.id, cleanup().revision, row.path]) : undefined;
+  });
+  const [live, setLive] = createSignal<{ key: string; state: "loading" | "ready" | "failed"; review?: Inspection["review"] }>();
+  let reading = false, disposed = false;
+  const read = () => {
+    const key = liveKey();
+    if (!key || reading || disposed) return;
+    const [id, , path] = JSON.parse(key) as [string, number, string];
+    reading = true;
+    const settle = (result: { state: "ready" | "failed"; review?: Inspection["review"] }) => {
+      reading = false;
+      if (liveKey() === key) setLive({ key, ...result });
+      else read(); // The selection moved on; read the row selected now.
+    };
+    terminationCleanupInspect(id).then(
+      (inspection) => settle(inspection.path === path ? { state: "ready", review: inspection.review } : { state: "failed" }),
+      () => settle({ state: "failed" }));
   };
+  createEffect(() => {
+    const key = liveKey();
+    if (key && untrack(live)?.key !== key) { setLive({ key, state: "loading" }); read(); }
+  });
+  onCleanup(() => { disposed = true; });
+  const liveState = () => { const current = live(); return current && current.key === liveKey() ? current : undefined; };
+  const liveReview = () => { const current = liveState(); return current?.state === "ready" ? current.review : undefined; };
   const blockers = createMemo(() => cleanupBlockers(currentFolder()?.rows ?? [], liveReview()));
   const blockerIndex = createMemo(() => {
     const computers = new Set(currentFolder()?.rows.map((row) => row.computer));
@@ -97,7 +118,7 @@ export default function WorktreeCleanup() {
           <button class="btn small" classList={{ on: details() }} aria-pressed={details()} onClick={() => setDetails(!details())}>{tr("Details")}</button><span class="grow" />
         </div>
         <Show when={current() && !current()!.busy && !["removed", "checking", "removing", "stopping"].includes(currentFolder()?.status ?? "removed")}>
-          <CleanupBlockersPanel blockers={blockers()} session={blockerSession} open={openBlocker} archive={(names) => setArchiving(names)} viewFiles={() => setInspect(current())}
+          <CleanupBlockersPanel blockers={blockers()} live={liveState()?.state} session={blockerSession} open={openBlocker} archive={(names) => setArchiving(names)} viewFiles={() => setInspect(current())}
             notes={notes()} archived={archivedCount()} disabled={cleanup().busy || anyCleanupRestore()} />
         </Show>
         <Show when={details()}><For each={currentFolder()?.rows}>{(row) => <pre class="bc-details mono">{row.details}</pre>}</For></Show>
@@ -155,7 +176,7 @@ export function CleanupInspection(props: { row: InspectionRow; close: () => void
       <div class="ip-body"><Show when={props.enabled !== false && !data.loading} fallback={<div class="ip-state">{tr("Loading…")}</div>}><Show when={!data.error} fallback={<div class="ip-state">{String(data.error)}</div>}>
         <Show when={tab() === "changes"}><Dropdown class="field" aria-label={tr("Changes mode")} value={mode()} onChange={(value) => setMode(value)} options={[{ value: "uncommitted", label: tr("Uncommitted changes") }, { value: "base", label: tr("Compare files with base") }]} /><div class="ip-state">{data()?.files?.length ? `${data()?.files?.length} changed files${data()?.files_partial ? " (partial)" : ""}` : tr("No changed files.")}</div><table class="su-table ip-files"><thead><tr><th>{tr("Changed file")}</th><th>{tr("State")}</th></tr></thead><tbody><For each={data()?.files}>{(f, index) => <tr classList={{ on: selectedFile() === index() }} onClick={() => setSelectedFile(index())} onDblClick={() => { setLocal({ file: f.path, offset: 0 }); setTab("local"); }}><td class="mono ell">{f.path}</td><td class="mono">{f.status}</td></tr>}</For></tbody></table><pre class="ip-diff mono">{text()?.text ?? text()?.error ?? ""}</pre></Show>
         <Show when={tab() === "commits"}><pre class="ip-diff mono grow">{data()?.commits?.text ?? data()?.commits?.error ?? tr("No additional commits.")}</pre></Show>
-        <Show when={tab() === "local"}><div class="notice warn"><Icon name="triangle-alert" size={14} /><span>{tr("Outside Git. Removing this folder deletes these files too.")}</span></div><div class="row"><button class="btn small" onClick={() => setLocal({ file: ".", offset: 0 })}>{tr("Browse all files")}</button><button class="btn small" disabled={file()?.file?.next_offset === undefined || file.loading} onClick={() => setLocal({ ...local(), offset: file()?.file?.next_offset ?? 0 })}>{tr("Next")}</button></div><Show when={!file.loading} fallback={<div class="ip-state">{tr("Loading…")}</div>}><Show when={!file.error} fallback={<div class="ip-state">{String(file.error)}</div>}><table class="su-table ip-files"><thead><tr><th>{tr("Local file / folder")}</th><th>{tr("Size")}</th></tr></thead><tbody><For each={file()?.file?.entries}>{(f) => <tr onDblClick={() => { if (!f.symlink) setLocal({ file: f.path, offset: 0 }); }}><td class="mono ell">{f.path}{f.directory ? "/" : ""}</td><td>—</td></tr>}</For></tbody></table><Show when={file()?.file?.text !== undefined || file()?.file?.binary}><pre class="ip-diff mono">{file()?.file?.binary ? tr("Binary file; text preview is unavailable.") : file()?.file?.text}{file()?.file?.truncated ? "\nPreview is truncated." : ""}</pre></Show></Show></Show></Show>
+        <Show when={tab() === "local"}><div class="notice warn"><Icon name="triangle-alert" size={14} /><span>{tr("Outside Git. Removing this folder deletes these files too.")}</span></div><div class="row"><button class="btn small" onClick={() => setLocal({ file: ".", offset: 0 })}>{tr("Browse all files")}</button><button class="btn small" disabled={file.loading || file()?.file?.next_offset === undefined} onClick={() => setLocal({ ...local(), offset: file()?.file?.next_offset ?? 0 })}>{tr("Next")}</button></div><Show when={!file.loading} fallback={<div class="ip-state">{tr("Loading…")}</div>}><Show when={!file.error} fallback={<div class="ip-state">{String(file.error)}</div>}><table class="su-table ip-files"><thead><tr><th>{tr("Local file / folder")}</th><th>{tr("Size")}</th></tr></thead><tbody><For each={file()?.file?.entries}>{(f) => <tr onDblClick={() => { if (!f.symlink) setLocal({ file: f.path, offset: 0 }); }}><td class="mono ell">{f.path}{f.directory ? "/" : ""}</td><td>—</td></tr>}</For></tbody></table><Show when={file()?.file?.text !== undefined || file()?.file?.binary}><pre class="ip-diff mono">{file()?.file?.binary ? tr("Binary file; text preview is unavailable.") : file()?.file?.text}{file()?.file?.truncated ? "\nPreview is truncated." : ""}</pre></Show></Show></Show></Show>
         <Show when={tab() === "sessions"}><Show when={data()?.review?.sessions?.length} fallback={<div class="ip-state">{tr("No related sessions.")}</div>}><ul class="ip-sessions" role="listbox" aria-label={tr("Related sessions")}><For each={data()?.review?.sessions?.filter((s) => typeof s === "string")}>{(s) => <li role="option" aria-selected={selectedSession() === s} classList={{ on: selectedSession() === s }} onClick={() => setSelectedSession(s)} onDblClick={openSession}><Icon name="message-square" size={13} class="dim" />{s}</li>}</For></ul><button class="btn small" disabled={!session()} onClick={openSession}>{tr("Open session")}</button></Show></Show>
       </Show></Show></div><div class="ip-status hint parts"><Show when={readAt()}>{(time) => <span>{tr("Updated %1", time())}</span>}</Show><span>{props.row.machine}</span><span>{tr("Local Git refs")}</span></div>
     </section>;

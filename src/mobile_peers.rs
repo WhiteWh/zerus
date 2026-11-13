@@ -367,6 +367,24 @@ fn validate(request: &LocalRequest) -> Result<()> {
         Ok(())
     };
     match op {
+        "__state" => {
+            ensure!(
+                rest.len() == 4
+                    && rest[0] == "delivery"
+                    && rest[1] == "receipt"
+                    && session(&rest[2])
+                    && rest[3] == "--json",
+                "delivery requires the exact receipt read ABI"
+            );
+            scoped(&request.payload)?;
+            ensure!(
+                request
+                    .payload
+                    .as_ref()
+                    .is_some_and(|p| p["expected_machine_id"] == request.target_machine_id),
+                "original receipt computer changed"
+            );
+        }
         "analytics" => {
             ensure!(rest == ["--json"], "analytics requires its fixed JSON ABI");
             let payload = request.payload.as_ref().context("analytics payload is required")?;
@@ -1291,8 +1309,17 @@ fn discovery(config: &Config) -> Result<Value> {
 
 fn local(config: &Config, request: LocalRequest) -> Result<i32> {
     validate(&request)?;
+    let machine = if request
+        .argv
+        .get(..2)
+        .is_some_and(|v| v == ["__state", "delivery"])
+    {
+        crate::state::lifecycle_receipt_machine(config).map_err(anyhow::Error::msg)?
+    } else {
+        swarm::local_node_id(config)?
+    };
     ensure!(
-        swarm::local_node_id(config)? == request.target_machine_id,
+        machine == request.target_machine_id,
         "mobile target identity changed; refresh computers"
     );
     // Rebind stdin to a private anonymous file, then invoke the existing native
@@ -1324,6 +1351,9 @@ fn transport_budget(helper: Helper, request: Option<&LocalRequest>) -> Duration 
     Duration::from_secs(30)
 }
 
+/// An agent's `mobile-peer` call (zerus-ppd26.11).
+const AGENT_REFUSED: &str = "hgs mobile-peer forwards a phone's request, which the other computer runs as the person; an agent never forwards one";
+
 fn execute(config: &Config, args: &[String]) -> Result<i32> {
     ensure!(
         args.len() == 2 && args[1] == "--json",
@@ -1341,6 +1371,10 @@ fn execute(config: &Config, args: &[String]) -> Result<i32> {
         "__mobile-peer-local" => local(config, input()?),
         "__mobile-peer-transport" => supervise(),
         "mobile-peer" => {
+            // The peer's __mobile-peer-local runs the phone's request as the
+            // person, so an agent's process never forwards one; the
+            // connector's own call carries no agent marker (zerus-ppd26.11).
+            ensure!(!crate::cli::agent_caller(), AGENT_REFUSED);
             let request: PeerRequest = input()?;
             let config = &Config::load()?;
             ensure!(

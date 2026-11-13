@@ -23,6 +23,20 @@ fn same_named(directory: &Directory, name: &str, file: &File) -> Result<()> {
     }
     directory.verify()
 }
+fn same_named_lock(
+    directory: &Directory,
+    name: &str,
+    guard: &crate::platform::FileLock,
+) -> Result<()> {
+    let named = directory.read_private(name)?;
+    let original = guard.identity().map_err(|e| e.to_string())?;
+    let current = FileIdentity::of(&named).map_err(|e| e.to_string())?;
+    if original != current {
+        return Err("Worktree receipt object changed".into());
+    }
+    directory.verify()
+}
+
 fn bytes(directory: &Directory, name: &str, mut file: &File) -> Result<Vec<u8>> {
     let before = FileIdentity::with_metadata(file).map_err(|e| e.to_string())?;
     if before.1.len() > LIMIT as u64 {
@@ -130,8 +144,11 @@ impl Store {
             let file = root.open_private_lock(STORE_LOCK)?;
             file.try_lock_exclusive()
                 .map_err(|_| "Worktree receipt store is busy")?;
-            same_named(&root, STORE_LOCK, &file)?;
-            Some(file)
+            let guard = crate::platform::FileLock::held(file);
+            #[cfg(all(test, unix))]
+            crate::platform::residual_lock_tests::reached("request-init");
+            same_named_lock(&root, STORE_LOCK, &guard)?;
+            Some(guard)
         } else {
             None
         };
@@ -170,8 +187,8 @@ impl Store {
         // Explicit unlock prevents an unrelated fork retaining this lock until
         // exec. It does not unlock any request or release native custody.
         if let Some(guard) = guard {
-            same_named(&store.root, STORE_LOCK, &guard)?;
-            FileExt::unlock(&guard).map_err(|e| e.to_string())?;
+            same_named_lock(&store.root, STORE_LOCK, &guard)?;
+            guard.release().map_err(|e| e.to_string())?;
         }
         Ok(store)
     }
@@ -329,3 +346,6 @@ impl Drop for Lock {
         let _ = FileExt::unlock(&self.file);
     }
 }
+
+#[cfg(all(test, unix))]
+mod residual_lock_tests;

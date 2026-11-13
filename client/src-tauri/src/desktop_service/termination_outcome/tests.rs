@@ -152,11 +152,9 @@ fn accounted_read_cannot_release_input_if_scope_changes_during_observation() {
     });
 }
 
-pub(super) fn fixture(config: Value) -> Fixture {
-    let f = Fixture::new(config);
-    std::fs::remove_file(f.0.join("hgs")).unwrap();
-    std::fs::write(
-        f.0.join("hgs"),
+fn write_termination_image(f: &Fixture) {
+    crate::write_executable(
+        &f.0.join("hgs"),
         format!(
             "#!/usr/bin/env python3\n{}\n{}",
             include_str!("fixture.py").replace("FIXTURE_SOURCE", &serde_json::to_string(&f.0.join("hgs")).unwrap()),
@@ -166,10 +164,32 @@ pub(super) fn fixture(config: Value) -> Fixture {
                 1,
             )
         ),
-    )
-    .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(f.0.join("hgs"), std::fs::Permissions::from_mode(0o700)).unwrap();
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn termination_image_executes_while_its_parent_writer_is_retained() {
+    if crate::test_context::desktop_fixture() {
+        return;
+    }
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    let f = Fixture::new(serde_json::json!({}));
+    let held = crate::test_executable::HeldWriters::arm();
+    write_termination_image(&f);
+    let status = std::process::Command::new(f.0.join("hgs"))
+        .arg("--help")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    held.assert_separate(&[f.0.join("hgs")]);
+}
+
+pub(super) fn fixture(config: Value) -> Fixture {
+    let f = Fixture::new(config);
+    write_termination_image(&f);
     std::fs::write(
         f.0.join("termination-capture"),
         serde_json::to_vec(&capture()).unwrap(),
@@ -364,9 +384,24 @@ fn program_continuation_keeps_the_same_native_origin_and_claim_after_exact_done(
         let actions = actions(&f);
         let key = crate::actions::Lane::key(&capture().target, &Action::Terminate);
         let hold = actions.begin(key.clone(), &Action::Terminate).unwrap();
-        let mut controller = confirm(service.clone(), Arc::new(Pending::default()))
-            .bind(Arc::new(hold))
-            .unwrap();
+        let hold: Arc<dyn Send + Sync> = Arc::new(hold);
+        let selected = selected(service.clone());
+        let selected = Selected(selected.0.with_hold(hold.clone()).unwrap());
+        let original_hold = selected.0.hold.clone();
+        let mut controller = Confirmation::new(
+            uuid::Uuid::new_v4().to_string(),
+            capture(),
+            selected,
+            Arc::new(Pending::default()),
+        )
+        .unwrap()
+        .bind(hold)
+        .unwrap();
+        assert!(
+            Arc::ptr_eq(&controller.context.hold, &original_hold),
+            "the program source and its bound confirmation share the original hold identity"
+        );
+        drop(original_hold);
         let invocation = controller.invocation().clone();
         let image = controller.context.image.clone();
         let connection = controller.context.routing.clone();
@@ -583,7 +618,7 @@ impl Drop for Release {
     }
 }
 #[test]
-fn retained_pipe_keeps_the_original_actions_claim_and_refuses_native_effect() {
+fn retained_rpc_pipe_releases_the_actions_claim_and_refuses_native_effect() {
     if crate::test_context::desktop_fixture() {
         return;
     }
@@ -597,7 +632,7 @@ fn retained_pipe_keeps_the_original_actions_claim_and_refuses_native_effect() {
         let actions = actions(&f);
         let outcome = crate::actions::dispatch_cleanup_native(
             &actions,
-            confirm(service.clone(), pending),
+            confirm(service.clone(), pending.clone()),
             None,
         )
         .await
@@ -605,25 +640,97 @@ fn retained_pipe_keeps_the_original_actions_claim_and_refuses_native_effect() {
         assert!(!matches!(outcome, Outcome::Done { .. }));
         assert!(effects(&calls(&f)).is_empty());
         let target = capture().target;
-        assert!(actions
-            .begin(
-                crate::actions::Lane::key(&target, &Action::Terminate),
-                &Action::Terminate
+        assert_original_exited_with_live_pipe_holder(&f);
+        assert!(
+            actions.reserve_end(&target).is_some(),
+            "a bounded RPC must release the session lane before pipe EOF"
+        );
+        assert!(service.shared.rpc.snapshot().unwrap().count(Role::Fleet) > 0);
+        assert!(
+            Confirmation::new(
+                uuid::Uuid::new_v4().to_string(),
+                capture(),
+                selected(service.clone()),
+                pending
             )
-            .is_none());
+            .is_err(),
+            "releasing the lane must never recreate the original consent"
+        );
         std::fs::write(f.0.join("termination-release"), []).unwrap();
         eventually("original retention pipes physically finish", || {
-            actions
-                .begin(
-                    crate::actions::Lane::key(&target, &Action::Terminate),
-                    &Action::Terminate,
-                )
-                .is_some()
+            service.shared.rpc.snapshot().unwrap().count(Role::Fleet) == 0
         })
         .await;
         assert!(effects(&calls(&f)).is_empty());
         service.join().await.unwrap();
         f.1.store(false, Ordering::Release);
+    });
+}
+
+fn assert_original_exited_with_live_pipe_holder(f: &Fixture) {
+    let holder: Value =
+        serde_json::from_slice(&std::fs::read(f.0.join("termination-pipe-holder")).unwrap())
+            .unwrap();
+    assert!(
+        !PathBuf::from(format!("/proc/{}", holder["parent"])).exists(),
+        "the original helper was reaped"
+    );
+    for pipe in ["stdout", "stderr"] {
+        let fd = if pipe == "stdout" { 1 } else { 2 };
+        let actual = std::fs::read_link(format!("/proc/{}/fd/{fd}", holder["pid"])).unwrap();
+        assert_eq!(actual.to_str(), holder[pipe].as_str());
+        assert!(actual.to_str().unwrap().starts_with("pipe:["));
+    }
+    assert!(!f.0.join("termination-holder-exited").exists());
+}
+
+#[test]
+fn retained_read_pipe_releases_the_actions_claim_without_readmitting_the_context() {
+    if crate::test_context::desktop_fixture() {
+        return;
+    }
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let f = fixture(json!({"termination_inspect_pipe":true}));
+        let _release = Release(f.0.join("termination-release"));
+        let (service, _cache) = connected(&f).await;
+        let actions = actions(&f);
+        let target = capture().target;
+        let hold = actions
+            .begin(
+                crate::actions::Lane::key(&target, &Action::Terminate),
+                &Action::Terminate,
+            )
+            .unwrap();
+        let context = Context::new_supported(service.clone(), Arc::new(hold)).unwrap();
+        let exit = context.read(&Invocation {
+            args: vec!["inspect".into(), target.name.clone(), "--json".into()],
+            stdin: None,
+            timeout: Duration::from_millis(200),
+            request_id: None,
+        });
+        assert!(matches!(exit, Exit::StartFailed(_)), "{exit:?}");
+        assert_original_exited_with_live_pipe_holder(&f);
+        assert!(
+            actions.reserve_end(&target).is_some(),
+            "a bounded read must release the session lane before pipe EOF"
+        );
+        assert!(context.start_call().is_err());
+        assert!(
+            context.busy.load(Ordering::Acquire),
+            "reader custody is still charged"
+        );
+        std::fs::write(f.0.join("termination-release"), []).unwrap();
+        eventually("original read pipe EOF", || {
+            !context.busy.load(Ordering::Acquire)
+        })
+        .await;
+        assert!(
+            context.start_call().is_err(),
+            "a failed context cannot be reused after EOF"
+        );
+        assert!(effects(&calls(&f)).is_empty());
+        service.join().await.unwrap();
     });
 }
 
@@ -1070,7 +1177,7 @@ fn an_oversized_native_receipt_is_bounded_and_never_restores_dispatch() {
 }
 
 #[test]
-fn overflow_keeps_original_dispatch_and_claim_until_the_actual_pipe_ends() {
+fn overflow_releases_the_actions_claim_but_keeps_original_dispatch_unconfirmed() {
     if crate::test_context::desktop_fixture() {
         return;
     }
@@ -1091,14 +1198,22 @@ fn overflow_keeps_original_dispatch_and_claim_until_the_actual_pipe_ends() {
         let pending = Arc::new(Pending::default());
         let actions = actions(&f);
         let original = confirm(service.clone(), pending.clone());
+        let image = Arc::downgrade(&original.selected.0.image);
         let target = original.capture().target.clone();
-        let key = crate::actions::Lane::key(&target, &Action::Terminate);
         let outcome = crate::actions::dispatch_cleanup_native(&actions, original, None)
             .await
             .unwrap();
         assert!(!matches!(outcome, Outcome::Done { .. }));
         assert_eq!(effects(&calls(&f)).len(), 1);
-        assert!(actions.begin(key.clone(), &Action::Terminate).is_none());
+        assert_original_exited_with_live_pipe_holder(&f);
+        assert!(
+            actions.reserve_end(&target).is_some(),
+            "a bounded native call must release the session lane before pipe EOF"
+        );
+        assert!(
+            image.upgrade().is_some(),
+            "original image custody survives lane revocation"
+        );
         assert!(Confirmation::new(
             uuid::Uuid::new_v4().to_string(),
             capture(),
@@ -1107,10 +1222,7 @@ fn overflow_keeps_original_dispatch_and_claim_until_the_actual_pipe_ends() {
         )
         .is_err());
         std::fs::write(f.0.join("termination-release"), b"release").unwrap();
-        eventually("overflow original pipe EOF", || {
-            actions.begin(key.clone(), &Action::Terminate).is_some()
-        })
-        .await;
+        eventually("overflow original pipe EOF", || image.upgrade().is_none()).await;
         service.join().await.unwrap();
         f.1.store(false, Ordering::Release);
     });

@@ -56,6 +56,8 @@ pub enum Operation {
     #[serde(skip)] // The ephemeral consumer is separate from durable policy requests.
     ActivationWait,
     AutomaticApprovals,
+    QuestionRoutes,
+    QuestionRouteChild,
     MaintenanceConfigure,
 }
 impl Operation {
@@ -81,6 +83,8 @@ impl Operation {
             Request::ImportPendingReads { .. } => Self::ImportPendingReads,
             Request::ActivationWait { .. } => Self::ActivationWait,
             Request::AutomaticApprovals { .. } => Self::AutomaticApprovals,
+            Request::QuestionRoutes { .. } => Self::QuestionRoutes,
+            Request::QuestionRouteChild { .. } => Self::QuestionRouteChild,
             Request::MaintenanceConfigure { .. } => Self::MaintenanceConfigure,
         }
     }
@@ -106,6 +110,8 @@ impl Operation {
             Self::ImportPendingReads => "import_pending_reads",
             Self::ActivationWait => "activation_wait",
             Self::AutomaticApprovals => "automatic_approvals",
+            Self::QuestionRoutes => "question_routes",
+            Self::QuestionRouteChild => "question_route_child",
             Self::MaintenanceConfigure => "maintenance_configure",
         }
     }
@@ -287,6 +293,9 @@ fn unknown(request: &Request, code: &str) -> Value {
             result["categories"] = json!(categories);
         }
     }
+    if let Request::QuestionRoutes { enabled, .. } = request {
+        result["enabled"] = json!(enabled);
+    }
     recovery_edit(request, &mut result);
     result
 }
@@ -345,6 +354,11 @@ enum Input {
         enabled: bool,
         categories: Option<Vec<String>>,
     },
+    QuestionRoutes {
+        id: String,
+        enabled: bool,
+    },
+    QuestionRouteChild(Box<Request>),
     Maintenance {
         id: String,
         configuration: Box<maintenance::Configuration>,
@@ -358,6 +372,8 @@ impl Input {
             Self::Cache { .. } => Operation::CacheMaintenance,
             Self::ImportReads { .. } => Operation::ImportPendingReads,
             Self::Approvals { .. } => Operation::AutomaticApprovals,
+            Self::QuestionRoutes { .. } => Operation::QuestionRoutes,
+            Self::QuestionRouteChild(_) => Operation::QuestionRouteChild,
             Self::Maintenance { .. } => Operation::MaintenanceConfigure,
             Self::Result(op) => *op,
         }
@@ -386,6 +402,11 @@ impl Input {
                 enabled,
                 categories,
             })),
+            Self::QuestionRoutes { id, enabled } => Ok(Some(Request::QuestionRoutes {
+                request_id: id,
+                enabled,
+            })),
+            Self::QuestionRouteChild(request) => Ok(Some(*request)),
             Self::Maintenance {
                 id,
                 mut configuration,
@@ -420,6 +441,10 @@ impl Input {
                 },
                 code,
             ),
+            Self::QuestionRoutes { id, enabled } => {
+                json!({"request_id":id,"op":"question_routes","enabled":enabled,"accepted":false,"durable":false,"pending":false,"code":code})
+            }
+            Self::QuestionRouteChild(request) => refused(request, code),
             Self::Maintenance { id, .. } => {
                 json!({"request_id":id,"op":"maintenance_configure","accepted":false,"durable":false,"pending":false,"code":code})
             }
@@ -465,6 +490,18 @@ impl Service {
             },
         )
         .await)
+    }
+    /// The person's global question route switch (zerus-sa9qn.32).
+    pub async fn question_routes(self: &Arc<Self>, id: String, enabled: bool) -> Value {
+        submit(self.shared.clone(), Input::QuestionRoutes { id, enabled }).await
+    }
+    /// The person's latch on one child's question route (zerus-sa9qn.50).
+    pub async fn question_route_child(self: &Arc<Self>, request: Request) -> Value {
+        submit(
+            self.shared.clone(),
+            Input::QuestionRouteChild(Box::new(request)),
+        )
+        .await
     }
     pub async fn maintenance_configure(
         self: &Arc<Self>,
@@ -518,6 +555,41 @@ pub(super) async fn approval_command(
             },
             "frontend_route_unavailable",
         )),
+    }
+}
+/// The person's global question route switch (zerus-sa9qn.32): only through
+/// this native frontend lane.
+pub(super) async fn question_routes_command(
+    service: Option<Arc<Service>>,
+    request_id: String,
+    enabled: bool,
+) -> Result<Value, String> {
+    if !canonical(&request_id) {
+        return Err("Invalid question route request identity.".into());
+    }
+    match service {
+        Some(service) => Ok(service.question_routes(request_id, enabled).await),
+        None => Ok(refused(
+            &Request::QuestionRoutes {
+                request_id,
+                enabled,
+            },
+            "frontend_route_unavailable",
+        )),
+    }
+}
+/// The person's latch on one child's question route (zerus-sa9qn.50): only
+/// through this native frontend lane.
+pub(super) async fn question_route_child_command(
+    service: Option<Arc<Service>>,
+    request: Request,
+) -> Result<Value, String> {
+    if !matches!(request, Request::QuestionRouteChild { .. }) || !canonical(request.id()) {
+        return Err("Invalid question route request identity.".into());
+    }
+    match service {
+        Some(service) => Ok(service.question_route_child(request).await),
+        None => Ok(refused(&request, "frontend_route_unavailable")),
     }
 }
 async fn submit(shared: Arc<Shared>, input: Input) -> Value {
@@ -678,6 +750,14 @@ fn submission_ready(snapshot: &Snapshot, request: &Request) -> bool {
     if matches!(request, Request::CacheMaintenance { .. }) {
         return snapshot.component_ready("cache_maintenance");
     }
+    // The person's question route switches are Store rows; they need no
+    // background worker, so turning routing off always reaches the service.
+    if matches!(
+        request,
+        Request::QuestionRoutes { .. } | Request::QuestionRouteChild { .. }
+    ) {
+        return true;
+    }
     snapshot.component_ready(if Operation::of(request) == Operation::AutomaticApprovals {
         "approvals"
     } else {
@@ -827,6 +907,10 @@ fn lookup(
     let id = uuid::Uuid::new_v4().to_string();
     let operation = if Operation::of(request) == Operation::AutomaticApprovals {
         "delivery_result"
+    } else if Operation::of(request) == Operation::QuestionRoutes {
+        "question_routes_result"
+    } else if Operation::of(request) == Operation::QuestionRouteChild {
+        "question_route_child_result"
     } else if Operation::of(request) == Operation::ImportPendingReads {
         "pending_reads_import_result"
     } else if Operation::of(request) == Operation::CacheMaintenance {
@@ -875,12 +959,20 @@ fn lookup_receipt(request: &Request, id: &str, value: Value) -> Result<Receipt, 
     }
     if matches!(
         Operation::of(request),
-        Operation::AutomaticApprovals | Operation::ImportPendingReads | Operation::CacheMaintenance
+        Operation::AutomaticApprovals
+            | Operation::QuestionRoutes
+            | Operation::QuestionRouteChild
+            | Operation::ImportPendingReads
+            | Operation::CacheMaintenance
     ) {
         let expected = if Operation::of(request) == Operation::CacheMaintenance {
             "cache_maintenance_result"
         } else if Operation::of(request) == Operation::ImportPendingReads {
             "pending_reads_import_result"
+        } else if Operation::of(request) == Operation::QuestionRoutes {
+            "question_routes_result"
+        } else if Operation::of(request) == Operation::QuestionRouteChild {
+            "question_route_child_result"
         } else {
             "delivery_result"
         };
@@ -948,10 +1040,17 @@ fn checked(request: &Request, mut value: Value, lookup: bool) -> Option<(Value, 
     // is refused before its policy write (zerus-sz42x.2).
     let approval_refusal = matches!(request, Request::AutomaticApprovals { .. })
         && value["code"] == "approval_policy_changed";
+    // The person's latch refuses these before any write (zerus-sa9qn.50).
+    let latch_refusal = matches!(request, Request::QuestionRouteChild { .. })
+        && matches!(
+            value["code"].as_str(),
+            Some("conflict" | "stale_identity" | "not_found" | "capacity" | "invalid_request")
+        );
     if !lookup
         && value["accepted"] == false
         && value["durable"] == false
         && (approval_refusal
+            || latch_refusal
             || matches!(
                 value["code"].as_str(),
                 Some(
@@ -1015,6 +1114,34 @@ fn checked(request: &Request, mut value: Value, lookup: bool) -> Option<(Value, 
         | Request::WorktreeProgramStop { .. }
         | Request::WorktreeProgramCleanup { .. }
         | Request::TerminationOutcome { .. } => return None,
+        // The service's own receipt of exactly this child, value and the
+        // revision after the expected one (zerus-sa9qn.50).
+        Request::QuestionRouteChild {
+            session_id,
+            person_off,
+            expected_revision,
+            ..
+        } => {
+            let applied = value["applied"].as_bool()?;
+            if value["op"] != "question_route_child"
+                || value["session_id"] != *session_id
+                || value["person_off"] != *person_off
+                || value["revision"].as_u64() != expected_revision.checked_add(u64::from(applied))
+            {
+                return None;
+            }
+            true
+        }
+        // The service's own receipt of exactly this switch value.
+        Request::QuestionRoutes { enabled, .. } => {
+            if value["op"] != "question_routes"
+                || value["enabled"] != *enabled
+                || !value["revision"].as_u64().is_some()
+            {
+                return None;
+            }
+            true
+        }
         Request::AutomaticApprovals {
             enabled,
             categories,

@@ -6,7 +6,12 @@ mod model;
 mod sends;
 
 pub(super) use sends::target_receipt;
-pub(crate) use sends::{caller_record, forward_send, send_origin};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) use sends::target_receipt_for_machine;
+pub(crate) use sends::{caller_record, forward_send, hosted_agent_call, send_origin};
+// Read by the desktop's ancestor environment check, which exists there only.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(crate) use sends::HOSTED_AGENT;
 
 use super::*;
 use anyhow::{ensure, Result as GraphResult};

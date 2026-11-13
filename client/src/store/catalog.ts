@@ -195,6 +195,7 @@ export function toSession(computer: ComputerId, key: string, v: ViewRow, marks: 
     archiveReason: optional(v.action_reasons?.archive),
     terminateReason: optional(v.action_reasons?.terminate),
     forgetReason: optional(v.action_reasons?.forget),
+    restoreReason: optional(v.action_reasons?.restore),
     cwdPath: text(v.cwd),
     cwdCanonical: text(v.cwd_canonical),
     gitRoot: text(v.git_root),
@@ -227,10 +228,25 @@ export function toSession(computer: ComputerId, key: string, v: ViewRow, marks: 
     sharedNotifications: !!v.shared_notifications,
     notificationRevision: typeof v.notification_revision === "number" ? v.notification_revision : undefined,
     keepWarm: keepWarmOf(v.keep_warm),
+    questionRouting: questionRoutingOf(v.question_routing),
   };
   // Task 252: the folder's git status once the list asked for it (store/gitStatus.ts).
   base.git = gitFor(base, computerFresh(computer));
   return Object.assign(base, marks.overlay(base));
+}
+
+/**
+ * The host's per-child question route switch, when it reports a valid one: under
+ * session-question-routing-v2 with `person_off`, a display-only mirror of the person's
+ * latch, whose authority is the child's computer's service (zerus-sa9qn.50).
+ */
+export function questionRoutingOf(value: unknown): { sendToParent: boolean; revision: number; personOff: boolean } | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const v = value as Record<string, unknown>;
+  const keys = Object.keys(v).length;
+  if (!(keys === 2 || (keys === 3 && typeof v.person_off === "boolean"))) return undefined;
+  if (typeof v.send_to_parent !== "boolean" || typeof v.revision !== "number" || !Number.isInteger(v.revision) || v.revision < 0) return undefined;
+  return { sendToParent: v.send_to_parent, revision: v.revision, personOff: v.person_off === true };
 }
 
 /** How long a `replaced` removal waits for the new run of the same name. */

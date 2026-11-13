@@ -10,6 +10,7 @@ use uuid::Uuid;
 pub const MIB: usize = 1024 * 1024;
 pub const REQUEST_MAX: usize = 29 * MIB;
 pub const READS: &[&str] = &[
+    "send_receipt",
     "repository_check",
     "repository_status",
     "analytics_read",
@@ -85,6 +86,7 @@ pub const MOBILE_DELIVERY: &[&str] = &[
     "away_30",
 ];
 pub const OPERATIONS: &[&str] = &[
+    "send_receipt",
     "repository_check",
     "repository_clone",
     "repository_status",
@@ -119,6 +121,8 @@ pub const OPERATIONS: &[&str] = &[
     "launch",
     "mark_read",
     "session_notifications",
+    "session_question_routing",
+    "session_question_route_person",
     "pause",
     "process_output",
     "project_assignment",
@@ -476,7 +480,14 @@ pub fn request(v: &Value) -> Result<()> {
             || SPEECH.contains(&op)
             || TASKS.contains(&op),
     )?;
-    if crate::repositories::OPERATIONS.contains(&op) {
+    if op == crate::send_receipt::OPERATION {
+        crate::send_receipt::validate(
+            p,
+            id,
+            &v["computer_id"],
+            v["session"].as_str().ok_or(Error::BAD)?,
+        )?;
+    } else if crate::repositories::OPERATIONS.contains(&op) {
         if v["session"] != "" {
             return Err(Error::BAD);
         }
@@ -603,6 +614,77 @@ pub fn request(v: &Value) -> Result<()> {
             }
         }
         if !p["muted"].is_boolean() || !p["expected_revision"].as_i64().is_some_and(|r| r >= 0) {
+            return Err(Error::BAD);
+        }
+    } else if op == "session_question_routing" {
+        // The person's per-child switch of the question route (zerus-sa9qn.33):
+        // exact identities, revision and value; the host decides the rest.
+        fields(
+            p,
+            &[
+                "expected_run_id",
+                "expected_conversation_id",
+                "expected_revision",
+                "send_to_parent",
+            ],
+            &[],
+        )?;
+        for (key, maximum) in [("expected_run_id", 128), ("expected_conversation_id", 256)] {
+            let value = text(&p[key], maximum, false)?;
+            if value.len() > maximum {
+                return Err(Error::BAD);
+            }
+        }
+        if !p["send_to_parent"].is_boolean()
+            || !p["expected_revision"].as_i64().is_some_and(|r| r >= 0)
+        {
+            return Err(Error::BAD);
+        }
+    } else if op == "session_question_route_person" {
+        // A phone's signed latch statement (zerus-sa9qn.50): exact fields;
+        // the gateway's service verifies the signature and applies it once.
+        fields(p, &["statement", "signature"], &[])?;
+        let s = &p["statement"];
+        fields(
+            s,
+            &[
+                "workspace_id",
+                "device_id",
+                "gateway_id",
+                "session_id",
+                "run_id",
+                "conversation_id",
+                "person_off",
+                "request_id",
+                "issued_at",
+                "expires_at",
+            ],
+            &[],
+        )?;
+        for (key, maximum) in [
+            ("workspace_id", 128),
+            ("device_id", 128),
+            ("gateway_id", 128),
+            ("session_id", 36),
+            ("request_id", 36),
+            ("run_id", 128),
+            ("conversation_id", 256),
+        ] {
+            let value = text(&s[key], maximum, false)?;
+            if value.len() > maximum {
+                return Err(Error::BAD);
+            }
+        }
+        let signature = text(&p["signature"], 128, false)?;
+        let (Some(issued), Some(expires)) = (s["issued_at"].as_u64(), s["expires_at"].as_u64())
+        else {
+            return Err(Error::BAD);
+        };
+        if !s["person_off"].is_boolean()
+            || signature.len() != 86
+            || expires <= issued
+            || expires - issued > 300
+        {
             return Err(Error::BAD);
         }
     } else if op == "mark_read" {

@@ -91,6 +91,27 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         categories: Option<Vec<String>>,
     },
+    /// The global switch of the owner-approved question route
+    /// (zerus-sa9qn.32): the person's own choice, through the native UI
+    /// permit only. Off stops new route reservations at once; it never
+    /// cancels or replays a reserved, sent or unknown route.
+    QuestionRoutes {
+        request_id: String,
+        enabled: bool,
+    },
+    /// The person's latch on one child's question route (zerus-sa9qn.50):
+    /// while `person_off` is set, that child's questions never route,
+    /// whatever its host file says. Only this native UI permit, or a phone
+    /// request the service verifies, sets or clears it, by compare-and-swap
+    /// at `expected_revision` for the child's exact run and conversation.
+    QuestionRouteChild {
+        request_id: String,
+        session_id: String,
+        run_id: String,
+        conversation_id: String,
+        person_off: bool,
+        expected_revision: u64,
+    },
     CacheMaintenance {
         request_id: String,
         command: Box<super::cache_maintenance::Command>,
@@ -140,6 +161,8 @@ impl Request {
             | Self::DesktopOwnership { request_id, .. }
             | Self::ImportPendingReads { request_id, .. }
             | Self::AutomaticApprovals { request_id, .. }
+            | Self::QuestionRoutes { request_id, .. }
+            | Self::QuestionRouteChild { request_id, .. }
             | Self::CacheMaintenance { request_id, .. }
             | Self::MaintenanceConfigure { request_id, .. } => request_id,
         }
@@ -165,6 +188,8 @@ impl Request {
             Self::ImportPendingReads { .. } => "import_pending_reads",
             Self::ActivationWait { .. } => "activation_wait",
             Self::AutomaticApprovals { .. } => "automatic_approvals",
+            Self::QuestionRoutes { .. } => "question_routes",
+            Self::QuestionRouteChild { .. } => "question_route_child",
             Self::CacheMaintenance { .. } => "cache_maintenance",
             Self::MaintenanceConfigure { .. } => "maintenance_configure",
         }
@@ -198,6 +223,19 @@ impl Request {
             Self::AutomaticApprovals { categories, .. } => categories
                 .as_deref()
                 .is_none_or(|ids| crate::approvals::automatic::Set::from_ids(ids).is_some()),
+            Self::QuestionRoutes { .. } => true,
+            Self::QuestionRouteChild {
+                session_id,
+                run_id,
+                conversation_id,
+                expected_revision,
+                ..
+            } => {
+                canonical_uuid(session_id)
+                    && crate::question_routing::identity(run_id, 128)
+                    && crate::question_routing::identity(conversation_id, 256)
+                    && *expected_revision < i64::MAX as u64
+            }
             Self::CacheMaintenance {
                 request_id,
                 command,

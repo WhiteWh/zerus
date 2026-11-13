@@ -97,7 +97,7 @@ fn production_open_keeps_one_complete_backup_and_later_starts_never_overwrite_it
         .unwrap();
     let owner = location.lock().unwrap();
     let store = Store::open_owned(&location, &epoch(), &owner).unwrap();
-    assert_eq!(schema(&store.db), 35);
+    assert_eq!(schema(&store.db), crate::desktop::store::SCHEMA);
     let original = backup_bytes(&location);
     let manifest: Manifest =
         serde_json::from_slice(&fs::read(location.root.join(BACKUP).join(MANIFEST)).unwrap())
@@ -180,7 +180,7 @@ fn the_schema_34_preflight_refuses_35_without_rewriting_its_database_or_columns(
     assert_eq!(fs::read(&path).unwrap(), before);
     assert_eq!(backup_bytes(&location), backup);
     let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-    assert_eq!(schema(&db), 35);
+    assert_eq!(schema(&db), crate::desktop::store::SCHEMA);
     assert_eq!(db.query_row::<i64,_,_>("SELECT count(*) FROM pragma_table_info('desktop_creation_worktrees') WHERE name IN ('creation_id','creation_slot')",[],|r|r.get(0)).unwrap(),2);
 }
 /// Task #421 (2026-11-09): an interrupted attempt left an EMPTY
@@ -194,7 +194,7 @@ fn an_empty_leftover_backup_is_retained_and_the_backup_is_made_again() {
     platform::private_dir(&location.root.join(BACKUP)).unwrap();
     let owner = location.lock().unwrap();
     let store = Store::open_owned(&location, &epoch(), &owner).unwrap();
-    assert_eq!(schema(&store.db), 35);
+    assert_eq!(schema(&store.db), crate::desktop::store::SCHEMA);
     drop(store);
     let manifest: Manifest =
         serde_json::from_slice(&fs::read(location.root.join(BACKUP).join(MANIFEST)).unwrap()).unwrap();
@@ -355,7 +355,7 @@ fn interrupted_slot_upgrade_rolls_back_the_real_transaction_and_keeps_the_backup
     drop(db);
     let owner = location.lock().unwrap();
     let store = Store::open_owned(&location, &epoch(), &owner).unwrap();
-    assert_eq!(schema(&store.db), 35);
+    assert_eq!(schema(&store.db), crate::desktop::store::SCHEMA);
     assert_eq!(backup_bytes(&location), backup);
 }
 #[test]
@@ -395,7 +395,7 @@ fn committed_wal_is_copied_with_the_database_and_restores_the_original_row() {
     let location = location(&root);
     let owner = location.lock().unwrap();
     let store = Store::open_owned(&location, &epoch(), &owner).unwrap();
-    assert_eq!(schema(&store.db), 35);
+    assert_eq!(schema(&store.db), crate::desktop::store::SCHEMA);
     drop(store);
     let manifest: Manifest =
         serde_json::from_slice(&fs::read(root.join(BACKUP).join(MANIFEST)).unwrap()).unwrap();
@@ -476,11 +476,11 @@ fn a_fresh_or_already_35_windows_store_starts_without_inventing_a_backup() {
     location.prepare().unwrap();
     let owner = location.lock().unwrap();
     let store = Store::open_owned(&location, &epoch(), &owner).unwrap();
-    assert_eq!(schema(&store.db), 35);
+    assert_eq!(schema(&store.db), crate::desktop::store::SCHEMA);
     assert!(!location.root.join(BACKUP).exists());
     drop(store);
     let store = Store::open_owned(&location, &epoch(), &owner).unwrap();
-    assert_eq!(schema(&store.db), 35);
+    assert_eq!(schema(&store.db), crate::desktop::store::SCHEMA);
     assert!(!location.root.join(BACKUP).exists());
 }
 

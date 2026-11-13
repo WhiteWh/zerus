@@ -31,15 +31,17 @@ public struct Event: Codable, Hashable, Sendable, Identifiable {
     public var origin: String?
     public var sender: String?
     public var report: String?
-    /// A fork's read-only row from the session it began from (that session's name); never incoming.
+    /// Exact provider identity, kept separately from receipt and presentation IDs.
     /// Optional so older cached rows still decode.
+    public var nativeMessageId: String?
+    /// A fork's read-only row from the session it began from (that session's name); never incoming.
     public var inheritedFrom: String?
 
     public init(id: String, role: String, text: String, time: String, at: Double = 0, requestId: String = "", attachments: [DisplayedAttachment] = [],
                 source: String = "", delivery: String = "", outgoingId: String = "", nativeType: String = "", submittedText: String = "",
                 originalId: String = "", historyId: String = "", historyCursor: String = "", historyEpoch: String = "", incomingSeq: Int64? = nil,
                 originalIds: [String] = [], detailTruncated: Bool = false, voice: VoiceMessage? = nil, deliveryState: String? = nil,
-                origin: String? = nil, sender: String? = nil, report: String? = nil, inheritedFrom: String? = nil) {
+                origin: String? = nil, sender: String? = nil, report: String? = nil, inheritedFrom: String? = nil, nativeMessageId: String? = nil) {
         self.id = id
         self.role = role
         self.text = text
@@ -65,6 +67,7 @@ public struct Event: Codable, Hashable, Sendable, Identifiable {
         self.sender = sender
         self.report = report
         self.inheritedFrom = inheritedFrom
+        self.nativeMessageId = nativeMessageId
     }
 
     /// The request of a row Zerus recorded itself: a delivery or voice receipt, or this phone's outbox. A native OpenCode
@@ -76,7 +79,7 @@ public struct Event: Codable, Hashable, Sendable, Identifiable {
         // Separate statements: one long `+` chain takes the type checker tens of seconds.
         var size = 260
         let fields: [String] = [id, role, text, time, requestId, source, delivery, outgoingId, nativeType, submittedText, originalId,
-                                historyId, historyCursor, historyEpoch, deliveryState ?? "", origin ?? "", sender ?? "", report ?? ""]
+                                historyId, historyCursor, historyEpoch, deliveryState ?? "", origin ?? "", sender ?? "", report ?? "", nativeMessageId ?? ""]
         for field in fields { size += field.utf8.count }
         for value in originalIds { size += value.utf8.count + 3 }
         for file in attachments {
@@ -479,7 +482,10 @@ public enum NativeEvents {
                          deliveryState: shown == "You" && inheritedFrom.isEmpty && QueuedDelivery.states.contains(value.string("delivery_state")) ? value.string("delivery_state") : nil,
                          origin: origin.isEmpty ? nil : origin, sender: origin == "peer_message" ? value.string("sender") : nil,
                          report: origin.isEmpty ? nil : ActivityNotices.report(origin: origin, report: value.string("report")),
-                         inheritedFrom: inheritedFrom.isEmpty ? nil : inheritedFrom)
+                         inheritedFrom: inheritedFrom.isEmpty ? nil : inheritedFrom,
+                         nativeMessageId: ["claude_native", "codex_native", "kimi_native", "dsh_native", "opencode_native"].contains(source) &&
+                            !value.string("message_id").isEmpty && value.string("message_id").utf8.count <= 256 &&
+                            !value.string("message_id").unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) ? value.string("message_id") : nil)
         }
         func replaces(_ provider: JSONObject, _ hook: JSONObject) -> Bool {
             provider.string("type") == "AgentMessage" && inScope(provider) && inScope(hook) && hook.string("type") == "Stop" &&

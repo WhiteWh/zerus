@@ -139,7 +139,7 @@ const STARTUP_POLL: Duration = Duration::from_millis(100);
 /// Its messaging socket and token are the launching session's own. Only these
 /// session marks are dropped: settings such as `CLAUDE_CODE_PROMPT_CACHE_TTL`
 /// or `CLAUDE_CODE_GIT_BASH_PATH` are the person's and stay.
-const SESSION_CONTEXT: &[&str] = &[
+pub(crate) const SESSION_CONTEXT: &[&str] = &[
     "CLAUDECODE",
     "CLAUDE_CODE_CHILD_SESSION",
     "CLAUDE_CODE_ENTRYPOINT",

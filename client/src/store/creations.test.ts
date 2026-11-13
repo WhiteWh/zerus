@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createRoot, createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import { createCreations, type CreationsDeps } from "./creations";
-import { createNoticeBus, NOTICE_MS, type NoticeBus } from "./notices";
+import { createNoticeBus, ERROR_NOTICE_MS, type NoticeBus } from "./notices";
 import { toSession } from "./catalog";
 import { RESOLVED, creationRowId, type CardScope, type ListScope } from "../ui/sessions/creations-ui";
 import type { CreationCard, CreationEvent, GroupingOut, ViewRow } from "../types";
@@ -474,7 +474,7 @@ describe("the notices (1577-1586)", () => {
     t.dispose();
   });
 
-  it("expires failed and unknown toasts while retaining card details and once-per-state delivery", async () => {
+  it("expires failed and unknown toasts on the error timer while retaining card details and once-per-state delivery", async () => {
     vi.useFakeTimers();
     const bus = createNoticeBus();
     const failed = card("a", { state: "failed", error: "Name already exists.", can_edit: true, created: LIVE });
@@ -482,12 +482,12 @@ describe("the notices (1577-1586)", () => {
     try {
       await t.started;
       expect(bus.notices()).toHaveLength(1); expect(bus.notices()[0].sticky).toBe(false);
-      vi.advanceTimersByTime(NOTICE_MS); expect(bus.notices()).toHaveLength(0);
+      vi.advanceTimersByTime(ERROR_NOTICE_MS); expect(bus.notices()).toHaveLength(0);
       expect(t.store.creations()[0].error).toBe("Name already exists.");
       t.emit(failed); expect(bus.notices()).toHaveLength(0);
       const unknown = { ...failed, state: "unknown", can_edit: false };
       t.emit(unknown); expect(bus.notices()).toHaveLength(1);
-      vi.advanceTimersByTime(NOTICE_MS); expect(bus.notices()).toHaveLength(0);
+      vi.advanceTimersByTime(ERROR_NOTICE_MS); expect(bus.notices()).toHaveLength(0);
       t.emit(unknown); expect(bus.notices()).toHaveLength(0);
       expect(t.store.creations()[0].state).toBe("unknown");
     } finally { t.dispose(); vi.useRealTimers(); }

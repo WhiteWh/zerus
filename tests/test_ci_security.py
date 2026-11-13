@@ -2081,6 +2081,8 @@ class PullRequestRunCancellationTests(unittest.TestCase):
             "android-approval-ui.yml": "android-approval-ui-run-4242",
             "android-project-ui.yml": "android-project-ui-run-4242",
             "ios-approval-ui.yml": "ios-approval-ui-run-4242",
+            # WhiteWh fork: its own Windows tests, per ref like Kimi.
+            "fork-tests.yml": "fork-tests-refs/heads/main",
         }
         manual = {name for name, text in self.pull_request_workflows().items()
                   if re.search(r"(?m)^  workflow_dispatch:", text)}

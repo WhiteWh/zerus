@@ -170,14 +170,48 @@ class WindowsFrontend(unittest.TestCase):
             observed = dict(available=False, error=type(error).__name__)
         print('STARTUP_REFUSAL_IMAGE_USERS_' + phase + ' ' + json.dumps(observed), file=sys.stderr)
 
+    def settle_image(self):
+        """Wait out a copied hgs.exe image still mapped by a child service.
+
+        Registered right after Desktop.setUp so, with LIFO cleanups, it runs
+        after every fixture stop and just before the TemporaryDirectory
+        cleanup. Observation only: a real leak fails the test and an
+        unavailable observation is diagnostic; nothing is killed or retried.
+        """
+        selected = getattr(self, 'image', None)
+        if selected is None:
+            return
+        deadline = time.monotonic() + 10
+        first = None
+        while True:
+            try:
+                observed = windows_file_users(selected)
+            except Exception as error:
+                observed = dict(available=False, error=type(error).__name__)
+            if not observed.get('available'):
+                print('IMAGE_USERS_AT_CLEANUP ' + json.dumps(observed), file=sys.stderr)
+                return
+            if not observed.get('users'):
+                return
+            if first is None:
+                first = observed
+                print('IMAGE_USERS_AT_CLEANUP ' + json.dumps(first), file=sys.stderr)
+            if time.monotonic() >= deadline:
+                self.fail('the copied hgs.exe image is still in use at cleanup: ' + json.dumps(first))
+            time.sleep(0.1)
+
     def setUp(self):
         self.assertEqual(os.name, 'nt', 'run this native suite on Windows')
         fixture = Path(os.environ['HGS_WINDOWS_FRONTEND_FIXTURE']).resolve(strict=True)
         original_cli = kernel.HGS
         kernel.Desktop.setUp(self)
+        # Runs after every later stop cleanup and immediately before the temp
+        # root's own cleanup (addCleanup is LIFO); the image is set below.
+        self.addCleanup(self.settle_image)
         stage = self.root / 'native'
         stage.mkdir()
         selected = stage / 'hgs.exe'
+        self.image = selected
         self.frontend = stage / 'hgs-tray.exe'
         shutil.copy2(original_cli, selected)
         shutil.copy2(fixture, self.frontend)
@@ -392,11 +426,31 @@ class DriftReplacementIdentity(unittest.TestCase):
             self.assertFalse(same_replacement(partial, dict(partial)), partial)
 
 
+class TaskModeFence:
+    """One uncertain fixture keeps custody; later cases launch nothing."""
+    def __init__(self):
+        self.retained = None
+
+    def check(self):
+        if self.retained is not None:
+            case, task, root = self.retained
+            raise unittest.SkipTest(f'TaskMode fixture fenced after first failure {case}; '
+                                    f'task {task} retained under custody at {root}')
+
+    def retain(self, case, task, root):
+        if self.retained is None:
+            self.retained = (case, task, str(root))
+
+
 @unittest.skipUnless(os.name == 'nt' and os.environ.get('GITHUB_ACTIONS') == 'true'
                      and os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted',
                      'Task-mode fixture requires a disposable hosted Windows runner')
 class WindowsTaskMode(unittest.TestCase):
+    fixture_fence = TaskModeFence()
+
     def setUp(self):
+        # Check before allocating paths or probing a shared per-user task.
+        self.fixture_fence.check()
         self.root = Path(tempfile.mkdtemp(prefix='zerus-task-mode-')).resolve()
         self.cli_image = self.root / 'portable' / 'hgs.exe'
         self.cli_image.parent.mkdir()
@@ -419,9 +473,15 @@ class WindowsTaskMode(unittest.TestCase):
                         HGS_STATE_DIR=str(self.state), HGS_PEERS='')
         self.task = None
         self.installed = False
+        self.task_may_remain = False
         self.latest = None
         self.held_originals = []
         self.addCleanup(self.close_originals)
+        self.addCleanup(self.retain_task_custody)
+
+    def retain_task_custody(self):
+        if self.task_may_remain:
+            self.fixture_fence.retain(self.id(), self.task, self.root)
 
     def close_originals(self):
         for dll, handle in self.held_originals:
@@ -444,11 +504,17 @@ class WindowsTaskMode(unittest.TestCase):
         self.assertFalse(metadata['exited'], metadata)
 
     def cli(self, *args):
+        if args[:3] == ('desktop', 'registration', 'install'):
+            # An unsuccessful/lost install reply does not prove absence.
+            self.task_may_remain = True
         result = subprocess.run([str(self.cli_image), *args], env=self.env,
                                 capture_output=True, text=True, encoding='utf-8', timeout=20)
         self.assertEqual(result.returncode, 0, (result.stderr + result.stdout)[-8192:])
         self.assertLessEqual(len(result.stdout.encode('utf-8')), 65536)
-        return json.loads(result.stdout)
+        value = json.loads(result.stdout)
+        if args[:3] == ('desktop', 'registration', 'remove') and value.get('registered') is False:
+            self.task_may_remain = False
+        return value
 
     def frontend_call(self, control, prefix, *, frontend=None):
         self.control.write_text(json.dumps(dict(control, cli=str(self.cli_image))), encoding='utf-8')
@@ -814,6 +880,15 @@ class WindowsTaskMode(unittest.TestCase):
         refused = json.loads(expired['stdout'])
         self.assertFalse(refused['ok'], refused)
         self.assertIn('deadline reached', refused['error'])
+        timing = refused['stop_timing']
+        self.assertEqual(timing['abi'], 'desktop-mode-stop-timing-v1')
+        self.assertEqual(timing['budget_ms'], 2000)  # Documented Stop contract.
+        self.assertLessEqual(timing['elapsed_ms'], 60000)
+        self.assertEqual(set(timing['steps']), {'native_rechecks', 'metadata_sync',
+                                               'instance_stop', 'physical_exit'})
+        self.assertEqual(timing['steps']['instance_stop']['calls'], 0)
+        self.assertEqual(timing['steps']['physical_exit']['calls'], 0)
+        print('MODE_STOP_TIMING_EXPIRED_HOLD_CONTROL ' + json.dumps(timing), file=sys.stderr)
         helper['marker'].unlink()
         record = json.loads(path.read_text(encoding='utf-8'))
         self.assertEqual((record['pending']['request_id'], record['pending']['phase']), (request, 'held'), record)

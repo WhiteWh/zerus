@@ -9,8 +9,17 @@ name: Fork tests
 # seventeen failed, each on the next test that reads the runner differently
 # from the developer's machine, and each cost a whole build. This run names
 # those failures at the push that made them.
+# Owner, 2026-11-13: a pull request into `whitewh/main` runs the same tests, so
+# a contributor's change meets the runner before it is merged. It is the
+# `pull_request` event: a fork's run gets a read-only token, no secrets, and
+# GitHub asks a maintainer to approve an outside contributor's run.
 on:
   push:
+    branches: [whitewh/main]
+    paths-ignore:
+      - 'docs/**'
+      - 'design/**'
+  pull_request:
     branches: [whitewh/main]
     paths-ignore:
       - 'docs/**'
@@ -20,10 +29,12 @@ on:
 permissions:
   contents: read
 
+# One line per pull request and one for the branch: a pull request never
+# cancels the branch's run. Only the newest push matters: an older run still
+# going is replaced; a manual run is never cancelled.
 concurrency:
-  group: fork-tests
-  # Only the newest push matters: an older run still going is replaced.
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'pull_request' && format('fork-tests-pr-{0}', github.event.pull_request.number) || format('fork-tests-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   windows:

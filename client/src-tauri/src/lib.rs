@@ -347,24 +347,7 @@ mod test_context;
 // On macOS only `live` tests use it; the replay build has none (zerus-tn54u).
 #[cfg_attr(not(feature = "live"), allow(dead_code))]
 pub(crate) fn write_executable(path: &std::path::Path, contents: impl AsRef<[u8]>) {
-    use std::os::unix::fs::PermissionsExt;
-    let name = path.file_name().expect("executable name").to_string_lossy();
-    let source = path.with_file_name(format!(".{name}.source"));
-    std::fs::write(&source, contents).unwrap();
-    match std::fs::remove_file(path) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-            panic!("cannot replace {}: {error}", path.display())
-        }
-        _ => {}
-    }
-    let status = std::process::Command::new("/bin/cp")
-        .arg(&source)
-        .arg(path)
-        .status()
-        .unwrap();
-    assert!(status.success(), "cannot write {}", path.display());
-    std::fs::remove_file(&source).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    test_executable::write_executable(path, contents);
 }
 
 /// What `run` settled before the app starts.
@@ -1874,6 +1857,10 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         desktop_service::notification_controls::desktop_notification_preferences_check,
         desktop_service::desktop_service_read_marks,
         desktop_service::desktop_service_automatic_approvals,
+        desktop_service::desktop_service_question_routes,
+        desktop_service::desktop_service_question_route_activity,
+        desktop_service::desktop_service_question_route_child,
+        desktop_service::desktop_service_question_route_child_status,
         desktop_service::task_message_inputs::desktop_service_task_message_inputs,
         desktop_service::task_message_inputs::desktop_service_task_message_input_release,
         desktop_service::frontend::desktop_service_maintenance_configure,
@@ -1973,8 +1960,11 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         action_delay::action_delay_cancel,
         actions::set_notifications,
         actions::set_keep_warm,
+        actions::set_question_routing,
         actions::set_parent,
         actions::inspect_session,
+        actions::composer_state,
+        actions::clear_input,
         actions::inspect_subagent_identity,
         session_folders::session_folder_status,
         session_folders::session_folder_open,
@@ -2746,3 +2736,7 @@ mod tests {
     }
 }
 
+#[cfg(all(test, unix))]
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+#[path = "../../../tests/support/executable.rs"]
+mod test_executable;

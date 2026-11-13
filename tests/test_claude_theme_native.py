@@ -7,6 +7,7 @@ The only seeded preference is a normal theme value; its focused AND checked
 native row must be observed, so a preference string alone proves nothing.
 """
 import hashlib
+from collections import deque
 import json
 import os
 from pathlib import Path
@@ -31,7 +32,20 @@ root=pathlib.Path(ROOT)
 args=sys.argv[1:]
 if args and args[0]=='send-keys':
     with (root/'theme-keys.jsonl').open('a') as f:f.write(json.dumps(args)+'\n')
+started=time.monotonic()
 result=subprocess.run([REAL_TMUX,'-S',str(root/'tmux.sock'),'-f','/dev/null',*args],capture_output=True)
+ended=time.monotonic()
+if args[:1]==['capture-pane']:
+    # Diagnostic I/O must neither block a product helper nor alter its result.
+    try:
+        with (root/'theme-captures.json').open('a+b') as f:
+            fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            f.seek(0);raw=f.read(65537)
+            rows=json.loads(raw) if raw and len(raw)<=65536 else []
+            rows.append(dict(source='product',ansi='-e' in args,started=started,ended=ended,returncode=result.returncode,
+                             stderr=result.stderr[-1024:].decode(errors='replace')))
+            f.seek(0);f.truncate();f.write(json.dumps(rows[-8:]).encode())
+    except Exception:pass
 if args[:1]==['capture-pane'] and '-e' not in args and TITLE.encode() in result.stdout:
     data=result.stdout[:16384]
     try:
@@ -70,9 +84,72 @@ class NativeClaudeTheme(Base):
         source=source.replace('ROOT',repr(str(self.root))).replace('REAL_TMUX',repr(test_pause.TMUX)).replace('TITLE.encode()',repr(TITLE)+'.encode()')
         self.script('tmux',source)
         self.name='claude/p/theme'
+        self.original_child={}
+        self.failure_recorded=False
+        self.test_captures=deque(maxlen=8)
+
+    def remember_child(self):
+        # Pin once; a replacement binding never supplies another child's exit.
+        if self.original_child:return
+        try:
+            record=self.binding(self.name)
+            fields=('session_id','run_id','pid','process_start','pane')
+            if all(isinstance(record.get(key),(str,int)) and record[key]
+                   and len(str(record[key]))<=256 for key in fields):
+                self.original_child={key:record[key] for key in fields}
+        except Exception:pass
+
+    def failure_diagnostics(self):
+        if self.failure_recorded:return
+        self.failure_recorded=True
+        try:
+            self.remember_child()
+            original=self.original_child
+            data=dict(original_child=original)
+            try:current=self.binding(self.name)
+            except Exception as error:
+                current={};data['binding_error']=str(error)[:1024]
+            same=bool(original) and all(current.get(key)==value for key,value in original.items())
+            data['binding_matches']=same
+            if same:
+                data['exit']={key:current.get(key) for key in ('exited_at','exit_code')}
+                if current.get('exited_at'):
+                    phase='before theme' if not (self.root/'first-native-theme.txt').exists() else 'after theme'
+                    data['summary']=f"native exited {current.get('exit_code')} {phase}"
+            # One bounded read of the last eight actual product captures.
+            captures=[]
+            path=self.root/'theme-captures.json'
+            try:
+                if path.exists():
+                    with path.open('rb') as f:raw=f.read(65537)
+                    if len(raw)<=65536:captures=json.loads(raw)[-8:]
+            except Exception as error:data['capture_log_error']=str(error)[:1024]
+            # Only this fixture's socket and original pane. Native stdout and
+            # stderr share its PTY: retain their combined tail, never redirect
+            # either native descriptor or interpose a different child process.
+            files={}
+            if same:
+                for name,args in [('native-stderr-tail.txt',['-S','-64']),('dead-private-pane.txt',[])]:
+                    try:files[name]=self.capture([*args,'-t',original['pane']],timeout=2).stdout[-16384:]
+                    except Exception:pass  # capture() retains the failed read in the ring.
+            data['captures']=sorted(captures+list(self.test_captures),key=lambda row:row['started'])[-8:]
+            data['native_stderr_source']='combined stdout/stderr from original private PTY'
+            retained=os.environ.get('HGS_CLAUDE_THEME_EVIDENCE')
+            target=(Path(retained) if retained else test_pause.REPO/'artifacts/test-results/python/claude-theme')/self._testMethodName
+            target.mkdir(parents=True,exist_ok=True)
+            for name,raw in files.items():(target/name).write_text(raw)
+            (target/'failure.json').write_text(json.dumps(data,indent=2)+'\n')
+            print('ZERUS_NATIVE_THEME_FAILURE='+json.dumps(data),flush=True)
+        except Exception as error:
+            # Diagnostics must never replace a timeout/assertion/launch error.
+            try:print('ZERUS_NATIVE_THEME_FAILURE='+json.dumps({'diagnostics_error':str(error)[:1024]}),flush=True)
+            except Exception:pass
 
     def tearDown(self):
         try:
+            result=self._outcome.result
+            if any(case is self for case,_ in result.failures+result.errors):
+                self.failure_diagnostics()
             evidence={}
             for name in ('first-native-theme.txt','last-native-theme.txt','theme-keys.jsonl'):
                 path=self.root/name
@@ -98,16 +175,33 @@ class NativeClaudeTheme(Base):
         end=time.monotonic()+timeout
         while time.monotonic()<end:
             value=predicate()
+            self.remember_child()
             if value:return value
             time.sleep(.025)
-        self.fail('Timed out waiting for '+what+'\n'+self.screen())
+        final=self.screen()
+        self.failure_diagnostics()
+        self.fail('Timed out waiting for '+what+'\n'+final)
+
+    def capture(self, args, timeout=5):
+        started=time.monotonic()
+        result=None
+        error=''
+        try:
+            result=subprocess.run([test_pause.TMUX,'-S',self.socket,'capture-pane','-p',*args],
+                                  env=self.env,capture_output=True,text=True,timeout=timeout)
+            return result
+        except Exception as caught:
+            error=str(caught)[:1024]
+            raise
+        finally:
+            self.test_captures.append(dict(source='test',started=started,ended=time.monotonic(),
+                                           returncode=result.returncode if result else None,
+                                           stderr=result.stderr[-1024:] if result else error))
 
     def screen(self):
         record=self.binding(self.name)
         if not record.get('pane'):return ''
-        result=subprocess.run([test_pause.TMUX,'-S',self.socket,'capture-pane','-p','-t',record['pane']],
-                              env=self.env,capture_output=True,text=True,timeout=5)
-        return result.stdout
+        return self.capture(['-t',record['pane']]).stdout
 
     def keys(self):
         path=self.root/'theme-keys.jsonl'
@@ -129,7 +223,9 @@ class NativeClaudeTheme(Base):
         # Start a private empty server with its genuine default-size setting.
         # The product still creates and launches the actual agent session.
         tmux_config=self.root/'theme-tmux.conf'
-        tmux_config.write_text(f'set -g exit-empty off\nset -g default-size {width}x{height}\n')
+        # Preserve a failed child's terminal until failure-only collection and
+        # the existing exact private-server cleanup; never retain a live server.
+        tmux_config.write_text(f'set -g exit-empty off\nset -g remain-on-exit on\nset -g default-size {width}x{height}\n')
         subprocess.run([test_pause.TMUX,'-S',self.socket,'-f',str(tmux_config),'start-server'],
                        env=self.env,capture_output=True,check=True,timeout=5)
         self.hgs('claude','p','-n','theme','-d')

@@ -11,6 +11,7 @@ vi.hoisted(() => {
 vi.mock("../../bridge", () => ({
   // The session entry points also initialize the bounded creation-card store.
   onCreations: vi.fn(async () => () => {}), creationsView: vi.fn(async () => []),
+  onTeamDecided: vi.fn(() => () => {}),
   runAction: vi.fn(),
   inspectSession: vi.fn(async () => null),
   pendingReadMarks: vi.fn(async () => []),

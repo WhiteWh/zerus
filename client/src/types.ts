@@ -68,6 +68,8 @@ export interface ViewRow {
   notification_revision?: number | null;
   /** The host's Keep cache warm state (`hgs keep-warm`), when it reports one. */
   keep_warm?: KeepWarmState | null;
+  /** The host's per-child question route switch (zerus-sa9qn.32). */
+  question_routing?: { send_to_parent: boolean; revision: number } | null;
   /** `created`, in whole seconds (it keys a conversation-less attention mark). */
   created?: number;
   /** Exact/fallback Qt row-density hashes with this computer's configured identity. */
@@ -302,6 +304,8 @@ export interface DesktopService {
     computers: { computer: string; complete: boolean; online: boolean; total: number | null; attention: number | null }[];
   };
   automatic_approvals: boolean | null;
+  /** The person's global question route switch; null where nothing routes (zerus-sa9qn.32). */
+  question_routes?: boolean | null;
   /** The approval categories the service's committed policy keeps on; absent from an older service. */
   automatic_approval_categories?: string[] | null;
   /** Held task message copies a person may review; display only, never a release. */

@@ -882,10 +882,30 @@ fn scaled(temp: &Path, count: usize) -> ProjectStore {
     store
 }
 
+/// Holds the index's clock at a time until dropped.
+struct HeldClock;
+impl HeldClock {
+    fn at(at: i64) -> Self {
+        CLOCK.with(|clock| clock.set(Some(at)));
+        Self
+    }
+}
+impl Drop for HeldClock {
+    fn drop(&mut self) {
+        CLOCK.with(|clock| clock.set(None));
+    }
+}
+
 #[test]
 fn a_large_project_pages_and_polls_with_bounded_work() {
     let temp = crate::host::staging::private_tempdir();
     let store = scaled(temp.path(), 5_000);
+    // The build and the polls read one time, past the settling of the
+    // fixture's writes: on a loaded host the build can outlast FULL_CHECK_MS,
+    // and the poll after it would then rightly be a full check, not the quiet
+    // one this test is for (zerus-iezgx). That full check is pinned last.
+    let held = now() + SETTLE_MS + 1;
+    let _clock = HeldClock::at(held);
     let (_, decoded, _) = counted(|| Index::open(&store).unwrap());
     assert_eq!(decoded, 5_000);
     // A poll with nothing changed: one stamp, no task decoded.
@@ -902,6 +922,11 @@ fn a_large_project_pages_and_polls_with_bounded_work() {
     let (rank, uuid) = parse_cursor(store.project_id(), Stage::Todo, &deep).unwrap();
     let (page, decoded, _) = counted(|| index.page(Stage::Todo, 50, &Anchor::After(rank, uuid)).unwrap());
     assert_eq!((page.position, decoded), (50, 0));
+    drop(index);
+    // A full-check period later, the poll checks every task file again.
+    let _clock = HeldClock::at(held + FULL_CHECK_MS);
+    let (_, decoded, stamped) = counted(|| Index::open(&store).unwrap());
+    assert_eq!((decoded, stamped), (0, 5_002));
 }
 
 /// design-tima's scale smoke: run it in release, with

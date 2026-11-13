@@ -15,7 +15,9 @@ export default function TaskView() {
   // A windowed list loads only some rows of each stage: a selected task beyond them is read on its own.
   const missing = () => { const id = wanted(); return id && tasks.loaded() && !listed() ? `${id.project}\n${id.uuid}` : undefined; };
   const [read] = createResource(missing, async (key) => { const task = await readSelectedTask(key); tasks.adopt(task); return task; });
-  const fetched = () => missing() && !read.error ? read() : undefined;
+  // Loading first: a pending read() would suspend this view's boundary and hide
+  // the Loading task… status below until the task arrives.
+  const fetched = () => missing() && !read.loading && !read.error ? read() : undefined;
   const chosen = () => listed() ?? (fetched() ? projectTask(fetched()!, find()) : undefined);
   const raw = () => tasks.tasks().find((t) => t.uuid === wanted()?.uuid) ?? fetched();
   const empty = () => !wanted()

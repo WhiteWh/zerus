@@ -1880,6 +1880,16 @@ fn iron_rules_start(record: &Value, event: &Value) -> Result<Option<(String, Str
 
 /// Records one hook event of this exact run. A main start publishes its
 /// confirmed binding only after its combined context was delivered.
+/// The agent whose hint shape the start context takes: the decided record's,
+/// else the environment's.
+fn format_agent(record: &str, environment: Option<String>) -> String {
+    if record.is_empty() {
+        environment.unwrap_or_default()
+    } else {
+        record.to_owned()
+    }
+}
+
 fn track(name: String, token: String, mut event: Value, output: &mut impl std::io::Write) -> Result<i32> {
     if nonempty_env("HGS_AGENT").as_deref() == Some("claude") {
         if let std::borrow::Cow::Owned(prompt) = journal::pasted_text(string(&event, "prompt")) {
@@ -2158,7 +2168,8 @@ fn track(name: String, token: String, mut event: Value, output: &mut impl std::i
     if let Some(context) = start_context(hint, tasks) {
         // A failed write or flush leaves only the early invalidation persisted.
         // Never expose a fresh conversation as started before this succeeds.
-        agent_hint::output(output, &context)?;
+        // Kimi reads its start context from its own shape (upstream, `output_for`).
+        agent_hint::output_for(&format_agent(&agent, nonempty_env("HGS_AGENT")), output, &context)?;
         if let Some((project, text)) = rules.filter(|_| context.encode_utf16().count() <= super::iron_rules::MAX_START_CONTEXT) {
             record["iron_rules_start_supported"] = json!(true);
             record["iron_rules_start_project"] = json!(project);
@@ -2454,6 +2465,13 @@ mod tests {
         assert!(joined.starts_with("Hint for this agent.") && joined.contains("Zerus tasks are this project's shared task list"));
         assert_eq!(start_context(None, None), None);
         assert_eq!(start_context(Some("Only a hint.".into()), None).as_deref(), Some("Only a hint."));
+    }
+
+    #[test]
+    fn hint_output_format_comes_from_the_decided_record_not_the_environment() {
+        assert_eq!(format_agent("kimi", Some("claude".into())), "kimi");
+        assert_eq!(format_agent("", Some("kimi".into())), "kimi");
+        assert_eq!(format_agent("", None), "");
     }
 
     #[test]

@@ -21,7 +21,17 @@ const WINDOWS: usize = 5;
 const TARGETS: usize = 50_000;
 const CAPTURE_BYTES: usize = 16 * 1024 * 1024;
 const REGISTRATIONS: usize = 16_384;
+/// A window this long past its deadline was never taken by its frontend.
+const STALE_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 pub const FIVE_WAITING: &str = "Five actions are waiting. Undo one or wait a moment.";
+/// Every refusal on this path names what the person can do instead of `busy`.
+pub const END_CLOSED: &str =
+    zerus_client_core::source!("The app's pending actions are closed. Restart the app to retry.");
+pub const END_SUBMITTED: &str = zerus_client_core::source!(
+    "This action was already submitted. Try again from the session's actions."
+);
+pub const END_ROOM: &str =
+    zerus_client_core::source!("Too many recent actions are pending. Restart the app to retry.");
 const TOO_MUCH_DATA: &str = "Too much session data selected at once. Select fewer sessions.";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -36,6 +46,8 @@ struct Member {
 }
 struct Group {
     window: Window,
+    /// The exact undo confirmation instant; a window this old is abandoned.
+    created: Instant,
     waiting: bool,
     ready: bool,
     members: Vec<Member>,
@@ -157,15 +169,18 @@ impl Delays {
             return Err(STATE_CHANGED.into());
         }
         let mut model = lock(&self.0);
-        if model.closed || model.seen.contains(&id) {
-            return Err("busy".into());
+        if model.closed {
+            return Err(END_CLOSED.into());
+        }
+        if model.seen.contains(&id) {
+            return Err(END_SUBMITTED.into());
         }
         if model.groups.len() >= WINDOWS {
             return Err(FIVE_WAITING.into());
         }
         let bytes = capture_bytes(&captures, CAPTURE_BYTES.saturating_sub(model.bytes))?;
         if !model.room_for_id() {
-            return Err("busy".into());
+            return Err(END_ROOM.into());
         }
         let mut claims = BTreeMap::new();
         for c in &captures {
@@ -174,7 +189,18 @@ impl Delays {
                 // A partial reservation drops all its claims before returning.
                 entry.insert(match &original {
                     Some(claim) => claim.clone(),
-                    None => actions.reserve_end(&c.target).ok_or("busy")?,
+                    None => match actions.reserve_end(&c.target) {
+                        Some(claim) => claim,
+                        // An undo window whose deadline passed long ago and
+                        // whose frontend never took it would otherwise keep
+                        // this lane for the app's lifetime (zerus-ex66o).
+                        None if self.release_abandoned(&mut model, &c.target, Instant::now()) => {
+                            actions
+                                .reserve_end(&c.target)
+                                .ok_or(crate::actions::END_BUSY)?
+                        }
+                        None => return Err(crate::actions::END_BUSY.into()),
+                    },
                 });
             }
         }
@@ -183,10 +209,12 @@ impl Delays {
         model.seen.insert(id.clone());
         model.bytes += bytes;
         let remaining = captures.len();
+        let confirmed = Instant::now();
         model.groups.insert(
             id,
             Group {
-                window: Window::new(Instant::now()),
+                window: Window::new(confirmed),
+                created: confirmed,
                 waiting: false,
                 ready: false,
                 remaining,
@@ -202,6 +230,32 @@ impl Delays {
             },
         );
         Ok(())
+    }
+
+    /// Releases the exact reservation of an undo window whose deadline passed
+    /// beyond [`STALE_GRACE`] and whose frontend never took it; the group's
+    /// claim would otherwise block every later end for its sessions.
+    fn release_abandoned(&self, model: &mut Model, target: &Target, now: Instant) -> bool {
+        let abandoned = model
+            .groups
+            .iter()
+            .find(|(_, group)| {
+                now.saturating_duration_since(group.created)
+                    > zerus_client_core::end_action::UNDO_WINDOW + STALE_GRACE
+                    && group.members.iter().any(|member| {
+                        member.captured.target.computer == target.computer
+                            && member.captured.target.name == target.name
+                    })
+            })
+            .map(|(id, _)| id.clone());
+        let Some(id) = abandoned else {
+            return false;
+        };
+        if let Some(mut group) = model.remove(&id) {
+            group.window.cancel();
+        }
+        self.0.changed.notify_all();
+        true
     }
 
     /// Blocking only on a dedicated worker, with an absolute native deadline.

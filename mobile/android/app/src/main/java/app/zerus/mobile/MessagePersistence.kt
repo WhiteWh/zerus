@@ -12,9 +12,14 @@ import java.util.UUID
 class MessagePersistence private constructor(context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val error = MutableStateFlow<Throwable?>(null)
+    private val outboxPins = OutboxPins()
+    fun retainOutbox(delivery: Set<String>, receipts: Set<String>, events: List<Event>) { outboxPins.retain(delivery, receipts, events) }
     private val initialized = scope.async {
         val store = PrivateStore(context.applicationContext)
-        OrderedStatePersistence(store.messageState(), scope, { store.saveMessageState(it) }, onResult = { error.value = it })
+        val writer = OutboxRetention.Normalizer(); val publication = OutboxRetention.Normalizer()
+        val initial = publication.normalize(writer.normalize(store.messageState(), outboxPins.snapshot()), outboxPins.snapshot())
+        OrderedStatePersistence(initial, scope, { store.saveMessageState(it) }, onResult = { error.value = it },
+            normalize = { writer.normalize(it, outboxPins.snapshot()) }, normalizePublished = { publication.normalize(it, outboxPins.snapshot()) })
     }
     suspend fun open() = initialized.await()
     companion object {

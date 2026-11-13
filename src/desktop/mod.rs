@@ -59,6 +59,8 @@ pub(crate) mod program_stop;
 #[allow(dead_code)] // The private final-cleanup adapter is the next caller.
 pub(crate) mod program_cleanup;
 mod protocol;
+/// The owner-approved question route leaf (zerus-sa9qn.8, slice a).
+mod question_route;
 mod registration;
 mod revoke;
 #[cfg(any(windows, test))]
@@ -604,6 +606,7 @@ fn projection(
             "feed_producers":1,"feed_frame_bytes":feed::LINE_BYTES,"connections":protocol::CONNECTIONS},
         "components":{"fleet":"awaiting_handoff","presence":"awaiting_handoff","reads":"awaiting_handoff","attention":"awaiting_handoff","approvals":"awaiting_handoff"}});
     delivery::decorate_passive(store, &mut value);
+    question_route::decorate(&store.db, &mut value);
     task_controls::decorate(&mut value);
     value["desktop_ownership"] = ownership::status(store, &location.configuration)
         .and_then(|v| Ok(serde_json::to_value(v)?))
@@ -1214,6 +1217,21 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                             ),
                             (Some(authority), None) => {
                                 match authority.into_request(&mut frontend_order) {
+                                    // The person's question route switch
+                                    // needs no background worker.
+                                    Ok(request) if request.operation() == "question_routes" => {
+                                        question_route::frontend(&mut store.db, request)
+                                    }
+                                    // The person's per-child latch, likewise.
+                                    Ok(request)
+                                        if request.operation() == "question_route_child" =>
+                                    {
+                                        question_route::latch_frontend(
+                                            &mut store.db,
+                                            &config.state,
+                                            request,
+                                        )
+                                    }
                                     Ok(request) => {
                                         delivery::passive_frontend_request(&mut store, request)
                                     }
@@ -1514,6 +1532,49 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                             .is_some_and(|v| v["op"] == "delivery_result")
                         {
                             delivery::result_request(&store, hello.request.as_ref().unwrap())
+                        } else if hello
+                            .request
+                            .as_ref()
+                            .is_some_and(|v| v["op"] == "question_routes_result")
+                        {
+                            question_route::result_request(
+                                &store.db,
+                                hello.request.as_ref().unwrap(),
+                            )
+                        } else if hello
+                            .request
+                            .as_ref()
+                            .is_some_and(|v| v["op"] == "question_route_activity")
+                        {
+                            question_route::activity_request(
+                                &store.db,
+                                hello.request.as_ref().unwrap(),
+                            )
+                        } else if hello
+                            .request
+                            .as_ref()
+                            .is_some_and(|v| v["op"] == "question_route_child_result")
+                        {
+                            question_route::latch_result(&store.db, hello.request.as_ref().unwrap())
+                        } else if hello
+                            .request
+                            .as_ref()
+                            .is_some_and(|v| v["op"] == "question_route_child_status")
+                        {
+                            question_route::latch_status(&store.db, hello.request.as_ref().unwrap())
+                        } else if hello
+                            .request
+                            .as_ref()
+                            .is_some_and(|v| v["op"] == "question_route_person")
+                        {
+                            // A phone's statement: this service runs the
+                            // connector's verifier itself (zerus-sa9qn.50).
+                            question_route::latch_person(
+                                &mut store.db,
+                                &config.state,
+                                hello.request.as_ref().unwrap(),
+                                |input| crate::phones::verify_route_person(config, input),
+                            )
                         } else if let Some(runtime) = &mut background {
                             let request_value = hello.request.as_ref().unwrap_or(&Value::Null);
                             if matches!(

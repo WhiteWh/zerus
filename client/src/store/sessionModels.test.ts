@@ -16,7 +16,7 @@ function context(extra: Record<string, unknown> = {}, cmd = "codex"): ModelConte
 }
 const tick = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 function setup() {
-  const port: ModelsPort = { apply: vi.fn(), catalog: vi.fn(), favorite: vi.fn(), notice: vi.fn() };
+  const port: ModelsPort = { apply: vi.fn(), refresh: vi.fn(), catalog: vi.fn(), favorite: vi.fn(), notice: vi.fn() };
   const store = createSessionModels(port);
   const rows = (input: ModelContext): PendingRow[] => [{ key: input.row.key, row: input.row, online: input.online, busy: input.busy }];
   return { store, port: vi.mocked(port), rows };
@@ -276,5 +276,125 @@ describe("session model settings", () => {
     port.favorite.mockReturnValue(new Promise((r) => { resolve = r; }));
     store.pickerActions.click("provider/a", true); store.setContext(context()); resolve({}); await tick();
     expect(store.picker().groups.flatMap((g) => g.models).some((m) => m.favorite)).toBe(false);
+  });
+});
+
+describe("session model scheduled Settings keeper races", () => {
+  const keeperBusy: Outcome = { outcome: "failed", detail: "hgs: Original picker host is busy or unavailable: Send holds it" };
+  const pending = () => context({ pending_model: "model-b", pending_effort: "medium", pending_settings_id: "pending-1" });
+
+  it("settles silently when Send wins the keeper slot and consumes the pending change", async () => {
+    const { store, port, rows } = setup();
+    const i = pending();
+    store.setContext(i);
+    port.apply.mockResolvedValue(keeperBusy);
+    port.refresh.mockResolvedValue({ run_id: "r1", conversation_id: "c1", pending_settings_id: "", model: "model-b", effort: "medium" });
+    store.observe(rows(i)); await tick();
+    expect(port.apply).toHaveBeenCalledExactlyOnceWith(expect.anything(), "model-b", "medium", "pending-1", false);
+    expect(port.refresh).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ run_id: "r1", conversation_id: "c1" }));
+    expect(port.notice).not.toHaveBeenCalled();
+    expect(store.queuedKeys()).toEqual([]);
+    store.observe(rows(i)); await tick();
+    expect(port.apply).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not refresh or replay when the automatic apply wins the race", async () => {
+    const { store, port, rows } = setup();
+    const i = pending();
+    store.setContext(i); port.apply.mockResolvedValue(done());
+    store.observe(rows(i)); await tick();
+    store.setContext(context({ model: "model-b", effort: "medium" }));
+    store.observe(rows(context({ model: "model-b", effort: "medium" }))); await tick();
+    expect(port.apply).toHaveBeenCalledTimes(1);
+    expect(port.refresh).not.toHaveBeenCalled();
+    expect(port.notice).not.toHaveBeenCalled();
+    expect(store.queuedKeys()).toEqual([]);
+  });
+
+  it("keeps a manual Apply keeper error visible and blocks automatic retry", async () => {
+    const { store, port, rows } = setup();
+    const i = context();
+    store.setContext(i); store.open(); store.chooseModel("model-b");
+    port.apply.mockResolvedValue(keeperBusy);
+    await store.apply();
+    expect(port.refresh).not.toHaveBeenCalled();
+    expect(port.notice).toHaveBeenCalledTimes(1);
+    store.observe(rows(i)); await tick();
+    expect(port.apply).toHaveBeenCalledTimes(1);
+  });
+
+  it("rearms the same pending change only after a distinct NotReady to Ready transition", async () => {
+    const { store, port, rows } = setup();
+    const i = pending();
+    store.setContext(i);
+    port.apply.mockResolvedValueOnce(keeperBusy).mockResolvedValueOnce(done());
+    port.refresh.mockResolvedValue({ run_id: "r1", conversation_id: "c1", pending_settings_id: "pending-1" });
+    store.observe(rows(i)); await tick();
+    expect(port.refresh).toHaveBeenCalledTimes(1);
+    expect(port.notice).not.toHaveBeenCalled();
+    store.observe(rows(i)); await tick();
+    expect(port.apply).toHaveBeenCalledTimes(1);
+    const notReady = { ...i, details: { ...i.details, settings_apply_when: "ready" }, row: { ...i.row, activity: "busy", phase: "working" } };
+    store.observe(rows(notReady));
+    store.observe(rows(i)); await tick();
+    expect(port.apply).toHaveBeenCalledTimes(2);
+    expect(port.apply).toHaveBeenLastCalledWith(expect.anything(), "model-b", "medium", "pending-1", false);
+    expect(port.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a replaced pending identity as stale without blocking its replacement", async () => {
+    const { store, port, rows } = setup();
+    const i = pending();
+    store.setContext(i);
+    port.apply.mockResolvedValueOnce(keeperBusy).mockResolvedValueOnce(done());
+    port.refresh.mockResolvedValue({ run_id: "r1", conversation_id: "c1", pending_settings_id: "pending-2" });
+    store.observe(rows(i)); await tick();
+    expect(port.notice).not.toHaveBeenCalled();
+    expect(store.queuedKeys()).toEqual([]);
+    const replaced = context({ pending_model: "model-b", pending_effort: "medium", pending_settings_id: "pending-2" });
+    store.setContext(replaced); store.observe(rows(replaced)); await tick();
+    expect(port.apply).toHaveBeenCalledTimes(2);
+    expect(port.apply).toHaveBeenLastCalledWith(expect.anything(), "model-b", "medium", "pending-2", false);
+  });
+
+  it("does not reconcile a keeper-busy result onto a changed target", async () => {
+    const { store, port, rows } = setup();
+    const i = pending();
+    store.setContext(i); port.apply.mockResolvedValue(keeperBusy);
+    port.refresh.mockResolvedValue({ run_id: "r2", conversation_id: "c2", pending_settings_id: "pending-1" });
+    store.observe(rows(i)); await tick();
+    expect(port.notice).not.toHaveBeenCalled();
+    expect(store.queuedKeys()).toEqual([]);
+    store.observe(rows(i)); await tick();
+    expect(port.apply).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears a waiting scheduled attempt when a later inspection consumes it", async () => {
+    const { store, port, rows } = setup();
+    const i = pending();
+    store.setContext(i); port.apply.mockResolvedValue(keeperBusy);
+    port.refresh.mockResolvedValue({ run_id: "r1", conversation_id: "c1", pending_settings_id: "pending-1" });
+    store.observe(rows(i)); await tick();
+    store.setContext(context({ model: "model-b", effort: "medium" }));
+    expect(store.queuedKeys()).toEqual([]);
+    store.observe(rows(context({ model: "model-b", effort: "medium" }))); await tick();
+    expect(port.apply).toHaveBeenCalledTimes(1);
+    expect(port.notice).not.toHaveBeenCalled();
+  });
+});
+
+describe("session model uncertain Settings outcomes", () => {
+  it("never refreshes an uncertain keeper result into silent settlement or replay", async () => {
+    const { store, port, rows } = setup();
+    const i = context({ pending_model: "model-b", pending_effort: "medium", pending_settings_id: "pending-1" });
+    store.setContext(i);
+    port.apply.mockResolvedValue({ outcome: "uncertain", detail: "hgs: Original picker host is busy or unavailable: Send holds it" });
+    store.observe(rows(i)); await tick();
+    expect(port.refresh).not.toHaveBeenCalled();
+    expect(port.notice).toHaveBeenCalledTimes(1);
+    expect(store.queuedKeys()).toEqual([i.row.key]);
+    const notReady = { ...i, details: { ...i.details, settings_apply_when: "ready" }, row: { ...i.row, activity: "busy", phase: "working" } };
+    store.observe(rows(notReady)); store.observe(rows(i)); await tick();
+    expect(port.apply).toHaveBeenCalledTimes(1);
   });
 });

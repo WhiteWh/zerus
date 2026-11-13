@@ -302,6 +302,9 @@ fn event_db_at(root: &Path) -> Result<Connection> {
         .map_err(|e| e.to_string())?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY, name TEXT, conversation TEXT, payload TEXT);
         CREATE INDEX IF NOT EXISTS events_session ON events(name, conversation, seq);
+        CREATE INDEX IF NOT EXISTS events_kimi_completions ON events(name, conversation,
+            json_extract(payload, '$.run_id'), json_extract(payload, '$.kimi_turn_id'))
+        WHERE json_extract(payload, '$.type') = 'Stop' AND json_extract(payload, '$.agent_id') = '';
         CREATE INDEX IF NOT EXISTS events_main_replies ON events(name, conversation, seq)
         WHERE json_extract(payload, '$.type') = 'Stop' AND json_extract(payload, '$.agent_id') = '';
         CREATE INDEX IF NOT EXISTS events_main_messages ON events(name, conversation, seq)
@@ -325,6 +328,14 @@ fn kimi_turn_id(record: &Value, event: &Value) -> Option<u64> {
         return None;
     }
     event["turn_id"].as_u64().filter(|id| *id <= i64::MAX as u64)
+}
+
+fn kimi_completion_logged(db: &Connection, record: &Value, id: u64) -> Result<bool> {
+    db.query_row("SELECT EXISTS(SELECT 1 FROM events WHERE name = ? AND conversation = ?
+        AND json_extract(payload, '$.run_id') = ? AND json_extract(payload, '$.kimi_turn_id') = ?
+        AND json_extract(payload, '$.type') = 'Stop' AND json_extract(payload, '$.agent_id') = '')",
+        params![journal_name(record), string(record, "conversation_id"), string(record, "run_id"), id],
+        |row| row.get(0)).map_err(|error| error.to_string())
 }
 
 pub(super) fn log_event(record: &Value, event: &Value) -> Result<()> {
@@ -377,6 +388,16 @@ pub(super) fn log_event(record: &Value, event: &Value) -> Result<()> {
     }
     let mut db = event_db()?;
     let transaction = db.transaction().map_err(|e| e.to_string())?;
+    // Stop and the main-wire terminal event describe one native completion.
+    // Keep the original seq:at reply identity, including after a crash between
+    // this journal commit and the saved record. The expression index bounds
+    // this exact lookup; neither text nor arrival time establishes identity.
+    if let Some(id) = kimi_turn_id(record, event).filter(|_| {
+        string(event, "hook_event_name") == "Stop"
+            && ["", "main"].contains(&string(event, "agent_id"))
+    }) {
+        if kimi_completion_logged(&transaction, record, id)? { return Ok(()); }
+    }
     transaction
         .execute(
             "INSERT INTO events(name, conversation, payload) VALUES (?, ?, ?)",
@@ -1243,7 +1264,7 @@ pub(super) fn inspection_with(
     // An approval answered in Terminal sends no hook; settling it takes the lock.
     if archive_id.is_none() && record_path(name).exists() {
         if let Ok(record) = read(name) {
-            claude_approval::reconcile(record);
+            kimi_completion::reconcile(claude_approval::reconcile(record));
         }
     }
     phases.mark("approval_reconcile");
@@ -1543,6 +1564,9 @@ pub(super) fn inspection_with(
     phases.mark("notifications");
     if archive_id.is_none() {
         keep_warm::enrich(&mut output, keep_warm::load().as_ref(), &record);
+        // The person's per-child question route switch, as the listing
+        // shows it (zerus-sa9qn.33): the phones check an action against it.
+        super::question_routing::enrich(&mut output, super::question_routing::load().as_ref());
         let usage = output["session_usage"].clone();
         keep_warm::describe(&mut output, &record, &usage);
     }

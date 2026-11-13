@@ -315,7 +315,7 @@ impl Controller {
         // timeout (45 local / 60 peer), not run_owned's 30-second RPC cap.
         let current = self.context.clone();
         let invocation = helper_invocation(invocation);
-        run::run_accounted_frozen(
+        let exit = run::run_accounted_frozen(
             self.context.image.executable(),
             &invocation,
             &self.context.environment,
@@ -326,7 +326,11 @@ impl Controller {
         )
         .ok()
         .filter(|_| !self.context.rejected.load(Ordering::Acquire))
-        .unwrap_or_else(|| Exit::StartFailed(UNCONFIRMED.into()))
+        .unwrap_or_else(|| Exit::StartFailed(UNCONFIRMED.into()));
+        // The consumed call has returned. A descendant's output pipe keeps
+        // image/process custody, not this session's action lane or consent.
+        self.context.hold.revoke();
+        exit
     }
 }
 // The Mac observer checks a live original Child before the owned runner can
@@ -407,13 +411,25 @@ struct Context {
     helper: PathBuf,
     cancel: Arc<AtomicBool>,
     environment: FrozenEnvironment,
-    hold: Arc<dyn Send + Sync>,
+    hold: Arc<Hold>,
     busy: Arc<AtomicBool>,
     rejected: Arc<AtomicBool>,
     trace: Arc<Trace>,
 }
+/// The logical action lane is independent of physical helper/pipe custody.
+/// All retained Context/CallLifetime clones see the same one-way revocation.
+struct Hold(Mutex<Option<Arc<dyn Send + Sync>>>);
+impl Hold {
+    fn new(hold: Arc<dyn Send + Sync>) -> Arc<Self> {
+        Arc::new(Self(Mutex::new(Some(hold))))
+    }
+    fn revoke(&self) {
+        let hold = self.0.lock().unwrap_or_else(PoisonError::into_inner).take();
+        drop(hold);
+    }
+}
 struct CallLifetime {
-    hold: Option<Arc<dyn Send + Sync>>,
+    hold: Option<Arc<Hold>>,
     rpc: Option<zerus_client_core::desktop::drain::Charge>,
     busy: Arc<AtomicBool>,
 }
@@ -501,7 +517,7 @@ impl Context {
             cancel,
             environment: FrozenEnvironment::capture()
                 .map_err(|_| trace.refuse(Reason::EnvironmentCapture))?,
-            hold,
+            hold: Hold::new(hold),
             busy: Arc::new(AtomicBool::new(false)),
             rejected: Arc::new(AtomicBool::new(false)),
             trace,
@@ -511,6 +527,20 @@ impl Context {
     }
     fn with_hold(self: &Arc<Self>, hold: Arc<dyn Send + Sync>) -> Result<Arc<Self>, String> {
         self.current_or_refuse()?;
+        // The program continuation binds this exact Actions resource again.
+        // Preserve its identity fence and share revocation across both owners.
+        let hold = if self
+            .hold
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|original| Arc::ptr_eq(original, &hold))
+        {
+            self.hold.clone()
+        } else {
+            Hold::new(hold)
+        };
         Ok(Arc::new(Self {
             service: self.service.clone(),
             scope: self.scope.clone(),
@@ -768,6 +798,12 @@ impl Context {
         let until = std::time::Instant::now() + Duration::from_secs(2);
         while self.busy.load(Ordering::Acquire) {
             if std::time::Instant::now() >= until {
+                // Keep busy/RPC/registration/image custody until actual EOF,
+                // but never let it pin the session lane after bounded return.
+                // Reject this Context permanently, including after late EOF;
+                // revocation cannot admit another call or recreate consent.
+                self.rejected.store(true, Ordering::Release);
+                self.hold.revoke();
                 return Err(self.trace.refuse(Reason::PhysicalFinish));
             }
             std::thread::sleep(Duration::from_millis(1));

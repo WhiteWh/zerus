@@ -408,6 +408,13 @@ fixture credentials and a temporary process-local CA. They cover a hidden model
 under **More models**, full-name picker rows, ordinary and effort-only changes,
 failure cleanup and existing-ID cancellation without replay. Every settings or
 effort request checks that the complete account `settings.json` is unchanged.
+`tests/test_existing_id_send.py` exercises the actual public pending-before-message
+controller on private scripted PTYs, using the exact-source ID seed image. It
+pins early outer receipts, the late input marker, GUI auto-apply slot fallback,
+Background routing, large/symlink receipt-cache parity, uncertainty and exact
+buffer cleanup. These controls are separate from official-agent acceptance:
+the Claude, Codex and Kimi native contracts must prove pending Settings followed
+by one unchanged message and exactly one model call with account defaults kept.
 `tests/test_claude_statusline_native.py` starts the real TUI through a tracked
 `hgs claude` launch, with the private home, state folder and socket and the
 loopback API of `tests/model_api_fixture.py`. Claude 2.1.296 and 2.1.308 coverage requires the
@@ -853,6 +860,8 @@ attachments, idle and during a running tool: Claude must settle, enter once and
 prove the submission in its transcript (`NativeHookedImagesClaude` also runs
 hgs's own UserPromptSubmit hook, which takes the state lock); Codex queues and
 delivers it once; Kimi delivers it once after a turn the fixture model holds.
+`NativeBusyClaude` also sends a prompt identical to one already in Claude's
+queue: only the send's own new `enqueue` may prove it, and both arrive.
 Claude offers a one-time default permission mode change; fixtures set
 `hasSeenAutoDefaultNudge` except the suite that answers that offer. OpenCode has
 a supported minimum of 2.0.32; CI tests its latest release on Linux and macOS.
@@ -1859,6 +1868,42 @@ candidate for a publisher-only retry.
 Signing with an owner-controlled identity and appointing a backup maintainer are
 optional follow-ups. Checksums and exact run/commit provenance are provided;
 package/tag signing is not configured.
+
+### Manual native cleanup qualification
+
+`client/scripts/native-cleanup-smoke.py` is the only end-to-end check of the
+real Terminate + **Remove working folder** path with real program stops. It
+drives the built GUI through native ownership, the confirmation, the program
+stop and the folder outcome (see `client/scripts/native-cleanup-smoke.md`). A
+maintainer runs it on a Linux workstation, not in CI:
+
+- **When:** before requesting publication of each Stable candidate, and before
+  merging any change to Terminate/Remove working folder, the native program stop
+  and cleanup journals, desktop ownership/takeover or GUI startup. Run it once
+  on the candidate's exact source; run it twice in separate output folders for a
+  change to the program-stop path.
+- **Inputs:** CLI and canonical `com.hgdev.hgs-tray` GUI binaries built from that
+  clean commit in the maintainer's own Cargo target, as the smoke's guide shows.
+- **Evidence to keep:** the new output folder with its `SHA256SUMS`.
+  - `result.json` must have return code 0 and `owner_install_unchanged: true`.
+  - The run log must show the four stage results: clean `removed`, kept local
+    data, `unknown`, and the refused changed conversation.
+  - Each stage must have its `*-signal-proof.json`.
+  - Record the folder and the hash of its `SHA256SUMS` with the candidate's
+    review.
+
+CI keeps the walk from rotting without running it. `test_native_cleanup_smoke.py`
+in the ordinary `client/scripts` discovery pins every UI string the walk reads,
+the CLI subcommands it calls and the journal layout it checks to their product
+sources. It also pins the walk's safety margins: the person's homes are
+read-only, the walk stays in its own user and PID namespace, and an optimized
+interpreter is refused.
+
+The walk has no `workflow_dispatch` job. Hosted Ubuntu runners would need their
+unprivileged user-namespace restriction lifted, ImageMagick 7 (`magick`, which
+Ubuntu's archive does not ship) and a full feature GUI build for each run. Its
+OCR timing is also tuned to a workstation, and no self-hosted runner is attached
+to a development machine.
 
 ## Validation record
 

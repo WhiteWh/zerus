@@ -10,6 +10,7 @@
     "other"
   ],
   "automatic_approvals": false,
+  "question_routes": null,
   "background": {
     "approvals": {
       "code": "not_started",

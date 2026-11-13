@@ -1,6 +1,7 @@
 //! Rebuildable, body-free receipt locators. Original JSON alone proves delivery.
-//! Reads never enumerate source directories. Legacy discovery runs separately in
-//! bounded background batches and never deletes or repairs original receipts.
+//! Projection reads never enumerate source directories. Legacy discovery runs
+//! in bounded background batches; publication registration compares bounded
+//! directory-entry metadata. Neither deletes or repairs original receipts.
 use super::*;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
@@ -15,7 +16,10 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 mod migration;
+mod pin;
+mod point;
 mod question;
+pub(super) use point::{delivery_binding, delivery_receipt, DeliveryQuery};
 // The independently developed recovery consumer stacks on this interface.
 #[allow(unused_imports)]
 pub(crate) use question::{question_page, Coverage, QuestionReceiptPage, QuestionReceiptRow};
@@ -26,8 +30,33 @@ pub(super) const PAGE_LIMIT: usize = 100;
 const EXAMINE: usize = 256;
 const ORIGINAL_BYTES: u64 = 256 * 1024;
 const DATABASE: &str = "delivery-receipts-v1.sqlite3";
-const ROWSET_PROTOCOL: &str = "2";
+// 4: the rebound trigger also moves a row's count between sources, so the
+// witness token stays exact across a source change (zerus-z5uax.1).
+const ROWSET_PROTOCOL: &str = "4";
 const VERIFY_SECONDS: f64 = 600.0;
+// The row-set witness token (zerus-z5uax): one receipt_meta entry per source.
+const WITNESS_PREFIX: &str = "rowset_witness:";
+// A reader verifies at most this many rows appended after the last exact
+// witness; beyond it the token is stale (unknown) until the worker re-witnesses.
+const WITNESS_DELTA: i64 = 4096;
+const WITNESS_MISMATCHES: &str = "rowset_witness_mismatches";
+
+/// The exact count a worker last verified for one source, under the schema
+/// it verified (its delete/rebind triggers) and up to the row sequence then.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Witnessed {
+    Agreed,
+    Mismatch,
+    Raced,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WitnessEntry {
+    schema: i64,
+    seq: i64,
+    count: i64,
+    at: f64,
+}
 
 // Coverage is sealed only after discovery. These guards invalidate that seal
 // if a cached locator disappears or moves without a matching original walk.
@@ -221,6 +250,33 @@ impl Binding {
     }
 }
 
+// Rebuildable projection metadata; the original fingerprint and the pinned
+// conversation still have to agree before any of these fields may be repaired.
+struct CachedRow {
+    fingerprint: String,
+    stamp: String,
+    name: String,
+    run: String,
+    conversation: String,
+    agent: String,
+    first: i64,
+    at: f64,
+    files: i64,
+}
+impl CachedRow {
+    fn matches(&self, binding: &Binding) -> bool {
+        self.conversation == binding.conversation && self.matches_except_conversation(binding)
+    }
+    fn matches_except_conversation(&self, binding: &Binding) -> bool {
+        self.name == binding.name
+            && self.run == binding.run
+            && self.agent == binding.agent
+            && self.first == i64::from(binding.first)
+            && self.at == binding.at
+            && self.files == i64::from(binding.files)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct Locator {
     source: Source,
@@ -398,17 +454,11 @@ impl Catalog {
                   OR OLD.name IS NOT NEW.name OR OLD.run IS NOT NEW.run OR OLD.conversation IS NOT NEW.conversation
                   OR OLD.agent IS NOT NEW.agent OR OLD.first_message IS NOT NEW.first_message
                   OR OLD.at IS NOT NEW.at OR OLD.files IS NOT NEW.files OR OLD.binding IS NOT NEW.binding)
-                  -- The one-way first-prompt pin is not a rebind: an empty
-                  -- conversation resolving to its run's conversation keeps
-                  -- every other identity column and the row's coverage.
-                  AND NOT (OLD.conversation='' AND NEW.conversation<>''
-                    AND OLD.seq IS NEW.seq AND OLD.source IS NEW.source AND OLD.request IS NEW.request
-                    AND OLD.name IS NEW.name AND OLD.run IS NEW.run AND OLD.agent IS NEW.agent
-                    AND OLD.first_message IS NEW.first_message AND OLD.at IS NEW.at
-                    AND OLD.files IS NEW.files AND OLD.binding IS NEW.binding)
                 BEGIN
                   UPDATE receipt_sources SET complete=0 WHERE source IN(OLD.source,NEW.source);
-                  INSERT INTO receipt_errors VALUES(OLD.source,OLD.request||'.json','index_row_changed')
+                  UPDATE receipt_sources SET indexed=MAX(0,indexed-1) WHERE source=OLD.source AND OLD.source IS NOT NEW.source;
+                  UPDATE receipt_sources SET indexed=indexed+1 WHERE source=NEW.source AND OLD.source IS NOT NEW.source;
+                  INSERT INTO receipt_errors VALUES(OLD.source,OLD.request||'.json',CASE WHEN OLD.conversation IS NOT NEW.conversation THEN 'binding_changed' ELSE 'index_row_changed' END)
                     ON CONFLICT(source,name) DO UPDATE SET reason=excluded.reason;
                   UPDATE receipt_meta SET value=lower(hex(randomblob(16))) WHERE key='epoch';
                 END;"))?;
@@ -476,7 +526,9 @@ impl Catalog {
             sql(db.execute_batch(
                 "CREATE INDEX IF NOT EXISTS receipt_change ON receipt_rows(source,change);
                  CREATE INDEX IF NOT EXISTS receipt_change_scope ON receipt_rows(source,agent,conversation,change,request);
-                 CREATE INDEX IF NOT EXISTS receipt_change_initial ON receipt_rows(source,agent,run,change,request);",
+                 CREATE INDEX IF NOT EXISTS receipt_change_initial ON receipt_rows(source,agent,run,change,request);
+                 CREATE INDEX IF NOT EXISTS receipt_seq ON receipt_rows(source,seq);
+                 CREATE INDEX IF NOT EXISTS receipt_gap ON receipt_rows(source) WHERE substr(stamp,1,4)='gap:';",
             ))?;
 
             // The frontier must cover every seeded row, repairing a persisted
@@ -497,8 +549,8 @@ impl Catalog {
                 sql(transaction.commit())?;
             }
             if !verified {
-                // Reissue the invalidation guards so a cache created with the
-                // earlier trigger definition also exempts the first-prompt pin.
+                // Legacy caches exempted every empty-to-nonempty conversation
+                // change. Replace that SQL-only exemption atomically.
                 sql(db.execute_batch(
                     "DROP TRIGGER IF EXISTS receipt_row_removed;
                      DROP TRIGGER IF EXISTS receipt_row_rebound;
@@ -513,14 +565,11 @@ impl Catalog {
                        OR OLD.name IS NOT NEW.name OR OLD.run IS NOT NEW.run OR OLD.conversation IS NOT NEW.conversation
                        OR OLD.agent IS NOT NEW.agent OR OLD.first_message IS NOT NEW.first_message
                        OR OLD.at IS NOT NEW.at OR OLD.files IS NOT NEW.files OR OLD.binding IS NOT NEW.binding)
-                       AND NOT (OLD.conversation='' AND NEW.conversation<>''
-                         AND OLD.seq IS NEW.seq AND OLD.source IS NEW.source AND OLD.request IS NEW.request
-                         AND OLD.name IS NEW.name AND OLD.run IS NEW.run AND OLD.agent IS NEW.agent
-                         AND OLD.first_message IS NEW.first_message AND OLD.at IS NEW.at
-                         AND OLD.files IS NEW.files AND OLD.binding IS NEW.binding)
                      BEGIN
                        UPDATE receipt_sources SET complete=0 WHERE source IN(OLD.source,NEW.source);
-                       INSERT INTO receipt_errors VALUES(OLD.source,OLD.request||'.json','index_row_changed')
+                       UPDATE receipt_sources SET indexed=MAX(0,indexed-1) WHERE source=OLD.source AND OLD.source IS NOT NEW.source;
+                       UPDATE receipt_sources SET indexed=indexed+1 WHERE source=NEW.source AND OLD.source IS NOT NEW.source;
+                       INSERT INTO receipt_errors VALUES(OLD.source,OLD.request||'.json',CASE WHEN OLD.conversation IS NOT NEW.conversation THEN 'binding_changed' ELSE 'index_row_changed' END)
                          ON CONFLICT(source,name) DO UPDATE SET reason=excluded.reason;
                        UPDATE receipt_meta SET value=lower(hex(randomblob(16))) WHERE key='epoch';
                      END;",
@@ -564,10 +613,17 @@ impl Catalog {
             sql(transaction.commit())?;
         }
         drop(upgrade);
-        Ok(Self {
+        let catalog = Self {
             db,
             state: state.to_owned(),
-        })
+        };
+        // A new, upgraded or schema-changed cache has no current token. Take
+        // the exact witness once here; if that is busy or fails, readers stay
+        // unknown and request the worker, which re-witnesses on every run.
+        if create && !catalog.witness_present() {
+            let _ = catalog.witness();
+        }
+        Ok(catalog)
     }
     fn remember(&self, source: Source, path: &Path, value: &Value) -> Result<()> {
         // Sequence allocation and the row write must be visible together: a
@@ -581,6 +637,29 @@ impl Catalog {
             self.remember_row(source, path, value)
         }
     }
+    fn cached_row(&self, source: Source, request: &str) -> Result<Option<CachedRow>> {
+        sql(self
+            .db
+            .query_row(
+                "SELECT binding,stamp,name,run,conversation,agent,first_message,at,files
+               FROM receipt_rows WHERE source=? AND request=?",
+                params![source.key(), request],
+                |row| {
+                    Ok(CachedRow {
+                        fingerprint: row.get(0)?,
+                        stamp: row.get(1)?,
+                        name: row.get(2)?,
+                        run: row.get(3)?,
+                        conversation: row.get(4)?,
+                        agent: row.get(5)?,
+                        first: row.get(6)?,
+                        at: row.get(7)?,
+                        files: row.get(8)?,
+                    })
+                },
+            )
+            .optional())
+    }
     fn remember_row(&self, source: Source, path: &Path, value: &Value) -> Result<()> {
         let filename = path
             .file_name()
@@ -588,45 +667,78 @@ impl Catalog {
             .ok_or("Invalid receipt name")?;
         let binding = Binding::parse(source, value, filename)?;
         let stamp = file_stamp(path)?;
-        let prior: Option<(String, String, String)> = sql(self
-            .db
-            .query_row(
-                "SELECT binding,conversation,stamp FROM receipt_rows WHERE source=? AND request=?",
-                params![source.key(), binding.id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional())?;
-        if let Some((original, conversation, prior_stamp)) = prior {
-            if original != binding.fingerprint
-                || (!conversation.is_empty() && conversation != binding.conversation)
+        let mut proven_pin = false;
+        if let Some(prior) = self.cached_row(source, &binding.id)? {
+            if prior.fingerprint != binding.fingerprint
+                || (!prior.conversation.is_empty() && prior.conversation != binding.conversation)
             {
                 return self.error(source, filename, "binding_changed");
             }
-            // A content update keeps the immutable binding: the same original
-            // identity, a new file stamp and one change for consumers. Only the
-            // existing one-way first-prompt resolution may move scope.
-            let resolved = conversation.is_empty();
-            let conversation = if resolved {
-                binding.conversation.clone()
-            } else {
-                conversation
-            };
-            if resolved || prior_stamp != stamp {
+            // An unchanged original can have corrupted cached projection fields.
+            // Restore those too; preserve the immutable fingerprint and the
+            // existing one-way first-prompt conversation pin.
+            // An empty cached conversation with an equally empty original is
+            // unchanged: rewriting it would publish a change on every walk.
+            let resolved = prior.conversation.is_empty();
+            if prior.stamp != stamp || !prior.matches(&binding) {
+                let proof = if resolved && !binding.conversation.is_empty() {
+                    let original = self.state.join(source.directory()).join(filename);
+                    let Some(proof) = pin::ProvenPin::read(source, &original, &binding, &stamp)
+                    else {
+                        return self.pin_conflict(source, filename);
+                    };
+                    Some(proof)
+                } else {
+                    None
+                };
                 let change = self.bump()?;
-                sql(self.db.execute(
+                let write = || {
+                    self.db.execute(
                     "UPDATE receipt_rows SET name=?,run=?,conversation=?,agent=?,first_message=?,at=?,files=?,stamp=?,change=? WHERE source=? AND request=?",
-                    params![binding.name, binding.run, conversation, binding.agent, binding.first, binding.at, binding.files, stamp, change, source.key(), binding.id],
-                ))?;
+                    params![binding.name, binding.run, binding.conversation, binding.agent, binding.first, binding.at, binding.files, stamp, change, source.key(), binding.id],
+                )
+                };
+                if let Some(proof) = proof.filter(|_| prior.matches_except_conversation(&binding)) {
+                    proven_pin = true;
+                    if proof.update(&self.db, write).is_err() {
+                        return self.pin_conflict(source, filename);
+                    }
+                } else {
+                    sql(write())?;
+                }
             }
         } else {
             let change = self.bump()?;
             sql(self.db.execute("INSERT INTO receipt_rows(source,request,name,run,conversation,agent,first_message,at,files,binding,stamp,change) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",params![source.key(),binding.id,binding.name,binding.run,binding.conversation,binding.agent,binding.first,binding.at,binding.files,binding.fingerprint,stamp,change]))?;
+        }
+        // Clear a discrepancy only after verifying the actual stored row. A
+        // failed write or another cache trigger must keep explicit unknownness.
+        let verified = self.cached_row(source, &binding.id)?;
+        if verified.is_none_or(|row| {
+            row.fingerprint != binding.fingerprint || row.stamp != stamp || !row.matches(&binding)
+        }) {
+            return if proven_pin {
+                self.pin_conflict(source, filename)
+            } else {
+                self.error(source, filename, "index_row_changed")
+            };
         }
         sql(self.db.execute(
             "DELETE FROM receipt_errors WHERE source=? AND name=?",
             params![source.key(), filename],
         ))?;
         Ok(())
+    }
+    fn pin_conflict(&self, source: Source, filename: &str) -> Result<()> {
+        sql(self.db.execute(
+            "UPDATE receipt_sources SET complete=0 WHERE source=?",
+            [source.key()],
+        ))?;
+        sql(self.db.execute(
+            "UPDATE receipt_meta SET value=? WHERE key='epoch'",
+            [uuid::Uuid::new_v4().to_string()],
+        ))?;
+        self.error(source, filename, "binding_changed")
     }
     fn bump(&self) -> Result<i64> {
         sql(self.db.query_row(
@@ -664,11 +776,11 @@ impl Catalog {
         // snapshot. Backfill finishing between separate queries must not turn
         // a prefix snapshot into complete legacy coverage.
         let transaction = sql(self.db.unchecked_transaction())?;
-        // The coverage check counts every retained row (the row-set witness),
-        // so it grows with the whole send history. Run it first in the same
-        // snapshot, bounded by the deadline alone: an exhausted page budget
-        // must never read as unverified coverage (zerus-hn36l). The page's
-        // own bounded queries keep their work cap below.
+        // Run the coverage check first in the same snapshot, bounded by the
+        // deadline alone: an exhausted page budget must never read as
+        // unverified coverage (zerus-hn36l). Its row-set witness token keeps
+        // the check bounded whatever the history size (zerus-z5uax). The
+        // page's own bounded queries keep their work cap below.
         self.db.progress_handler(
             1000,
             Some(move || deadline.is_some_and(|d| Instant::now() >= d)),
@@ -910,15 +1022,7 @@ impl Catalog {
         if !rowset_protocol(&self.db) {
             return false;
         }
-        let witness: bool = self
-            .db
-            .query_row(
-                "SELECT NOT EXISTS(SELECT 1 FROM receipt_sources WHERE indexed != (SELECT COUNT(*) FROM receipt_rows WHERE source=receipt_sources.source))",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(false);
-        if !witness {
+        if !self.witness_current() {
             return false;
         }
         // A row without a sequence, or a frontier behind MAX(change), means a
@@ -944,9 +1048,243 @@ impl Catalog {
         }
         true
     }
+    /// The row-set witness in bounded work, whatever the history size: every
+    /// source's trigger counter equals the exact count a worker last verified
+    /// plus the rows appended after it, and the schema (with its delete and
+    /// rebind triggers) is unchanged since. A deletion fires those triggers,
+    /// and a schema change voids the token. More than WITNESS_DELTA appended
+    /// rows, a missing or foreign token, or any read failure is unknown: the
+    /// caller requests the worker, which re-witnesses the exact rows.
+    fn witness_current(&self) -> bool {
+        let sources: rusqlite::Result<Vec<String>> = self
+            .db
+            .prepare("SELECT source FROM receipt_sources")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect()
+            });
+        let Ok(sources) = sources else {
+            return false;
+        };
+        !sources.is_empty()
+            && sources
+                .iter()
+                .all(|source| self.source_witness_current(source))
+    }
+    /// One source's row-set witness in bounded work (see witness_current).
+    pub(super) fn source_witness_current(&self, source: &str) -> bool {
+        let read = || -> rusqlite::Result<bool> {
+            let schema: i64 = self
+                .db
+                .query_row("PRAGMA schema_version", [], |row| row.get(0))?;
+            let (indexed, value): (i64, Option<String>) = self.db.query_row(
+                "SELECT s.indexed,m.value FROM receipt_sources s
+                   LEFT JOIN receipt_meta m ON m.key=?1||s.source WHERE s.source=?2",
+                params![WITNESS_PREFIX, source],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let Some(entry) =
+                value.and_then(|value| serde_json::from_str::<WitnessEntry>(&value).ok())
+            else {
+                return Ok(false);
+            };
+            if entry.schema != schema {
+                return Ok(false);
+            }
+            // The source's rows after its own token, on the (source,seq)
+            // index and capped: a missing index is a read failure (unknown).
+            let added: i64 = self.db.query_row(
+                "SELECT COUNT(*) FROM (SELECT 1 FROM receipt_rows INDEXED BY receipt_seq
+                   WHERE source=?1 AND seq>?2 LIMIT ?3)",
+                params![source, entry.seq, WITNESS_DELTA + 1],
+                |row| row.get(0),
+            )?;
+            Ok(added <= WITNESS_DELTA && indexed == entry.count + added)
+        };
+        read().unwrap_or(false)
+    }
+    /// Whether every source has a token taken under the current schema.
+    fn witness_present(&self) -> bool {
+        let schema: rusqlite::Result<i64> = self
+            .db
+            .query_row("PRAGMA schema_version", [], |row| row.get(0));
+        let Ok(schema) = schema else {
+            return false;
+        };
+        Source::ALL.into_iter().all(|source| {
+            self.db
+                .query_row(
+                    "SELECT value FROM receipt_meta WHERE key=?",
+                    [format!("{WITNESS_PREFIX}{}", source.key())],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok()
+                .and_then(|value| serde_json::from_str::<WitnessEntry>(&value).ok())
+                .is_some_and(|entry| entry.schema == schema)
+        })
+    }
+    /// Publish one source's row-set witness inside the caller's transaction:
+    /// `counted` is an exact count of its rows taken under guards that rule
+    /// out a concurrent change (the walk's bounded count, or a snapshot count
+    /// plus the rows appended since). The trigger counter must equal it.
+    /// Agreement refreshes the source's token; disagreement is a recorded
+    /// mismatch. Constant SQL work: no row is counted here.
+    pub(super) fn witness_publish(
+        &self,
+        source: Source,
+        counter: i64,
+        counted: i64,
+    ) -> Result<bool> {
+        if counter != counted {
+            self.witness_mismatch(source, counter, counted)?;
+            return Ok(false);
+        }
+        let schema: i64 = sql(self
+            .db
+            .query_row("PRAGMA schema_version", [], |row| row.get(0)))?;
+        let seq: i64 =
+            sql(self
+                .db
+                .query_row("SELECT COALESCE(MAX(seq),0) FROM receipt_rows", [], |row| {
+                    row.get(0)
+                }))?;
+        let entry = WitnessEntry {
+            schema,
+            seq,
+            count: counted,
+            at: now(),
+        };
+        sql(self.db.execute(
+            "INSERT INTO receipt_meta VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![
+                format!("{WITNESS_PREFIX}{}", source.key()),
+                serde_json::to_string(&entry).map_err(|_| "Receipt index is unavailable")?
+            ],
+        ))?;
+        Ok(true)
+    }
+    /// A trigger counter that disagrees with its rows. Nothing is re-sealed
+    /// here: the whole token is cleared, this source's coverage becomes
+    /// unknown, cursors restart, and a visible error plus a durable diagnostic
+    /// are recorded. The counter takes the exact count so that a later walk,
+    /// which starts after this record and re-reads every original, can seal
+    /// the source again; only such a walk clears the error.
+    fn witness_mismatch(&self, source: Source, counter: i64, exact: i64) -> Result<()> {
+        sql(self.db.execute(
+            "DELETE FROM receipt_meta WHERE key GLOB ?1",
+            [format!("{WITNESS_PREFIX}*")],
+        ))?;
+        sql(self.db.execute(
+            "UPDATE receipt_sources SET complete=0,indexed=?1 WHERE source=?2",
+            params![exact, source.key()],
+        ))?;
+        sql(self.db.execute(
+            "UPDATE receipt_meta SET value=? WHERE key='epoch'",
+            [uuid::Uuid::new_v4().to_string()],
+        ))?;
+        self.error(source, "@witness", "witness_mismatch")?;
+        let prior: i64 = sql(self
+            .db
+            .query_row(
+                "SELECT value FROM receipt_meta WHERE key=?",
+                [WITNESS_MISMATCHES],
+                |row| row.get::<_, String>(0),
+            )
+            .optional())?
+        .and_then(|value| serde_json::from_str::<Value>(&value).ok())
+        .and_then(|value| value["count"].as_i64())
+        .unwrap_or(0);
+        sql(self.db.execute(
+            "INSERT INTO receipt_meta VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![
+                WITNESS_MISMATCHES,
+                json!({"count":prior+1,"source":source.key(),"counter":counter,"rows":exact,"at":now()}).to_string()
+            ],
+        ))?;
+        Ok(())
+    }
+    /// Re-witness every source exactly: each worker run, and a new, upgraded
+    /// or schema-changed cache. The exact counts come from one read snapshot,
+    /// without the write lock; a short IMMEDIATE transaction then adds the
+    /// rows appended since that snapshot and publishes. A delete, rebind or
+    /// schema change in between (each rotates the epoch or the schema) is a
+    /// race: nothing changes and the next run retries. Any mismatch leaves no
+    /// token at all, so readers stay unknown until a clean witness.
+    pub(super) fn witness(&self) -> Result<Witnessed> {
+        let (epoch, schema, watermark, counts) = {
+            let read = sql(self.db.unchecked_transaction())?;
+            let epoch: String = sql(self.db.query_row(
+                "SELECT value FROM receipt_meta WHERE key='epoch'",
+                [],
+                |row| row.get(0),
+            ))?;
+            let schema: i64 = sql(self
+                .db
+                .query_row("PRAGMA schema_version", [], |row| row.get(0)))?;
+            let watermark: i64 = sql(self.db.query_row(
+                "SELECT COALESCE(MAX(seq),0) FROM receipt_rows",
+                [],
+                |row| row.get(0),
+            ))?;
+            let mut counts = Vec::with_capacity(Source::ALL.len());
+            for source in Source::ALL {
+                counts.push(sql(self.db.query_row(
+                    "SELECT COUNT(*) FROM receipt_rows WHERE source=?",
+                    [source.key()],
+                    |row| row.get::<_, i64>(0),
+                ))?);
+            }
+            sql(read.commit())?;
+            (epoch, schema, watermark, counts)
+        };
+        let write = sql(rusqlite::Transaction::new_unchecked(
+            &self.db,
+            rusqlite::TransactionBehavior::Immediate,
+        ))?;
+        let now_epoch: String = sql(self.db.query_row(
+            "SELECT value FROM receipt_meta WHERE key='epoch'",
+            [],
+            |row| row.get(0),
+        ))?;
+        let now_schema: i64 = sql(self
+            .db
+            .query_row("PRAGMA schema_version", [], |row| row.get(0)))?;
+        if now_epoch != epoch || now_schema != schema {
+            sql(write.commit())?;
+            return Ok(Witnessed::Raced);
+        }
+        let mut agreed = true;
+        for (source, counted) in Source::ALL.into_iter().zip(counts) {
+            let appended: i64 = sql(self.db.query_row(
+                "SELECT COUNT(*) FROM receipt_rows INDEXED BY receipt_seq WHERE source=?2 AND seq>?1",
+                params![watermark, source.key()],
+                |row| row.get(0),
+            ))?;
+            let counter: i64 = sql(self.db.query_row(
+                "SELECT indexed FROM receipt_sources WHERE source=?",
+                [source.key()],
+                |row| row.get(0),
+            ))?;
+            agreed &= self.witness_publish(source, counter, counted + appended)?;
+        }
+        if !agreed {
+            sql(self.db.execute(
+                "DELETE FROM receipt_meta WHERE key GLOB ?1",
+                [format!("{WITNESS_PREFIX}*")],
+            ))?;
+        }
+        sql(write.commit())?;
+        Ok(if agreed {
+            Witnessed::Agreed
+        } else {
+            Witnessed::Mismatch
+        })
+    }
     /// A stale-but-consistent locator stays complete: age only schedules the
     /// background re-verification walk, which flips coverage when it finds a
-    /// discrepancy. No consumer waits on the 600 s timer by itself.
+    /// discrepancy. No consumer waits on the 600 s timer by itself. The
+    /// row-set token has the same cadence: a missing or old token is due.
     fn verification_due(&self) -> bool {
         let verified_at = self
             .db
@@ -960,7 +1298,21 @@ impl Catalog {
             .flatten()
             .and_then(|value| value.parse::<f64>().ok())
             .unwrap_or(0.0);
-        now() - verified_at >= VERIFY_SECONDS
+        let witnessed_at = Source::ALL
+            .into_iter()
+            .map(|source| {
+                self.db
+                    .query_row(
+                        "SELECT value FROM receipt_meta WHERE key=?",
+                        [format!("{WITNESS_PREFIX}{}", source.key())],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .ok()
+                    .and_then(|value| serde_json::from_str::<WitnessEntry>(&value).ok())
+                    .map_or(0.0, |entry| entry.at)
+            })
+            .fold(f64::INFINITY, f64::min);
+        now() - verified_at.min(witnessed_at) >= VERIFY_SECONDS
     }
     fn change_epoch(&self) -> Result<(String, String, i64)> {
         let epoch: String = sql(self.db.query_row(
@@ -1236,6 +1588,19 @@ fn file_stamp(path: &Path) -> Result<String> {
     }
 }
 
+/// The content stamp of `file_stamp` and the modification time, from one
+/// metadata read. None for anything but a regular file.
+fn file_state(path: &Path) -> Option<(String, f64)> {
+    let metadata = fs::symlink_metadata(path)
+        .ok()
+        .filter(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())?;
+    let (seconds, nanos) = crate::platform::modified(&metadata);
+    Some((
+        format!("{}:{seconds}:{nanos}", metadata.len()),
+        seconds as f64 + nanos as f64 / 1e9,
+    ))
+}
+
 /// Projection is advisory. Missing index/original data is never proof of absence
 /// and this module is deliberately absent from every send/retry admission check.
 pub(super) fn page(
@@ -1256,13 +1621,269 @@ pub(super) fn request_migration() {
     migration::request(&root());
 }
 
+fn receipt_source(path: &Path) -> Option<Source> {
+    Source::ALL.into_iter().find(|source| {
+        path.parent()
+            .is_some_and(|p| p.ends_with(source.directory()))
+    })
+}
+
+fn receipt_location(path: &Path, source: Source) -> Result<(PathBuf, &str)> {
+    let parent = path.parent().ok_or("Invalid receipt path")?;
+    let owner = if matches!(source, Source::Terminal | Source::Question) {
+        parent.parent()
+    } else {
+        parent.parent().and_then(Path::parent)
+    }
+    .ok_or("Invalid receipt owner")?;
+    let state = crate::platform::canonical(owner).map_err(|_| "Receipt owner is unavailable")?;
+    if crate::platform::canonical(parent).map_err(|_| "Receipt directory is unavailable")?
+        != state.join(source.directory())
+    {
+        return Err("Foreign receipt directory".into());
+    }
+    let filename = path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .ok_or("Invalid receipt name")?;
+    Ok((state, filename))
+}
+
+/// Metadata only, never a permission to write an original. A scan uses at most
+/// 2 MiB of entry digests and retains only their sorted SHA-256 fingerprint.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+#[derive(Clone)]
+pub(in crate::state) struct BeforeCommit {
+    path: PathBuf,
+    entries: ReceiptEntries,
+}
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+#[derive(Clone)]
+struct ReceiptEntries {
+    object: (u64, u64),
+    stamp: String,
+    others: usize,
+    fingerprint: [u8; 32],
+    receipts: usize,
+    target: bool,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn receipt_entries(path: &Path) -> Option<ReceiptEntries> {
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::{
+            ffi::OsStrExt,
+            fs::{DirEntryExt, MetadataExt},
+        };
+        let started = Instant::now();
+        let parent = path.parent()?;
+        let target = path.file_name()?;
+        let metadata = fs::symlink_metadata(parent).ok()?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return None;
+        }
+        let object = (metadata.dev(), metadata.ino());
+        let unchanged = |other: &fs::Metadata| {
+            other.is_dir()
+                && !other.file_type().is_symlink()
+                && (
+                    other.dev(),
+                    other.ino(),
+                    other.len(),
+                    other.mtime(),
+                    other.mtime_nsec(),
+                    other.ctime(),
+                    other.ctime_nsec(),
+                ) == (
+                    metadata.dev(),
+                    metadata.ino(),
+                    metadata.len(),
+                    metadata.mtime(),
+                    metadata.mtime_nsec(),
+                    metadata.ctime(),
+                    metadata.ctime_nsec(),
+                )
+        };
+        let mut result = ReceiptEntries {
+            object,
+            stamp: migration::stamp(parent).ok()?,
+            others: 0,
+            fingerprint: [0; 32],
+            receipts: 0,
+            target: false,
+        };
+        let mut entries: Vec<[u8; 32]> = Vec::new();
+        for (number, entry) in fs::read_dir(parent).ok()?.enumerate() {
+            if number >= 65_536 || started.elapsed() >= Duration::from_millis(20) {
+                return None;
+            }
+            let entry = entry.ok()?;
+            let name = entry.file_name();
+            if name.as_bytes().ends_with(b".json") {
+                result.receipts += 1;
+            }
+            if name == target {
+                result.target = true;
+                continue;
+            }
+            if entry.ino() == 0 {
+                return None;
+            }
+            let mut hash = Sha256::new();
+            hash.update(entry.ino().to_be_bytes());
+            hash.update(name.as_bytes());
+            entries.push(hash.finalize().into());
+            result.others += 1;
+        }
+        entries.sort_unstable();
+        let mut hash = Sha256::new();
+        for entry in entries {
+            hash.update(entry);
+        }
+        result.fingerprint = hash.finalize().into();
+        if started.elapsed() >= Duration::from_millis(20)
+            || !unchanged(&fs::symlink_metadata(parent).ok()?)
+            || migration::stamp(parent).ok()? != result.stamp
+        {
+            return None;
+        }
+        Some(result)
+    }
+}
+
+/// Capture before staging adds its temporary directory entry. Failure only
+/// disables the optimization; it must never refuse an otherwise valid send.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(in crate::state) fn before_commit(path: &Path) -> Option<BeforeCommit> {
+    Some(BeforeCommit {
+        path: path.to_owned(),
+        entries: receipt_entries(path)?,
+    })
+}
+
+/// Register an original which its custodian has already committed and verified.
+/// Keep the batch's atomic change allocation and witness/epoch rules. Advancing
+/// coverage additionally requires a stable exact directory delta: every other
+/// filename/inode is unchanged, and the prior receipt count agrees with the
+/// verified ledger. Unknown deltas leave coverage for the background worker.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(in crate::state) fn remember_committed(
+    path: &Path,
+    value: &Value,
+    before: Option<&BeforeCommit>,
+) -> bool {
+    let Some(source) = receipt_source(path) else {
+        return false;
+    };
+    let remember = (|| -> Result<()> {
+        let (state, filename) = receipt_location(path, source)?;
+        let catalog = Catalog::open(&state, true)?;
+        let registered = (|| -> Result<()> {
+            let transaction = sql(catalog.db.unchecked_transaction())?;
+            let prior: (String, bool, i64, i64) = sql(catalog.db.query_row(
+                "SELECT stamp,complete,indexed,errors FROM receipt_sources WHERE source=?",
+                [source.key()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            ))?;
+            let covered = before
+                .filter(|b| {
+                    b.path == path
+                        && prior.1
+                        && prior.3 == 0
+                        && prior.0 == b.entries.stamp
+                        && prior.2 == b.entries.receipts as i64
+                })
+                .filter(|_| catalog.coverage_verified());
+            catalog.remember(source, path, value)?;
+            let failed: bool = sql(catalog.db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM receipt_errors WHERE source=? AND name=?)",
+                params![source.key(), filename],
+                |r| r.get(0),
+            ))?;
+            if failed {
+                return Err("Receipt registration is incomplete".into());
+            }
+            let mut advanced = false;
+            if let (Some(before), Some(after)) =
+                (covered, covered.and_then(|_| receipt_entries(path)))
+            {
+                if after.target
+                    && after.object == before.entries.object
+                    && after.others == before.entries.others
+                    && after.fingerprint == before.entries.fingerprint
+                    && after.receipts
+                        == before.entries.receipts + usize::from(!before.entries.target)
+                    && catalog.coverage_verified()
+                {
+                    // A legitimate mutable projection update may rotate the
+                    // epoch. Preserve that rotation while restoring coverage.
+                    sql(catalog.db.execute(
+                        "UPDATE receipt_sources SET stamp=?,complete=1 WHERE source=? AND errors=0",
+                        params![after.stamp, source.key()],
+                    ))?;
+                    advanced = true;
+                }
+            }
+            if !advanced {
+                // A coarse clock may leave the same stamp despite a foreign
+                // entry change. Unknown proof must clear the flag as well.
+                sql(catalog.db.execute(
+                    "UPDATE receipt_sources SET complete=0 WHERE source=?",
+                    [source.key()],
+                ))?;
+            }
+            sql(transaction.commit())?;
+            Ok(())
+        })();
+        if registered.is_err() {
+            // Outside the rolled-back transaction: never resurrect its old
+            // complete witness after an allocation or row-write failure.
+            let _ = catalog.db.execute(
+                "UPDATE receipt_sources SET complete=0 WHERE source=?",
+                [source.key()],
+            );
+        }
+        registered
+    })();
+    // Report this advisory failure to the frontend as well: the invalidation
+    // itself may have failed. Neither result can fail or replay the send.
+    remember.is_ok()
+}
+
+/// Called only after the keeper exits. A complete successful registration
+/// needs no forced history walk; incomplete or due verification remains work.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::state) fn request_committed_reconciliation() {
+    let state = root();
+    let ready = (|| -> Result<bool> {
+        let catalog = Catalog::open(&state, false)?;
+        let (stamp, complete, errors): (String, bool, i64) = sql(catalog.db.query_row(
+            "SELECT stamp,complete,errors FROM receipt_sources WHERE source='terminal'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ))?;
+        Ok(complete
+            && errors == 0
+            && catalog.coverage_verified()
+            && !catalog.verification_due()
+            && migration::stamp(&state.join(Source::Terminal.directory()))
+                .is_ok_and(|now| now == stamp))
+    })();
+    if ready != Ok(true) {
+        migration::request(&state);
+    }
+}
+
 /// Preserve the authoritative atomic write and its error exactly. Index failure
 /// never turns a possibly delivered send into a refusal or allows its replay.
 pub(super) fn persist(path: &Path, value: &Value) -> Result<()> {
-    let source = Source::ALL.into_iter().find(|source| {
-        path.parent()
-            .is_some_and(|p| p.ends_with(source.directory()))
-    });
+    let source = receipt_source(path);
     let before = source
         .and_then(|_| path.parent())
         .and_then(|p| migration::stamp(p).ok());
@@ -1270,19 +1891,7 @@ pub(super) fn persist(path: &Path, value: &Value) -> Result<()> {
     if let Some(source) = source {
         let remember = (|| -> Result<()> {
             let parent = path.parent().ok_or("Invalid receipt path")?;
-            let owner = if matches!(source, Source::Terminal | Source::Question) {
-                parent.parent()
-            } else {
-                parent.parent().and_then(Path::parent)
-            }
-            .ok_or("Invalid receipt owner")?;
-            let state =
-                crate::platform::canonical(owner).map_err(|_| "Receipt owner is unavailable")?;
-            if crate::platform::canonical(parent).map_err(|_| "Receipt directory is unavailable")?
-                != state.join(source.directory())
-            {
-                return Err("Foreign receipt directory".into());
-            }
+            let (state, _) = receipt_location(path, source)?;
             let catalog = Catalog::open(&state, true)?;
             catalog.remember(source, path, value)?;
             // Only advance an already reconciled snapshot. A missed/legacy

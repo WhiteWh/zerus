@@ -109,6 +109,7 @@ object EventHistoryCodec {
         .put("text", event.text).put("time", event.time).put("at", event.at.takeIf(Double::isFinite) ?: 0.0)
         .put("request_id", event.requestId).put("source", event.source).put("delivery", event.delivery)
         .put("native_type", event.nativeType).put("submitted_text", event.submittedText)
+        .also { if(event.nativeMessageId.isNotEmpty()) it.put("native_message_id",event.nativeMessageId) }
         .put("original_id", event.originalId).put("history_id", event.historyId).put("history_cursor", event.historyCursor)
         .put("history_epoch", event.historyEpoch).put("incoming_seq", event.incomingSeq ?: JSONObject.NULL)
         .put("original_ids", JSONArray(event.originalIds)).put("detail_truncated",event.detailTruncated)
@@ -138,7 +139,8 @@ object EventHistoryCodec {
                 value.optJSONArray("original_ids")?.let { ids -> (0 until minOf(ids.length(),8)).mapNotNull { ids.opt(it) as? String } }.orEmpty(), value.optBoolean("detail_truncated"),
                 value.optJSONObject("voice")?.let(VoiceProtocol::message),
                 value.optString("origin").takeIf { it in ActivityNotices.origins }.orEmpty(), value.optString("sender"), value.optString("report"),
-                inheritedFrom = value.optString("inherited_from").take(512))
+                inheritedFrom = value.optString("inherited_from").take(512),
+                nativeMessageId = value.string("native_message_id").takeIf { it.toByteArray(Charsets.UTF_8).size<=256 && it.none(Char::isISOControl) }.orEmpty())
                 .let(ActivityNotices::cached)
         }
     }

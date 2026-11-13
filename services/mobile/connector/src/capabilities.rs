@@ -53,6 +53,7 @@ pub fn external_operation_allowed(operation: &str) -> bool {
 }
 
 pub const WINDOWS_OPERATIONS: &[&str] = &[
+    "send_receipt",
     "inspect",
     "history",
     "archive_list",
@@ -65,6 +66,7 @@ pub const WINDOWS_OPERATIONS: &[&str] = &[
     "compact_context",
     "mark_read",
     "session_notifications",
+    "session_question_routing",
     "terminal_snapshot",
     "terminal_input",
     "hooks_status",
@@ -93,6 +95,7 @@ pub const CLEAR_CONTEXT_DISMISS_HELP_MARKER: &str = "Mobile clear-context ABI: d
 /// [`crate::launch::OPERATIONS`]. Every other known operation is refused
 /// as unsupported and never advertised.
 pub const IMPLEMENTED: &[&str] = &[
+    "send_receipt",
     "analytics_read",
     "archive_list",
     "attachment_read",
@@ -109,6 +112,8 @@ pub const IMPLEMENTED: &[&str] = &[
     "inspect",
     "mark_read",
     "session_notifications",
+    "session_question_routing",
+    "session_question_route_person",
     "process_output",
     "project_assignment",
     "project_assign",
@@ -177,6 +182,11 @@ pub enum Gate {
     /// The phone's Send now, Cancel and Done list.
     TaskActions,
     Repository,
+    SendReceipt,
+    /// The person's per-child question route switch (zerus-sa9qn.33).
+    QuestionRouting,
+    /// A phone's signed latch statement (zerus-sa9qn.50).
+    QuestionRoutePerson,
 }
 
 impl Gate {
@@ -188,6 +198,9 @@ impl Gate {
             Gate::TaskExchange => flags.task_exchange,
             Gate::TaskActions => flags.task_actions,
             Gate::Repository => flags.repository,
+            Gate::SendReceipt => flags.send_receipt,
+            Gate::QuestionRouting => flags.question_routing,
+            Gate::QuestionRoutePerson => flags.question_route_person,
         }
     }
 
@@ -200,6 +213,9 @@ impl Gate {
             Gate::TaskExchange => "task_exchange",
             Gate::TaskActions => "task_actions",
             Gate::Repository => "repository",
+            Gate::SendReceipt => "send_receipt",
+            Gate::QuestionRouting => "question_routing",
+            Gate::QuestionRoutePerson => "question_route_person",
         }
     }
 
@@ -211,6 +227,9 @@ impl Gate {
             Gate::TaskExchange => "hgs task exchange|digests --json",
             Gate::TaskActions => "hgs task mobile-send|mobile-cancel|mobile-done --json",
             Gate::Repository => crate::repositories::HELP_MARKER,
+            Gate::SendReceipt => crate::send_receipt::HELP_MARKER,
+            Gate::QuestionRouting => crate::session_question_routing::HELP_MARKER,
+            Gate::QuestionRoutePerson => crate::session_question_route_person::HELP_MARKER,
         }
     }
 }
@@ -230,6 +249,11 @@ pub struct ConnectorOnly {
 /// of the black-box suites read the same table from
 /// `services/mobile/tests/rust-only-operations.json`.
 pub const CONNECTOR_ONLY: &[ConnectorOnly] = &[
+    ConnectorOnly {
+        operation: "send_receipt",
+        gate: Gate::SendReceipt,
+        class: Class::Read,
+    },
     ConnectorOnly {
         // The session-action marker predates queue removal: an older hgs prints it
         // and refuses the request. Only `remove_queued` in the session's
@@ -278,6 +302,18 @@ pub const CONNECTOR_ONLY: &[ConnectorOnly] = &[
         operation: "task_done",
         gate: Gate::TaskActions,
         class: Class::Read,
+    },
+    // The person's per-child question route switch (zerus-sa9qn.33).
+    ConnectorOnly {
+        operation: "session_question_routing",
+        gate: Gate::QuestionRouting,
+        class: Class::Mutation,
+    },
+    // A phone's signed latch statement (zerus-sa9qn.50).
+    ConnectorOnly {
+        operation: "session_question_route_person",
+        gate: Gate::QuestionRoutePerson,
+        class: Class::Mutation,
     },
 ];
 
@@ -331,6 +367,7 @@ pub const SPEECH_CONFIG: &[&str] = &[
 /// What the native CLI offers, from its help text.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Flags {
+    pub send_receipt: bool,
     pub windows_gateway: bool,
     pub analytics: bool,
     pub archive: bool,
@@ -347,6 +384,10 @@ pub struct Flags {
     pub directory_create: bool,
     pub read: bool,
     pub session_notifications: bool,
+    /// The exact `session-question-routing-v1` line (zerus-sa9qn.33).
+    pub question_routing: bool,
+    /// The exact `question-route-person-v1` line (zerus-sa9qn.50).
+    pub question_route_person: bool,
     pub preference: bool,
     pub attachment_read: bool,
     pub file_read: bool,
@@ -384,6 +425,9 @@ impl Flags {
     pub fn from_help(help: &str) -> Flags {
         let has = |marker: &str| help.contains(marker);
         let flags = Flags {
+            send_receipt: help
+                .lines()
+                .any(|line| line.trim() == crate::send_receipt::HELP_MARKER),
             windows_gateway: help.lines().any(|line| line.trim() == WINDOWS_HELP_MARKER),
             analytics: has("hgs [@host] analytics --json"),
             archive: has("archives --json"),
@@ -405,6 +449,12 @@ impl Flags {
             session_notifications: help
                 .lines()
                 .any(|line| line.trim() == crate::session_notifications::HELP_MARKER),
+            question_routing: help
+                .lines()
+                .any(|line| line.trim() == crate::session_question_routing::HELP_MARKER),
+            question_route_person: help
+                .lines()
+                .any(|line| line.trim() == crate::session_question_route_person::HELP_MARKER),
             preference: has("swarm preference set mobile_delivery"),
             attachment_read: has("attachment <session> --request ID --index N"),
             file_read: has("file-read <session> --json"),

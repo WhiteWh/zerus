@@ -51,6 +51,13 @@ fn json_file_position(argv: &[String]) -> Option<usize> {
 }
 
 fn main() {
+    // A native context callback is an optional bounded read, never ordinary
+    // CLI dispatch (which can prepare managers, peers and live-session work).
+    if std::env::args().nth(1).as_deref() == Some("--opencode-agent-hint") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        println!("{}", serde_json::json!({"context":state::opencode::hint_context(&args)}));
+        return;
+    }
     #[cfg(windows)]
     let entered = std::time::Instant::now();
     zerus_client_core::quit_origin::capture_process_entry();
@@ -193,3 +200,7 @@ mod tests {
         assert_eq!(json_file_position(&args(&["team", "list"])), None);
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/support/executable.rs"]
+mod test_executable;

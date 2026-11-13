@@ -5,7 +5,9 @@
 //! request receipt rules. Borrowed callbacks remain trusted Rust call sites,
 //! never decoded commands or permits.
 //! The one logical deadline vetoes later effects; it cannot bound synchronous
-//! helper drain or justify releasing its original physical resources.
+//! helper drain or justify releasing its original physical resources. The only
+//! post-deadline spawn is a pre-reserved Send buffer discard, within its fixed
+//! two-second cleanup lease; it cannot write records or deliver input.
 use super::*;
 use crate::state::{
     repositories::directory::Directory,
@@ -49,8 +51,37 @@ pub(super) fn front_settings(name: &str, raw: &[u8]) -> Option<Result<i32>> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::state) fn front_send(
+    _public: &input::PublicSend,
+    candidate: input::native_send::Candidate,
+    raw: &[u8],
+) -> Option<Result<Value>> {
+    // Reservation is still disposition. Failure silently preserves the old
+    // blocking Root path, including the GUI auto-apply race.
+    let slot = host::send_slot()?;
+    Some((|| {
+        let frame = host::frame::Frame::new_send(raw.to_vec(),candidate,
+            host::frame::Deadline::after(operation_budget(host::frame::Operation::Send))?)?;
+        host::request_send(frame,slot)
+    })())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn operation_budget(operation: host::frame::Operation) -> Duration {
+    Duration::from_secs(match operation {
+        host::frame::Operation::Send => 25,
+        host::frame::Operation::Effort | host::frame::Operation::Settings => 15,
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn native_checked(name: &str, request: &Request, empty: bool) -> Result<Value> {
     driver::checked(name, request, empty)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn send_settings_ready(record: &Value) -> Option<Result<()>> {
+    driver::send_settings_ready(record)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -75,6 +106,9 @@ pub(in crate::state) fn entered() -> bool {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::state) fn owned_send() -> bool {driver::owned_send()}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(in crate::state) fn refuse<T>(error: String) -> Result<T> {
     driver::refuse(error)
 }
@@ -93,6 +127,7 @@ pub(in crate::state) fn deadline(until: Instant) -> Result<Instant> {
 pub(super) enum Receipts {
     Effort,
     Settings,
+    Send,
 }
 
 /// The two literal paths and the named-key path share the SAME checks.
@@ -230,6 +265,7 @@ pub(super) struct Scope<'a> {
     sessions: Directory,
     inputs: Directory,
     receipts: Directory,
+    send_directories: Option<(Directory, Directory)>,
     record: Original,
     binding: Binding,
     proof: KindProof,
@@ -288,9 +324,13 @@ impl<'a> Scope<'a> {
         }
         let sessions = state.child("sessions")?;
         let inputs = state.child("native-input")?;
+        let send_directories = if receipts == Receipts::Send {
+            Some((state.child("settings_receipts")?,state.child("attachments")?))
+        } else { None };
         let receipts = state.child(match receipts {
             Receipts::Effort => "effort_receipts",
             Receipts::Settings => "settings_receipts",
+            Receipts::Send => "input_receipts",
         })?;
         let record = Original::open(&sessions, format!("{sid}.json"))?;
         let actual = record.record(&sessions)?;
@@ -309,6 +349,7 @@ impl<'a> Scope<'a> {
             sessions,
             inputs,
             receipts,
+            send_directories,
             record,
             binding: Binding::capture(&actual),
             proof,
@@ -336,6 +377,12 @@ impl<'a> Scope<'a> {
             directory.verify()?;
             if !directory.private()? {
                 return Err("The original picker directory is not private".into());
+            }
+        }
+        if let Some((settings,attachments)) = &self.send_directories {
+            for directory in [settings,attachments] {
+                directory.verify()?;
+                if !directory.private()? { return Err("Original Send directory is not private".into()); }
             }
         }
         if crate::platform::canonical(root()).map_err(|e| e.to_string())? != self.state.path

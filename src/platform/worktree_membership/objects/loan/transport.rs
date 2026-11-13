@@ -299,15 +299,30 @@ mod tests {
     fn until() -> Instant {
         Instant::now() + std::time::Duration::from_secs(3)
     }
+    /// The descriptors of this process that share `file`'s open file
+    /// description (kcmp KCMP_FILE): `file` itself and every received copy of
+    /// a right to it. Not every descriptor on its inode: another thread of the
+    /// test process may hold a brief new open of the same file, such as the
+    /// worktree membership scan's O_PATH open of each /proc/self/fd entry,
+    /// which is a description of its own (zerus-yskhm).
     #[cfg(target_os = "linux")]
     fn copies(file: &File) -> usize {
-        use std::os::unix::fs::MetadataExt;
-        let original = file.metadata().unwrap();
+        const KCMP_FILE: libc::c_int = 0;
+        let pid = std::process::id() as libc::pid_t;
+        let shares = |fd: libc::c_int| unsafe {
+            libc::syscall(libc::SYS_kcmp, pid, pid, KCMP_FILE, file.as_raw_fd(), fd) == 0
+        };
+        // Without kcmp the count would prove nothing.
+        assert!(
+            shares(file.as_raw_fd()),
+            "kcmp KCMP_FILE: {}",
+            io::Error::last_os_error()
+        );
         std::fs::read_dir("/proc/self/fd")
             .unwrap()
             .filter_map(Result::ok)
-            .filter_map(|fd| std::fs::metadata(fd.path()).ok())
-            .filter(|m| m.dev() == original.dev() && m.ino() == original.ino())
+            .filter_map(|fd| fd.file_name().to_str()?.parse::<libc::c_int>().ok())
+            .filter(|&fd| shares(fd))
             .count()
     }
     #[test]

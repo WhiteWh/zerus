@@ -383,7 +383,7 @@ fn read_hint_policy(directory: &Path, home: &str) -> std::result::Result<HintPol
 /// values, including an empty exclusion list, after shell startup and on every
 /// new native process. No config path or policy goes into the saved recipe.
 pub(crate) fn agent_hint_environment(provider: &str) -> Vec<String> {
-    if !["claude", "codex"].contains(&provider) {
+    if !["claude", "codex", "kimi"].contains(&provider) {
         return Vec::new();
     }
     let policy = platform::home()
@@ -402,6 +402,21 @@ fn hint_policy_environment(policy: std::result::Result<HintPolicy, ()>) -> Vec<S
                 off: String::new(),
             }
             .environment()
+        }
+    }
+}
+
+/// A native host or session launch resolves its own current policy. Unlike a
+/// tracked hook, it does not require a previously forwarded process snapshot.
+pub(crate) fn configured_agent_hint(account: &str) -> bool {
+    let policy = platform::home()
+        .ok_or(())
+        .and_then(|home| read_hint_policy(&config_dir(&home), &home));
+    match policy {
+        Ok(policy) => policy.allows(account),
+        Err(()) => {
+            eprintln!("{HINT_POLICY_DIAGNOSTIC}");
+            false
         }
     }
 }
@@ -614,7 +629,7 @@ mod tests {
             hint_policy_environment(Err(())),
             ["HGS_AGENT_HINT=0", "HGS_AGENT_HINT_OFF="]
         );
-        for provider in ["kimi", "opencode", "dsh", "sh"] {
+        for provider in ["opencode", "dsh", "sh"] {
             assert!(agent_hint_environment(provider).is_empty());
         }
         let absent = tempfile::tempdir().unwrap();

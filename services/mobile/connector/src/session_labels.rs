@@ -233,6 +233,85 @@ mod tests {
         os::unix::fs::PermissionsExt,
     };
 
+    const ORIGINAL_CASE: &str = "ZERUS_CONNECTOR_LABEL_ORIGINAL_CASE";
+
+    /// Other libtest threads can fork while a short Store guard is held and
+    /// retain its CLOEXEC descriptor until exec. The shipped responder runs
+    /// these synchronous operations on one current-thread runtime. Give each
+    /// fixture that same original-process boundary, before opening any store.
+    fn isolated_original() -> bool {
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+        use std::time::Instant;
+        let thread = std::thread::current();
+        let case = thread.name().expect("named session-label test");
+        if let Some(original) = std::env::var_os(ORIGINAL_CASE) {
+            assert_eq!(original, case, "wrong original fixture");
+            return false;
+        }
+        let root = tempfile::tempdir().unwrap();
+        for name in ["home", "tmp", "state", "tmux", "config"] {
+            std::fs::create_dir(root.path().join(name)).unwrap();
+        }
+        let stdout = root.path().join("stdout");
+        let stderr = root.path().join("stderr");
+        // Regular files avoid making completion depend on a pipe EOF that an
+        // unrelated pre-exec fork in the parent could also retain.
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([case, "--exact", "--test-threads=1"])
+            .env(ORIGINAL_CASE, case)
+            .env("HOME", root.path().join("home"))
+            .env("TMPDIR", root.path().join("tmp"))
+            .env("HGS_STATE_DIR", root.path().join("state"))
+            .env("HGS_CONFIG_DIR", root.path().join("config"))
+            .env("TMUX_TMPDIR", root.path().join("tmux"))
+            .env_remove("HGS_SESSION")
+            .env_remove("HGS_SESSION_ID")
+            .env_remove("HGS_RUN_ID")
+            .stdin(Stdio::null())
+            .stdout(std::fs::File::create(&stdout).unwrap())
+            .stderr(std::fs::File::create(&stderr).unwrap())
+            .spawn()
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(30);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= until {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("original session-label fixture {case} did not settle");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let read = |path: &Path| {
+            let mut bytes = Vec::new();
+            std::fs::File::open(path)
+                .unwrap()
+                .take(65_537)
+                .read_to_end(&mut bytes)
+                .unwrap();
+            assert!(bytes.len() <= 65_536, "fixture output exceeded its bound");
+            String::from_utf8(bytes).unwrap()
+        };
+        let output = read(&stdout);
+        let error = read(&stderr);
+        assert!(
+            status.success() && output.contains("test result: ok. 1 passed"),
+            "original session-label fixture {case}: {status}\n{output}\n{error}"
+        );
+        true
+    }
+
+    #[test]
+    fn a_clean_label_fixture_always_has_its_own_original_process() {
+        if isolated_original() {
+            return;
+        }
+        assert!(std::env::var_os(ORIGINAL_CASE).is_some());
+    }
+
     fn make_fifo(path: &std::path::Path) {
         use std::os::unix::fs::FileTypeExt;
         // rustix::fs::mkfifoat is unavailable on Apple targets. POSIX mkfifo
@@ -305,6 +384,9 @@ mod tests {
     }
     #[test]
     fn only_the_same_canonical_configuration_answers_an_original_query() {
+        if isolated_original() {
+            return;
+        }
         let (_temp, selection, query, context, at) = fixture();
         assert!(Selection::at(
             &selection.path,
@@ -355,6 +437,9 @@ mod tests {
     }
     #[test]
     fn a_query_sample_must_lie_strictly_inside_the_freshness_window() {
+        if isolated_original() {
+            return;
+        }
         // zerus-1uvah: the fixture's query lasts exactly QUERY_MILLIS, so
         // the freshness rule accepts the write's own sample and rejects a
         // second sample taken even 1 ms before it or after the window. A
@@ -371,6 +456,9 @@ mod tests {
 
     #[test]
     fn busy_irregular_and_oversized_inputs_never_block_or_prove_ready() {
+        if isolated_original() {
+            return;
+        }
         use std::os::unix::fs::symlink;
         let (_temp, selection, query, context, at) = fixture();
         let held = Store::lock(&selection.directory, false).unwrap();
@@ -475,14 +563,23 @@ mod tests {
     }
     #[tokio::test]
     async fn a_live_journal_owner_answers_once_with_only_a_bounded_context_read() {
+        if isolated_original() {
+            return;
+        }
         run(false, true).await;
     }
     #[tokio::test]
     async fn a_missing_runtime_routing_marker_never_gives_a_positive() {
+        if isolated_original() {
+            return;
+        }
         run(false, false).await;
     }
     #[tokio::test]
     async fn a_configuration_changed_during_the_native_read_cannot_answer() {
+        if isolated_original() {
+            return;
+        }
         run(true, true).await;
     }
 }

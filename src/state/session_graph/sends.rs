@@ -17,7 +17,13 @@ fn machine() -> Option<String> {
 /// A verified native target is useful even when an older caller has no source
 /// attribution. Do not add it to an old receipt on replay.
 pub(crate) fn target_receipt(record: &Value) -> Option<Value> {
-    let endpoint = Endpoint::from_record(&machine()?, record)?;
+    target_receipt_for_machine(record, &machine()?)
+}
+
+/// The same target from an already verified, existing machine identity.
+/// This factory never loads, initializes or saves a machine catalog.
+pub(crate) fn target_receipt_for_machine(record: &Value, machine: &str) -> Option<Value> {
+    let endpoint = Endpoint::from_record(machine, record)?;
     Some(json!({"schema":1,"node":endpoint.key(),"endpoint":endpoint,
         "name":record["name"],"run_id":record["run_id"]}))
 }
@@ -39,6 +45,11 @@ fn token_record() -> Option<Value> {
     let run = nonempty_env("HGS_RUN_ID")?;
     let record = read_run(&name, &run).ok()??;
     if !process_alive(&record) || record["state"] == "archived" {
+        return None;
+    }
+    // Ancestry through a recorded DeepSeek host proves no other agent's
+    // session (zerus-ppd26.15).
+    if crate::state::dsh::host_check() != crate::state::dsh::HostCheck::Outside {
         return None;
     }
     proven(record)
@@ -131,6 +142,21 @@ fn host_session() -> Option<crate::host::protocol::CallerSession> {
     {
         None
     }
+}
+
+/// The `HGS_AGENT` value a resident DeepSeek host's bridge sets on the
+/// processes of every tool call, whether or not it also has that session's
+/// own markers (zerus-ppd26).
+pub(crate) const HOSTED_AGENT: &str = "dsh";
+
+/// Whether this command runs in a resident host's tool call. Such a command
+/// is an agent's even when no session can be proven for it (no identity file
+/// yet, an agent the native UI opened, or a host this hgs cannot prove), so a
+/// guard that would otherwise take an unmarked caller for the person refuses
+/// it. Like every marker this guards against accidental use, not against an
+/// agent that clears its own environment.
+pub(crate) fn hosted_agent_call() -> bool {
+    std::env::var_os("HGS_AGENT").is_some_and(|agent| agent == HOSTED_AGENT)
 }
 
 /// The calling agent's own binding under its current name, proven like a
@@ -499,5 +525,46 @@ mod caller_proof_tests {
         // <git>/mingw64/libexec/git-core -> <git>/bin/bash.exe
         let bash = exec.parent()?.parent()?.parent()?.join("bin").join("bash.exe");
         bash.is_file().then_some(bash)
+    }
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+    #[test]
+    fn existing_machine_factory_and_initializing_wrapper_keep_identical_shapes() {
+        let home=tempfile::tempdir().unwrap();
+        let output=std::process::Command::new(std::env::current_exe().unwrap())
+            .env_clear().env("PATH",std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME",home.path()).env("HGS_CONFIG_DIR",home.path().join("config"))
+            .env("HGS_STATE_DIR",home.path().join("state"))
+            .args(["--exact","state::session_graph::sends::receipt_tests::private_factory_fixture","--ignored","--test-threads=1"])
+            .stdin(std::process::Stdio::null()).output().unwrap();
+        assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stdout));
+    }
+    #[test]
+    #[ignore="private machine-initialization compatibility fixture"]
+    fn private_factory_fixture() {
+        let config=crate::config::Config::load().unwrap();
+        let catalog=config.dir.join("swarm/catalog.json");
+        let machine=uuid::Uuid::new_v4().to_string();
+        let record=json!({"agent":"codex","run_id":"run","conversation_id":"cid","name":"codex/example/receipt"});
+        let value=target_receipt_for_machine(&record,&machine).unwrap();
+        let endpoint=Endpoint::from_record(&machine,&record).unwrap();
+        assert_eq!(value,json!({"schema":1,"node":endpoint.key(),"endpoint":endpoint,"name":record["name"],"run_id":record["run_id"]}));
+        assert!(!catalog.exists() && !root().join("graph").exists(),"read-only factory created state");
+        let old=target_receipt(&record).unwrap();
+        assert!(catalog.exists(),"ordinary wrapper stopped initializing machine identity");
+        let bytes=fs::read(&catalog).unwrap();
+        let persisted=crate::swarm::existing_node_id(&bytes).unwrap();
+        assert_eq!(old,target_receipt_for_machine(&record,&persisted).unwrap());
+        for agent in ["claude","codex","kimi","dsh","opencode"] {
+            for cid in [Value::Null,json!(""),json!("cid")] {
+                let mut record=record.clone();record["agent"]=json!(agent);record["conversation_id"]=cid;
+                assert_eq!(target_receipt(&record),target_receipt_for_machine(&record,&persisted));
+            }
+        }
+        assert_eq!(fs::read(catalog).unwrap(),bytes,"factory or stable wrapper changed the catalog");
+        assert!(!root().join("graph").exists());
     }
 }

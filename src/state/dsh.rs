@@ -19,8 +19,72 @@ use std::{
 
 #[cfg(unix)]
 mod host_identity;
+#[cfg(unix)]
+mod shell_identity;
 #[cfg(all(test, unix))]
 pub(super) use host_identity::record_running_for_test;
+#[cfg(all(test, unix))]
+pub(super) use host_identity::recorded::UNDER_HOST as UNDER_HOST_FOR_TESTS;
+/// The shared check (zerus-ppd26.15): Agent Teams' caller proof calls it too.
+#[cfg(unix)]
+pub(crate) use host_identity::recorded::{hosted_ancestor, Host, Refusal};
+
+/// Whether this command runs under a DeepSeek host this computer records
+/// (zerus-ppd26.15). Such a command can be only that host's own hosted
+/// session, never another agent's session and never the person. The process
+/// tree and the recorded host files decide, never a marker the caller sets.
+/// See `host_identity/recorded.rs` for the rules and limits.
+// DeepSeek hosts never run on Windows, so there only `Outside` is built.
+#[cfg_attr(not(unix), allow(dead_code))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum HostCheck {
+    /// Every record was read and none is an ancestor.
+    Outside,
+    /// A recorded host is an ancestor.
+    Under,
+    /// The ancestry or a record could not be verified: refused like `Under`,
+    /// with the sentence that names the path and how to clear it.
+    Unverified(String),
+}
+
+/// The check for this process. DeepSeek hosts never run on Windows, so no
+/// host is recorded there.
+pub(crate) fn host_check() -> HostCheck {
+    #[cfg(unix)]
+    {
+        let found: std::result::Result<Option<Host>, Refusal> = hosted_ancestor();
+        match found {
+            Ok(None) => HostCheck::Outside,
+            Ok(Some(_)) => HostCheck::Under,
+            Err(refusal) => HostCheck::Unverified(refusal.sentence()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        HostCheck::Outside
+    }
+}
+
+impl HostCheck {
+    /// The sentence that refuses the command, or `None` outside every
+    /// recorded host.
+    pub(crate) fn sentence(self) -> Option<String> {
+        match self {
+            HostCheck::Outside => None,
+            #[cfg(unix)]
+            HostCheck::Under => Some(host_identity::recorded::UNDER_HOST.to_owned()),
+            #[cfg(not(unix))]
+            HostCheck::Under => None,
+            HostCheck::Unverified(sentence) => Some(sentence),
+        }
+    }
+}
+
+/// The sentence that refuses this command as an agent session and as the
+/// person, or `None` outside every recorded host.
+pub(crate) fn host_refusal() -> Option<String> {
+    host_check().sentence()
+}
 
 // Resident bridge identity is independent of the installed harness release.
 const ADAPTER_VERSION: &str = "0.2.1-rc.2";
@@ -91,7 +155,26 @@ const PROVIDER: provider_binding::Provider = provider_binding::Provider::DeepSee
 pub(crate) fn exists(name: &str) -> bool { PROVIDER.exists(name) }
 pub(super) fn binding(name: &str) -> Result<Value> { PROVIDER.read(name) }
 pub(super) fn read_id(id: &str) -> Result<Value> { PROVIDER.read_id(id) }
-pub(super) fn save(record: &mut Value) -> Result<()> { PROVIDER.save(record) }
+/// Saves the binding, then the identity its hosted tool calls carry
+/// (`shell_identity`). Every path that starts a run ends here, so the file
+/// names the run this save established. A file that cannot be written
+/// leaves that session's tool calls without session markers, never with
+/// another session's, and is reported without undoing the saved binding.
+pub(super) fn save(record: &mut Value) -> Result<()> {
+    PROVIDER.save(record)?;
+    #[cfg(unix)]
+    if let Err(error) = shell_identity::write(record) {
+        eprintln!("hgs: {}'s tool calls carry no session markers until its identity can be written: {error}", string(record, "name"));
+    }
+    Ok(())
+}
+/// Forgets the binding and the identity its tool calls carried.
+fn remove(record: &Value) -> Result<()> {
+    PROVIDER.remove(record)?;
+    #[cfg(unix)]
+    shell_identity::remove(record);
+    Ok(())
+}
 fn native_home() -> PathBuf {
     nonempty_env("DSH_HOME")
         .map(PathBuf::from)
@@ -675,8 +758,8 @@ fn host_arguments(overlay: &Path, default_profile: bool) -> Vec<String> {
 }
 
 /// H4: the one overlay Zerus writes for the host: its private bridge only.
-fn host_overlay(script: &Path, socket: &Path, block_upload: bool) -> Value {
-    let mut insert = vec![json!({"id":"hgs-native-dsh","name":script,"config":{"socket":socket,"recoveryPolicy":recovery::policy_path()}})];
+fn host_overlay(script: &Path, config: Value, block_upload: bool) -> Value {
+    let mut insert = vec![json!({"id":"hgs-native-dsh","name":script,"config":config})];
     if block_upload {
         // U22: the row replaces the shipped plugin's config; the user's global
         // dsh configuration is never edited.
@@ -1231,9 +1314,19 @@ fn ensure_host(record: &Value) -> Result<bool> {
         }
     }
     let overlay = dir.join("hgs.patch.json");
+    // The bridge reads each hosted session's own markers from here, one
+    // file per native conversation that `save` writes (zerus-ppd26).
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut config = bridge_config(&socket, agent_hint::for_account("native-dsh"));
+    #[cfg(unix)]
+    {
+        let identities = shell_identity::folder(record);
+        private_dir(&identities)?;
+        config["shellIdentities"] = json!(identities);
+    }
     atomic(
         &overlay,
-        &host_overlay(&script, &socket, session_upload::block()).to_string(),
+        &host_overlay(&script, config, session_upload::block()).to_string(),
     )?;
     // N17: the block state this host starts with is recorded beside it, so a
     // later launch into a host started before the block can say so instead of
@@ -1273,7 +1366,19 @@ fn ensure_host(record: &Value) -> Result<bool> {
     }
     command.args(host_arguments(&overlay, !Path::new(string(record, "agent_home")).join("profiles/hgs/package.json").exists()))
         .env("DSH_HOME", string(record, "agent_home"))
-        .current_dir(home())
+        .current_dir(home());
+    // The variables a native host never takes from the process that starts
+    // it: those of the session that process runs in (`host::SESSION_CONTEXT`,
+    // which the Windows session host also drops) and its terminal's name. One
+    // host serves every DeepSeek session of its agent home, so whichever
+    // session happened to start it is not the session of any hosted agent.
+    for name in crate::state::backend::host::SESSION_CONTEXT
+        .iter()
+        .chain(&["HGS_TERMINAL_NAME"])
+    {
+        command.env_remove(name);
+    }
+    command
         .stdin(Stdio::null())
         .stdout(log.try_clone().map_err(|e| e.to_string())?)
         .stderr(log);
@@ -1499,6 +1604,14 @@ fn effective_selection(record: &Value, config: &Config) -> Result<PermissionSele
     }
     let mode = crate::accounts::permission_mode(config, "native-dsh", "dsh").map_err(|e| e.message)?;
     decode_permission_selection(&mode)
+}
+
+fn bridge_config(socket: &Path, hint: Option<&str>) -> Value {
+    let mut config = json!({"socket": socket, "recoveryPolicy": recovery::policy_path()});
+    if let Some(hint) = hint {
+        config["agentHint"] = json!(hint);
+    }
+    config
 }
 
 struct PermissionPlan {
@@ -2446,7 +2559,25 @@ fn normalize(record: &Value, row: &Value, inspected: &Value) -> Value {
         value["native_recovery"] = pending_recovery.clone();
     }
     recovery::enrich(record,&mut value);
-    let process_source = if inspected["jobs"].is_array() || inspected["shellCalls"].is_array() { inspected } else { row };
+    // An inspection reads the host's processes. A listing row carries the
+    // bridge's bounded `listJobs` summary instead (zerus-yj7ef). Only a
+    // complete summary is a count; an incomplete one, or a row without one
+    // from an older bridge, leaves the count unknown, never idle.
+    let listed_jobs = &row["listJobs"];
+    let listed = listed_jobs["complete"] == true
+        && listed_jobs["jobs"]
+            .as_array()
+            .map(Vec::len)
+            .is_some_and(|n| listed_jobs["count"] == json!(n));
+    let listed_source =
+        json!({"jobs": if listed { listed_jobs["jobs"].clone() } else { Value::Null }});
+    let process_source = if inspected["jobs"].is_array() || inspected["shellCalls"].is_array() {
+        inspected
+    } else if listed {
+        &listed_source
+    } else {
+        row
+    };
     value["process_work"] = processes::dsh_work(record,process_source,alive && value["activity"] == "idle" && value["phase"] == "idle");
     // Task 278: its own running jobs, whatever its activity.
     value["background_jobs"] = processes::dsh_registered(record,process_source,alive);
@@ -3355,7 +3486,7 @@ pub(super) fn session_action(name: &str, action: &str, new_name: Option<&str>, s
             }
         },
         "rename"=>{notifications::anchor(&mut record);if storage::in_id_layout(&record) { recovery::rename_job_in_place(&record,new_name.unwrap())?; } else { recovery::rename_job(name,new_name.unwrap(),string(&record,"run_id"))?; } record["name"]=json!(new_name.unwrap());},
-        "forget"=>{PROVIDER.remove(&record)?;return Ok(());},
+        "forget"=>{remove(&record)?;return Ok(());},
         _=>unreachable!(),
     }
     save(&mut record)?;
@@ -3594,8 +3725,9 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
                 receipt["submitted_text"] = json!(text);
                 receipt["submitted_at"] = json!(now());
                 receipt["status"] = json!("pending");
-                if agent_id.is_empty() {
-                    if let Some(target) = session_graph::target_receipt(&record) {
+                if let Some(target) = session_graph::target_receipt(&record) {
+                    delivery::bind(&mut receipt, &record, &target);
+                    if agent_id.is_empty() {
                         receipt["graph_target"] = target;
                     }
                 }
@@ -3746,7 +3878,7 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
                 "pause",
                 json!({"sessionId":record["conversation_id"]}),
             )?;
-            PROVIDER.remove(&record)?;
+            remove(&record)?;
             usage_samples::forget(name);
         }
         "exists" => return Ok(0),
@@ -3787,6 +3919,15 @@ mod current_read_tests {
     #[test]
     fn listed_child_rows_mark_only_person_requests() {
         run_private("state::dsh::current_read_tests::child_rows");
+    }
+
+    /// zerus-yj7ef: an idle DeepSeek row in a listing reports its running
+    /// background jobs from the bridge's bounded summary: one running job is
+    /// Background, a settled one is none, and a row from an older bridge, or
+    /// one over the bound, stays unknown.
+    #[test]
+    fn listed_rows_report_background_work() {
+        run_private("state::dsh::current_read_tests::list_processes");
     }
 
     /// Runs the ignored fixture `test` in a child process with private state.
@@ -3908,6 +4049,56 @@ mod current_read_tests {
         );
         // A row without a parent link carries no field.
         assert!(listed(&record(), idle).get("human_request").is_none());
+    }
+
+    #[test]
+    #[ignore = "run by listed_rows_report_background_work"]
+    fn list_processes() {
+        if std::env::var_os("ZERUS_DSH_CURRENT_READ_FIXTURE").is_none() {
+            return;
+        }
+        let unasked =
+            |method: &str, _: Value| -> Result<Value> { Err(format!("{method} was not expected")) };
+        let listed = |row: Value| {
+            snapshot_with(&record(), &list("host-1", vec![row]), &mut |m, p| {
+                unasked(m, p)
+            })
+        };
+        let job = |status: &str, owner: &str| json!({"id":"7","kind":"bash","owner":owner,"status":status,"startedAt":1_000_000.0,"label":"npm run dev","callId":"call-1"});
+        let mut idle = row(&[3], None);
+        idle["running"] = json!(false);
+        let with = |jobs: Vec<Value>| {
+            let mut row = idle.clone();
+            row["listJobs"] = json!({"complete":true,"count":jobs.len(),"jobs":jobs});
+            row
+        };
+        let work = |row: Value| listed(row)["process_work"].clone();
+        let running = work(with(vec![job("running", "session-A")]));
+        assert_eq!(
+            (&running["count"], &running["command"]),
+            (&json!(1), &json!("npm run dev")),
+            "{running}"
+        );
+        // A subagent's job is its parent's background work too, as in an inspection.
+        assert_eq!(work(with(vec![job("running", "child-1")]))["count"], 1);
+        assert_eq!(work(with(vec![]))["count"], 0, "a settled job leaves none");
+        assert_eq!(work(with(vec![job("completed", "session-A")]))["count"], 0);
+        // An older bridge sends no summary, and an incomplete one (no registry,
+        // or over the bound) is no count: both stay unknown.
+        assert!(work(idle.clone())["count"].is_null());
+        let mut over = idle.clone();
+        over["listJobs"] = json!({"complete":false,"count":null,"jobs":[]});
+        assert!(work(over)["count"].is_null());
+        let mut torn = with(vec![job("running", "session-A")]);
+        torn["listJobs"]["count"] = json!(2);
+        assert!(
+            work(torn)["count"].is_null(),
+            "a count that disagrees with its jobs is unknown"
+        );
+        // A working row reports no count, as before.
+        let mut busy = with(vec![job("running", "session-A")]);
+        busy["running"] = json!(true);
+        assert!(work(busy)["count"].is_null());
     }
 
     #[test]
@@ -5096,13 +5287,13 @@ mod notification_tests {
             }
             assert!(args.contains("--patch") && args.contains("--profile hgs"), "{kind}: {args}");
         }
-        let overlay = host_overlay(Path::new("state/bridge.mjs"), Path::new("state/socket"), false).to_string().to_lowercase();
+        let overlay = host_overlay(Path::new("state/bridge.mjs"), bridge_config(Path::new("state/socket"), None), false).to_string().to_lowercase();
         assert!(overlay.contains("hgs-native-dsh"), "{overlay}");
         for forbidden in ["session-log", "sessionlog", "logupload", "upload"] {
             assert!(!overlay.contains(forbidden), "{overlay}");
         }
         // U22: the block overlay disables the shipped plugin; off leaves dsh alone.
-        let blocked = host_overlay(Path::new("state/bridge.mjs"), Path::new("state/socket"), true).to_string();
+        let blocked = host_overlay(Path::new("state/bridge.mjs"), bridge_config(Path::new("state/socket"), None), true).to_string();
         assert!(blocked.contains("session-log-deepseek") && blocked.contains("\"enabled\":false"), "{blocked}");
     }
 
@@ -5307,6 +5498,41 @@ mod notification_tests {
 #[cfg(all(test, unix))]
 mod compatibility_tests {
     use super::*;
+
+    /// zerus-ppd26: the session that happens to start a native host is not
+    /// the session of any hosted agent, so the host never takes its markers.
+    #[test]
+    fn a_native_host_never_takes_the_markers_of_the_session_that_starts_it() {
+        let record = json!({"agent_home":"/nonexistent/hgs-native-home"});
+        let command = host_command(&record, Path::new("/nonexistent/hgs.patch.json"));
+        let envs: BTreeMap<String, Option<String>> = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        for name in crate::state::backend::host::SESSION_CONTEXT.iter().chain(&[
+            "HGS_TERMINAL_NAME",
+            "HGS_SESSION",
+            "HGS_SESSION_ID",
+            "HGS_RUN_ID",
+            "HGS_AGENT",
+            "HGS_ACCOUNT_ID",
+        ]) {
+            assert_eq!(envs.get(*name), Some(&None), "{name} must be removed");
+        }
+        assert_eq!(
+            envs.get("DSH_HOME"),
+            Some(&Some("/nonexistent/hgs-native-home".to_owned()))
+        );
+        // The host belongs to this state root and configuration.
+        for kept in ["HGS_STATE_DIR", "HGS_CONFIG_DIR"] {
+            assert!(!envs.contains_key(kept), "{kept} must be inherited");
+        }
+    }
 
     #[test]
     fn startup_accepts_only_the_explicitly_reviewed_harness_releases() {
@@ -5653,5 +5879,24 @@ mod pending_identity_tests {
         let one = source("11111111-1111-4111-8111-111111111111", "session-one");
         let two = source("22222222-2222-4222-8222-222222222222", "session-two");
         assert_ne!(fork_pending_path(&one,Some("child")), fork_pending_path(&two,Some("child")));
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_host_gets_the_agent_hint_only_when_it_is_on() {
+        let socket = Path::new("/state/dsh/hosts/key/host.sock");
+        let on = bridge_config(socket, Some(agent_hint::HINT));
+        assert_eq!(
+            (on["socket"].as_str(), on["agentHint"].as_str()),
+            (Some("/state/dsh/hosts/key/host.sock"), Some(agent_hint::HINT))
+        );
+        assert!(on["recoveryPolicy"].is_string());
+        let off = bridge_config(socket, None);
+        assert!(off.get("agentHint").is_none());
+        assert_eq!(off["socket"], on["socket"]);
     }
 }

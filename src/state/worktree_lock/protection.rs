@@ -20,7 +20,7 @@ pub(in crate::state) struct Protection {
     common: Directory,
     checkout: Option<Directory>,
     metadata: Directory,
-    _repository: fs::File,
+    _repository: crate::platform::FileLock,
     receipt: String,
     before: Value,
     lock: fs::File,
@@ -31,7 +31,7 @@ pub(in crate::state) struct Protection {
 /// not just its negative metadata write. A changed name is never a new lock.
 struct ProviderLock {
     directories: Vec<Directory>,
-    file: fs::File,
+    file: crate::platform::FileLock,
 }
 impl ProviderLock {
     fn verify(&self) -> Result<()> {
@@ -39,7 +39,7 @@ impl ProviderLock {
             directory.verify()?;
         }
         let current = self.directories[0].read_private("bindings.lock")?;
-        if object(&current)? != object(&self.file)? {
+        if object(&current)? != exclusion_object(&self.file)? {
             return Err("The shared holder's original exclusion file changed".into());
         }
         Ok(())
@@ -48,6 +48,11 @@ impl ProviderLock {
 
 fn object(file: &fs::File) -> Result<Value> {
     let id = crate::platform::FileIdentity::of(file).map_err(|e| e.to_string())?;
+    Ok(json!([id.device, id.inode]))
+}
+
+fn exclusion_object(lock: &crate::platform::FileLock) -> Result<Value> {
+    let id = lock.identity().map_err(|e| e.to_string())?;
     Ok(json!([id.device, id.inode]))
 }
 
@@ -258,6 +263,9 @@ impl Protection {
         repository
             .try_lock_exclusive()
             .map_err(|_| "The original checkout is busy")?;
+        let repository = crate::platform::FileLock::held(repository);
+        #[cfg(all(test, unix))]
+        crate::platform::lock_tests::reached("protection-move");
         let mut lock = legacy_veto::open(&metadata)?;
         let lock_object = object(&lock)?;
         let lock_version = legacy_veto::version(&lock)?;
@@ -345,6 +353,9 @@ impl Protection {
         repository
             .try_lock_exclusive()
             .map_err(|_| "The worktree is busy; nothing was published")?;
+        let repository = crate::platform::FileLock::held(repository);
+        #[cfg(all(test, unix))]
+        crate::platform::lock_tests::reached("protection-retained");
         let state = state()?;
         let receipts = state.child("worktree-protections")?;
         let receipt = receipt(owner);
@@ -445,6 +456,9 @@ impl Protection {
         repository
             .try_lock_exclusive()
             .map_err(|_| "The worktree is busy; nothing was published")?;
+        let repository = crate::platform::FileLock::held(repository);
+        #[cfg(all(test, unix))]
+        crate::platform::lock_tests::reached("protection-new");
         match fs::symlink_metadata(metadata.path.join("locked")) {
             Err(e) if e.kind() == io::ErrorKind::NotFound => (),
             _ => {
@@ -584,6 +598,9 @@ impl Protection {
                 file.try_lock_exclusive().map_err(|_| {
                     "The shared native holder is busy; the original lock stays".to_owned()
                 })?;
+                let file = crate::platform::FileLock::held(file);
+                #[cfg(all(test, unix))]
+                crate::platform::lock_tests::reached("provider-acquired");
                 Ok::<_, String>(file)
             })
             .transpose()?;
@@ -593,7 +610,7 @@ impl Protection {
                 dir.verify()?;
             }
             if let Some(file) = &provider {
-                if object(&directories[0].read_private("bindings.lock")?)? != object(file)? {
+                if object(&directories[0].read_private("bindings.lock")?)? != exclusion_object(file)? {
                     return Err("The shared holder's original exclusion file changed".into());
                 }
             }
@@ -664,6 +681,8 @@ impl Protection {
         self.lock.sync_all().map_err(|e| e.to_string())?;
         self.reason = id.into();
         self.verify()?;
+        #[cfg(all(test, unix))]
+        crate::platform::lock_tests::reached("provider-transfer");
         if let Some(provider) = &provider {
             provider.verify()?;
         }

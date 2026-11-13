@@ -343,9 +343,49 @@ fn actual_cli_publishes_through_the_granted_service_actor_and_retains_immutable_
     let after = fixture.json(&["desktop", "status", "--json"], b"");
     assert_eq!(after["epoch"], epoch);
     assert_eq!(after["notification_runtime"]["ready"], true);
+    let stage_name = stale_marker
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(".owner-v1.json"))
+        .unwrap_or("")
+        .to_owned();
+    let lock_sidecar = stale_marker.with_file_name(format!("{stage_name}.lease-v1"));
+    let imports_names: Vec<String> = fs::read_dir(&imports)
+        .into_iter()
+        .flatten()
+        .take(32)
+        .filter_map(|entry| entry.ok().map(|entry| entry.file_name().to_string_lossy().into_owned()))
+        .collect();
+    let creator = abandoned.0.try_wait().unwrap();
+    let creator_state = match creator {
+        None => "running".to_owned(),
+        Some(status) => format!("exited {status:?}"),
+    };
+    let creator_error = if creator.is_some() {
+        let _ = abandoned.0.kill();
+        let mut bytes = Vec::new();
+        if let Some(stderr) = abandoned.0.stderr.as_mut() {
+            let _ = stderr.take(4096).read_to_end(&mut bytes);
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    } else {
+        String::new()
+    };
+    let diagnostic = format!(
+        "stage_dir={} marker={} lock_sidecar={} creator={} creator_error={creator_error:?} imports=[{}]",
+        stale_path.is_dir(),
+        stale_marker.is_file(),
+        lock_sidecar.exists(),
+        creator_state,
+        imports_names.join(","),
+    );
     assert!(
-        stale_path.is_dir() && stale_marker.is_file(),
-        "live creator retained despite old timestamp"
+        stale_path.is_dir(),
+        "live creator stage directory missing: {diagnostic}"
+    );
+    assert!(
+        stale_marker.is_file(),
+        "live creator owner marker missing: {diagnostic}"
     );
     abandoned.0.kill().unwrap();
     abandoned.0.wait().unwrap();

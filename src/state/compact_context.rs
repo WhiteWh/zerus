@@ -72,7 +72,14 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     write(&mut record)?;
     atomic(&path, &json!({"status":"in_progress"}).to_string())?;
     let result: Result<()> = (|| {
-        backend::current().send(string(&record,"pane"), &[backend::Key::Literal("/compact")])?;
+        // Kimi 2.5.3 computeArgumentHint matches /^\/(\S+)( ?)$/.
+        // Its hint rendering loses the composer border and hardware cursor.
+        // Two trailing spaces hide that hint; Kimi trims the empty instruction.
+        // Keep the exact command verifier below unchanged.
+        // Evidence: artifacts/test-results/kimi-compact/diagnosis/RAW-SHA256SUMS
+        // SHA-256: ddf8b09fc81ebfec93fdcae7a175a52e33920d6c0154ebf98e4b2ba2763ef383
+        let command = if string(&record, "agent") == "kimi" { "/compact  " } else { "/compact" };
+        backend::current().send(string(&record,"pane"), &[backend::Key::Literal(command)])?;
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             let current = kimi_tui_choice::identity(&record)?;

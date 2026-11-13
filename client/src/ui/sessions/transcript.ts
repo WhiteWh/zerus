@@ -1,6 +1,7 @@
 import type { ActivityEvent, LocalMessage, Reply } from "../../types";
 import { eventKey } from "../../store/activity";
-import type { ActivityItem, InboxItem, LocalItem, MediaMessage, ToolEvent, TranscriptItem, VoiceState } from "./types";
+import type { ActivityItem, InboxItem, LocalItem, MediaMessage, RouteLine, ToolEvent, TranscriptItem, VoiceState } from "./types";
+import type { RouteActivity } from "../../store/questionRouteActivity";
 import { imageSize } from "./attachment-image";
 import { messageTimeOf } from "../lib/dates";
 import { tr, trNoop } from "../../i18n";
@@ -10,7 +11,10 @@ import { toolMedia } from "./media";
 // A Symbol cannot arrive from a provider's JSON. Only our own local send
 // supplies these immutable-cache preview paths and oriented dimensions.
 const LOCAL_FILES = Symbol("local attachment presentation");
-type DisplayEvent = ActivityEvent & { [LOCAL_FILES]?: LocalMessage["attachments"] };
+// Likewise only the service's own route read supplies a route line, never a journal event.
+const ROUTE = Symbol("question route line");
+type DisplayEvent = ActivityEvent & { [LOCAL_FILES]?: LocalMessage["attachments"]; [ROUTE]?: RouteLine };
+const routeOf = (e: ActivityEvent) => (e as DisplayEvent)[ROUTE];
 
 // Journal events as the Activity items of the approved design, after the
 // rules of tray/src/ActivityView.cpp: messages by role, thinking, cleared
@@ -492,10 +496,40 @@ export function mergeProvider(given: readonly ActivityEvent[], summary?: Record<
  * The items of a transcript, oldest first; ids are stable while events only
  * append. `local` are the open session's local rows (the composer view's).
  */
-export function buildTranscript(given: readonly ActivityEvent[], summary?: Record<string, unknown>, local: readonly LocalMessage[] = []): TranscriptItem[] {
+/**
+ * The service's submitted question routes of this session as timeline events
+ * (zerus-sa9qn.33). A parent's own message of exactly the routed text folds
+ * into its line, which keeps that text behind a disclosure; any other line is
+ * placed by its time, after the events of the same time.
+ */
+export function mergeRoutes(events: readonly ActivityEvent[], routes: readonly RouteActivity[]): ActivityEvent[] {
+  if (!routes.length) return events as ActivityEvent[];
+  const out: DisplayEvent[] = events.slice();
+  for (const route of [...routes].sort((a, b) => a.at - b.at)) {
+    const line: RouteLine = { requestId: route.requestId, role: route.role, child: route.child.name, reference: route.child.reference,
+      parent: route.parent.name, preview: route.question.preview };
+    const event: DisplayEvent = { type: "QuestionRoute", at: route.at, activity_display_key: `route-${route.requestId}`, [ROUTE]: line };
+    const text = route.text;
+    const folds = text === undefined ? [] : out.flatMap((e, i) => !routeOf(e) && e.type !== "LocalMessage" && e.source !== "hgs_voice"
+      && messageRole(e) === "user" && e.detail === text ? [i] : []);
+    if (folds.length) {
+      line.text = text;
+      event.at = out[folds[0]].at;
+      out[folds[0]] = event;
+      for (const i of folds.slice(1).reverse()) out.splice(i, 1);
+      continue;
+    }
+    let i = out.length;
+    while (i > 0 && typeof out[i - 1].at === "number" && (out[i - 1].at as number) > route.at) i--;
+    out.splice(i, 0, event);
+  }
+  return out;
+}
+
+export function buildTranscript(given: readonly ActivityEvent[], summary?: Record<string, unknown>, local: readonly LocalMessage[] = [], routes: readonly RouteActivity[] = []): TranscriptItem[] {
   const provider = mergeAttachmentMessages(mergeProvider(mergeMessages(given, summary), summary), summary);
-  if (!provider.length && !local.length) return recordedContext(summary);
-  const events = mergeAttachmentMessages(local.length ? mergeLocal(provider, local) : provider, summary);
+  if (!provider.length && !local.length && !routes.length) return recordedContext(summary);
+  const events = mergeRoutes(mergeAttachmentMessages(local.length ? mergeLocal(provider, local) : provider, summary), routes);
   return transcriptItems(events, summary, !provider.length);
 }
 
@@ -531,6 +565,11 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
     }
     const role = messageRole(e);
     const at = timeText(e.at);
+    const route = routeOf(e);
+    if (route) {
+      items.push({ id, kind: "receipt", at, sender: route.role === "child" ? tr("Question sent to the parent session") : tr("Question from a child session"), route });
+      i++; continue;
+    }
     if (e.turn_origin === "keep_warm" || e.origin === "keep_warm") {
       // A keep-warm ping is not the person's message: its prompt, the reply
       // and its Stop are one dim row. An untagged provider copy of the reply
@@ -621,7 +660,7 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
     // Adjacent operational events form one group; messages and attention stay boundaries.
     const group = [e];
     i++;
-    while (i < events.length && group.length < GROUP_LIMIT && events[i].type !== "AgentThinking" && events[i].type !== "SessionCleared"
+    while (i < events.length && group.length < GROUP_LIMIT && events[i].type !== "AgentThinking" && events[i].type !== "SessionCleared" && !routeOf(events[i])
       && events[i].inherited_from === e.inherited_from
       && !messageRole(events[i]) && !attention(e) && !attention(events[i])) group.push(events[i++]);
     const tools: string[] = [];
@@ -655,7 +694,7 @@ export function createTranscriptProjection() {
   const trim = <T>(map: Map<string, T>, limit: number) => { while (map.size > limit) map.delete(map.keys().next().value!); };
   return {
     reset() { recent.clear(); bindings.clear(); },
-    build(given: readonly ActivityEvent[], summary?: Record<string, unknown>, local: readonly LocalMessage[] = []): TranscriptItem[] {
+    build(given: readonly ActivityEvent[], summary?: Record<string, unknown>, local: readonly LocalMessage[] = [], routes: readonly RouteActivity[] = []): TranscriptItem[] {
       for (const row of local) { recent.set(row.id, row); }
       trim(recent, 50);
       const present = new Set(local.map(row => row.id));
@@ -678,7 +717,7 @@ export function createTranscriptProjection() {
         return id ? { ...event, activity_display_key: id } : event;
       });
       trim(bindings, 1000);
-      return transcriptItems(mergeAttachmentMessages(events, summary), summary, !provider.length);
+      return transcriptItems(mergeRoutes(mergeAttachmentMessages(events, summary), routes), summary, !provider.length);
     },
   };
 }

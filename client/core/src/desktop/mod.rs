@@ -30,6 +30,9 @@ pub mod ownership;
 pub mod pending_reads;
 pub mod producer;
 pub mod profile;
+/// The owner-approved route of a supervised child's blocking question to its
+/// live parent (zerus-sa9qn.8, slice a).
+pub mod question_route;
 pub mod relay;
 pub mod server_trust;
 pub mod service;

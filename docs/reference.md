@@ -198,6 +198,14 @@ tmux session NAME; use --new -d or open a new tab`; Windows names no tmux). The 
 session gets its own session and run identity, never the caller's. Its account
 comes from the launch (`--account ID` or the computer's default for that agent);
 the account profile that the calling session runs under is not passed on.
+Neither is the calling agent's command context (`AGENT_COMMAND_CONTEXT` in
+`src/state/backend/mod.rs`): Claude Code's and Codex's session, process and tool
+call markers, DeepSeek and OpenCode native session IDs, and `NO_COLOR`. A tmux
+server that a launch starts keeps none of them, nor the caller's session
+variables, in the environment it gives every later pane, and an agent starts
+without them even when a server already holds them. `hgs send` reads the agent's
+styled prompt; under `NO_COLOR` Claude Code's placeholder looks like a draft and
+every send is refused while it shows.
 
 ### Session references
 
@@ -292,7 +300,17 @@ folder, open a shell there, **Copy session ID** and **Clear session**. Its
 **Session actions** menu shares the same checked handlers. A stopped session
 hides the Clear session icon and offers
 **Start fresh…** in the menu; an archived session shows **Restore session** in its
-place. The session list context menu offers **Clear session…** for a live session
+place. **Restore session** follows the computer's restore decision, as batch
+Restore does; a computer that reports no actions keeps the earlier rule.
+
+A Claude or Codex session that exited before its first message reported a
+conversation ID but wrote no transcript. Its archive therefore does not offer
+Restore, and gives the reason "This session ended before its first message"
+(zerus-wyrqg). The archive summary checks this with one metadata read of the
+saved transcript (Claude's transcript, Codex's rollout): it must be a
+non-empty regular file. The restore's own check stays the authority.
+
+The session list context menu offers **Clear session…** for a live session
 where a stopped one offers **Start fresh…**. For a session that is not open, it
 becomes available once that session's own inspection confirms the conversation
 listed for it; choosing it opens the session and asks the same confirmation.
@@ -330,20 +348,82 @@ establish a unique session identity.
 
 ### Static agent guidance
 
-The static hint source currently covers tracked Claude Code and Codex main
-conversations. Its native delivery contract still requires qualification on the
-reviewed versions before adoption. Kimi, OpenCode and DeepSeek channels remain
-separate work; older hgs peers inject nothing.
+The static hint source covers tracked Claude Code, Codex, Kimi Code and DeepSeek
+main conversations. Its native delivery is verified on reviewed versions.
+OpenCode 2.2.7 uses the native instruction entry described below; older hgs
+peers inject nothing.
 
 The hint points to `hgs guide` with fixed English text, independent of session
-name, computer and hgs version. It uses the existing SessionStart hook context,
-without changing user instruction flags, project launchers or saved native
-arguments. It is not sent as a person's Activity message. New conversations and
+name, computer and hgs version. Claude Code and Codex use the existing
+SessionStart hook context. Kimi uses one UserPromptSubmit JSON `message` per
+conversation, verified on interactive Kimi 2.5.3 launches, not the separate
+`--prompt` mode. DeepSeek hosts started by hgs register the same sentence for
+hgs-owned main agents; native subagents and sessions opened in the host's own
+UI receive no hint. An already-running host keeps its bridge until its next
+start and is never hot-reloaded. One effective copy means the latest prompt,
+not every hint retained in history: opting out does not remove old hint-bearing
+system messages, and re-enabling can retain them beside a new one. No channel
+changes user instruction flags, project launchers or saved native arguments,
+and none is sent as a person's Activity message. New conversations and
 previously unmarked conversations receive an attempt; repeated resumes suppress
-another attempt. Clear and compaction replace context and request a new copy.
-A fork inherits suppression only from the exact marked context it forks.
-Renaming does not change the text or hint revision. Arbitrary commands and native
-subagents receive no hint.
+another attempt when the provider retains the context. Clear and compaction
+replace context for Claude Code and Codex and request a new copy. Kimi retains
+the existing hook part on resume and compaction, so those paths do not add
+another copy; clear creates a new conversation and emits once. A fork inherits
+suppression only from the exact marked context it forks. Renaming does not
+change the text or hint revision. Arbitrary commands and native subagents
+receive no hint.
+
+For OpenCode, new-session creation and a verified existing-session launch whose
+single-message native history read is empty write
+`PUT /api/experimental/session/{id}/instructions/entries/zerus.agent-hint` with
+`{"value": HINT}`. The exact conversation and hint revision are marked before
+the request; the mark is suppression metadata, not a delivery receipt. A failed
+or uncertain request does not block creation or resume and is not replayed,
+because another PUT could duplicate the retained entry. OpenCode retains the
+entry as effective prompt context across resume and compaction, without a
+durable `Instructions updated` history row on the pinned version. A clear/new
+session gets its own entry. Inspection and background polling never attach it.
+A resume with a marked entry does not write again. A reconciled pending
+creation follows the same emptiness check. An existing conversation with any
+native message receives no instruction-entry attachment; an unreadable or
+malformed history answer is not proof of emptiness.
+
+OpenCode persists a noninitial instruction delta as an `Instructions updated`
+system message. That makes the channel a durable transcript update rather than
+a history-free instruction entry. Previously unmarked conversations with turns
+instead use a context-only V2 plugin on OpenCode 2.2.7 or newer. Zerus loads its
+own plugin through a launch-only configuration overlay when starting a service;
+it never writes a plugin into the person's global configuration or project.
+Existing plugins and settings stay intact. A service already running is never
+restarted or changed to install the plugin. If the exact plugin source is not
+active, launch/resume reports that the optional hint is unavailable and
+inspection exposes `agent_hint_status.state` and its reason.
+
+Cold starts reclaim at most 16 verified Zerus plugin folders using a 100 ms
+maintenance deadline. Each unique launch folder records the exact service PID
+and birth after a matching launch environment is verified. Cleanup inspects
+only that service and keeps a folder while it is alive or uncertain, plus the
+latest service marker's folder. Unrelated protected processes and host churn
+do not block reclamation. A durable intent is written before spawn; abandoned
+prepared folders are unused, while unresolved starts and legacy unpinned folders
+stay retained. Unknown files and links also stay retained. The 256-folder limit
+remains an allocation backstop and never grants deletion authority or changes
+the person's OpenCode config.
+Forgetting a binding also retires its private hint route. Ambiguous routes stay
+blocked until a complete check finds no remaining binding; the check examines
+at most 64 entries and 1 MiB in 25 ms, retaining the route on any uncertainty.
+
+Each primary model request gets a bounded, read-only lookup of one exact saved
+run/conversation/workspace/service binding. Its decided policy, rather than the
+shared service's environment, controls injection. A stale, malformed, absent or
+busy binding supplies no hint. Native subagents are excluded. The plugin appends
+one system part without editing user messages, receipts or instruction history;
+it does not run for compaction, title or transient generation. The next primary
+request receives the hint again after compaction. A Zerus-managed service restart
+loads the overlay again and resume verifies readiness for that new service.
+Opting out on resume suppresses this context channel. Existing revision-one
+entry-backed conversations keep their entry and never enable the plugin channel.
 
 Configure optional injection in the hgs config file or caller environment:
 
@@ -353,12 +433,13 @@ HGS_AGENT_HINT_OFF="native-codex work"   # exclude exact account IDs
 ```
 
 Injection defaults to enabled. The global value accepts `0` or `1`; the exclusion
-list is whitespace-separated and uses `native-claude` or `native-codex` for the
-provider's own login. Environment values take precedence, including an explicitly
-empty exclusion list. Invalid or unreadable hint policy disables only optional
-injection with a bounded diagnostic; unrelated configuration validation is
-unchanged. `hgs guide` and `hgs self` remain available when injection is disabled.
-Opt-out does not remove context already retained by the provider.
+list is whitespace-separated and uses `native-claude`, `native-codex`,
+`native-kimi`, `native-dsh` or `native-opencode` for the provider's own login.
+Environment values take precedence, including an explicitly empty exclusion
+list. Invalid or unreadable hint policy disables only optional injection with a
+bounded diagnostic; unrelated configuration validation is unchanged. `hgs
+guide` and `hgs self` remain available when injection is disabled. Opt-out does
+not remove context already retained by the provider.
 
 Each fresh start, resume, recovery, archive restore and fork resolves the current
 caller's effective hint policy again. Only those effective hint values enter the
@@ -744,13 +825,17 @@ Nothing in this version creates such a lock.
 
 The desktop client adds `--session-id` only to explicit actions: send, send
 now, answer, queued-message removal, clear and compact, interrupt, model
-settings, pause, resume, start fresh, rename, fork, archive, terminate, kill
-and forget. It does so when the listed row for the action's exact run carries a
-session ID and that computer's `hgs --help` lists `session-id-selector-v1`; the
-answer is kept for ten minutes. Reads, polls, history, status, watch, terminal
-input and read marks keep the name until a label index exists. Confirmed
-delayed and worktree-cleanup end actions keep their scoped envelope, which
-already names the exact run and conversation. A refused ID shows as a changed
+settings, pause, resume, start fresh, rename and fork. It does so when the
+listed row for the action's exact run carries a session ID and that computer's
+`hgs --help` lists `session-id-selector-v1`; the answer is kept for ten minutes.
+Reads, polls, history, status, watch, terminal input and read marks keep the
+name until a label index exists. Confirmed delayed and worktree-cleanup end
+actions keep their scoped envelope, which already names the exact run and
+conversation. Archive, Terminate, Kill and Forget run only that way: without
+their undo window's capture (or a confirmed worktree cleanup) the desktop runs
+none of them, and it never sends a name-only `hgs archive` or `hgs kill` or a
+run-only `hgs terminate` (zerus-sa9qn.25). Clear archive's Forget stays bound to
+each entry's archive ID. A refused ID shows as a changed
 session, but only when the CLI refused it while resolving it: another name, no
 session or several sessions. A later read's "no longer names", which can
 follow an effect, keeps the action's own result.
@@ -898,7 +983,13 @@ provider's already-loaded settings are not retrofitted.
 
 Activity recognizes duplicate Kimi callbacks by their native turn ID within the
 same run and conversation. Equal captions in separate native turns or cleared
-conversations remain separate messages.
+conversations remain separate messages. For Kimi releases that omit the Stop
+hook, inspection and listing can settle the exact current main turn from a
+bounded, stable main-wire `turn.ended` or `prompt.completed` event. A matching
+TurnStarted identity is required; a newer prompt, incomplete wire, outstanding
+tool or changed run/conversation prevents settlement. Reply text never proves
+completion. Stop and wire evidence share one durable completion and reply ID;
+background jobs and subagents remain active until their own work finishes.
 For older attachment callbacks that lack that ID, a complete bounded native
 history and a unique exact staged-file input can associate their rich file card
 with the one native turn. The confirmed local delivery can supply the receipt
@@ -1085,6 +1176,60 @@ make the dragged session its child; the upper and lower parts of a card still
 reorder. Every change is confirmed in a dialog, which names a parent it
 replaces, before the desktop calls `hgs parent`.
 
+Ending a parent never ends its children by itself (zerus-sa9qn.17).
+`hgs [@host] terminate SESSION --with-children` and
+`hgs [@host] archive SESSION --with-children` are the explicit choice to end
+them too. The parent runs first with its own command and rules; only when it
+succeeds does each live (non-archived) descendant on that computer get the same
+command, one at a time, every child before any grandchild and at most eight
+levels deep. A link names a parent by its session ID; only a link without a
+session ID names a parent listed without one, by conversation. This is stricter
+than the listing's nesting, which also falls back to the conversation for a
+link with a session ID. A link another computer forwarded never matches. Each
+child call is bound to the session ID, run and conversation the listing showed,
+so a session that took the label meanwhile, or the child restarted into another
+run or given another conversation, is refused, and Terminate also passes
+`--expected-run-id`. Each child keeps its own rules: Archive takes only stopped
+or paused sessions, Terminate stops a running child and also moves a stopped or
+paused child to Archive (as `hgs terminate` does for any such session; the
+desktop's Terminate leaves those children as they are), a DeepSeek or OpenCode
+child refuses an action it does not support, and no working folder removal is
+implied; the configured worktree maintenance treats an archived child as any
+archived session. A child that is not ended is reported on
+standard error and never retried, and the command exits 1 with how many were
+not ended. With `--dry-run` it validates the parent and lists the children it
+would end. A parent refused or unknown ends no child. An older peer without the
+flag refuses it as a usage error before acting.
+
+On the desktop, the Terminate confirmation of a session with live child
+sessions on its computer, and a Move to archive confirmation shown only for
+such a session, list them and offer **Also end N child sessions** (Archive:
+**Also archive N child sessions**), off by default. Children the action does
+not apply to now (Terminate takes running sessions, Archive stopped or paused
+ones; an offline computer or a write in flight leaves one out too) are listed
+as staying. The count and the list cover every level, not only the direct
+children, and the confirmation says so. As on the command line, a session whose
+link its own listing marks `missing` (a link another computer forwarded is
+always `missing`) is never offered, although the list may still nest it. One
+deliberate difference remains: when a child's link falls back to its parent's
+conversation ID because the parent was listed without a session ID, the
+desktop still offers that child, by name, but
+`hgs terminate --with-children` does not end it. At most 50 are named; the
+rest are counted. When chosen, the children run after
+the parent's own outcome is done as one preconfirmed selection batch: each
+through its own guarded action, rechecked as the same instance, one at a time
+and never retried, without the parent's Remove working folder choice. Like
+every end action started in the desktop, each child's call passes the undo
+window and runs the scoped `hgs session-action` envelope with the run and
+conversation the confirmation listed, so a child restarted or given another
+conversation meanwhile is refused and kept. A Terminate child without an HGS archive
+is killed, as its own Terminate and a selection's Terminate kill it: it leaves
+the list and any native conversation history is kept. The confirmation marks
+each such child and counts them. Terminate lists a stopped or paused child as
+staying and notes that `hgs terminate --with-children` would move it to
+Archive. A parent that failed or whose outcome is unknown keeps every child. One notice counts the children ended,
+failed or changed, and unknown.
+
 `hgs ls --json` rows carry `parent` with `state` from the same listing: `live`
 (running, its agent not exited), `saved` (paused, stopped or exited),
 `archived`, or `missing` when this computer lists no such session (gone, or on
@@ -1174,6 +1319,194 @@ toggle adds **Asking** (quiet requests waiting for it) and **Needs you**
 `client/core/tests/fixtures/supervised-attention.json` lists the cases the
 desktop projects and Android and iOS check.
 
+A supervised child's blocking question also goes to its parent session, once
+(zerus-sa9qn.8, owner approval of 2026-11-12). This is an owner-approved,
+service-originated route, not the person's consent: the durable desktop
+service on the child's own computer originates one guarded `hgs send` to the
+live parent with no per-message confirmation, and nothing else. It never
+answers, selects or approves anything, never builds a UI permit and never
+changes who is alerted: the child stays quiet exactly as above, and every
+person-only request still notifies. The service watches its own computer's
+rows on every catalog event, whatever the notification settings. A row is an
+edge when it is a running Claude child waiting for input (`phase: input`)
+whose parent is `live`, not forwarded, and whose host reports
+`human_request: false`; a new `attention_signature` is a new edge, and a
+question already pending at startup counts once. After about 3 seconds the
+service reads the child with one bounded `hgs inspect NAME --after
+9223372036854775807 --skip-processes` and its `hgs reference`, at most one
+read per child and two in all, each with a 5-second timeout, from a
+deduplicated queue of at most 64 edges; it reads again immediately before
+sending. Only Claude's own AskUserQuestion card routes: source `hook`, the
+main agent, not optional, no `answer_delivery`, `can_answer: true` and a full
+identity. Claude Code's own prompts (`claude_native_question`), every
+synthetic native card, approvals, trust and sign-in never route. Codex asks
+blocking questions only through native prompts and its async questions are
+optional, so a Codex child has nothing to route in v1; Kimi, DeepSeek and
+OpenCode questions are a follow-up (zerus-sa9qn.34).
+
+The parent's own current row on the same computer, matched by the link's
+session ID, must be running a terminal agent (Claude, Codex or Kimi); the send
+names its current run and conversation. The deferred-send actor runs the one
+fixed `hgs send PARENT --json` as its `route_question` kind, with the usual
+guarded checks (exact run and conversation, native input state; a draft or
+busy layout refuses). Its request ID is a name-based UUID of the question
+identity (RFC 9562 version 8 from SHA-256: machine, child session, run,
+conversation, question ID and hash), so it is idempotent across restarts. The
+route ledger reserves each identity in the same transaction as the actor's
+original and settles it from the actor's receipt only: `submitted` (the CLI's
+own receipt), `refused` (before any child ran, an invalid text, or more than
+20 routed questions for that parent in the last hour) or `unknown`
+(everything else, including an `hgs send` refusal, which leaves no receipt).
+Nothing is retried; an unknown result is never replayed, and a routed or
+refused identity never routes again. The ledger keeps at most 65,536 rows with
+rolling retention (zerus-sa9qn.36): when it is full, one bounded pass reads at
+most 1,024 settled (`submitted` or `refused`) rows older than a day, oldest
+first from a rolling cursor, and deletes at most 256 whose question can never
+be read again, because this computer's complete catalog no longer lists the
+child at that row's run (a run ID is never reused, and a question routes only
+from its listed run). Reserved and unknown rows, a row of a run still listed,
+a row from an older ledger without a run while its session is listed, and
+every row while the catalog is incomplete are kept, so nothing is replayed or
+routed twice. A question that finds the ledger still full after that pass is
+not routed then; Activity shows retained routes only. The text is a fixed English template of
+at most 2 KiB: the header `[Zerus child question]`, the child's name and
+reference (the name single-quoted; a child whose name holds anything but
+ASCII letters, digits, `.`, `_` and `-` in three segments is never routed and
+is recorded `refused` as `question_route_invalid`, as is a question whose run,
+conversation, question ID or hash holds anything but ASCII letters, digits,
+`:`, `_`, `.` and `-`), the question kind and option count, at most 300 characters of the
+first question as one quoted line labelled as the child's data, `hgs inspect
+'<reference>'` for the full question, the exact `hgs answer CHILD --json`
+fields (run, conversation, question ID and hash) and "If only the person can
+decide, say so in your reply." It carries no ticket, wait or other authority.
+v1 routes on Linux only; macOS follows the deferred-send actor's macOS child
+seam and Windows keeps today's behaviour. The service advertises `Desktop
+question route: route-questions-v1` in `hgs --help`; an older service does not
+route.
+
+A submitted route shows one line in the child's and in the parent's desktop
+Activity (zerus-sa9qn.33): **Question sent to the parent session** with the
+parent's name, or **Question from a child session** with the child's name,
+then the route's own preview of at most 300 characters as plain text and the
+child's reference with Copy. The parent's own message of exactly the routed
+text folds into its line, behind **Show the received message**; any other
+line is placed by its time. Refused, reserved and unknown routes show nothing
+in this version. The lines come from the background service's read-only
+`question_route_activity` request (`request_id` and the session's durable
+`session_id`, exactly): at most the 20 newest submitted routes where the
+session is the child or the parent, read by two partial indexes of the route
+ledger (Store schema 38) and each route's own saved original. The read sends,
+settles and grants nothing. The desktop reads it for a local session in
+background service mode: once when the session is shown, then at most every
+3 s while its Activity changes, and a shown child every 15 s.
+
+The person has two switches, both on by default (zerus-sa9qn.32):
+
+- **Settings > Sessions > Send child questions to the parent session** is kept
+  by the background service (Store schema 37) and changed only through the
+  person's native frontend request (`question_routes`), never by a command
+  an agent can run. It is shown only where the service routes (Linux).
+- **Send questions to PARENT** in a Claude child's Session actions is kept on
+  the child's computer beside its notification preference
+  (`question-routing.json`, keyed by the child's durable session ID, so a
+  rename or a new conversation keeps it) and shared with every desktop and
+  phone. `hgs [@host] question-routing <session> --json` changes it by
+  compare-and-swap (stdin `expected_run_id`, `expected_conversation_id`,
+  `expected_revision`, `send_to_parent`; marker
+  `session-question-routing-v1`) and refuses a change from an agent's own
+  process tree (`agent_refused`), on the switch's own computer and, for `hgs
+  @host question-routing`, in the local CLI before forwarding (also in the
+  guarded `--expect-machine ID [--client C] [__state]` forms and `__state
+  question-routing`, zerus-sa9qn.51). That refusal
+  stops accidental agent use only; it is not a security boundary, because a
+  same-user agent can clear its session variables, leave its process tree or
+  write `question-routing.json` directly. The person-only control is the
+  global switch above (zerus-sa9qn.49). Listing rows and `hgs inspect` carry
+  `question_routing` (`send_to_parent`, `revision`), null when the setting is
+  unreadable or the session has no durable ID. Android and iOS show the same
+  entry in a live Claude child's Session actions and change it through the
+  mobile relay's Rust-only `session_question_routing` operation and the Rust
+  connector (zerus-sa9qn.33); the legacy Python connector refuses it. Phones
+  see the switch only once both the relay and the computer advertise it: the
+  relay lists the operation, and the connector offers it only when the
+  computer's `hgs --help` shows the `session-question-routing-v1` marker.
+  `mobile/android/app/src/test/resources/question-routing-contract.json` is
+  the shared contract of the desktop, the connector, the relay, Android and
+  iOS.
+
+- **The person's latch** (zerus-sa9qn.50): the background service on the
+  child's computer keeps a latch per durable session ID (Store schema 39).
+  While it is set, the child's questions never route, whatever its host
+  file says. The latch is the authority. After each change the service
+  writes the child's host file to follow it (`send_to_parent` the latch's
+  opposite), with a display-only mirror `person_off`. Listing rows,
+  `hgs inspect` and switch replies then carry
+  `question_routing` {`send_to_parent`, `revision`, `person_off`} (help
+  marker `session-question-routing-v2`). Older clients that know only the
+  two-key shape show the switch as unknown and fail closed. `hgs
+  question-routing` changes only `send_to_parent` and keeps the mirror.
+  On a child of this computer the desktop's **Send questions to PARENT**
+  goes through the latch: the person's native frontend request
+  (`question_route_child`, compare-and-swap at the child's exact run,
+  conversation and latch revision; closed refusals `conflict`,
+  `stale_identity`, `not_found`, `capacity`). The entry shows "You turned
+  this child's questions off" while latched. A remote child keeps its host
+  switch; while its mirror says a person latched it, the desktop shows it
+  off and offers no "on", which only its own computer or a phone can
+  give. The request lane an agent can reach only reads the latch
+  (`question_route_child_status`, `question_route_child_result`).
+  Boundary: the latch is person-only against an agent using commands (the
+  CLI, `hgs desktop request`, the connector), not against the same user
+  editing the service Store or the connector's files directly, the same
+  as the global switch.
+  A phone on an encrypted workspace sets the latch too, where its relay
+  and the computer both offer `session_question_route_person` (help marker
+  `question-route-person-v1`). The phone signs a statement with its
+  workspace Ed25519 key: domain `zerus-question-route-person-v1`, with
+  the workspace, phone, gateway, child session, run, conversation, value
+  and request ID, valid at most 5 minutes. The connector forwards it as one
+  `hgs desktop request` (`question_route_person`). The service runs this
+  computer's connector itself, pinned: the desktop's absolute selection or
+  the installed sibling of `hgs` (never a PATH lookup). Its directory must
+  be owned by this user or root and not writable by group or others. The
+  binary, opened relative to that directory without following a final
+  symlink, must be a regular file under the same rule: a packaged one, such
+  as the AUR's root-owned `/usr/bin/zerus-mobile-connector`, qualifies
+  (zerus-sa9qn.56).
+  It must answer `--version` as `zerus-mobile-connector X.Y.Z`, and the path
+  must still name it after the run. On Linux the service executes the
+  descriptor it checked (`execveat` with `AT_EMPTY_PATH`), so a file put at
+  the path after the check never runs (zerus-sa9qn.54). macOS has no
+  descriptor exec and runs the path. There, only this same user or root
+  could swap the file between the check and the run and back before the
+  recheck; that is outside this threat model. The run is bounded to 0.4 s
+  and 1.2 s and 64 KiB of output, with a cleared environment:
+  `zerus-mobile-connector --workspace verify-question-route-person`. The
+  verifier checks that a current phone of this workspace signed exactly
+  that statement for this gateway, and must reply exactly `{ok, verifier:
+  "question-route-person-v1", verified}`. Any failure, timeout or other
+  output is the closed refusal `not_verified`. The service then sets the
+  latch once per request ID, and the host file follows. Decisions apply in
+  the order the person made them (zerus-sa9qn.53): the latch keeps the
+  time of its last decision (a desktop decision records the computer's
+  time). A statement not issued after it, such as one delivered late, is
+  the closed refusal `stale_decision` and changes nothing. A decision that
+  changes nothing still records its time. The phone then refreshes and
+  asks again. Peers and Windows
+  gateways do not offer it, and a legacy connection keeps the host switch.
+  The shared vector is
+  `services/mobile/crypto/tests/vectors/question-route-person-v1.json`.
+
+The router reads nothing while the global switch is off. Every reservation
+reads both switches and the latch again in its own transaction, so a switch turned off
+before it stops the send and writes nothing; off never cancels or replays a
+question already reserved, sent or unknown. Turning routing on again reads the
+catalog from a new baseline: a question still pending and supervised then is
+routed once, also when it was first read, or its reservation found a switch or
+the latch off, while routing was off (zerus-sa9qn.45). One asked and answered
+while routing was off is never sent, and a question already in the route
+ledger never routes again.
+
 Android (zerus-sa9qn.4) and iOS (zerus-sa9qn.5) apply the same contract, iOS
 in ZerusKit `ChildSessions` and the session card: child cards nest under a
 parent shown in the same project group, 16 dp per level up to three levels
@@ -1217,6 +1550,7 @@ is insufficient. Older ambiguous records are not reclassified automatically.
 
 ```sh
 hgs archive codex/my-project/review                 # stopped sessions only
+hgs terminate codex/my-project/lead --with-children # then its live child sessions
 hgs ls --local --json
 hgs inspect codex/my-project/review --archive ID
 hgs resume codex/my-project/review --archive ID -d
@@ -4648,6 +4982,39 @@ bounded history window and disappears when it no longer matches, including on
 edit or Allow retry. It changes no draft, checkpoint or uncertainty state: text
 equality is never request-ID receipt evidence and never clears or retries input.
 
+`hgs [@host] delivery receipt ORIGINAL_NAME --json` reads one original send
+receipt, including text-only sends, without sending or checking a native agent.
+Its input is an object containing `request_id` (the read transport UUID),
+`message_request_id` (the original send UUID), `expected_machine_id`,
+`expected_session_id`, `expected_run_id`, `expected_conversation_id`, `provider`,
+`native_digest`, and an optional `agent_id`. Here `provider` is the agent kind:
+`claude`, `codex`, `kimi`, `dsh` or `opencode`. The name is the original recorded
+label, not a route to its current holder; this command never follows a rename.
+The request's machine and durable session binding must match the original.
+The native digest is the unchanged producer digest: SHA-256 of the exact stdin
+bytes for terminal sends, or of the compact JSON `[original_name, request]` for
+DeepSeek and OpenCode. It is distinct from a phone's canonical intent digest.
+OpenCode proof requires the original provider-valid `msg_` message ID; missing,
+malformed or unsupported native IDs remain unknown and are never exposed as delivery evidence.
+
+A verified submitted original returns body-free metadata, its submission time,
+queue flag and an exact native message ID only when the original records one.
+This proves admission to the original input path, not completion of agent work.
+Every other readable outcome is `status: unknown` with a bounded reason. Missing,
+corrupt, oversized, pending, unbound or mismatched evidence never means Not sent
+and never authorizes replay. New sends record their immutable machine/session
+binding before delivery; older receipts without that binding stay unknown even
+when their digest matches. No lookup retrofits or rewrites receipt history.
+
+The lookup reads one UUID-named original of at most 256 KiB through pinned
+directories whose entries only their owner can change. It does not open the
+derived receipt database, enumerate receipts, run migration, resolve a live
+session or contact a provider. Missing
+state stays missing. Its existing computer-identity check is read-only too.
+The `delivery-receipt-v1` capability marker gates remote forwarding to prevent an
+older CLI from treating the command as a launch. This CLI operation is the first
+part of mobile ordinary-send recovery; connector and phone support ship separately.
+
 Recent attachment delivery projection uses the private, rebuildable
 `delivery-receipts-v1.sqlite3` locator in the state directory. A refresh reads
 at most 100 original receipts for the selected provider, conversation and child;
@@ -4661,7 +5028,8 @@ The inspection's `receipt_projection` reports index coverage, its next cursor
 and explicit missing, corrupt or changed-original gaps. An unavailable or still
 building index is unknown coverage, not evidence that no message was sent.
 Legacy discovery runs in one coalesced background worker per state directory,
-with transactions limited to 64 directory entries or 25 ms and a pause between
+with transactions limited to 64 directory entries or indexed bindings, or 25 ms,
+and a pause between
 batches. An interrupted worker retains committed locators and their sequence
 numbers; discovery reopens in the background. It never deletes or rewrites
 receipt history. New sends retain the original atomic receipt write and update
@@ -4671,6 +5039,23 @@ Older caches remain unverified until the worker reconciles their originals.
 Removing a locator or changing its indexed identity invalidates coverage and
 snapshot cursors. Every worker restart reconciles the original directory even
 when its modification time is unchanged; inspection never does that walk.
+Before clearing a cache discrepancy, the worker verifies every projection field
+against its validated original and repairs compatible metadata. A conflicting
+original fingerprint or pinned conversation remains an explicit gap.
+A first-message receipt may acquire its original's resolved conversation while
+keeping its page chain. The writer re-reads and validates the original before
+this exact update. Other cached conversation changes immediately invalidate
+coverage and report `binding_changed`. Legacy guards must upgrade before a
+cache can serve verified coverage.
+The worker also checks indexed bindings not encountered in that walk, counting
+retained bindings within the same bounded pass. Finishing a source does not
+rescan its rows. It publishes that count only if the source stamp, epoch and
+trigger-maintained count stayed unchanged during counting; a racing walk keeps
+the live count and incomplete coverage. A missing original keeps its binding and
+becomes an explicit gap with a history change sequence. Discovery can finish
+with a gap; question recovery still refuses
+unverifiable evidence. Restoring the same original clears its gap, while a
+replacement with another binding remains untrusted.
 
 The same locator exposes exact name, run and conversation pages for question
 recovery. Deadline-bounded inspection never walks the question receipt directory;
@@ -4843,6 +5228,36 @@ For Claude and Kimi messages ending in a literal backslash, the paste includes a
 final newline so the single Enter submits the unchanged message instead of
 activating the agent's backslash-Enter line continuation. This is verified
 against native history; no second Enter is sent as an automatic retry.
+On Unix, a public send to an existing-ID Claude, Codex or Kimi session can apply
+one exact scheduled Settings change before its message. The same custodian keeps
+the original Root and SID exclusions and one original 25-second deadline across
+both steps. This path keeps the normal 64 KiB text limit and admits at most one attachment
+with at most 1 MiB decoded data. These exact count and byte decisions precede
+selection, receipts and terminal input; larger attachment requests use their
+existing send path, including the normal 20 MiB total attachment limit. Its outer input
+receipt precedes the first Settings key;
+`input_pending_at` still immediately precedes the message paste. After input is
+offered to that custodian, a refusal or lost acknowledgement means delivery is
+uncertain and never authorizes retry. These observations omit the best-effort
+diagnostic screen sample. Zero-pending sends, Background or busy sends and
+internal submissions retain their ordinary routing. Codex sends whose native
+conversation ID is still empty also keep their ordinary path; its startup
+dialog checks and Settings walk exceed this path's measured budget margin.
+Unprimed Kimi sends remain eligible. If another Settings
+custodian already owns the slot, the send keeps its ordinary blocking path.
+An expired or refused staged message gets one pre-reserved, UUID-specific tmux
+buffer discard after Stage physically settles, within two seconds of the
+original deadline. If Stage remains unsettled beyond that lease, cleanup is
+uncertain and its buffer may remain; original custody lasts until its helpers
+physically settle. This narrow path does not enable general native continuity.
+The deadline is minted once before the keeper handoff; nested Settings borrows
+it. Standalone Settings and Effort retain their 15-second keeper budgets.
+The desktop waits up to 30 seconds for a local Send and 45 seconds for a peer.
+The longer local caller lifetime also applies to ordinary and legacy local
+sends; their command arguments, input, routing and native checks are unchanged.
+The composer keeps its single-send guard until the original call settles.
+A connector operator's `subprocess_timeout` below about 27 seconds would cut
+a pending-Settings Send short; the connector default remains unchanged.
 Codex messages ending in an `@mention` likewise include a final pasted newline
 to move the cursor outside file/mention completion before the single Enter.
 Codex trims that newline on submission; the message and receipt retain the
@@ -5199,7 +5614,10 @@ separate confirmation because they change permissions beyond this request.
 **Do not start** cancels the tool without creating a goal or changing the mode.
 Zerus answers only the exact native goal panel after the same complete wire and
 process checks as other Kimi approvals; Kimi's recorded decision and mode label
-confirm delivery. A different, clipped or unverifiable panel stays read-only.
+confirm delivery. In the fullscreen Goal panel, animated foreground RGB colours
+on the exact `Using tools` status row above it may change between observations;
+all other screen bytes and the complete validated panel must match. A different,
+clipped or unverifiable panel stays read-only.
 
 Other Kimi tool approvals also appear in Activity, with the complete request from
 Kimi's wire. Kimi's hooks cannot approve, so Zerus answers only in Kimi's own
@@ -7434,7 +7852,36 @@ Run inside a session (`HGS_SESSION` and
 `HGS_RUN_ID`), `hgs task` acts as that session's agent: `add` files the task
 for that session, and the project settings can keep agents to their own
 session or limit how many tasks they start per hour. `settings --set` reads a
-JSON object and changes only the fields it names.
+JSON object and changes only the fields it names. A DeepSeek host's tool call
+(`HGS_AGENT=dsh`) never acts as the person; while its session cannot be proven,
+`hgs task` refuses it (see Session markers of hosted tool calls).
+
+Another computer's hgs, reached as `hgs @host …`, sees no marker of the agent
+that calls it and takes the caller for the person. So an agent's process
+never forwards a command whose handler tells the person from an agent that way
+(zerus-ppd26.9). Those commands are `task`, `team` and `question-routing`
+(`PERSON_ONLY_FORWARDED` in `src/cli.rs`); a newer peer's `team` or
+`question-routing` is covered too.
+- **Where the check runs:** on this computer before any ssh, `--dry-run`
+  included, on every route: plain `@host`, `@host --expect-machine ID
+  [--client C]`, the private `__state` entry and a session reference's
+  verified hop.
+- **Who counts as an agent:** a process that claims a session (`HGS_SESSION`
+  and `HGS_RUN_ID`, proven or not), a resident DeepSeek tool call
+  (`HGS_AGENT=dsh`), or a process a live session proves as its caller, a
+  Claude background job included.
+- **What the agent does instead:** it runs `hgs task` on its own computer,
+  which reaches every computer's copy. A person's shell that inherited an
+  agent's variables can unset them.
+- **Unchanged:** tasks' own forwarding of `send` and `cancel` to the
+  executor's computer (`--agent NODE/SESSION`).
+- **Still forwarded for an agent:** `answer`, `interrupt` and terminal input
+  act the same for an agent and the person; `wait` acts on its ticket;
+  `parent` and `wait begin` refuse a caller the other computer cannot see;
+  `desktop` and `approval-log` refuse every other computer.
+
+This guards against accidental agent use, not against an agent that clears its
+own environment. Forwarding a verified caller instead is future work.
 
 The desktop cancellation dialog uses `hgs task cancel-execution REF --project P --json`,
 with schema 1 JSON on stdin: `dispatch_id`, `stage_at`, executor `machine` and `session_id`,
@@ -8697,6 +9144,96 @@ identity remain unverifiable, rather than being assigned a synthetic identity.
 A healthy resident adapter reconnects without a restart or record rewrite.
 These checks never stop a host or reload its bridge.
 
+### Session markers of hosted tool calls
+
+One native host serves every DeepSeek session of its agent home from one
+process, so whichever session happens to start it is not the session of any
+hosted agent (zerus-ppd26). Zerus starts the host without that session's
+variables: the session markers, its account, launch and parent identities, its
+terminal (`TMUX`, `TMUX_PANE`, `HGS_TERMINAL_NAME`) and `CLAUDECODE`, the same
+list the Windows session host drops. The state and configuration roots stay.
+
+Every tool call's processes then carry `HGS_AGENT=dsh` and exactly the calling
+session's own markers: `HGS_SESSION` (its name), `HGS_RUN_ID`, `HGS_SESSION_ID`
+and `HGS_ACCOUNT_ID=native-dsh`. Zerus writes them after each binding save to a
+private file per native conversation, `shells/<conversation>.json` in the host
+folder, so they always name the current run, and removes it when the session is
+forgotten. The adapter reads that file for each call, foreground, background or
+promoted, and a child agent's calls carry its parent session's markers. Without
+a valid file, for example an agent the native UI opened, a call carries
+`HGS_AGENT=dsh` and none of the four: the adapter removes them explicitly, never
+passing a partial or inherited set. Its `ping` reports `shellIdentity` when it
+sets these per call.
+
+A hosted tool call is never the person. `hgs task` and the desktop's
+agent-descended refusal treat `HGS_AGENT=dsh` without a session they can prove
+as an agent, and refuse person actions plainly. Until a hosted session can be
+proven, its `hgs task` commands are refused and its sends are unattributed.
+
+The limit: one process serves all hosted sessions, so process ancestry proves
+only that a command runs under the host serving a session, not which hosted
+agent ran it. The markers are claims that the host sets per call, which ends
+accidental attribution to another session; an agent that deliberately sets
+another hosted session's markers, or edits the same-user identity file, is not
+detected by them.
+
+A host an older Zerus started keeps the markers it inherited and its adapter
+until it exits on its own; it is never restarted or reloaded for this. Its
+`ping` has no `shellIdentity`, and the existing refusals for those inherited
+markers stay. The adapter version is unchanged, so this Zerus keeps using such a
+host. Such a host started from a process without session markers, such as the
+desktop or a plain terminal, gives its tool calls neither markers nor
+`HGS_AGENT`: the markers cannot tell those calls from the person, and only the
+check of recorded host ancestry below refuses them.
+
+Under a recorded host, no other identity (zerus-ppd26.15). The process tree and
+the host records decide this, never a marker the caller sets. hgs reads the host
+records first: a computer or account that records no DeepSeek host is never
+affected by the rest of this check. Otherwise hgs walks a command's ancestry
+through processes of the same user, at most 64, up to the first process of
+another user. When that walk contains a DeepSeek host this
+computer records in `dsh/hosts`, matched by process ID and birth, the command is
+never another agent's session and never the person, even when that agent's
+process is also an ancestor, as it is while the `hgs` that started the host
+still runs. The send and `hgs wait begin` origin and the parent link of a launch,
+local and forwarded with `--parent-link`, are left unattributed; `hgs task`,
+`hgs self`, `hgs parent adopt`, question routing (locally and before `@host`
+forwarding) and desktop mode registration refuse. An unmarked `hgs send` or
+`send-now` under a host found is refused too, locally, by reference and before
+`@host` forwarding, because its target would receive it without a sender; an
+unverifiable check refuses no send, so a sandboxed agent's sender-less send
+keeps working. A launch under a host keeps an empty parent. `HGS_AGENT=dsh` stays
+an extra guard. The checks also refuse in both directions, the person's commands and
+task reads included, when:
+- a host record cannot be read or is malformed;
+- there are more than 64 host folders or 1024 entries;
+- a record names an ancestor's process ID without its birth;
+- the walk reaches 64 processes without the top;
+- the birth of a process on the walk cannot be read;
+- a process on the walk cannot be read or changes while it is read;
+- the walk reaches a process of the user whose parent is 0: the first process
+  of a separate process namespace the user owns, such as an agent's sandbox
+  (bubblewrap with its own PID namespace), `unshare --user --pid` or a rootless
+  container. A host outside it cannot be seen, so commands that need the caller
+  proof must run outside that sandbox, or with its private process namespace
+  turned off.
+Each cause has its own refusal. A record's refusal names the exact path and how
+to clear it: close the DeepSeek sessions of that agent home, then remove the
+record. The desktop shows it. Agent Teams' caller proof uses the same check,
+`state::dsh::hosted_ancestor`.
+Records of an earlier boot never block anyone. A host's records are written
+atomically (a synced temporary file renamed into place, then the folder synced),
+so a crash leaves the previous record or the new one. Outside this check:
+- a command that leaves the host's tree (a double fork, setsid, or a background
+  job whose shell exits), which the user's service manager adopts;
+- a host started by an attempt that ended before its running record.
+
+The official minimal composition's persistent `bash` tool keeps one shell per
+agent across calls, which starts with the environment of the call that opened
+it. Its later commands keep that session's markers, which can name an earlier
+run after a relaunch. The `hgs` profile Zerus launches uses the per-call `bash`
+tool.
+
 Reviewed adoption of `0.2.1-rc.5` (2026-10-29, `zerus-r7d4`): the rc.2-only
 startup gate rejected rc.5 before starting the host. Comparison of the official
 npm packages found the launcher's code, boot/profile handling, web listener,
@@ -8896,6 +9433,32 @@ and reasoning are excluded. Searching never starts, resumes or reloads a host.
 Hosts are asked at once, each scanning for at most 5 seconds; a stopped host, an
 older adapter or a host that does not answer within 7 seconds reports that
 history as unavailable.
+
+A DeepSeek row in `hgs ls` and the GUI reports its background work without an
+inspection, so an idle session with a running background job shows
+**Background**. The adapter answers `ping` with `listJobs: true`. Each row of
+its `list` answer then carries `listJobs`: a summary of the running bash jobs
+of that session and of its subagents listed in the same answer. Jobs are taken
+from the same native job registry that an inspection reads:
+
+- `{"complete": true, "count": N, "jobs": [...]}` when at most 32 such jobs run.
+  `count` equals the number of `jobs` entries, and 0 means no background work.
+  Each entry is `{"id", "kind": "bash", "owner", "status", "startedAt",
+  "label", "callId"}`. `status` is `starting`, `running` or `stopping`;
+  `owner` is the session or subagent ID; `startedAt` is milliseconds since the
+  epoch; `label` holds at most 240 characters; `callId` may be null.
+- `{"complete": false, "count": null, "jobs": []}` when there is no job registry
+  or more than 32 jobs run. There is no count.
+
+A count is a number only when `complete` is true. HGS lists such a row with
+`process_work.count` N; an incomplete summary, or one whose count disagrees with
+its jobs, leaves `process_work.count` null. An adapter from an older Zerus has
+no `listJobs` in `ping` and no `listJobs` key in its rows. Its rows also keep
+`process_work.count` null. Consumers read null as unknown, never as free. A host
+is never restarted to gain this; hosts started by this version provide it. The
+bridge's own `ping` and `list` answers for this contract are captured in
+`tests/fixtures/dsh-bridge-list-row.json`; `tests/test_dsh_bridge.py` fails when
+they differ and rewrites the file with `ZERUS_REGENERATE_DSH_BRIDGE_CAPTURE=1`.
 
 The official Schedule plugin (**Automation tasks** in Native UI Plugins) is
 listed and managed per exact session. The reviewed web bundles include it,
@@ -9235,6 +9798,37 @@ Next on Linux and macOS frames the quoted paths as one literal terminal paste,
 so path characters are not individual native approval shortcuts. It still sends
 no Enter. Generic typing, text paste and Windows file-drop framing are unchanged.
 **Open externally** and **Copy connect command** retain access from other clients.
+
+**Clear input** (an eraser icon in the Terminal bar) discards text left in the
+native agent's own composer, such as a message whose delivery was uncertain
+(zerus-wkj9l). It shows only while the selected live session's composer is
+recognized and not empty, its agent is not working, and nothing is being sent
+to it; the Terminal tab reads the composer every few seconds while it is shown.
+The confirmation shows the exact text that will be discarded. After **Clear
+input**, `hgs terminal SESSION --json` (`action: "clear-input"`, the composer
+read's `terminal_binding_id`, a 5-second deadline and that exact `text`) takes
+the input lock and refuses a busy agent, a changed terminal or any other
+composer text before a key is sent. It then presses End and Ctrl+U, which clear
+a line in Claude Code, Codex and Kimi Code and do nothing on an empty composer.
+Ctrl+C is never sent: Codex quits on it once the composer is empty. It reads
+the composer again after every round and stops once it is empty (`cleared`),
+or reports `uncertain` with the remaining text when it stops changing, as a
+multi-line draft can. A request ID is never replayed. The clear is recorded with
+the session (`input_cleared`) and settles an unconfirmed earlier input whose
+residue it was. It is only ever the person's action: no delivery or retry uses
+it. The read is `action: "composer"`, which returns the text, `clearable` and
+the reason when it is not.
+
+While a send to that run from any client (another desktop, a phone, an agent
+or a task) is still in its proof window, both the read and the clear refuse, and
+nothing is typed (zerus-wkj9l.1). The proof window lasts while the send's
+receipt is `in_progress` with no delivery outcome and its input is at most 40
+seconds old. During it, the message being delivered may sit in the composer.
+Once that send ends uncertain, its stuck text is clearable again. Claude Code
+text is read only when the cursor lies between the composer's two rules, never
+from a past prompt shown above it. The Terminal tab keeps at most one read in
+flight and reads only Claude Code, Codex and Kimi Code sessions. A Codex session started in the home folder itself
+is not recognized and is cleared in Terminal.
 
 In Zerus Next on Linux and macOS, an image-bearing browser paste event stays in
 the selected Terminal. On Arch with WebKitGTK, use **Shift+Insert** for an image
@@ -10319,21 +10913,35 @@ Claude Code attaches a pasted line that is only an image path asynchronously:
 until it has read the image its composer is empty with a `Pasting…` footer, and
 an Enter then submits nothing (zerus-iitw8). For Claude the single Enter
 therefore waits until the composer shows the paste settled, and `submitted`
-requires Claude's own transcript to record the message: a new user row
-(`native: transcript`) or, while it works, a queue `enqueue` (`native: queue`).
-A new conversation with no transcript yet counts its settled composer emptying
-after Enter (`native: composer`). Both waits share one 8-second window from the
-paste. In the WhiteWh fork (owner, 2026-11-13) the composer's frames read the
+requires Claude's own transcript to record exactly this message after the
+paste: a new typed user row (`native: transcript`) or, while it works, a new
+queue `enqueue` (`native: queue`). The row must hold the same lines in the same
+order, none added, apart from Claude's image tokens and blank lines, and be
+stamped no earlier than the paste. A prompt queued earlier that Claude takes
+now (a `queued` user row, a `queued_command` attachment, `remove` or `dequeue`)
+never proves a later send. A new conversation with no transcript yet counts
+its settled composer emptying after Enter (`native: composer`). Both waits
+share one 8-second window from the paste and hold no state lock, so other
+sessions' hooks run meanwhile. The send's `input_typing` marker on the session
+keeps every other input out until it ends (other sends and session actions,
+Terminal input and Clear input). Its term starts again with the window, after
+the paste, so slow work before the paste never lets it lapse inside the window;
+it never lasts more than the window plus 4 seconds. Before its single
+Enter the send takes the lock again, by the same deadline, and checks that its
+marker still holds and the composer still shows the settled text. Otherwise the
+receipt stays `in_progress` with `delivery: uncertain`, its reason and the
+composer's text (at most 2,000 characters, never image bytes), and the error
+names that text; it is never retyped. Codex and Kimi show a paste at once, so
+their Enter still confirms the receipt. A busy agent's tool events never
+confirm the previous input: only an input-acceptance event (a submitted or
+queued prompt, a turn or task start) or Claude's own transcript or queue record
+of the message lets the next request through. An emptied composer
+(`native: composer`) proves the Enter but not that Claude accepted the input. While a busy agent may still hold the previous message in its
+own queue, the refusal says so. In the WhiteWh fork (owner, 2026-11-13) the composer's frames read the
 pane's own cursor, one cheap terminal read, instead of the console's full input
 evidence: under a build's load that evidence took so long that the window read
 no composer at all and a delivered paste stayed unsent. The input check still
-runs once before the Enter. Otherwise the receipt stays `in_progress` with `delivery: uncertain`, its
-reason and the composer's text (at most 2,000 characters, never image bytes),
-and the error names that text; it is never retyped. Codex and Kimi show a paste
-at once, so their Enter still confirms the receipt. A busy agent's tool events
-never confirm the previous input: only an input-acceptance event (a submitted
-or queued prompt, a turn or task start) or that native proof lets the next
-request through.
+runs once before the Enter.
 
 In the WhiteWh fork (owner, 2026-11-13) an uncertain Claude delivery can be
 confirmed later: `hgs send SESSION --confirm REQUEST_ID --json` reads Claude's

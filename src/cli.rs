@@ -79,6 +79,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        Desktop task message references: desktop-task-message-reference-v1
        Desktop task message input review: desktop-task-message-input-review-v1
        Desktop deferred send ABI: desktop-deferred-send-v1
+       Desktop question route: route-questions-v1
        Desktop deferred answer ABI: desktop-deferred-answer-v1
        Desktop deferred answer update phase: desktop-deferred-answer-update-phase-v1
        Desktop deferred compact to send ABI: desktop-deferred-compact-to-send-v1
@@ -166,12 +167,14 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        hgs @host download --path REMOTE_PATH --output LOCAL_FILE   download a copy through configured SSH or explicit WSL
        hgs [@host] answer <session> --json   answer an exact pending question from JSON stdin
        hgs [@host] answer <session> --observe --json   read a pending question's consent identity, changing nothing
+       hgs [@host] delivery receipt <original-session-name> --json   read exact original send evidence from JSON stdin
        hgs [@host] parent <session> --json   read, adopt (as the calling agent), set or clear its parent session from JSON stdin
        hgs [@host] read <session> --json   mark the current reply/attention read (JSON stdin)
        hgs [@host] subagent retire <session> --json   retire an exact stale child record (JSON stdin)
        Subagent retirement ABI: subagent-retire-v1
        hgs [@host] notifications <session> --json   shared mute preference (session-notifications-v1)
        hgs [@host] keep-warm <session> --json   keep the prompt cache warm for 1-7 hours or always (session-keep-warm-v1)
+       hgs [@host] question-routing <session> --json   send this child's questions to its parent, the person's switch (session-question-routing-v1)
        hgs [@host] fork <session> [-n name] [-d] [--archive ID]  branch into a new conversation
        hgs [@host] effort <session> --json   change this agent's effort from JSON stdin
        hgs [@host] settings <session> --json model and effort for this session (JSON stdin)
@@ -255,6 +258,10 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        Mobile clear-context ABI: dismiss-prompt-v1
        session-notifications-v1
        session-keep-warm-v1
+       delivery-receipt-v1
+       session-question-routing-v1
+       session-question-routing-v2
+       question-route-person-v1
        session-parent-v1
        launch-parent-v1
        claimed-parent-v1
@@ -265,7 +272,8 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        hgs [@host] rename <session> <new-full-name> [--archive <id>]
        hgs [@host] archives --json [--bounded]   date-filtered archive pages (JSON stdin); --bounded caps counts at 10,000 and each scan at 25,000 rows
        archive-bounded-pages-v1
-       hgs [@host] archive <session>          move a stopped conversation to Archive
+       hgs [@host] archive <session> [--with-children]   move a stopped conversation to Archive
+       hgs [@host] terminate <session> [--expected-run-id ID] [--with-children]   stop and keep the conversation in Archive
        hgs [@host] pause <session>|--all       save and gracefully close idle agents
        hgs [@host] resume <session>|--all [-d] [--archive <id>]   restore exact conversations
        hgs [@host] resume <session> --fresh [-d] [--expected-run-id ID]   same settings, new conversation
@@ -309,6 +317,7 @@ Claude/Codex/Kimi install tracking hooks; Codex hooks need trust in /hooks.
 pause refuses untracked/busy sessions. Saved sessions survive reboot; a opens them again.
 Archive holds completed conversations; only explicit resume --archive restores them.
 terminate stops a tracked session and preserves it in Archive; kill explicitly forgets it.
+terminate/archive --with-children then end the session's live child sessions, each by its own rules.
 pause/resume --all covers tracked terminal agents; OpenCode uses exact per-session controls.
 resume --all excludes Archive. kill --archive forgets only that archived entry.
 rename changes the session label while preserving its agent/project, process and conversation.
@@ -327,7 +336,7 @@ fn local_sessions() -> Result<()> {
 // Repository preparation owns only its checkout and receipt. Like the existing
 // configuration/control commands, it does not require or enable a session host.
 fn needs_local_sessions(command: &str) -> bool {
-    !matches!(command, "ls" | "watch" | "machine" | "presence" | "swarm" | "project" | "account" | "speech" | "analytics" | "graph" | "wait" | "team" | "rules" | "mobile" | "hooks" | "repository" | "session-action-status" | "subagent" | "path-info")
+    !matches!(command, "ls" | "watch" | "machine" | "presence" | "swarm" | "project" | "account" | "speech" | "analytics" | "graph" | "wait" | "team" | "rules" | "mobile" | "hooks" | "repository" | "session-action-status" | "delivery" | "subagent" | "path-info")
 }
 
 /// Fails unless this process may run what the processes of a session run:
@@ -627,6 +636,7 @@ fn unix_only_usage(line: &str) -> bool {
         zerus_client_core::desktop::task_message::REFERENCE_HELP_MARKER,
         zerus_client_core::desktop::task_message::review::HELP_MARKER,
         zerus_client_core::desktop::deferred_send::HELP_MARKER,
+        zerus_client_core::desktop::question_route::HELP_MARKER,
         zerus_client_core::desktop::deferred_answer::HELP_MARKER,
         zerus_client_core::desktop::deferred_answer::UPDATE_PHASE_MARKER,
         zerus_client_core::desktop::compact_to_send::HELP_MARKER,
@@ -686,6 +696,7 @@ fn advertised(usage: Cow<'static, str>, linux: bool) -> Cow<'static, str> {
         zerus_client_core::desktop::task_message::REFERENCE_HELP_MARKER,
         zerus_client_core::desktop::task_message::review::HELP_MARKER,
         zerus_client_core::desktop::deferred_send::HELP_MARKER,
+        zerus_client_core::desktop::question_route::HELP_MARKER,
         zerus_client_core::desktop::deferred_answer::HELP_MARKER,
         zerus_client_core::desktop::deferred_answer::UPDATE_PHASE_MARKER,
         zerus_client_core::desktop::compact_to_send::HELP_MARKER,
@@ -772,6 +783,14 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
         env::set_var(crate::wsl::POLICY, "existing-only");
         args.drain(..2);
     }
+    // A connector read uses the long-lived closed namespace so a downgraded
+    // executable refuses it instead of falling through to a session launch.
+    // This one read needs neither a native session host nor a writer.
+    if args.first().map(String::as_str) == Some("__state")
+        && args.get(1).map(String::as_str) == Some("delivery")
+    {
+        return state::dispatch(&args[1..]).map_err(|e| Error::new(1, e));
+    }
     if crate::desktop::launchd_command(&args) {
         args.pop();
         return dispatch(args).map_err(|mut error| {
@@ -826,7 +845,7 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
             return Err(Error::new(1,"Mobile target identity changed; refresh computers"));
         }
         let guarded_at = if args.get(2).is_some_and(|a| a=="--client") {4} else {2};
-        let actual = if args.get(guarded_at).is_some_and(|a| a=="session-action-status") {
+        let actual = if args.get(guarded_at).is_some_and(|a| a=="session-action-status"||a=="delivery") {
             state::lifecycle_receipt_machine(&config).map_err(|_| Error::new(1,"Native machine identity is unavailable"))?
         } else {
             crate::swarm::local_node_id(&config).map_err(|_| Error::new(1,"Native machine identity is unavailable"))?
@@ -916,6 +935,59 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
         return Ok(1);
     };
     let args = &args[index + 1..];
+    // The per-child question route switch (zerus-sa9qn.32): refuse a change
+    // from an agent's own process tree here, before any `@host` forwarding,
+    // because the peer's hgs cannot see this caller (zerus-sa9qn.47). This is
+    // a guard against accidental agent use, not a security boundary: the
+    // person-only control is the global switch (zerus-sa9qn.49). The routed
+    // command is found in every form a peer runs it: `--expect-machine ID
+    // [--client C] [__state] COMMAND` and `[__state] COMMAND`
+    // (zerus-sa9qn.51).
+    let (first, then) = if command == "--expect-machine" {
+        let at = if args.get(1).is_some_and(|a| a == "--client") {
+            3
+        } else {
+            1
+        };
+        (args.get(at), args.get(at + 1))
+    } else {
+        (Some(command), args.first())
+    };
+    let routed = if first.is_some_and(|a| a == "__state") {
+        then
+    } else {
+        first
+    }
+    .map(String::as_str);
+    // The same agent refusal as a local change, before forwarding
+    // (zerus-ppd26.1, zerus-ppd26.15).
+    if routed == Some("question-routing") {
+        if let Some(refused) = crate::state::question_routing::agent_refusal() {
+            println!("{refused}");
+            return Ok(1);
+        }
+    }
+    // A send under a recorded DeepSeek host that is actually found is the
+    // host's own hosted call only when the host bridge's call marker and its
+    // own complete session token pair are there. A marked call without that
+    // proof (for example an older host's inherited markers), partial markers,
+    // or no markers would reach a live target without a sender. Refuse it
+    // here, before any reference hop or `@host` forwarding (zerus-ppd26.22).
+    // Only a host actually found refuses: an unverifiable check, such as a
+    // sandboxed agent's sender-less send, keeps working as before.
+    if matches!(routed, Some("send" | "send-now")) {
+        let proven_hosted = crate::state::session_graph::hosted_agent_call()
+            && ["HGS_SESSION", "HGS_RUN_ID"]
+                .iter()
+                .all(|name| env::var(name).is_ok_and(|value| !value.is_empty()));
+        let check = crate::state::dsh::host_check();
+        if check == crate::state::dsh::HostCheck::Under
+            && state::session_graph::send_origin().is_none()
+            && !proven_hosted
+        {
+            return Err(Error::new(1, check.sentence().unwrap_or_default()));
+        }
+    }
     if let Some(result) = wsl_forward(&config, &target, command, args, dry) {
         return result;
     }
@@ -1274,9 +1346,10 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
             }
             state_command(command, &args)
         }
-        "inspect" | "processes" | "worktrees" | "git-status" | "git-diff" | "repository" | "dirs" | "send" | "send-now" | "send-cancel" | "session-action" | "session-action-status" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "read" | "notifications" | "keep-warm"
-        | "attachment" | "file-read" | "recovery" | "voice" | "schedules" | "graph" | "wait" | "team" | "rules" | "switch-account" | "parent" => {
+        "inspect" | "processes" | "worktrees" | "git-status" | "git-diff" | "repository" | "dirs" | "send" | "send-now" | "send-cancel" | "session-action" | "session-action-status" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "read" | "notifications" | "keep-warm" | "question-routing"
+        | "attachment" | "file-read" | "recovery" | "voice" | "schedules" | "graph" | "wait" | "team" | "rules" | "switch-account" | "parent" | "delivery" => {
             if command == "rules" && dry { return Err(Error::new(1,"Rules operations do not support --dry-run")); }
+            if command == "delivery" && dry { return Err(Error::new(1,"Delivery receipt reads do not support --dry-run")); }
             if command == "session-action-status" && dry { return Err(Error::new(1,"Lifecycle receipt reads do not support --dry-run")); }
             if command == "repository" && dry { return Err(Error::new(1,"Repository operations do not support --dry-run")); }
             if command == "wait" && dry { return Err(Error::new(1,"Wait operations do not support --dry-run")); }
@@ -1289,7 +1362,7 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
             if command == "worktrees" && args.first().is_some_and(|s| s == "create" || s == "cancel" || s == "remove" || s == "sweep" || s == "policy" && args.get(1).is_some_and(|s|s=="set")) && dry {
                 return Err(Error::new(1, "worktree creation, removal and policy changes do not support --dry-run"));
             }
-            if (matches!(command.as_str(), "processes" | "send" | "send-now" | "send-cancel" | "session-action" | "terminal" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "recovery" | "read" | "notifications" | "keep-warm" | "voice" | "schedules" | "parent") || (command=="attachment" && has(args,"--stage"))) && dry {
+            if (matches!(command.as_str(), "processes" | "send" | "send-now" | "send-cancel" | "session-action" | "terminal" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "recovery" | "read" | "notifications" | "keep-warm" | "question-routing" | "voice" | "schedules" | "parent") || (command=="attachment" && has(args,"--stage"))) && dry {
                 return Err(Error::new(1, "message input does not support --dry-run"));
             }
             state_command(command, args)
@@ -1618,6 +1691,7 @@ fn selector_markers(command: &str, args: &[String]) -> Result<Option<Vec<Marker>
     match inner {
         "notifications" => markers.push(Marker::Line("session-notifications-v1")),
         "keep-warm" => markers.push(Marker::Line("session-keep-warm-v1")),
+        "question-routing" => markers.push(Marker::Line("session-question-routing-v1")),
         "hooks" => markers.push(Marker::Text("hooks-health-v1")),
         _ => {}
     }
@@ -1688,7 +1762,7 @@ fn is_reference_call(command: &str, args: &[String]) -> bool {
 const SESSION_COMMANDS: &[&str] = &[
     "inspect", "reference", "processes", "send", "send-now", "send-cancel", "switch-account", "history", "history-projection",
     "terminal", "session-action", "session-action-status", "compact-context", "clear-context",
-    "interrupt", "attachment", "file-read", "answer", "read", "notifications", "keep-warm", "fork", "effort",
+    "interrupt", "attachment", "file-read", "answer", "read", "notifications", "keep-warm", "question-routing", "fork", "effort",
     "settings", "schedules", "voice", "hooks", "a", "kill", "rename", "archive", "terminate",
     "pause", "resume", "native-ui", "__dsh-ui-url", "parent",
 ];
@@ -1742,7 +1816,7 @@ fn resolves_label_first(command: &str, args: &[String], here: bool, local: bool)
 const REQUEST_GUARDED: &[&str] = &[
     "send", "send-now", "history", "history-projection", "terminal", "session-action",
     "compact-context", "clear-context", "interrupt", "attachment", "file-read", "answer", "read",
-    "notifications", "keep-warm", "effort", "settings", "schedules", "voice", "parent",
+    "notifications", "keep-warm", "question-routing", "effort", "settings", "schedules", "voice", "parent",
 ];
 /// Its guard is on its command line (`--expected-run-id`, `--run`, `--run-id`,
 /// `--expected-conversation-id`, `--conversation`).
@@ -1903,6 +1977,85 @@ fn remote(
     remote_via(config, target, command, args, global_dry, None)
 }
 
+/// Commands whose handler takes a caller without session markers for the
+/// person (zerus-ppd26.9): `task` (the actor of every task change), `team`
+/// (its person-only operations) and `question-routing` (the person's switch,
+/// zerus-sa9qn.47). Another computer's hgs, reached over SSH, sees no marker
+/// of the agent that calls it, so an agent's call stops on this computer. A
+/// newer peer may run a command this hgs lacks, so its name is listed too.
+/// Commands that act the same for an agent and the person (answer,
+/// interrupt, terminal input, `wait` with its ticket), or that refuse an
+/// unknown caller there (`parent`, `wait begin`), still forward.
+pub(crate) const PERSON_ONLY_FORWARDED: &[&str] = &["task", "team", "question-routing"];
+
+/// The command a forwarded call runs: past `--expect-machine ID [--client
+/// C]` and the private `__state` entry.
+fn routed_command<'a>(command: &'a str, args: &'a [String]) -> Option<&'a str> {
+    let (first, then) = if command == "--expect-machine" {
+        let at = if args.get(1).is_some_and(|arg| arg == "--client") {
+            3
+        } else {
+            1
+        };
+        (
+            args.get(at).map(String::as_str),
+            args.get(at + 1).map(String::as_str),
+        )
+    } else {
+        (Some(command), args.first().map(String::as_str))
+    };
+    if first == Some("__state") {
+        then
+    } else {
+        first
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A unit test's caller, so a route check is tested without changing this
+    /// process's environment, which other tests share (zerus-ppd26.12).
+    static TEST_AGENT: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether an agent runs this hgs (zerus-ppd26.9): it claims a session's
+/// markers, proven or not (`hgs task` refuses an unproven claim here too), it
+/// is a resident DeepSeek host's tool call (`HGS_AGENT=dsh`), or a live
+/// session proves it as its caller, a Claude background job included. Like
+/// every marker this guards against accidental agent use, not against an
+/// agent that clears its own environment.
+pub(crate) fn agent_caller() -> bool {
+    #[cfg(test)]
+    if let Some(agent) = TEST_AGENT.with(std::cell::Cell::get) {
+        return agent;
+    }
+    let set = |name: &str| env::var_os(name).is_some_and(|value| !value.is_empty());
+    (set("HGS_SESSION") && set("HGS_RUN_ID"))
+        || env::var_os("HGS_AGENT").is_some_and(|agent| agent == "dsh")
+        || state::session_graph::caller_record().is_some()
+}
+
+/// The refusal of a person-only command an agent would run on another
+/// computer, before anything is forwarded (zerus-ppd26.9).
+fn person_only_forwarding(command: &str, args: &[String]) -> Result<()> {
+    let Some(verb) =
+        routed_command(command, args).filter(|verb| PERSON_ONLY_FORWARDED.contains(verb))
+    else {
+        return Ok(());
+    };
+    if !agent_caller() {
+        return Ok(());
+    }
+    Err(Error::new(
+        1,
+        format!(
+            "hgs {verb} on another computer would act as the person there, which cannot see which agent calls it. \
+             An agent runs hgs {verb} on its own computer; a person's shell that inherited an agent's HGS_SESSION \
+             and HGS_RUN_ID can unset them"
+        ),
+    ))
+}
+
 /// The port Codex's browser sign-in waits on, on the signing computer.
 const CALLBACK_PORT: u16 = 1455;
 /// SSH options for a remote sign-in: this computer's loopback port 1455
@@ -1926,6 +2079,19 @@ fn account_sign_in(command: &str, args: &[String]) -> bool {
     rest.first().is_some_and(|operation| operation == "login")
 }
 
+/// The SSH line a peer command's dry run prints, for a person to read or
+/// paste: the alias is one word that reads back exactly (zerus-sa9qn.39). An
+/// alias may hold `;`, `$(…)`, backticks and quotes, and `platform::quote`
+/// leaves a leading `~` or `=` bare, which shells expand (tilde, zsh equals),
+/// so such an alias is quoted too. The remote command is already quoted.
+fn dry_run_line(flags: &[String], alias: &str, remote: &str) -> String {
+    let mut word = platform::quote(alias);
+    if word == alias && alias.starts_with(['~', '=']) {
+        word = format!("'{alias}'");
+    }
+    format!("ssh {} {word} {remote}", platform::join(flags))
+}
+
 /// `remote`, optionally as the one verified hop of a session reference: the
 /// peer runs the command guarded by `--expect-machine MACHINE`, with the same
 /// SSH options the command has without it (zerus-ucck P1c).
@@ -1937,6 +2103,8 @@ fn remote_via(
     global_dry: bool,
     machine: Option<&str>,
 ) -> Result<i32> {
+    // Every route to another computer passes here, before any ssh is built.
+    person_only_forwarding(command, args)?;
     if target.starts_with('-') || target.chars().any(char::is_whitespace) {
         return Err(Error::new(1, "invalid SSH host alias"));
     }
@@ -2006,7 +2174,7 @@ fn remote_via(
         "--expect-machine" => {
             let expected=require(&args,0,"Missing expected machine identity")?;
             let actual=require(&args,1,"Missing guarded command")?;
-            let terminal=!has(&args,"-d")&&!matches!(actual,"dirs"|"path-info"|"worktrees"|"repository"|"session-action-status"|"--help"|"dsh"|"opencode");
+            let terminal=!has(&args,"-d")&&!matches!(actual,"dirs"|"path-info"|"worktrees"|"repository"|"session-action-status"|"delivery"|"--help"|"dsh"|"opencode");
             flags=vec!["-o".into(),"BatchMode=yes".into(),"-o".into(),crate::windows_peer::connect_timeout(config, target, 3)];
             if terminal { flags.insert(0,"-t".into()); }
             let mut all=vec!["--expect-machine".into(),expected.into(),"--client".into(),config.host().into()];
@@ -2014,7 +2182,7 @@ fn remote_via(
         }
         "session-action-status" if machine.is_none() => return Err(Error::new(2,"A remote lifecycle receipt read requires --expect-machine ID before session-action-status")),
         "archives" | "session-action-status" | "kill" | "terminate" | "pause" | "inspect" | "reference" | "processes" | "worktrees" | "git-status" | "git-diff" | "repository" | "dirs" | "project" | "archive" | "rename"
-        | "send" | "send-now" | "send-cancel" | "session-action" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "schedules" | "graph" | "wait" | "team" | "rules" | "guide" | "dsh" | "opencode" | "attachment" | "file-read" | "recovery" | "swarm" | "read" | "notifications" | "keep-warm" | "speech" | "analytics" | "voice" | "hooks" | "parent" | "path-info" | "test" | "--help" => {
+        | "send" | "send-now" | "send-cancel" | "session-action" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "schedules" | "graph" | "wait" | "team" | "rules" | "guide" | "dsh" | "opencode" | "attachment" | "file-read" | "recovery" | "swarm" | "read" | "notifications" | "keep-warm" | "question-routing" | "speech" | "analytics" | "voice" | "hooks" | "parent" | "delivery" | "path-info" | "test" | "--help" => {
             flags = vec![
                 "-o".into(),
                 "BatchMode=yes".into(),
@@ -2102,6 +2270,8 @@ fn remote_via(
     } else if command == "team" {
         // WhiteWh fork: the same probe as wait, for peers without agent teams.
         platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qF 'hgs [@host] team OPERATION'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to use agent teams' >&2; exit 1; fi",platform::join(&remote_args)))
+    } else if command == "delivery" {
+        platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*delivery-receipt-v1[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to read original send receipts' >&2; exit 1; fi",platform::join(&remote_args)))
     } else if command == "parent" {
         // An older peer would read an unknown command as an agent launch.
         platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*session-parent-v1[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to change parent sessions' >&2; exit 1; fi",platform::join(&remote_args)))
@@ -2109,6 +2279,8 @@ fn remote_via(
         platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*session-notifications-v1[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to change notification preferences' >&2; exit 1; fi",platform::join(&remote_args)))
     } else if command == "archives" && has(&args, "--bounded") {
         bounded_archive_script(&remote_args, false)
+    } else if command == "question-routing" {
+        platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*session-question-routing-v1[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to change where child questions go' >&2; exit 1; fi",platform::join(&remote_args)))
     } else if command == "keep-warm" {
         platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*session-keep-warm-v1[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to keep the prompt cache warm' >&2; exit 1; fi",platform::join(&remote_args)))
     } else if command == "hooks" {
@@ -2143,15 +2315,18 @@ fn remote_via(
     let remote = if global_dry || has(&args, "--dry-run") { remote } else {
         let mut markers: Vec<(&str, bool)> = match command {
             "--expect-machine" if args.get(1).is_some_and(|v| v == "session-action-status") => vec![("guarded-create-v1", false), ("lifecycle-receipt-status-v1", true)],
+            "--expect-machine" if args.get(1).is_some_and(|v| v == "delivery") => vec![("guarded-create-v1", false), ("delivery-receipt-v1", true)],
             "--expect-machine" if wrapped_path_info => vec![("guarded-create-v1", false), ("hgs [@host] path-info --path", false)],
             "--expect-machine" => vec![("guarded-create-v1", false)],
             "subagent" => vec![("Subagent retirement ABI: subagent-retire-v1", false)],
             "repository" => vec![("repository-clone-v1", false)],
+            "delivery" => vec![("delivery-receipt-v1", true)],
             "wait" => vec![("hgs [@host] wait", false)],
             "rules" => vec![("iron-rules-v1", false)],
             "team" => vec![("hgs [@host] team OPERATION", false)],
             "notifications" => vec![("session-notifications-v1", true)],
             "keep-warm" => vec![("session-keep-warm-v1", true)],
+            "question-routing" => vec![("session-question-routing-v1", true)],
             "hooks" => vec![("hooks-health-v1", false)],
             "analytics" => vec![("hgs [@host] analytics --json", false)],
             "path-info" => vec![("hgs [@host] path-info --path", false)],
@@ -2186,7 +2361,7 @@ fn remote_via(
         }
         #[cfg(test)]
         REMOTE_DRY_PLAN.with(|plan| *plan.borrow_mut() = Some((flags.clone(), remote.clone())));
-        println!("ssh {} {target} {remote}", platform::join(&flags));
+        println!("{}", dry_run_line(&flags, target, &remote));
         return Ok(0);
     }
     if command == "ls" && has(&args, "--json") {
@@ -3855,6 +4030,57 @@ fn launch(
 
 #[cfg(test)]
 mod tests {
+    /// zerus-sa9qn.39: a pasted peer dry-run line reads the alias back as one
+    /// word and runs nothing, in sh (run) and fish (`fish_words`, modelled).
+    #[cfg(unix)]
+    #[test]
+    fn a_peer_dry_run_prints_the_alias_as_one_inert_word() {
+        let flags = ["-o", "BatchMode=yes"].map(String::from);
+        let remote = "~/.local/bin/hgs ls --local --dry-run";
+        assert_eq!(super::dry_run_line(&flags, "nowhere", remote), format!("ssh -o BatchMode=yes nowhere {remote}"));
+        assert_eq!(super::dry_run_line(&flags, "~root", remote), format!("ssh -o BatchMode=yes '~root' {remote}"));
+        assert_eq!(super::dry_run_line(&flags, "=ls", remote), format!("ssh -o BatchMode=yes '=ls' {remote}"));
+        for alias in [
+            "nowhere",
+            "x;>pwned",
+            "$(>pwned)",
+            "`>pwned`",
+            "it's",
+            "a\"b;>pwned",
+            "x\\';>pwned;#",
+            "x'$(>pwned)'`>pwned`\"",
+            "~root",
+            "~",
+            "=ls",
+        ] {
+            let line = super::dry_run_line(&flags, alias, remote);
+            let head = line.strip_suffix(&format!(" {remote}")).unwrap();
+            assert_eq!(
+                crate::platform::fish_words(head),
+                Ok(["ssh", "-o", "BatchMode=yes", alias].map(String::from).to_vec()),
+                "{line}"
+            );
+            let folder = tempfile::tempdir().unwrap();
+            let out = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!("ssh() {{ printf '%s\\0' \"$@\"; }}\n{line}"))
+                .current_dir(folder.path())
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", folder.path())
+                .output()
+                .unwrap();
+            assert!(!folder.path().join("pwned").exists(), "{line} ran a payload");
+            let words: Vec<String> = String::from_utf8(out.stdout)
+                .unwrap()
+                .split_terminator('\0')
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(words.get(2).map(String::as_str), Some(alias), "{line}: {words:?}");
+            assert_eq!(words.len(), 7, "{line}: {words:?}");
+        }
+    }
+
     #[test]
     fn claude_history_uses_the_released_folder_cap_and_hash() {
         // Golden folder names from VL/Pe/sre in Claude Code 2.1.322. Each
@@ -4370,6 +4596,8 @@ mod tests {
         assert!(USAGE.lines().any(|line| line.trim() == task_marker));
         let send_marker = zerus_client_core::desktop::deferred_send::HELP_MARKER;
         assert!(USAGE.lines().any(|line| line.trim() == send_marker));
+        let route_marker = zerus_client_core::desktop::question_route::HELP_MARKER;
+        assert!(USAGE.lines().any(|line| line.trim() == route_marker));
         let answer_marker = zerus_client_core::desktop::deferred_answer::HELP_MARKER;
         assert!(USAGE.lines().any(|line| line.trim() == answer_marker));
         let phase_marker = zerus_client_core::desktop::deferred_answer::UPDATE_PHASE_MARKER;
@@ -4439,6 +4667,10 @@ mod tests {
                 )
                 .replace(
                     "       Desktop deferred send ABI: desktop-deferred-send-v1\n",
+                    ""
+                )
+                .replace(
+                    "       Desktop question route: route-questions-v1\n",
                     ""
                 )
                 .replace(
@@ -4515,6 +4747,7 @@ mod tests {
         let references = zerus_client_core::desktop::task_message::REFERENCE_HELP_MARKER;
         let review = zerus_client_core::desktop::task_message::review::HELP_MARKER;
         let send = zerus_client_core::desktop::deferred_send::HELP_MARKER;
+        let route = zerus_client_core::desktop::question_route::HELP_MARKER;
         let answer = zerus_client_core::desktop::deferred_answer::HELP_MARKER;
         let phase = zerus_client_core::desktop::deferred_answer::UPDATE_PHASE_MARKER;
         let compact = zerus_client_core::desktop::compact_to_send::HELP_MARKER;
@@ -4528,6 +4761,7 @@ mod tests {
         assert!(!mac.lines().any(|line| line.trim() == references));
         assert!(!mac.lines().any(|line| line.trim() == review));
         assert!(!mac.lines().any(|line| line.trim() == send));
+        assert!(!mac.lines().any(|line| line.trim() == route));
         assert!(!mac.lines().any(|line| line.trim() == answer));
         assert!(!mac.lines().any(|line| line.trim() == phase));
         assert!(!mac.lines().any(|line| line.trim() == compact));
@@ -4555,6 +4789,10 @@ mod tests {
                 )
                 .replace(
                     "       Desktop deferred send ABI: desktop-deferred-send-v1\n",
+                    ""
+                )
+                .replace(
+                    "       Desktop question route: route-questions-v1\n",
                     ""
                 )
                 .replace(
@@ -4657,5 +4895,43 @@ mod tests {
                 .unwrap_err();
         assert_eq!(error.code, 1);
         assert_eq!(error.message, state::backend::INVALID_SESSION_ID.text());
+    }
+
+    /// A session reference's verified hop is a route to another computer
+    /// too: a person-only command is refused there for an agent before any
+    /// ssh, and the person's goes on (zerus-ppd26.12).
+    #[test]
+    fn a_reference_hop_checks_person_only_commands_before_ssh() {
+        let config = Config {
+            home: String::new(),
+            dir: PathBuf::new(),
+            state: PathBuf::new(),
+            selves: vec!["local".into()],
+            peers: vec!["peer".into()],
+            base_peers: Vec::new(),
+            peers_from_environment: false,
+            machines: Default::default(),
+            tab: false,
+            tab_colors: String::new(),
+        };
+        let machine = Some("55555555-5555-4555-8555-555555555555");
+        let args = ["zerus://session".to_owned(), "--json".to_owned()];
+        for command in PERSON_ONLY_FORWARDED {
+            TEST_AGENT.with(|agent| agent.set(Some(true)));
+            let refused = remote_via(&config, "peer", command, &args, true, machine).unwrap_err();
+            assert_eq!(refused.code, 1, "{command}");
+            assert!(
+                refused.message.contains("would act as the person"),
+                "{command}: {}",
+                refused.message
+            );
+            TEST_AGENT.with(|agent| agent.set(Some(false)));
+            assert_eq!(
+                remote_via(&config, "peer", command, &args, true, machine).unwrap(),
+                0,
+                "{command}"
+            );
+        }
+        TEST_AGENT.with(|agent| agent.set(None));
     }
 }
