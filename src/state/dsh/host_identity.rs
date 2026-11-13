@@ -3,6 +3,8 @@
 use super::*;
 use std::process::Child;
 
+/// A live host recognized by its own command line (zerus-ppd26.21).
+mod argv;
 /// The recorded hosts and the ancestor check (zerus-ppd26.15).
 pub(super) mod recorded;
 

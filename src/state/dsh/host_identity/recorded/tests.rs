@@ -608,13 +608,13 @@ fn a_recorded_host_matches_an_ancestor_by_id_and_birth() {
     );
 }
 
-/// zerus-ppd26.18: the records come first. With none, the walk never runs,
-/// so nothing it would refuse (a separate PID namespace, a /proc that hides
-/// root's processes) applies; an unreadable record refuses without a walk.
-/// With records, the walk's refusal stands, and a chain without the host is
-/// read again, where a change refuses.
+/// zerus-ppd26.18/21: the records come first and still name a host by birth;
+/// with none, the walk still looks for a live host by its own command line,
+/// but never refuses on it, so a computer without records keeps its previous
+/// answer. With records the walk's refusal stands, and a chain without the
+/// host is read again, where a change refuses.
 #[test]
-fn the_records_come_first_and_none_means_no_walk() {
+fn the_records_come_first_and_a_missing_record_never_refuses() {
     let walked = std::cell::Cell::new(false);
     let found = decide(
         || Ok(Vec::new()),
@@ -622,10 +622,53 @@ fn the_records_come_first_and_none_means_no_walk() {
             walked.set(true);
             Err(Refusal::IsolatedPidNamespace)
         },
+        |_| None,
         |_| Err(Refusal::UnreadableAncestry),
     );
     assert_eq!(found, Ok(None));
-    assert!(!walked.get(), "no record, no walk");
+    assert!(walked.get(), "a host can be recognized without its records");
+    let rows = [
+        (10, own(20, Some("b10"))),
+        (20, own(1, Some("b20"))),
+        (1, Inspection::Foreign),
+    ];
+    let chain = walk(10, table(&rows)).unwrap();
+    let host = Host {
+        pid: 20,
+        birth: "b20".into(),
+    };
+    let rechecked = std::cell::Cell::new(false);
+    assert_eq!(
+        decide(
+            || Ok(Vec::new()),
+            || Ok(chain.clone()),
+            |_| Some(host.clone()),
+            |_| {
+                rechecked.set(true);
+                Ok(())
+            },
+        ),
+        Ok(Some(host.clone())),
+        "a command line alone proves a live host"
+    );
+    assert!(!rechecked.get(), "a host found needs no second read");
+    assert_eq!(
+        decide(
+            || Ok(Vec::new()),
+            || Ok(chain.clone()),
+            |_| None,
+            |_| {
+                rechecked.set(true);
+                Ok(())
+            },
+        ),
+        Ok(None),
+        "no record and no command line is still outside"
+    );
+    assert!(
+        !rechecked.get(),
+        "without records the chain is not read again"
+    );
     let record = |pid: u32, birth: &str| Recorded {
         named: named(pid, Some(birth)),
         record: PathBuf::from(format!("/state/dsh/hosts/{pid}/host.identity.json")),
@@ -634,31 +677,48 @@ fn the_records_come_first_and_none_means_no_walk() {
     assert_eq!(
         decide(
             || Err(Refusal::UnreadableRecord(unreadable.clone())),
-            || -> Result<Vec<Ancestor>, Refusal> { panic!("walked before the records refused") },
+            || Err(Refusal::UnreadableAncestry),
+            |_| None,
             |_| Ok(()),
         ),
         Err(Refusal::UnreadableRecord(unreadable.clone()))
     );
     assert_eq!(
         decide(
+            || Err(Refusal::UnreadableRecord(unreadable.clone())),
+            || Ok(chain.clone()),
+            |_| Some(host.clone()),
+            |_| panic!("an argv host needs no second read"),
+        ),
+        Ok(Some(host.clone())),
+        "a live host above the command answers Under even with unreadable records"
+    );
+    assert_eq!(
+        decide(
+            || Err(Refusal::UnreadableRecord(unreadable.clone())),
+            || Ok(chain.clone()),
+            |_| None,
+            |_| Err(Refusal::UnreadableAncestry),
+        ),
+        Err(Refusal::UnreadableRecord(unreadable.clone())),
+        "without a live host the record's own refusal stands"
+    );
+    assert_eq!(
+        decide(
             || Ok(vec![record(99, "b99")]),
             || Err(Refusal::IsolatedPidNamespace),
+            |_| None,
             |_| Ok(())
         ),
         Err(Refusal::IsolatedPidNamespace),
         "with a record the walk's refusal stands"
     );
-    let rows = [
-        (10, own(20, Some("b10"))),
-        (20, own(1, Some("b20"))),
-        (1, Inspection::Foreign),
-    ];
-    let chain = walk(10, table(&rows)).unwrap();
     let rechecked = std::cell::Cell::new(false);
     assert_eq!(
         decide(
             || Ok(vec![record(99, "b99")]),
             || Ok(chain.clone()),
+            |_| None,
             |_| {
                 rechecked.set(true);
                 Ok(())
@@ -671,6 +731,7 @@ fn the_records_come_first_and_none_means_no_walk() {
         decide(
             || Ok(vec![record(99, "b99")]),
             || Ok(chain.clone()),
+            |_| None,
             |_| Err(Refusal::UnreadableAncestry)
         ),
         Err(Refusal::UnreadableAncestry),
@@ -680,6 +741,7 @@ fn the_records_come_first_and_none_means_no_walk() {
         decide(
             || Ok(vec![record(20, "b20")]),
             || Ok(chain.clone()),
+            |_| panic!("a recorded host needs no command line"),
             |_| Err(Refusal::UnreadableAncestry)
         ),
         Ok(Some(Host {
@@ -687,6 +749,119 @@ fn the_records_come_first_and_none_means_no_walk() {
             birth: "b20".into()
         })),
         "a host found needs no second read"
+    );
+}
+
+/// A live host's own argument vector proves it without any record
+/// (zerus-ppd26.21): the writer's exact shape, with the patch path under this
+/// state root, matches the same-user ancestors; another state root, an
+/// unrelated similar command line, a foreign top and an unreadable vector do
+/// not.
+#[test]
+fn a_hosts_own_argument_vector_proves_it_without_records() {
+    let rows = [
+        (10, own(20, Some("b10"))),
+        (20, own(1, Some("b20"))),
+        (1, Inspection::Foreign),
+    ];
+    let chain = walk(10, table(&rows)).unwrap();
+    let state = Path::new("/state");
+    let host_args = |state: &str, id: &str| -> Vec<Vec<u8>> {
+        let patch = format!("{state}/dsh/hosts/{id}/hgs.patch.json");
+        [
+            "node",
+            "/opt/dsh/dsh.js",
+            "--profile",
+            "hgs",
+            "--patch",
+            patch.as_str(),
+            "--no-open",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "0",
+        ]
+        .iter()
+        .map(|part| part.as_bytes().to_vec())
+        .collect()
+    };
+    let read = |pid: u32| -> Option<Vec<Vec<u8>>> {
+        match pid {
+            20 => Some(host_args("/state", "0123456789abcdef")),
+            _ => None,
+        }
+    };
+    assert_eq!(
+        host_by_process(&chain, state, read),
+        Some(Host {
+            pid: 20,
+            birth: "b20".into()
+        }),
+        "the exact writer shape under this state root is a live host"
+    );
+    let other = |pid: u32| -> Option<Vec<Vec<u8>>> {
+        match pid {
+            20 => Some(host_args("/elsewhere", "0123456789abcdef")),
+            _ => None,
+        }
+    };
+    assert_eq!(
+        host_by_process(&chain, state, other),
+        None,
+        "another state root is not this computer's host"
+    );
+    let similar = |pid: u32| -> Option<Vec<Vec<u8>>> {
+        match pid {
+            20 => Some(
+                [
+                    "dsh",
+                    "--profile",
+                    "hgs",
+                    "--patch",
+                    "/state/dsh/hosts/0123456789abcdef/not-hgs.patch.json",
+                    "--no-open",
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    "0",
+                ]
+                .into_iter()
+                .map(|part| part.as_bytes().to_vec())
+                .collect(),
+            ),
+            _ => None,
+        }
+    };
+    assert_eq!(
+        host_by_process(&chain, state, similar),
+        None,
+        "a similar argv without the writer's patch file is not a host"
+    );
+    let outside_chain = |pid: u32| -> Option<Vec<Vec<u8>>> {
+        match pid {
+            99 => Some(host_args("/state", "0123456789abcdef")),
+            _ => None,
+        }
+    };
+    assert_eq!(
+        host_by_process(&chain, state, outside_chain),
+        None,
+        "a process outside the ancestry is not a host of this command"
+    );
+    let unreadable_then_host = |pid: u32| -> Option<Vec<Vec<u8>>> {
+        match pid {
+            20 => None,
+            10 => Some(host_args("/state", "0123456789abcdef")),
+            _ => None,
+        }
+    };
+    assert_eq!(
+        host_by_process(&chain, state, unreadable_then_host),
+        Some(Host {
+            pid: 10,
+            birth: "b10".into()
+        }),
+        "an unreadable vector is skipped, not a refusal"
     );
 }
 
