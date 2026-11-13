@@ -340,6 +340,29 @@ fn image_path(line: &str) -> bool {
         && [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic"].iter().any(|ext| lower.ends_with(ext))
 }
 
+/// Claude Code records a pasted tab as four spaces: inside its
+/// `<pasted_content id=...>` wrapper in the transcript and in its
+/// UserPromptSubmit hook detail.  Comparison only: fold every run of spaces
+/// and tabs inside a line to one space so the proof compares the message the
+/// agent recorded, never its whitespace rendering.  Stored and sent text is
+/// unchanged.
+fn comparison(line: &str) -> String {
+    let mut text = String::with_capacity(line.len());
+    let mut whitespace = false;
+    for ch in line.chars() {
+        if ch == ' ' || ch == '\t' {
+            whitespace = true;
+        } else {
+            if whitespace {
+                text.push(' ');
+                whitespace = false;
+            }
+            text.push(ch);
+        }
+    }
+    text
+}
+
 /// The lines that must reach the transcript, in order: the message without
 /// blank lines, image-path lines Claude attaches instead, Claude's own
 /// `[Image #N]` tokens and its `<pasted_content>` wrapper.
@@ -353,7 +376,7 @@ fn significant(text: &str) -> Vec<String> {
             }) {
                 line = rest.trim_start();
             }
-            line.to_owned()
+            comparison(line)
         })
         .filter(|line| !line.is_empty() && !image_path(line))
         .filter(|line| !line.starts_with("<pasted_content") && !line.starts_with("</pasted_content"))
@@ -448,6 +471,25 @@ mod tests {
         let start = Instant::now();
         assert_eq!(settle(&frames, &claim(), soon(3_000)), Ok(SETTLED.into()));
         assert!(start.elapsed() >= STABLE, "entered after {:?}", start.elapsed());
+    }
+
+    #[test]
+    fn claude_four_space_tabs_are_the_same_message() {
+        let message = "13.11 (today)\tSheikh_DM → FarshMaker\t160 GEM";
+        let recorded = "13.11 (today)    Sheikh_DM → FarshMaker    160 GEM";
+        assert!(same(message, recorded));
+        assert!(same(
+            message,
+            &format!("<pasted_content id=\"x\">\n{recorded}\n</pasted_content>")
+        ));
+        assert!(same("a\tb", "a  b"));
+        // Exactness: another word, an added line, a missing line, another
+        // order or a longer line still differs.
+        assert!(!same("a\tb", "a c"));
+        assert!(!same("a\tb", "a    b\nadded"));
+        assert!(!same("a\tb\nmissing", "a    b"));
+        assert!(!same("a\tb\nc", "c\na    b"));
+        assert!(!same("a\tb", "a    b c"));
     }
 
     #[test]
