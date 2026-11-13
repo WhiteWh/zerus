@@ -13,6 +13,9 @@ import {
 import { normalizeModelCatalog, selectModel } from "../provider-selection";
 import "../styles/catalog.css";
 import { TextInput, TextArea } from "../lib/TextField";
+import { Dropdown } from "../lib/Dropdown";
+import { accountsPage, loadAccounts } from "../../store/accounts";
+import { accountChoices } from "../../store/newTeamSources";
 
 // Task #44: Qt's TeamCatalogEditor. The header holds Open Team designer,
 // Import…, Export…, Revert, Save catalog, Discard draft and Apply
@@ -79,7 +82,7 @@ export function TeamCatalogEditor(props: TeamCatalogEditorProps): JSX.Element {
   };
   const [tab, setTab] = createSignal<Tab>("roles");
   const [current, setCurrent] = createSignal<Partial<Record<Tab, string>>>({});
-  onMount(() => void editor.load());
+  onMount(() => { void editor.load(); void loadAccounts(); });
   createEffect(on(() => props.savedVersion, (version, previous) => { if (version !== undefined && previous !== undefined && version !== previous) void editor.load(); }));
 
   const list = (which: CatalogList): Item[] => (editor.view()?.[which] as Item[] | undefined) ?? [];
@@ -252,33 +255,53 @@ export function PromptOrder(props: { item: Item; apply: (change: PromptChange) =
   );
 }
 
-/** Task 50 (Qt teamRoleModel/teamRoleEffort): the model as an editable menu of the account's models, the effort from that model's efforts. */
+export function AccountMenu(props: { item: Item; value: string; onChange: (value: string) => void; label: string }) {
+  const options = () => {
+    const choices = accountChoices(accountsPage(), str(props.item.computer))
+      .filter((choice) => choice.provider === str(props.item.agent))
+      .map((choice) => ({ value: choice.id, label: choice.label, disabled: !choice.signedIn }));
+    const all = [{ value: "", label: tr("Default account") }, ...choices];
+    if (props.value && !all.some((choice) => choice.value === props.value)) all.push({ value: props.value, label: props.value, disabled: false });
+    return all;
+  };
+  return <Dropdown class="cat-account" value={props.value} aria-label={props.label} onChange={props.onChange} options={options()} />;
+}
+
+const CUSTOM_MODEL = "__custom_model__";
+/** Task 50 (Qt teamRoleModel/teamRoleEffort): the account's models and the selected model's efforts. */
 export function ModelMenu(props: { item: Item; roles: RoleContext; value: string; effort: string; onChange: (value: string) => void; onEffortChange: (value: string) => void; label: string }) {
-  const listId = `cat-models-${Math.random().toString(36).slice(2)}`;
-  const options = () => (props.roles.tick(), modelOptions(props.item, props.roles.catalogs.get(props.item)));
+  const [custom, setCustom] = createSignal(false);
+  const options = () => {
+    props.roles.tick();
+    return [{ value: "", label: tr("default model") },
+      ...modelOptions(props.item, props.roles.catalogs.get(props.item)).map((option) => ({ value: option.id, label: option.label })),
+      { value: CUSTOM_MODEL, label: tr("Custom") }];
+  };
   onMount(() => props.roles.catalogs.request(props.item));
-  createEffect(on(() => `${str(props.item.computer)}\n${str(props.item.account)}\n${str(props.item.agent)}`, () => props.roles.catalogs.request(props.item), { defer: true }));
+  createEffect(on(() => `${str(props.item.computer)}\n${str(props.item.account)}\n${str(props.item.agent)}`, () => { setCustom(false); props.roles.catalogs.request(props.item); }, { defer: true }));
   const choose = (value: string) => {
     const next = selectModel(normalizeModelCatalog(props.roles.catalogs.get(props.item) ?? []), value, props.effort);
     props.onChange(next.modelId);
     props.onEffortChange(next.effortId);
   };
+  const select = (value: string) => {
+    if (value === CUSTOM_MODEL) { setCustom(true); return; }
+    setCustom(false);
+    choose(value);
+  };
   return (
     <>
-      <TextInput class="cat-model" list={listId} value={props.value} placeholder={tr("default model")} aria-label={props.label}
-        onChange={(event) => choose(event.currentTarget.value.trim())} />
-      <datalist id={listId}><For each={options()}>{(option) => <option value={option.id}>{option.label}</option>}</For></datalist>
+      <Dropdown class="cat-model" value={custom() ? CUSTOM_MODEL : props.value} aria-label={props.label} onChange={select} options={options()} />
+      <Show when={custom()}><TextInput class="cat-model-custom" value={props.value} placeholder={tr("Custom")} aria-label={props.label}
+        onChange={(event) => choose(event.currentTarget.value.trim())} /></Show>
     </>
   );
 }
 
 export function EffortMenu(props: { item: Item; roles: RoleContext; model: string; value: string; onChange: (value: string) => void; label: string }) {
   const options = () => (props.roles.tick(), effortOptions(props.model, props.roles.catalogs.get(props.item), props.value));
-  return (
-    <select class="cat-effort" value={props.value} aria-label={props.label} onChange={(event) => props.onChange(event.currentTarget.value)}>
-      <For each={options()}>{(effort) => <option value={effort}>{effort || "—"}</option>}</For>
-    </select>
-  );
+  return <Dropdown class="cat-effort" value={props.value} aria-label={props.label} onChange={props.onChange}
+    options={options().map((effort) => ({ value: effort, label: effort || "—" }))} />;
 }
 
 /** One item's fields, Duplicate and Delete. */
@@ -298,13 +321,21 @@ function ItemForm(props: { editor: CatalogEditorStore; kind: CatalogKind; item: 
     const next = agentChange(str(agent));
     if (!(await setField("agent", next.agent))) return false;
     await setField("account", next.account);
-    return setField("model", next.model);
+    await setField("model", next.model);
+    return setField("effort", "");
+  };
+  const changeAccount = async (account: unknown): Promise<boolean> => {
+    if (!(await setField("account", account))) return false;
+    await setField("model", "");
+    return setField("effort", "");
   };
   const special = (spec: CatalogFieldSpec): JSX.Element | undefined => {
     if (props.kind !== "role") return undefined;
     switch (spec.name) {
       case "color":
         return <LookPicker item={props.item} dark={props.roles.dark} onColor={(name) => void setField("color", name)} onIcon={(value) => void setField("icon", value)} />;
+      case "account":
+        return <AccountMenu item={props.item} value={str(props.item.account)} label={tr(spec.label)} onChange={(value) => void changeAccount(value)} />;
       case "model":
         return <ModelMenu item={props.item} roles={props.roles} value={str(props.item.model)} effort={str(props.item.effort)} label={tr(spec.label)} onChange={(value) => void setField("model", value)} onEffortChange={(value) => void setField("effort", value)} />;
       case "effort":

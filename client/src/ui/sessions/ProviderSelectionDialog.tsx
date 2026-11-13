@@ -30,7 +30,7 @@ export default function ProviderSelectionDialog(props: { session: Session; ancho
         <button type="button" class="icon-btn" aria-label={tr("Close")} title={tr("Close")} onClick={props.close}><Icon name="x" size={16} /></button>
       </div>
       <div class="dlg-body provider-selection-account-row">
-        <div class="form-row"><label>{tr("Account")}</label><AccountSwitchChip session={props.session} /></div>
+        <div class="form-row"><label>{tr("Account")}</label><AccountSwitchChip session={props.session} onSwitch={props.close} /></div>
       </div>
       <Show when={models.view()} fallback={
         <div class="dlg-foot"><span class="spacer" /><button type="button" class="btn" onClick={props.close}>{tr("Cancel")}</button></div>

@@ -18,7 +18,7 @@ interface Preview { refusal: string; newSession: string; folder: string; loading
  * (task 352), a confirmation with Cancel focused, then `hgs switch-account`.
  * An account of the same agent switches in place; one of another agent moves
  * the session there with a handoff. The receipt is shown in the chip. */
-export function AccountSwitchChip(props: { session: Session; compact?: boolean; locked?: string }): JSX.Element {
+export function AccountSwitchChip(props: { session: Session; compact?: boolean; locked?: string; onSwitch?: () => void }): JSX.Element {
   const [open, setOpen] = createSignal(false);
   const [target, setTarget] = createSignal<Choice>();
   const [preview, setPreview] = createSignal<Preview>({ refusal: "", newSession: "", folder: "", loading: false });
@@ -81,6 +81,7 @@ export function AccountSwitchChip(props: { session: Session; compact?: boolean; 
       close();
     } finally {
       setBusy(false);
+      props.onSwitch?.();
     }
   };
 
