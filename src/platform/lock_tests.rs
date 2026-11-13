@@ -163,6 +163,9 @@ pub(crate) fn control(fixture: &str, case: &str) {
         .env("HGS_PEERS", "")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        // A damaged private repository must not discover an enclosing
+        // checkout when its disk-backed temporary root is inside one.
+        .env("GIT_CEILING_DIRECTORIES", std::env::temp_dir())
         .env("ZERUS_WORKTREE_LOCK_CONTROL", case)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
