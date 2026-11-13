@@ -1365,6 +1365,28 @@ and expected revision are checked by the durable request; no client changes the
 setting optimistically. Archives and child sessions cannot change it. Missing
 metadata leaves the control unavailable rather than creating a phone-only mute.
 
+A live Claude child with a parent link offers Send questions to PARENT (or Stop
+sending questions to PARENT) when both relay and computer advertise
+`session_question_routing` and the row reports a valid `question_routing`
+(zerus-sa9qn.33). It changes the child's per-child switch of the owner-approved
+question route (`hgs question-routing`, marker `session-question-routing-v1`)
+through the Rust-only relay operation and the Rust connector; the legacy Python
+connector refuses it. The same exact run/conversation and expected revision
+apply, nothing changes optimistically, and only the computer's exact reply
+settles it: an unknown or uncertain result is never retried. The shared
+contract is `question-routing-contract.json` in the Android test resources.
+On an encrypted workspace whose relay and computer also offer
+`session_question_route_person`, the same entry sends the person's latch
+instead (zerus-sa9qn.50). The phone signs a statement for its gateway with
+its workspace signing key (`RoutePersonStatement`). The gateway's desktop
+service verifies it through its own connector and applies it once, so an
+agent on the computer cannot clear a phone's "off" with commands. The
+statement's shared vector is
+`services/mobile/crypto/tests/vectors/question-route-person-v1.json`.
+Under marker `session-question-routing-v2` the row's `question_routing` also
+carries `person_off`, a display-only mirror of that latch; the phone then
+shows the child off and, without the person's statement, offers no "on".
+
 Muted conversations retain their native state, unread replies, pending requests
 and Needs attention/Active membership. Attention and unread styling becomes
 neutral with a mute icon; Working and error signals remain visible. Notification

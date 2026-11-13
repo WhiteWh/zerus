@@ -28,12 +28,20 @@ fn capture(scope: &Scope) -> Result<(&'static str, Process)> {
         unsafe { libc::geteuid() } != 0,
         "use the desktop user, without sudo"
     );
+    // A resident DeepSeek host's tool call is an agent's even without session
+    // markers it can prove (zerus-ppd26).
     ensure!(
         ["HGS_SESSION", "HGS_SESSION_ID", "HGS_RUN_ID"]
             .iter()
-            .all(|name| std::env::var_os(name).is_none()),
+            .all(|name| std::env::var_os(name).is_none())
+            && !crate::state::session_graph::hosted_agent_call(),
         "agent session cannot change desktop mode; use Settings or a terminal outside Zerus"
     );
+    // Nor any command under a recorded DeepSeek host, which the process tree
+    // and the host records decide (zerus-ppd26.15).
+    if let Some(refusal) = crate::state::dsh::host_refusal() {
+        anyhow::bail!("{refusal} Change desktop mode from Settings or a terminal outside Zerus.");
+    }
     let until = Instant::now() + WAIT;
     #[cfg(target_os = "macos")]
     let owned = macos_ancestry::inspect(std::process::id(), until)?;

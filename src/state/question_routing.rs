@@ -33,12 +33,18 @@ pub(crate) const FILE: &str = "question-routing.json";
 pub(crate) struct Entry {
     send_to_parent: bool,
     revision: u64,
+    /// The person's latch, mirrored here for display by the desktop service
+    /// only (zerus-sa9qn.50); the latch in the service Store is the
+    /// authority. Written only while set, so a file without one is unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    person_off: bool,
 }
 impl Default for Entry {
     fn default() -> Self {
         Self {
             send_to_parent: true,
             revision: 0,
+            person_off: false,
         }
     }
 }
@@ -132,6 +138,25 @@ pub(super) fn load() -> Option<Store> {
 /// from the CLI state root `state` (the desktop service's own): `None` when
 /// the setting is unreadable or the ID is not a session ID, which never
 /// routes.
+/// The refusal for an agent's command, here and before any `@host`
+/// forwarding: a proven agent, a resident DeepSeek host's tool call marked as
+/// one (zerus-ppd26.1), and any command under a recorded DeepSeek host, which
+/// the process tree and the host records decide (zerus-ppd26.15). A host
+/// check that cannot be verified refuses too, with `host_unverified` and the
+/// sentence that names the record and how to clear it.
+pub(crate) fn agent_refusal() -> Option<Value> {
+    if session_graph::caller_record().is_some() || session_graph::hosted_agent_call() {
+        return Some(json!({"ok": false, "error": "agent_refused"}));
+    }
+    match super::dsh::host_check() {
+        super::dsh::HostCheck::Outside => None,
+        super::dsh::HostCheck::Under => Some(json!({"ok": false, "error": "agent_refused"})),
+        super::dsh::HostCheck::Unverified(message) => {
+            Some(json!({"ok": false, "error": "host_unverified", "message": message}))
+        }
+    }
+}
+
 pub(crate) fn send_to_parent_at(state: &Path, session_id: &str) -> Option<bool> {
     if !session_id::canonical(session_id) {
         return None;
@@ -141,8 +166,19 @@ pub(crate) fn send_to_parent_at(state: &Path, session_id: &str) -> Option<bool> 
         .map(|store| store.entry(session_id).send_to_parent)
 }
 
+/// The switch as rows, inspection and replies show it (marker
+/// `session-question-routing-v2`): with the person's latch mirror.
 fn view(entry: Entry) -> Value {
-    json!({"send_to_parent": entry.send_to_parent, "revision": entry.revision})
+    json!({"send_to_parent": entry.send_to_parent, "revision": entry.revision,
+        "person_off": entry.person_off})
+}
+
+/// The switch of `session_id` at the state root `state` as rows show it.
+#[cfg(test)]
+pub(crate) fn view_at(state: &Path, session_id: &str) -> Option<Value> {
+    read_store(&path(state))
+        .ok()
+        .map(|store| view(store.entry(session_id)))
 }
 
 /// The `question_routing` object of a listing row: null when the setting is
@@ -199,12 +235,50 @@ fn update(store: &mut Store, record: &Value, request: &Request) -> (i32, Value, 
             false,
         );
     };
+    // The latch mirror is the service's alone; this change keeps it.
     let next = Entry {
         send_to_parent: request.send_to_parent,
         revision,
+        person_off: current.person_off,
     };
     store.sessions.insert(id.to_owned(), next);
     (0, reply(true, None, true, next), true)
+}
+
+/// The service's write after a change of the person's latch (zerus-sa9qn.50):
+/// the child's switch at the state root `state` follows it (`send_to_parent`
+/// is the latch's opposite) and mirrors it for display, under the switch's
+/// lock. Only the service calls this, after the person's own request; the
+/// latch in its Store, not this file, is the person's decision.
+pub(crate) fn set_for_person(state: &Path, session_id: &str, person_off: bool) -> Result<bool> {
+    let send_to_parent = !person_off;
+    if !session_id::canonical(session_id) {
+        return Err("invalid question routing session".into());
+    }
+    let _guard = lock(Some(&state.join("question-routing.lock")))?;
+    let mut store = read_store(&path(state))?;
+    let current = store.entry(session_id);
+    if current.send_to_parent == send_to_parent && current.person_off == person_off {
+        return Ok(false);
+    }
+    if !store.sessions.contains_key(session_id) && store.sessions.len() >= MAX_ENTRIES {
+        return Err("question routing settings are full".into());
+    }
+    let revision = current
+        .revision
+        .checked_add(1)
+        .filter(|r| *r <= MAX_REVISION)
+        .ok_or("question routing revisions are exhausted")?;
+    store.sessions.insert(
+        session_id.to_owned(),
+        Entry {
+            send_to_parent,
+            revision,
+            person_off,
+        },
+    );
+    persist(&path(state), &store)?;
+    Ok(true)
 }
 
 /// `hgs question-routing <session> --json`: one compare-and-swap of the
@@ -228,8 +302,8 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     // Refuse an agent's own process tree, the parent or the child itself
     // (zerus-sa9qn.32): a guard against accidental agent use, not a boundary
     // (zerus-sa9qn.49). `hgs @host` refuses before forwarding (cli.rs).
-    if session_graph::caller_record().is_some() {
-        println!("{}", json!({"ok": false, "error": "agent_refused"}));
+    if let Some(refused) = agent_refusal() {
+        println!("{refused}");
         return Ok(1);
     }
     expect(
@@ -295,7 +369,8 @@ mod tests {
             store.entry(id),
             Entry {
                 send_to_parent: true,
-                revision: 0
+                revision: 0,
+                person_off: false
             }
         );
         // Already on: nothing changes.
@@ -308,7 +383,7 @@ mod tests {
         assert_eq!((code, changed), (0, true));
         assert_eq!(
             reply["question_routing"],
-            json!({"send_to_parent": false, "revision": 1})
+            json!({"send_to_parent": false, "revision": 1, "person_off": false})
         );
         // A second desktop with the old revision is refused, not merged.
         let (code, reply, changed) = update(&mut store, &record(), &request(0, true));
@@ -325,7 +400,7 @@ mod tests {
         assert_eq!((code, changed), (0, true));
         assert_eq!(
             reply["question_routing"],
-            json!({"send_to_parent": true, "revision": 2})
+            json!({"send_to_parent": true, "revision": 2, "person_off": false})
         );
         // The entry stays, so its revision never goes back.
         assert_eq!(store.entry(id).revision, 2);
@@ -340,6 +415,7 @@ mod tests {
                 Entry {
                     send_to_parent: false,
                     revision: 1,
+                    person_off: false,
                 },
             );
         }
@@ -385,7 +461,7 @@ mod tests {
         enrich(&mut row, Some(&store));
         assert_eq!(
             row["question_routing"],
-            json!({"send_to_parent": false, "revision": 1})
+            json!({"send_to_parent": false, "revision": 1, "person_off": false})
         );
         enrich(&mut row, None);
         assert_eq!(row["question_routing"], Value::Null, "unknown storage");
@@ -396,5 +472,37 @@ mod tests {
             Value::Null,
             "no durable session ID"
         );
+    }
+
+    /// zerus-sa9qn.50: the person's latch mirror is the service's alone; the
+    /// CLI's change keeps it, and a file without one is written unchanged.
+    #[test]
+    fn the_latch_mirror_is_kept_by_a_cli_change_and_written_only_while_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = "11111111-1111-4111-8111-111111111111";
+        assert!(set_for_person(dir.path(), id, true).unwrap());
+        assert_eq!(
+            view_at(dir.path(), id),
+            Some(json!({"send_to_parent": false, "revision": 1, "person_off": true}))
+        );
+        assert!(!set_for_person(dir.path(), id, true).unwrap(), "already so");
+        let mut store = read_store(&path(dir.path())).unwrap();
+        let request = Request {
+            expected_run_id: "run-1".into(),
+            expected_conversation_id: "conversation-1".into(),
+            expected_revision: 1,
+            send_to_parent: true,
+        };
+        let (code, reply, changed) = update(&mut store, &record(), &request);
+        assert_eq!((code, changed), (0, true));
+        assert_eq!(
+            reply["question_routing"],
+            json!({"send_to_parent": true, "revision": 2, "person_off": true})
+        );
+        // Cleared: the file entry has no mirror key again.
+        assert!(set_for_person(dir.path(), id, false).unwrap());
+        let text = std::fs::read_to_string(path(dir.path())).unwrap();
+        assert!(!text.contains("person_off"), "{text}");
+        assert!(set_for_person(dir.path(), "x", true).is_err());
     }
 }

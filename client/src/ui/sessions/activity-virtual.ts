@@ -90,6 +90,10 @@ export function activityText(items: TranscriptItem[], expanded: Record<string, b
       item.kind === "tool" && !expanded[item.id] ? item.body : undefined,
       expanded[item.id] ? toolText(item, more) : undefined,
     ]);
+    if (item.kind === "receipt" && item.route) return lines([
+      item.sender, item.at, item.route.role === "child" ? item.route.parent : item.route.child, item.route.preview,
+      item.route.reference, expanded[item.id] ? item.route.text : undefined,
+    ]);
     const body = item.replies?.length
       ? item.replies.map((reply) => lines([tr("Question"), reply.question, tr("Your answer"), reply.answer])).join("\n")
       : item.kind === "user" ? item.body : item.body ? markdownText(item.body) : undefined;

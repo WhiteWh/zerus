@@ -254,8 +254,13 @@ pub(crate) fn current(config: &Config, args: &[String]) -> cli::Result<i32> {
     };
     let (record, source) = match state::session_graph::caller_record() {
         Some(record) => (record, "process"),
+        // A native claim stays a claim. Without one, a command under a
+        // recorded DeepSeek host says so (zerus-ppd26.15).
         None => (state::parent_link::native_self().map_err(|e| Error::new(1, e))?
-            .ok_or_else(|| Error::new(1, "hgs self: no live Zerus session owns this process"))?, "claimed"),
+            .ok_or_else(|| match state::dsh::host_refusal() {
+                Some(refusal) => Error::new(1, format!("hgs self: {refusal}")),
+                None => Error::new(1, "hgs self: no live Zerus session owns this process"),
+            })?, "claimed"),
     };
     let (reference, provider) = from_record(config, &record)?;
     let parent = json!({"session_id":record["session_id"],"name":record["name"],"run_id":record["run_id"],"conversation_id":record["conversation_id"]});

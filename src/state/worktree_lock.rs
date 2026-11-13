@@ -731,6 +731,9 @@ mod tests {
             assert_eq!(intents_left(), 0);
         };
         match case.as_str() {
+            case if case.starts_with("scoped_") => {
+                scoped_tests::run(case, &main, &checkout, &common, &record, &lock);
+            }
             "move_existing_veto" | "move_no_relock" | "move_retention_cut" |
             "move_invalid_files" | "move_lost_metadata" | "move_between_unlock" | "move_record_transaction" |
             "move_between_relock" | "move_between_replace" => {
@@ -1512,3 +1515,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, unix))]
+mod scoped_tests;

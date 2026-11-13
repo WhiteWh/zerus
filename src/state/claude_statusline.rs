@@ -421,7 +421,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let config = temp.path().join("config");
         let project = temp.path().join("project");
-        fs::create_dir_all(&project).unwrap();
+        // The project is its own repository root, so the climb for an
+        // enclosing repository stops at it wherever the temporary folder
+        // lies, inside another checkout too (zerus-yzoh1).
+        fs::create_dir_all(project.join(".git")).unwrap();
         assert_eq!(user_status_line(&config, &project, false), Ok(None));
         let user = json!({"type": "command", "command": "user-line", "padding": 2});
         write(&config.join("settings.json"), &json!({"model": "opus", "statusLine": user}));
@@ -446,7 +449,6 @@ mod tests {
         // Local settings of an enclosing repository are not resolved.
         let nested = project.join("nested");
         fs::create_dir_all(nested.join(".claude")).unwrap();
-        fs::create_dir_all(project.join(".git")).unwrap();
         assert_eq!(user_status_line(&config, &nested, false), Ok(Some(user.clone())));
         write(&project.join(".claude/settings.local.json"), &json!({"theme": "dark"}));
         assert_eq!(user_status_line(&config, &nested, false), Ok(Some(user.clone())));

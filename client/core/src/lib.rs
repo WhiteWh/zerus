@@ -461,3 +461,7 @@ mod hgs_tests {
         assert!(found.is_none_or(|found| found.is_file()));
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "../../../tests/support/executable.rs"]
+pub(crate) mod test_executable;

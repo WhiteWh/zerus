@@ -21,6 +21,10 @@ use std::time::{Duration, Instant, SystemTime};
 
 mod copy_review;
 pub use copy_review::{CopyReview, CopyReviewOutcome};
+#[cfg(all(test, unix))]
+mod fork_tests;
+#[cfg(all(test, unix))]
+mod identity_lock_tests;
 
 /// A rank longer than this renumbers its stage (ranks stay valid up to 64).
 const RENUMBER_AT: usize = 32;
@@ -463,7 +467,7 @@ impl Admitted<'_> {
 pub struct ProjectStore {
     dir: PathBuf,
     project: String,
-    _lock: File,
+    _lock: OwnedLock,
     /// Serializes this instance's read-modify-write of the change journal:
     /// a store is shared between threads, and `save` takes `&self`.
     journal: std::sync::Mutex<()>,
@@ -475,6 +479,33 @@ pub struct ProjectStore {
     /// files. A document whose base is older is merged into the files'
     /// current state before it is saved, never written over it.
     durable: std::sync::Mutex<std::collections::HashMap<String, VersionVector>>,
+}
+
+/// Releases an acquired exclusion on every scope exit, including errors before
+/// a ProjectStore exists. An inherited copy cannot unlock its original owner.
+struct OwnedLock {
+    file: File,
+    owner_pid: u32,
+}
+
+impl OwnedLock {
+    fn acquired(file: File) -> Self {
+        Self {
+            file,
+            owner_pid: std::process::id(),
+        }
+    }
+}
+
+impl Drop for OwnedLock {
+    fn drop(&mut self) {
+        // A pre-exec child can retain this open file description after our
+        // close. Release it explicitly, but never from a fork child's copy:
+        // that would unlock the original process's still-live store.
+        if self.owner_pid == std::process::id() {
+            let _ = FileExt::unlock(&self.file);
+        }
+    }
 }
 
 fn private_options() -> OpenOptions {
@@ -654,6 +685,25 @@ enum Marked {
     No,
     Unreadable,
     Saved(VersionVector),
+}
+
+#[cfg(test)]
+type LockAcquired = Box<dyn FnMut(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    /// Runs immediately after acquiring a replica exclusion, before fallible work.
+    static LOCK_ACQUIRED: std::cell::RefCell<Option<LockAcquired>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn lock_acquired(path: &Path) {
+    LOCK_ACQUIRED.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook(path);
+        }
+    });
 }
 
 #[cfg(test)]
@@ -839,6 +889,9 @@ impl ProjectStore {
                 }
             }
         }
+        let _lock = OwnedLock::acquired(lock);
+        #[cfg(test)]
+        lock_acquired(&root.join("store-id.lock"));
         if let Some(id) = read(&path)? {
             return Ok(Some(id));
         }
@@ -889,6 +942,9 @@ impl ProjectStore {
                 }
             }
         }
+        let lock = OwnedLock::acquired(lock);
+        #[cfg(test)]
+        lock_acquired(&dir.join(".lock"));
         // A crash during an atomic write leaves its temporary file behind. No
         // one else writes while this lock is held, so any left now is garbage;
         // removing it is best effort.
@@ -2262,6 +2318,10 @@ mod tests {
         assert_eq!(store.agent_starts_since(2_000).unwrap(), 0);
     }
 
+    /// The lock is released when the store drops, at once: its owner unlocks
+    /// it explicitly (OwnedLock), so a child forked between this store's open
+    /// and its drop cannot keep it through a copied descriptor (fork_tests).
+    /// The tests still start no child process beside it (zerus-kxpjt).
     #[test]
     fn the_project_lock_is_exclusive() {
         let root = tempfile::tempdir().unwrap();
@@ -2644,15 +2704,15 @@ mod tests {
                 .documents,
             Some(BTreeSet::new())
         );
-        // A special file is never opened to wait on.
+        // A special file is never opened to wait on. It is made in this
+        // process, never by a child, beside the_project_lock_is_exclusive;
+        // the owner's explicit unlock already covers a forked child's copied
+        // descriptor (OwnedLock, zerus-kxpjt).
         #[cfg(unix)]
         {
             fs::remove_file(&path).unwrap();
-            let made = std::process::Command::new("mkfifo")
-                .arg(&path)
-                .status()
-                .unwrap();
-            assert!(made.success());
+            let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
             assert!(store
                 .changes_since(&known.generation, known.offset)
                 .unwrap()

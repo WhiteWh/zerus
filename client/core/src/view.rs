@@ -1366,16 +1366,10 @@ pub fn row(value: &Value) -> ViewRow {
         summary: simplified(&session.summary()),
         updated_at: number(value, "last_event_at").filter(|at| *at > 0.0),
         keep_warm: object(value, "keep_warm").map(|warm| Value::Object(warm.clone())),
-        question_routing: object(value, "question_routing")
-            .filter(|routing| {
-                routing.len() == 2
-                    && routing.get("send_to_parent").is_some_and(Value::is_boolean)
-                    && routing
-                        .get("revision")
-                        .and_then(Value::as_i64)
-                        .is_some_and(|revision| revision >= 0)
-            })
-            .map(|routing| Value::Object(routing.clone())),
+        question_routing: value
+            .get("question_routing")
+            .filter(|routing| crate::question_routing::shaped(routing))
+            .cloned(),
         archived_at: number(value, "archived_at"),
         turn_started: session.turn_started(),
         launch_id: some(text(value, "launch_id")),
@@ -2027,6 +2021,16 @@ mod tests {
             status(json!({"tracked": true, "phase": "idle", "activity": "idle"})),
             s("ready", "Ready")
         );
+        // zerus-yj7ef: an idle DeepSeek listing row, with the count its bridge's
+        // listJobs summary gives (null from an older bridge: unknown).
+        let dsh = |count: Value| {
+            json!({"tracked": true, "backend": "dsh", "account_id": "native-dsh", "state": "running",
+                "phase": "idle", "activity": "idle",
+                "process_work": {"count": count, "started_at": null, "command": "", "sampled_at": 1.0}})
+        };
+        assert_eq!(status(dsh(json!(1))), s("background", "Background"));
+        assert_eq!(status(dsh(json!(0))), s("ready", "Ready"));
+        assert_eq!(status(dsh(Value::Null)), s("ready", "Ready"));
         assert_eq!(
             status(json!({"tracked": true, "activity": "unknown"})),
             s("ready", "Status unknown")
@@ -2441,6 +2445,20 @@ mod tests {
             assert_eq!(routed(bad.clone()), None, "{bad}");
         }
         assert_eq!(row(&json!({"name": "claude/b/c"})).question_routing, None);
+        // The shared contract's parse cases.
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../mobile/android/app/src/test/resources/question-routing-contract.json"
+        ))
+        .unwrap();
+        for case in contract["parse"].as_array().unwrap() {
+            let expected = Some(case["routing"].clone()).filter(|v| !v.is_null());
+            assert_eq!(
+                routed(case["question_routing"].clone()),
+                expected,
+                "{}",
+                case["name"]
+            );
+        }
     }
 
     #[test]

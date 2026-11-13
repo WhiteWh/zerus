@@ -181,6 +181,19 @@ finally:
         self.assertEqual(value['code'], 'revoke_hold_refused')
         self.assertFalse(self.desktop.exists())
 
+    @unittest.skipUnless(sys.platform.startswith(('linux', 'darwin')), 'Unix registration admission')
+    def test_a_hosted_deepseek_call_cannot_change_desktop_mode(self):
+        # zerus-ppd26: a resident DeepSeek host sets HGS_AGENT=dsh on every tool
+        # call, with or without session markers; the caller's own check refuses
+        # it before any ancestry is read.
+        hosted = {key: value for key, value in self.env.items()
+                  if key not in ('HGS_SESSION', 'HGS_SESSION_ID', 'HGS_RUN_ID')}
+        hosted['HGS_AGENT'] = 'dsh'
+        result = subprocess.run([str(HGS), 'desktop', 'registration', 'mode-check', '--json'], env=hosted,
+                                capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('agent session cannot change desktop mode', result.stderr)
+
     def test_notification_controls_are_scoped_reads_and_generic_mutation_is_refused(self):
         self.serve()
         current = self.cli('desktop', 'status', '--json')
@@ -1794,8 +1807,8 @@ finally:
     @staticmethod
     def remove_catalog_reason_schema(db):
         # Rewind the later leaves too, never leaving one labelled older: the
-        # schema-36 and 37 question route leaves (zerus-sa9qn.8 and .32;
-        # dropping a table drops its triggers and indexes), the
+        # schema-36 to 40 question route leaves (zerus-sa9qn.8, .32, .33, .50
+        # and .36; dropping a table drops its triggers and indexes), the
         # schema-34 session resume, schema-32 startup attention index,
         # schema-30 compact-to-send, schema-29
         # deferred answer, schema-28
@@ -1803,6 +1816,9 @@ finally:
         # message inputs, schema-26 task message, schema-25 termination
         # retention, creation launch/worktree, then the schema-22 catalog
         # approval.
+        db.execute('DROP TABLE desktop_question_route_retention')
+        db.execute('DROP TABLE desktop_question_route_children')
+        db.execute('DROP TABLE desktop_question_route_child_requests')
         db.execute('DROP TABLE desktop_question_route_policy')
         db.execute('DROP TABLE desktop_question_route_policy_requests')
         db.execute('DROP TABLE desktop_question_routes')

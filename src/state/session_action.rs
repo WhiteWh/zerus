@@ -116,6 +116,10 @@ impl Scope {
     }
 }
 
+/// Why an archive that ended before its first message cannot restore.
+pub(super) const NO_CONVERSATION: &str =
+    "This session ended before its first message, so it saved no conversation to restore";
+
 /// A presentation gate, never a substitute for the locked action checks.
 /// `resumed` is the summary's single verification of a pending resume.
 pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<()>>) -> Value {
@@ -126,6 +130,11 @@ pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<(
     let recipe = record["base"].is_array() && (Path::new(string(record, "launch_dir")).is_dir() || super::worktree_lifecycle::restorable(record));
     let cleanup_pending = clear_context::cleanup_pending(record);
     let restore_pending = !string(record, "restore_archive_id").is_empty() || cleanup_pending;
+    let restorable =
+        archived && recipe && !cleanup_pending && !record_path(string(record, "name")).exists();
+    // One bounded metadata read, only for an archive that may otherwise
+    // restore (zerus-wyrqg).
+    let conversation = !restorable || recipes::restore_conversation_saved(record);
     let decisions = [
         (
             "pause",
@@ -145,10 +154,7 @@ pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<(
             !changing && fork::summary(record, live_pane)["fork_supported"] == true,
         ),
         ("terminate", !archived),
-        (
-            "restore",
-            archived && recipe && !cleanup_pending && !record_path(string(record, "name")).exists(),
-        ),
+        ("restore", restorable && conversation),
         ("forget", !changing && !restore_pending),
     ];
     let mut allowed = Vec::new();
@@ -164,6 +170,7 @@ pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<(
                     "resume" =>
                         "Resume requires a saved session and available native launch recipe",
                     "archive" => "Archive requires a stopped or paused confirmed session",
+                    "restore" if !conversation => NO_CONVERSATION,
                     "restore" => "Restore requires an archive recipe and an unused session name",
                     "terminate" => "An archive has no running session to terminate",
                     "fork" => "This session cannot fork its confirmed native context yet",
@@ -613,5 +620,71 @@ mod tests {
         assert!(first.get("error").is_none());
         assert!(first.get("error_source").is_none());
         assert_eq!(attempt(&path, &request(), "session", "hash", |_| panic!("replayed")).unwrap(), first);
+    }
+
+    /// A Claude or Codex archive that exited before its first message wrote
+    /// no transcript: Restore is not offered, and says why (zerus-wyrqg).
+    #[test]
+    fn an_archive_without_a_saved_conversation_offers_no_restore() {
+        use std::fs;
+        let folder = tempfile::tempdir().unwrap();
+        let transcript = folder.path().join("conversation.jsonl");
+        let record = |agent: &str, launch_dir: &Path| {
+            json!({"name": format!("{agent}/example/archived-{}", uuid::Uuid::new_v4()),
+                "agent": agent, "archive_id": "archive-1", "conversation_id": "conversation-1",
+                "base": [agent], "launch_dir": launch_dir, "transcript": transcript})
+        };
+        let restore = |record: &Value| {
+            let summary = summary(record, false, &None);
+            let allowed = summary["allowed_actions"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("restore"));
+            (
+                allowed,
+                summary["action_reasons"]["restore"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned(),
+            )
+        };
+        for agent in ["claude", "codex"] {
+            // Missing, a folder, then empty: nothing to restore.
+            let _ = fs::remove_file(&transcript);
+            assert_eq!(
+                restore(&record(agent, folder.path())),
+                (false, NO_CONVERSATION.to_owned()),
+                "{agent}"
+            );
+            fs::create_dir(&transcript).unwrap();
+            assert_eq!(
+                restore(&record(agent, folder.path())),
+                (false, NO_CONVERSATION.to_owned()),
+                "{agent}"
+            );
+            fs::remove_dir(&transcript).unwrap();
+            fs::write(&transcript, "").unwrap();
+            assert_eq!(
+                restore(&record(agent, folder.path())),
+                (false, NO_CONVERSATION.to_owned()),
+                "{agent}"
+            );
+            // The first message saved it.
+            fs::write(&transcript, "{}\n").unwrap();
+            assert_eq!(
+                restore(&record(agent, folder.path())),
+                (true, String::new()),
+                "{agent}"
+            );
+            // Without a recipe the usual reason stays.
+            let _ = fs::remove_file(&transcript);
+            let reason = restore(&record(agent, &folder.path().join("gone"))).1;
+            assert_eq!(
+                reason,
+                "Restore requires an archive recipe and an unused session name"
+            );
+        }
+        // Kimi keeps its own check in the restore itself.
+        assert!(restore(&record("kimi", folder.path())).0);
     }
 }

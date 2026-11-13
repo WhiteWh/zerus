@@ -61,9 +61,17 @@ pub(in crate::state) fn front_send(
     let slot = host::send_slot()?;
     Some((|| {
         let frame = host::frame::Frame::new_send(raw.to_vec(),candidate,
-            host::frame::Deadline::after(Duration::from_secs(15))?)?;
+            host::frame::Deadline::after(operation_budget(host::frame::Operation::Send))?)?;
         host::request_send(frame,slot)
     })())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn operation_budget(operation: host::frame::Operation) -> Duration {
+    Duration::from_secs(match operation {
+        host::frame::Operation::Send => 25,
+        host::frame::Operation::Effort | host::frame::Operation::Settings => 15,
+    })
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

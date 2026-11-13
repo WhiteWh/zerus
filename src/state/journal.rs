@@ -1226,6 +1226,9 @@ pub(super) fn inspection_with(
     notifications::enrich(&mut output, notifications::load().as_ref(), journal_name);
     if archive_id.is_none() {
         keep_warm::enrich(&mut output, keep_warm::load().as_ref(), &record);
+        // The person's per-child question route switch, as the listing
+        // shows it (zerus-sa9qn.33): the phones check an action against it.
+        super::question_routing::enrich(&mut output, super::question_routing::load().as_ref());
         let usage = output["session_usage"].clone();
         keep_warm::describe(&mut output, &record, &usage);
     }

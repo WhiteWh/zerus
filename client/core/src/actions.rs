@@ -525,7 +525,7 @@ pub fn invocation(
             (
                 vec!["send".to_owned(), name, "--json".to_owned()],
                 Some(input),
-                15,
+                30,
                 45,
                 Some(request_id.to_owned()),
             )
@@ -2397,9 +2397,29 @@ mod tests {
             })
         );
         let local = invocation(&target(""), &send("hi", vec![]), "req-2").unwrap();
-        assert_eq!(local.timeout, Duration::from_secs(15));
+        assert_eq!(local.timeout, Duration::from_secs(30));
         let input: Value = serde_json::from_slice(local.stdin.as_ref().unwrap()).unwrap();
         assert!(input.get("agent_id").is_none() && input.get("expected_compaction_id").is_none());
+    }
+
+    #[test]
+    fn send_windows_are_30_local_and_45_peer_for_ordinary_and_child_messages() {
+        for agent_id in [None, Some("agent-7")] {
+            let action = Action::Send {
+                text: "original message".into(),
+                attachments: vec![],
+                agent_id: agent_id.map(String::from),
+                expected_compaction_id: None,
+            };
+            for (computer, seconds) in [("", 30), ("mac", 45)] {
+                let call = invocation(&target(computer), &action, "original-request").unwrap();
+                assert_eq!(call.timeout, Duration::from_secs(seconds));
+                assert_eq!(call.request_id.as_deref(), Some("original-request"));
+                let input: Value = serde_json::from_slice(call.stdin.as_ref().unwrap()).unwrap();
+                assert_eq!(input["text"], "original message");
+                assert_eq!(input["agent_id"].as_str(), agent_id);
+            }
+        }
     }
 
     #[test]

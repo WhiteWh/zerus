@@ -47,6 +47,11 @@ fn token_record() -> Option<Value> {
     if !process_alive(&record) || record["state"] == "archived" {
         return None;
     }
+    // Ancestry through a recorded DeepSeek host proves no other agent's
+    // session (zerus-ppd26.15).
+    if crate::state::dsh::host_check() != crate::state::dsh::HostCheck::Outside {
+        return None;
+    }
     let owner = u32::try_from(record["pid"].as_u64()?).ok()?;
     let mut pid = std::process::id();
     for _ in 0..64 {
@@ -60,6 +65,21 @@ fn token_record() -> Option<Value> {
         pid = process.parent;
     }
     None
+}
+
+/// The `HGS_AGENT` value a resident DeepSeek host's bridge sets on the
+/// processes of every tool call, whether or not it also has that session's
+/// own markers (zerus-ppd26).
+pub(crate) const HOSTED_AGENT: &str = "dsh";
+
+/// Whether this command runs in a resident host's tool call. Such a command
+/// is an agent's even when no session can be proven for it (no identity file
+/// yet, an agent the native UI opened, or a host this hgs cannot prove), so a
+/// guard that would otherwise take an unmarked caller for the person refuses
+/// it. Like every marker this guards against accidental use, not against an
+/// agent that clears its own environment.
+pub(crate) fn hosted_agent_call() -> bool {
+    std::env::var_os("HGS_AGENT").is_some_and(|agent| agent == HOSTED_AGENT)
 }
 
 /// The calling agent's own binding under its current name, proven like a

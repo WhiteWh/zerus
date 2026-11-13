@@ -333,6 +333,7 @@ pub(super) fn effect(
     );
     let (source, identity) = instances::selected_image(Path::new(&plan.argv[0]))?;
     let mut fence = Fence {
+        stop_timing: None,
         admission,
         location,
         background: true,

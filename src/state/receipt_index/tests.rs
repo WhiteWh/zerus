@@ -261,17 +261,40 @@ fn bounded_migration_resumes_without_rewriting_history_or_sequences() {
     let corrupt = directory.join("corrupt.json");
     fs::write(&corrupt, b"{").unwrap();
     let mut migration = migration::Migration::new(temp.path()).unwrap();
-    assert!(!migration.step().unwrap());
     let catalog = Catalog::open(temp.path(), false).unwrap();
-    let before: Vec<(String, i64)> = catalog
-        .db
-        .prepare("SELECT request,seq FROM receipt_rows ORDER BY seq")
-        .unwrap()
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-        .unwrap()
-        .map(|r| r.unwrap())
-        .collect();
-    assert!(!before.is_empty() && before.len() <= 64);
+    // A slow or descheduled runner can end the first slice before any row is
+    // inserted. Step until the first rows appear, bounded, and check each
+    // step's row delta so a batch can never exceed its 64-entry budget.
+    let mut before: Vec<(String, i64)> = Vec::new();
+    let mut previous = 0usize;
+    for _ in 0..1000 {
+        let complete = migration.step().unwrap();
+        let count: i64 = catalog
+            .db
+            .query_row("SELECT COUNT(*) FROM receipt_rows", [], |r| r.get(0))
+            .unwrap();
+        let count = count as usize;
+        assert!(
+            count.saturating_sub(previous) <= 64,
+            "one migration step inserted more than 64 rows"
+        );
+        previous = count;
+        if count > 0 {
+            before = catalog
+                .db
+                .prepare("SELECT request,seq FROM receipt_rows ORDER BY seq")
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+            assert!(before.len() <= 64);
+            assert!(!complete, "the migration finished before its first rows appeared");
+            break;
+        }
+        assert!(!complete, "the migration finished without inserting a row");
+    }
+    assert!(!before.is_empty(), "no row was inserted within 1000 bounded steps");
     drop(migration);
     let writer = Catalog::open(temp.path(), true).unwrap();
     writer
@@ -1172,12 +1195,20 @@ fn a_lost_witness_or_stale_verification_turns_coverage_incomplete_and_the_walk_r
         .unwrap();
     let page = catalog.page(&scope, "", 100, true).unwrap();
     assert_eq!(page.metadata["migration_complete"], false);
-    // The bounded verification requests the worker; its forced walk repairs
-    // the witness (and any lost row) and refreshes the verification age.
+    // The bounded verification requests the worker. Its count publication
+    // records the mismatch and seals nothing (zerus-z5uax): the error stays
+    // visible until a later walk, which re-reads every original, completes.
+    let mut migration = migration::Migration::new(temp.path()).unwrap();
+    while !migration.step().unwrap() {}
+    let recorded = catalog.page(&scope, "", 100, true).unwrap();
+    assert_eq!(recorded.metadata["migration_complete"], false);
+    assert_eq!(recorded.metadata["unattributed_errors"], 1);
+    assert_eq!(recorded.metadata["indexed"], 2);
     let mut migration = migration::Migration::new(temp.path()).unwrap();
     while !migration.step().unwrap() {}
     let repaired = catalog.page(&scope, "", 100, true).unwrap();
     assert_eq!(repaired.metadata["migration_complete"], true);
+    assert_eq!(repaired.metadata["unattributed_errors"], 0);
     assert_eq!(repaired.metadata["indexed"], 2);
     // Age alone is not evidence: a stale-but-consistent locator stays
     // complete and only schedules the re-verification walk.
@@ -1482,3 +1513,6 @@ mod scope_restore;
 
 #[path = "pin_tests.rs"]
 mod proven_pin;
+
+#[path = "witness_tests.rs"]
+mod witness_token;

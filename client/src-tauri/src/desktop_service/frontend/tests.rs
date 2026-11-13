@@ -1170,3 +1170,62 @@ fn a_question_route_switch_settles_only_on_its_exact_durable_receipt() {
         false
     );
 }
+
+/// The person's latch on one child (zerus-sa9qn.50): only the service's exact
+/// receipt of this child, value and next revision releases it; its closed
+/// refusals precede any write; anything else stays unknown.
+#[test]
+fn a_question_route_latch_settles_only_on_its_exact_receipt_or_closed_refusal() {
+    let session = "00000000-0000-4000-8000-000000000001";
+    let request = Request::QuestionRouteChild {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        session_id: session.into(),
+        run_id: "run-1".into(),
+        conversation_id: "conversation-1".into(),
+        person_off: true,
+        expected_revision: 2,
+    };
+    assert_eq!(Operation::of(&request), Operation::QuestionRouteChild);
+    assert_eq!(Operation::QuestionRouteChild.name(), "question_route_child");
+    let receipt = json!({"request_id":request.id(),"op":"question_route_child","session_id":session,
+        "person_off":true,"revision":3,"applied":true,"accepted":true,"durable":true,"code":""});
+    let (_, complete) = checked(&request, receipt.clone(), false).unwrap();
+    assert!(complete);
+    // Already so: the same revision.
+    let mut same = receipt.clone();
+    same["applied"] = json!(false);
+    same["revision"] = json!(2);
+    assert!(checked(&request, same, false).is_some());
+    for (field, wrong) in [
+        ("request_id", json!(uuid::Uuid::new_v4().to_string())),
+        ("op", json!("question_routes")),
+        ("session_id", json!("00000000-0000-4000-8000-000000000002")),
+        ("person_off", json!(false)),
+        ("revision", json!(4)),
+        ("applied", json!(null)),
+        ("durable", json!(false)),
+    ] {
+        let mut value = receipt.clone();
+        value[field] = wrong;
+        assert!(checked(&request, value, false).is_none(), "{field}");
+    }
+    // A closed refusal before any write settles; a store failure does not.
+    for code in ["conflict", "stale_identity", "not_found", "capacity"] {
+        let refusal = json!({"request_id":request.id(),"op":"question_route_child","accepted":false,
+            "durable":false,"code":code});
+        assert!(
+            checked(&request, refusal, false).is_some_and(|(_, done)| done),
+            "{code}"
+        );
+    }
+    let store = json!({"request_id":request.id(),"op":"question_route_child","accepted":false,
+        "durable":false,"code":"question_route_store_refused"});
+    assert!(checked(&request, store, false).is_none());
+    // A lost reply looks up its original receipt, read-only.
+    let lookup = json!({"request_id":"11111111-1111-4111-8111-111111111111","op":"question_route_child_result",
+        "accepted":true,"durable":false,"original_request_id":request.id(),"found":true,"result":receipt});
+    assert!(matches!(
+        lookup_receipt(&request, "11111111-1111-4111-8111-111111111111", lookup),
+        Ok(Receipt::Present(_))
+    ));
+}

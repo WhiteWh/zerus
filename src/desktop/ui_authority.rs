@@ -1741,6 +1741,7 @@ enum OrderedOperation {
     ActivationWait,
     AutomaticApprovals,
     QuestionRoutes,
+    QuestionRouteChild,
     MaintenanceConfigure,
     ImportPendingReads,
     DesktopOwnership,
@@ -1769,6 +1770,7 @@ impl From<&Request> for OrderedOperation {
             Request::ActivationWait { .. } => Self::ActivationWait,
             Request::AutomaticApprovals { .. } => Self::AutomaticApprovals,
             Request::QuestionRoutes { .. } => Self::QuestionRoutes,
+            Request::QuestionRouteChild { .. } => Self::QuestionRouteChild,
             Request::MaintenanceConfigure { .. } => Self::MaintenanceConfigure,
             Request::ImportPendingReads { .. } => Self::ImportPendingReads,
             Request::DesktopOwnership { .. } => Self::DesktopOwnership,
@@ -1920,18 +1922,26 @@ fn ancestry(
 
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn marked(bytes: &[u8]) -> bool {
+    // A resident DeepSeek host sets HGS_AGENT=dsh on every tool call's
+    // processes, with or without that session's markers (zerus-ppd26).
+    let hosted = [
+        b"HGS_AGENT=".as_slice(),
+        crate::state::session_graph::HOSTED_AGENT.as_bytes(),
+    ]
+    .concat();
     bytes.split(|b| *b == 0).any(|entry| {
-        [
-            b"HGS_SESSION=".as_slice(),
-            b"HGS_SESSION_ID=",
-            b"HGS_RUN_ID=",
-            b"LD_PRELOAD=",
-            b"LD_AUDIT=",
-            b"DYLD_INSERT_LIBRARIES=",
-            b"DYLD_FORCE_FLAT_NAMESPACE=",
-        ]
-        .iter()
-        .any(|key| entry.starts_with(key))
+        entry == hosted.as_slice()
+            || [
+                b"HGS_SESSION=".as_slice(),
+                b"HGS_SESSION_ID=",
+                b"HGS_RUN_ID=",
+                b"LD_PRELOAD=",
+                b"LD_AUDIT=",
+                b"DYLD_INSERT_LIBRARIES=",
+                b"DYLD_FORCE_FLAT_NAMESPACE=",
+            ]
+            .iter()
+            .any(|key| entry.starts_with(key))
     })
 }
 
@@ -3729,6 +3739,17 @@ mod tests {
         assert!(marked(b"PATH=/bin\0HGS_SESSION=example\0"));
         assert!(marked(b"HGS_RUN_ID=\0"));
         assert!(!marked(b"X_HGS_SESSION=example\0HGS_SESSION_EXTRA=x\0"));
+        // A resident DeepSeek host's tool call, even without session markers
+        // (zerus-ppd26); other agent kinds keep their session markers.
+        assert!(marked(b"PATH=/bin\0HGS_AGENT=dsh\0"));
+        for other in [
+            &b"HGS_AGENT=claude\0"[..],
+            b"HGS_AGENT=dshx\0",
+            b"HGS_AGENT=\0",
+            b"X_HGS_AGENT=dsh\0",
+        ] {
+            assert!(!marked(other));
+        }
         for key in [
             "LD_PRELOAD",
             "LD_AUDIT",

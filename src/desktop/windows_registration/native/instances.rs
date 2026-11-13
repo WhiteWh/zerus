@@ -425,13 +425,28 @@ impl Running {
         self.service.check()
     }
     pub(super) fn stop(&mut self, fence: &mut impl FnMut() -> Result<()>) -> Result<()> {
+        self.stop_measured(fence, None)
+    }
+    fn stop_measured(
+        &mut self,
+        fence: &mut impl FnMut() -> Result<()>,
+        timing: Option<&policy::mode::timing::Timing>,
+    ) -> Result<()> {
+        use policy::mode::timing::Step;
         fence()?;
-        self.check()?;
+        if let Some(timing) = timing {
+            timing.measure(Step::NativeRechecks, || self.check())?;
+        } else {
+            self.check()?;
+        }
         fence()?;
         // Mark before calling COM: a failed/unknown result is never replayed.
         self.stopped = true;
-        unsafe { self.instance.Stop() }
-            .context("Original task stop result is unknown; inspect the pending transition.")?;
+        let stop = || unsafe { self.instance.Stop() };
+        match timing {
+            Some(timing) => timing.measure(Step::InstanceStop, stop),
+            None => stop(),
+        }.context("Original task stop result is unknown; inspect the pending transition.")?;
         fence()
     }
     pub(super) fn exited(
@@ -527,12 +542,15 @@ pub(super) fn stop_original(
     original: &mut Running,
     until: Instant,
     fence: &mut impl FnMut() -> Result<()>,
+    timing: &policy::mode::timing::Timing,
 ) -> Result<()> {
     super::mode::stop::checked(
         original,
         fence,
-        |original, fence| check_original_selection(native, plan, wanted, original, until, fence),
-        |original, fence| original.stop(fence),
+        |original, fence| timing.measure(policy::mode::timing::Step::NativeRechecks, || {
+            check_original_selection(native, plan, wanted, original, until, fence)
+        }),
+        |original, fence| original.stop_measured(fence, Some(timing)),
     )
 }
 

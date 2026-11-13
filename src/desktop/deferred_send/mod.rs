@@ -40,6 +40,9 @@ pub(in crate::desktop) enum Reservation {
     Refused,
     /// The person's switch is off: roll back, nothing is written.
     Off,
+    /// The route ledger stayed full after its retention pass: commit that
+    /// pass only, no original (zerus-sa9qn.36).
+    Full,
 }
 
 use zerus_client_core::desktop::deferred_send as wire;
@@ -77,6 +80,23 @@ pub(super) fn receipt(
     request_id: &str,
 ) -> anyhow::Result<Option<wire::Receipt>> {
     Ok(ledger::load(db, request_id)?.map(|row| row.receipt))
+}
+
+/// One route original's own record, read-only, for its Activity line
+/// (zerus-sa9qn.33). The original is loaded and re-derived by its kind like
+/// every saved original; `None` when it is absent or not a route. It grants
+/// nothing.
+pub(super) fn route_record(
+    db: &rusqlite::Connection,
+    request_id: &str,
+) -> anyhow::Result<Option<zerus_client_core::desktop::question_route::Record>> {
+    let Some(row) = ledger::load(db, request_id)? else {
+        return Ok(None);
+    };
+    if row.verified.binding.kind != wire::Kind::RouteQuestion {
+        return Ok(None);
+    }
+    Ok(serde_json::from_str(&row.verified.intent.checkpoint).ok())
 }
 
 /// The scoped read-only lookup of one original's receipt

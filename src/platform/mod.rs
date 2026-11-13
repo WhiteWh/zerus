@@ -200,30 +200,68 @@ pub fn lock_contended(error: &io::Error) -> bool {
 /// Windows frees a closed handle's lock only when system resources allow, and a
 /// forked child can keep a Unix descriptor open until exec, so closing the file
 /// alone can leave the next process waiting.
-pub struct FileLock(File);
+pub struct FileLock {
+    file: File,
+    owner_pid: u32,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Every unlock_owner call that reached the actual unlock (owner matched).
+    pub(crate) static UNLOCK_ATTEMPTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Tests only: make the next unlock_owner attempts fail without unlocking.
+    pub(crate) static FAIL_UNLOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 impl FileLock {
     pub fn exclusive(file: File) -> io::Result<Self> {
         fs2::FileExt::lock_exclusive(&file)?;
-        Ok(Self(file))
+        Ok(Self::held(file))
     }
 
     /// Takes ownership of a file whose lock this process has just acquired.
     pub fn held(file: File) -> Self {
-        Self(file)
+        Self {
+            file,
+            owner_pid: std::process::id(),
+        }
+    }
+
+    /// Preserve a caller's fallible normal release without retrying it in Drop.
+    /// Error exits still use the acquisition-owner guard's ordinary Drop.
+    pub(crate) fn release(mut self) -> io::Result<()> {
+        let result = self.unlock_owner();
+        self.owner_pid = 0;
+        result
+    }
+
+    fn unlock_owner(&self) -> io::Result<()> {
+        if self.owner_pid == std::process::id() {
+            #[cfg(test)]
+            {
+                UNLOCK_ATTEMPTS.with(|attempts| attempts.set(attempts.get() + 1));
+                if FAIL_UNLOCK.with(std::cell::Cell::get) {
+                    return Err(io::Error::other("injected unlock failure"));
+                }
+            }
+            fs2::FileExt::unlock(&self.file)
+        } else {
+            Ok(())
+        }
     }
 
     /// The identity of the exact file object this lock is held on.
     #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     pub fn identity(&self) -> io::Result<FileIdentity> {
-        FileIdentity::of(&self.0)
+        FileIdentity::of(&self.file)
     }
 }
 
 impl Drop for FileLock {
     fn drop(&mut self) {
         // Rust 1.89+ File::unlock would shadow the trait method; name fs2 explicitly.
-        let _ = fs2::FileExt::unlock(&self.0);
+        // An inherited copy must not unlock its parent's still-live scope.
+        let _ = self.unlock_owner();
     }
 }
 
@@ -920,3 +958,8 @@ mod console_allocation_tests {
         );
     }
 }
+
+#[cfg(all(test, unix))]
+pub(crate) mod lock_tests;
+#[cfg(all(test, unix))]
+pub(crate) mod residual_lock_tests;

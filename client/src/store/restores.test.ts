@@ -233,13 +233,16 @@ describe("Restore session (Qt changeSession 5542-5560)", () => {
     });
   });
 
-  it("restores a row whose reported operations leave out restore, as Qt's header and selected-row menu do", async () => {
+  it("does not restore a row whose computer leaves restore out (zerus-wyrqg); an unreported one keeps Qt's rule", async () => {
     await createRoot(async (dispose) => {
       const a = setup();
-      a.page(archivedView(1, { allowed_actions: ["rename", "forget"] }));
-      mocked.runAction.mockResolvedValueOnce(done());
+      // An archive that ended before its first message saved no conversation.
+      a.page(archivedView(1, { allowed_actions: ["rename", "forget"] }), archivedView(2, { allowed_actions: ["restore", "rename", "forget"] }));
       await a.restore(a.row(1));
-      expect(mocked.runAction).toHaveBeenCalledWith(expect.objectContaining({ name: "codex/example/a1" }), { kind: "restore", archive_id: uuid(1) });
+      expect(mocked.runAction).not.toHaveBeenCalled();
+      mocked.runAction.mockResolvedValueOnce(done());
+      await a.restore(a.row(2));
+      expect(mocked.runAction).toHaveBeenCalledWith(expect.objectContaining({ name: "codex/example/a2" }), { kind: "restore", archive_id: uuid(2) });
       dispose();
     });
   });

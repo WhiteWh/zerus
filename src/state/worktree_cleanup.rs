@@ -1214,6 +1214,9 @@ fn leftovers(
             if lock.try_lock_exclusive().is_err() {
                 continue;
             }
+            let _lock = crate::platform::FileLock::held(lock);
+            #[cfg(all(test, unix))]
+            crate::platform::lock_tests::reached("leftovers");
             let Ok((fresh, partial)) = list(common, common, step(total, 5)) else {
                 continue;
             };
@@ -1560,7 +1563,7 @@ fn scan_leftover_limit(root: &Path, deadline: Instant, limit: usize) -> Leftover
 /// binding or managed worktree mutation cannot race that original decision.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) struct ProgramStopGuards {
-    _repository: std::fs::File,
+    _repository: crate::platform::FileLock,
     _state: storage::Guard,
 }
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1579,6 +1582,9 @@ pub(super) fn program_stop_guards(
             Err(_) => std::thread::sleep(Duration::from_millis(5)),
         }
     }
+    let repository = crate::platform::FileLock::held(repository);
+    #[cfg(all(test, unix))]
+    crate::platform::lock_tests::reached("program-stop");
     let state = storage::writer_until(until)?.ok_or("Session state is busy")?;
     Ok(ProgramStopGuards {
         _repository: repository,
@@ -3693,3 +3699,6 @@ mod binding_census_tests {
         session_id::clear();
     }
 }
+
+#[cfg(all(test, unix))]
+pub(super) mod scoped_tests;

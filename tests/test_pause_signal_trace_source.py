@@ -249,6 +249,29 @@ class SignalTraceSource(unittest.TestCase):
                 self.assertEqual(syncs, [('sync', 17), ('sync', 23), ('close', 23)])
 
 
+# Exact expectation-only #2162 / zerus-wyrqg update in a1860304e. Require it
+# in its own archive regression, then recover the unchanged historical class pin.
+ARCHIVE_RESTORE_EXPECTATION_UPDATE = """        # #2162 / zerus-wyrqg: a missing saved conversation also removes the
+        # Restore offer. Failed actions still leave the archive unchanged.
+        self.assertIn("restore", expected["allowed_actions"])
+        expected["allowed_actions"].remove("restore")
+        expected["action_reasons"]["restore"] = (
+            "This session ended before its first message, so it saved no conversation to restore")
+"""
+
+
+def mac_protected_source(name, text):
+    if name != "Archive":
+        return text
+    archive = ast.parse(text).body[0]
+    method = next(node for node in archive.body if isinstance(node, ast.FunctionDef)
+                  and node.name == "test_missing_history_and_wrong_name_cannot_destroy_archive")
+    body = ast.get_source_segment(text, method)
+    if text.count(ARCHIVE_RESTORE_EXPECTATION_UPDATE) != 1 or body.count(ARCHIVE_RESTORE_EXPECTATION_UPDATE) != 1:
+        raise AssertionError("reviewed archive restore expectation is missing, changed, duplicated or moved")
+    return text.replace(ARCHIVE_RESTORE_EXPECTATION_UPDATE, "", 1)
+
+
 MAC_PROTECTED = {'direct_signal_agent': '0e0e76129449c8490a15cb5efadccb631f46aefe8d62b8081a8bf3364c2fd9bd', 'DirectSignalTrace': 'fb9bc39f72f835553e15c00b5744337a23fb3c6ba7d800143e87964c1a32c880', 'Lifecycle': '0c75dcf0a29b6aeacd206e972daccb084584cb9396080baba237f83beae17f87', 'Archive': 'e4bb6ea60a035bb09a2b05a33350d8c69d310b53e8742f59c851deaaf2af74a9'}
 # The fake agent also records HGS_SESSION_ID (zerus-ucck P1, approved addition).
 # Lifecycle gains only zerus-b64dl's plain-environment hook health/repair checks in
@@ -276,6 +299,24 @@ def mac_probe(namespace):
 
 
 class MacPauseObserverSource(unittest.TestCase):
+    def test_reviewed_archive_restore_update_is_exact_and_owned_by_its_test(self):
+        archive = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "Archive")
+        text = ast.get_source_segment(SOURCE, archive)
+        update = ARCHIVE_RESTORE_EXPECTATION_UPDATE
+        original = mac_protected_source("Archive", text)
+        self.assertEqual(hashlib.sha256(original.encode()).hexdigest(), MAC_PROTECTED["Archive"])
+        for kind, replacement in (("missing", ""), ("changed", update.replace('"restore"', '"other"', 1)),
+                                  ("duplicated", update + update)):
+            with self.subTest(kind=kind):
+                with self.assertRaises(AssertionError):
+                    mac_protected_source("Archive", text.replace(update, replacement, 1))
+        other = next(node for node in ast.parse(text).body[0].body if isinstance(node, ast.FunctionDef)
+                     and node.name != "test_missing_history_and_wrong_name_cannot_destroy_archive")
+        body = ast.get_source_segment(text, other)
+        moved = text.replace(update, "", 1).replace(body, body + "\n" + update, 1)
+        with self.assertRaises(AssertionError):
+            mac_protected_source("Archive", moved)
+
     def test_exact_darwin_case_only_and_original_agent_lifecycle_linux_bodies_are_preserved(self):
         namespace = load_mac()
         selected = namespace['MacPauseProbe'].selected
@@ -287,7 +328,7 @@ class MacPauseObserverSource(unittest.TestCase):
                                      case == namespace['MAC_PAUSE_CASE'] and not legacy)
         for name, expected in MAC_PROTECTED.items():
             node = next(node for node in TREE.body if getattr(node, 'name', None) == name)
-            text = ast.get_source_segment(SOURCE, node)
+            text = mac_protected_source(name, ast.get_source_segment(SOURCE, node))
             self.assertEqual(hashlib.sha256(text.encode()).hexdigest(), expected, name)
         self.assertEqual(hashlib.sha256(AGENT.encode()).hexdigest(), MAC_AGENT_SHA256)
         probe = mac_probe(namespace)

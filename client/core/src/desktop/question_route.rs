@@ -116,8 +116,10 @@ pub fn edge(row: &Value) -> Option<Edge> {
         .unwrap_or("");
     let quiet = row.get("human_request") == Some(&Value::Bool(false));
     // The person's per-child switch (zerus-sa9qn.32): on only when its host
-    // reports it on; unknown or absent never routes.
-    let allowed = row["question_routing"]["send_to_parent"] == true;
+    // reports it on; unknown or absent never routes. Its mirror of the
+    // person's latch (zerus-sa9qn.50) is never an edge either.
+    let allowed = row["question_routing"]["send_to_parent"] == true
+        && row["question_routing"]["person_off"] != true;
     let edge = Edge {
         name: text(row, "name"),
         session_id: text(row, "session_id"),

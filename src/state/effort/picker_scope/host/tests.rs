@@ -10,6 +10,20 @@ const FRONTEND: &str = "state::effort::picker_scope::host::tests::frontend";
 const FIXTURE: &str = "state::effort::picker_scope::host::tests::private_fixture";
 
 #[test]
+fn pending_send_has_25_seconds_while_standalone_pickers_keep_15() {
+    for (operation, seconds) in [
+        (Operation::Send, 25),
+        (Operation::Settings, 15),
+        (Operation::Effort, 15),
+    ] {
+        assert_eq!(
+            super::super::operation_budget(operation),
+            Duration::from_secs(seconds)
+        );
+    }
+}
+
+#[test]
 fn send_binary_segment_handles_backpressure_eof_and_its_original_deadline() {
     let (writer, reader) = UnixStream::pair().unwrap();
     writer.set_nonblocking(true).unwrap();

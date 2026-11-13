@@ -658,6 +658,16 @@ impl<N: Native + 'static> Connector<N> {
                 "native shared notification ABI is unavailable",
             ));
         }
+        if operation == crate::session_question_routing::OPERATION && !flags.question_routing {
+            return Err(Failure::text(crate::session_question_routing::UNAVAILABLE));
+        }
+        if operation == crate::session_question_route_person::OPERATION
+            && !flags.question_route_person
+        {
+            return Err(Failure::text(
+                crate::session_question_route_person::UNAVAILABLE,
+            ));
+        }
         if operation == "mark_read" && !flags.read {
             return Err(Failure::text("native shared read ABI is unavailable"));
         }
@@ -761,6 +771,41 @@ impl<N: Native + 'static> Connector<N> {
                 if !crate::session_notifications::result_valid(&result, payload) {
                     return Err(Failure::text(
                         "native notification preference acknowledgement did not match",
+                    ));
+                }
+                Ok(result)
+            }
+            "session_question_routing" => {
+                let payload = payload.expect("validated");
+                let result = self
+                    .call(
+                        Call::new(["question-routing", session, "--json"])
+                            .payload(payload.clone())
+                            .failure_json(),
+                    )
+                    .await?;
+                if !crate::session_question_routing::result_valid(&result, payload) {
+                    return Err(Failure::text(
+                        "native question routing acknowledgement did not match",
+                    ));
+                }
+                Ok(result)
+            }
+            crate::session_question_route_person::OPERATION => {
+                let payload = payload.expect("validated");
+                if self.peer {
+                    return Err(Failure::text(crate::session_question_route_person::PEER));
+                }
+                let result = self
+                    .call(
+                        Call::new(["desktop", "request", "--json"])
+                            .payload(crate::session_question_route_person::request(payload))
+                            .failure_json(),
+                    )
+                    .await?;
+                if !crate::session_question_route_person::result_valid(&result, payload) {
+                    return Err(Failure::text(
+                        "native person question route acknowledgement did not match",
                     ));
                 }
                 Ok(result)

@@ -2,13 +2,89 @@
 // 0.2.2-rc.1 hosts. Its ping version identifies the adapter, not the harness.
 // Loaded through its supported Cordis --patch extension mechanism. No fork of
 // the engine, credential copying, HTTP authentication bypass or PTY injection.
+// One method wrapper adds explicit environment entries, the subprocess
+// service's documented caller entries, to processes a tool call starts.
 import net from 'node:net';
 import fs from 'node:fs/promises';
+import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
+import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { isDeepStrictEqual } from 'node:util';
 
 export const name = 'hgs-native-dsh';
+
+// zerus-ppd26. One host serves every DeepSeek session of its agent home, so
+// its own environment names no session: hgs starts it without the markers of
+// whichever session launched it. Every tool call's processes instead carry
+// HGS_AGENT=dsh and exactly the calling session's own markers, or none of
+// them; an explicit undefined entry is the subprocess service's tombstone
+// that removes an inherited value. Never a partial or inherited set.
+const SESSION_MARKERS = Object.freeze(['HGS_SESSION', 'HGS_RUN_ID', 'HGS_SESSION_ID', 'HGS_ACCOUNT_ID']);
+const IDENTITY_BYTES = 4096;
+const NATIVE_SESSION = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export function callEnvironment(identity) {
+  const env = { HGS_AGENT: 'dsh' };
+  for (const key of SESSION_MARKERS) env[key] = undefined;
+  if (identity) Object.assign(env, { HGS_SESSION: identity.session, HGS_RUN_ID: identity.run,
+    HGS_SESSION_ID: identity.session_id, HGS_ACCOUNT_ID: identity.account });
+  return Object.freeze(env);
+}
+
+const plainMarker = value => typeof value === 'string' && value.length > 0 && value.length <= 2048
+  && [...value].every(c => { const n = c.codePointAt(0); return n > 0x1f && (n < 0x7f || n > 0x9f); });
+
+// The file hgs writes for one native conversation (state/dsh/shell_identity.rs).
+export function parseIdentity(text, sessionId) {
+  let value;
+  try { value = JSON.parse(text); } catch { return undefined; }
+  if (value?.version !== 1 || value.conversation !== sessionId) return undefined;
+  const { session, run, session_id, account } = value;
+  return [session, run, session_id, account].every(plainMarker) ? { session, run, session_id, account } : undefined;
+}
+
+// A child agent's processes carry its top-level session's markers, as an
+// in-process subagent of another agent shares that agent's environment.
+export function identitySession(agent) {
+  const header = agent?.session?.header;
+  const id = header?.origin === 'subagent' ? header.parentSession : (agent?.session?.id ?? header?.id);
+  return typeof id === 'string' && NATIVE_SESSION.test(id) ? id : undefined;
+}
+
+export function readIdentity(dir, sessionId) {
+  if (typeof dir !== 'string' || !dir || !sessionId) return undefined;
+  let fd;
+  try {
+    fd = openSync(join(dir, sessionId + '.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const meta = fstatSync(fd);
+    if (!meta.isFile() || meta.size > IDENTITY_BYTES) return undefined;
+    const buffer = Buffer.alloc(IDENTITY_BYTES + 1);
+    const read = readSync(fd, buffer, 0, buffer.length, 0);
+    return read > IDENTITY_BYTES ? undefined : parseIdentity(buffer.subarray(0, read).toString('utf8'), sessionId);
+  } catch { return undefined; } finally { if (fd !== undefined) closeSync(fd); }
+}
+
+// Adds the current call's entries to each process the service starts while
+// that call runs; later caller entries never override them.
+export function wrapSpawns(service, current) {
+  const wrapped = [];
+  for (const method of ['spawn', 'spawnTerminal']) {
+    const original = service?.[method];
+    if (typeof original !== 'function') continue;
+    const wrapper = function (spec, ...rest) {
+      const env = current();
+      return original.call(this, env && spec && typeof spec === 'object' ? { ...spec, env: { ...spec.env, ...env } } : spec, ...rest);
+    };
+    service[method] = wrapper;
+    wrapped.push([method, original, wrapper]);
+  }
+  return {
+    installed: wrapped.some(([method]) => method === 'spawn'),
+    current: () => wrapped.every(([method, , wrapper]) => service[method] === wrapper),
+    restore() { for (const [method, original, wrapper] of wrapped) if (service[method] === wrapper) service[method] = original; },
+  };
+}
 export const inject = ['sessionController', 'agents', 'goals', 'llm', 'agentDefaultModel', 'sessionQuery', 'userQuestions', 'workspaceRegistry', 'subagents', 'permissionPresets', 'approval', 'commands'];
 
 export const AGENT_HINT_SECTION = 'hgs:agent-hint';
@@ -170,6 +246,20 @@ export function apply(ctx, config) {
   registerAgentHint(ctx, config?.agentHint, owned);
   const generation = randomUUID();
   const shellContext = new AsyncLocalStorage(), shellCalls = new Map(), jobCalls = new Map();
+  const callContext = new AsyncLocalStorage();
+  const identities = typeof config.shellIdentities === 'string' && config.shellIdentities ? config.shellIdentities : null;
+  let spawns = null, spawnService = null;
+  // A reloaded subprocess service is wrapped again before the next call.
+  function callEnvironmentInstalled() {
+    const service = ctx.get('subprocess');
+    if (spawns && service === spawnService && spawns.current()) return true;
+    spawns?.restore();
+    spawns = wrapSpawns(service, () => callContext.getStore());
+    spawnService = spawns.installed ? service : null;
+    return spawns.installed;
+  }
+  callEnvironmentInstalled();
+  ctx.on('dispose', () => spawns?.restore());
   const jobRegistry = ctx.get('jobs');
   if (jobRegistry) ctx.on('dispose',jobRegistry.events.subscribe({owners:'scope'},event => {
     const call = shellContext.getStore();
@@ -178,7 +268,14 @@ export function apply(ctx, config) {
     }
     if (event.type === 'removed') jobCalls.delete(event.job.id);
   }));
-  ctx.on('tools/execute',async (exec,next) => {
+  // Every tool call, whatever the tool or agent: its processes carry
+  // HGS_AGENT=dsh and the calling top-level session's markers or none.
+  ctx.on('tools/execute', (exec, next) => {
+    callEnvironmentInstalled();
+    const env = callEnvironment(readIdentity(identities, identitySession(exec.agent)));
+    return callContext.run(env, () => observeShell(exec, next));
+  });
+  function observeShell(exec, next) {
     if (exec.name !== 'bash' || !exec.agent?.session?.id) return next();
     const call={callId:exec.callId,owner:exec.agent.session.id,command:String(exec.arguments?.command ?? '').slice(0,16000),
       cwd:exec.arguments?.workdir?.slice(0,4096),startedAt:Date.now(),status:'running'};
@@ -193,7 +290,7 @@ export function apply(ctx, config) {
         return result;
       } catch(error){call.status='failed';call.finishedAt=Date.now();throw error;}
     });
-  });
+  }
   const recovery = new Map(), recoveryReceipts = new Map();
   const compactions = new Map(), compactReceipts = new Set();
   const forkReceipts = new Map(), forking = new Map();
@@ -537,23 +634,51 @@ export function apply(ctx, config) {
     if (p.action === 'update' && (!p.expected || typeof p.expected !== 'object')) throw new Error('Expected task record is required');
     return { available: true, generation, result: await manageSchedule(schedule, p) };
   }
+  // zerus-yj7ef: every list row carries `listJobs`, a bounded summary of the
+  // session's running bash jobs, its own and its listed subagents', read from
+  // the same job registry as inspect. Contract (docs/reference.md):
+  //   {complete: true, count: N, jobs: [N jobs]} when N <= LIST_JOB_LIMIT;
+  //   {complete: false, count: null, jobs: []} without a registry or over it.
+  // ping advertises listJobs: true. A host without both is unknown, never idle.
+  // Kept apart from the rest of the list builder.
+  const LIST_JOB_LIMIT = 32;
+  const runningJob = job => job.kind === 'bash' && ['starting', 'running', 'stopping'].includes(job.status);
+  function listJobs(items) {
+    const registry = ctx.get('jobs');
+    const owners = new Map(items.map(row => [row.sessionId, [row.sessionId]]));
+    for (const row of items) {
+      if (row.origin === 'subagent' && row.parentSessionId !== row.sessionId) owners.get(row.parentSessionId)?.push(row.sessionId);
+    }
+    const summaries = new Map();
+    for (const [sessionId, ids] of owners) {
+      const jobs = typeof registry?.list === 'function'
+        ? ids.flatMap(owner => registry.list(owner).filter(job => job.owner === owner && runningJob(job))) : null;
+      summaries.set(sessionId, !jobs || jobs.length > LIST_JOB_LIMIT ? { complete: false, count: null, jobs: [] }
+        : { complete: true, count: jobs.length, jobs: jobs.map(job => ({ id: job.id, kind: job.kind, owner: job.owner,
+          status: job.status, startedAt: job.startedAt, label: String(job.label ?? '').slice(0, 240), callId: jobCalls.get(job.id)?.callId ?? null })) });
+    }
+    return summaries;
+  }
   async function execute(request) {
     if (closing) throw new Error('Native host is stopping');
     const p = request.params ?? {};
     switch (request.method) {
-      case 'ping': return { protocol: 1, version: '0.2.1-rc.2', generation, accountPermissions: true, sessionActions: true,
+      case 'ping': return { protocol: 1, version: '0.2.1-rc.2', generation, accountPermissions: true, sessionActions: true, listJobs: true,
+        shellIdentity: callEnvironmentInstalled(),
         nativeOperations: ['fork', 'history-search', 'schedules'], schedule: Boolean(scheduleService()) };
       case 'list': {
         const list = await api.list({}, new AbortController().signal);
         const status = await accountStatus();
         const scheduled = await scheduleSummaries();
+        const jobSummaries = listJobs(list.items);
         return { ...list, generation, items: list.items.map(row => {
           const agent = ctx.agents.get(row.sessionId);
           const selection = agent ? selectionOf(agent, row.projections?.values) : null;
           return { ...row, selection, accountStatus: status, authRequired: needsSignIn(selection, status),
             goal: agent ? ctx.goals.get(agent) ?? null : row.projections?.values.goal ?? null,
             pendingQuestions: publicQuestions(row.sessionId), nativeRecovery: recoveryPublic(row.sessionId),
-            ...(scheduled ? { schedules: scheduled.get(row.sessionId) ?? { count: 0, recurring: 0, nextAt: null } } : {}) };
+            ...(scheduled ? { schedules: scheduled.get(row.sessionId) ?? { count: 0, recurring: 0, nextAt: null } } : {}),
+            listJobs: jobSummaries.get(row.sessionId) };
         }) };
       }
       case 'inspect': return inspect(p);

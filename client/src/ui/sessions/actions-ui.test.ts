@@ -57,13 +57,21 @@ describe("menuState change", () => {
     // A live row's change entry never reads it.
     expect(menuState(row({ state: "paused" }), true, false, undefined, { occupied: true }).change.enabled).toBe(true);
   });
-  it("does not read allowed(restore): the client's context menu is Qt's selected-row case, which reuses the header (5360, 3897-3898)", () => {
-    const refused = row({ state: "archived", archive_id: "a1", allowed_actions: ["rename", "forget"] });
-    expect(menuState(refused, true, false, undefined, { context: true }).change.enabled).toBe(true);
-    expect(menuState(refused, true, false).change.enabled).toBe(true);
+  it("follows the computer's restore decision, as batch Restore does (zerus-wyrqg)", () => {
+    // An archive that ended before its first message saved no conversation.
+    const empty = "This session ended before its first message, so it saved no conversation to restore";
+    const refused = row({ state: "archived", archive_id: "a1", allowed_actions: ["rename", "forget"], action_reasons: { restore: empty } });
+    expect(menuState(refused, true, false, undefined, { context: true }).change).toEqual({ label: "Restore session", enabled: false, reason: empty });
+    expect(menuState(refused, true, false).change).toEqual({ label: "Restore session", enabled: false, reason: empty });
+    // Details win over the row.
+    expect(menuState(refused, true, false, details({ allowed_actions: ["restore"] })).change.enabled).toBe(true);
+    const allowed = row({ state: "archived", archive_id: "a1", allowed_actions: ["restore", "rename", "forget"] });
+    expect(menuState(allowed, true, false).change).toEqual({ label: "Restore session", enabled: true, reason: undefined });
+    // A computer that reports no actions keeps Qt's rule (canChange 5302-5304).
+    expect(menuState(row({ state: "archived", archive_id: "a1" }), true, false).change.enabled).toBe(true);
     // The other conditions still hold.
-    expect(menuState(row({ state: "archived", allowed_actions: ["rename"] }), true, false, undefined, { context: true }).change.enabled).toBe(false);
-    expect(menuState(refused, true, false, undefined, { context: true, occupied: true }).change.enabled).toBe(false);
+    expect(menuState(row({ state: "archived", allowed_actions: ["restore"] }), true, false, undefined, { context: true }).change.enabled).toBe(false);
+    expect(menuState(allowed, true, false, undefined, { context: true, occupied: true }).change.enabled).toBe(false);
   });
   it("lets auth_required stand in for idle with details", () => {
     expect(menuState(row({ activity: "busy" }), true, false, details({ auth_required: true })).change.enabled).toBe(true);

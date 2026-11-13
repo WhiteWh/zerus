@@ -18,6 +18,21 @@ const UNCONFIRMED: &str =
 const IDENTITY: &str = source!("The session has no confirmed conversation yet.");
 const HELP_CAP: usize = 256 * 1024;
 const REPLY_CAP: usize = 64 * 1024;
+/// At most this much of the host's own sentence for a check it cannot verify.
+const MESSAGE_CHARS: usize = 2000;
+
+/// The switch's exact shape: `send_to_parent` and its `revision`, with the
+/// person's latch mirror `person_off` under marker
+/// `session-question-routing-v2` (zerus-sa9qn.50). Anything else is unknown.
+pub fn shaped(routing: &Value) -> bool {
+    routing.as_object().is_some_and(|o| {
+        (o.len() == 2 || (o.len() == 3 && o.get("person_off").is_some_and(Value::is_boolean)))
+            && o.get("send_to_parent").is_some_and(Value::is_boolean)
+            && o.get("revision")
+                .and_then(Value::as_i64)
+                .is_some_and(|revision| revision >= 0)
+    })
+}
 
 /// Whether `stdout` lists the marker as a whole line.
 pub fn has_marker(stdout: &[u8]) -> bool {
@@ -26,17 +41,18 @@ pub fn has_marker(stdout: &[u8]) -> bool {
         .any(|line| line.trim_ascii() == MARKER.as_bytes())
 }
 
+/// A run or conversation identity as the switch's requests carry it:
+/// non-empty, at most `maximum` bytes, no control characters.
+pub fn identity(value: &str, maximum: usize) -> bool {
+    !value.is_empty() && value.len() <= maximum && !value.chars().any(|c| c < ' ' || c == '\u{7f}')
+}
+
 /// `hgs [@host] question-routing NAME --json`; 15 s here and 35 s on a peer.
 pub fn invocation(
     target: &Target,
     send_to_parent: bool,
     expected_revision: i64,
 ) -> Result<Invocation, String> {
-    let identity = |value: &str, maximum: usize| {
-        !value.is_empty()
-            && value.len() <= maximum
-            && !value.chars().any(|c| c < ' ' || c == '\u{7f}')
-    };
     if target.name.is_empty()
         || !identity(&target.run_id, 128)
         || !identity(&target.conversation_id, 256)
@@ -94,11 +110,24 @@ pub fn classify(
         .ok()
         .filter(Value::is_object);
     if code != 0 {
+        // Only a closed refusal that claims no result is a refusal.
         let error = reply
             .as_ref()
-            .filter(|reply| reply["ok"] == false)
+            .filter(|reply| reply["ok"] == false && reply.get("applied").is_none())
             .and_then(|reply| reply["error"].as_str())
             .unwrap_or("");
+        // A DeepSeek host check the host cannot verify refuses the person too;
+        // its sentence names the record and how to clear it, so it is shown
+        // as given (zerus-ppd26.15).
+        if error == "host_unverified" {
+            if let Some(message) = reply
+                .as_ref()
+                .and_then(|reply| reply["message"].as_str())
+                .filter(|message| !message.trim().is_empty())
+            {
+                return Err(message.trim().chars().take(MESSAGE_CHARS).collect());
+            }
+        }
         return Err(refusal(error).to_owned());
     }
     let Some(mut reply) = reply else {
@@ -119,6 +148,7 @@ pub fn classify(
     let routing = &reply["question_routing"];
     let revision = routing["revision"].as_i64();
     let confirmed = exact
+        && shaped(routing)
         && reply["ok"] == true
         && reply["run_id"].as_str() == Some(target.run_id.as_str())
         && reply["conversation_id"].as_str() == Some(target.conversation_id.as_str())
@@ -241,10 +271,77 @@ mod tests {
         assert!(refused("conflict").contains("another device"));
         assert!(refused("agent_refused").starts_with("Only you"));
         assert_eq!(refused("whatever"), UNCONFIRMED);
+        // zerus-ppd26.15: an unverified host check shows the host's sentence,
+        // bounded; without one it is unconfirmed.
+        let sentence = "Cannot verify the DeepSeek agent host record /state/dsh/hosts/a/host.identity.json: remove it.";
+        let unverified = |message: Value| {
+            classify(
+                &t,
+                false,
+                0,
+                reply(
+                    json!({"ok": false, "error": "host_unverified", "message": message}),
+                    1,
+                ),
+            )
+            .unwrap_err()
+        };
+        assert_eq!(unverified(json!(sentence)), sentence);
+        assert_eq!(
+            unverified(json!("x".repeat(5000))).chars().count(),
+            MESSAGE_CHARS
+        );
+        assert_eq!(unverified(json!("")), UNCONFIRMED);
+        assert_eq!(unverified(json!(null)), UNCONFIRMED);
+        assert_eq!(refused("host_unverified"), UNCONFIRMED);
         assert_eq!(
             classify(&t, false, 0, Exit::TimedOut).unwrap_err(),
             UNCONFIRMED
         );
+    }
+
+    /// The shared contract the phones and the connector follow
+    /// (mobile/android/app/src/test/resources/question-routing-contract.json).
+    #[test]
+    fn the_shared_contract_settles_each_reply_the_same_way() {
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../mobile/android/app/src/test/resources/question-routing-contract.json"
+        ))
+        .unwrap();
+        assert_eq!(contract["marker"], MARKER);
+        let change = &contract["change"];
+        let t = Target {
+            computer: String::new(),
+            name: "claude/project/child".into(),
+            run_id: change["session"]["run_id"].as_str().unwrap().into(),
+            conversation_id: change["session"]["conversation_id"]
+                .as_str()
+                .unwrap()
+                .into(),
+        };
+        let current = &change["routing"];
+        let send = !current["send_to_parent"].as_bool().unwrap();
+        let revision = current["revision"].as_i64().unwrap();
+        let call = invocation(&t, send, revision).unwrap();
+        let input: Value = serde_json::from_slice(call.stdin.as_ref().unwrap()).unwrap();
+        assert_eq!(input, change["payload"]);
+        for case in contract["results"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let exit = reply(
+                case["result"].clone(),
+                case["exit"].as_i64().unwrap() as i32,
+            );
+            let settled = classify(&t, send, revision, exit);
+            match case["outcome"].as_str().unwrap() {
+                "confirmed" => assert!(settled.is_ok(), "{name}"),
+                "refused" => assert_eq!(
+                    settled.unwrap_err(),
+                    refusal(case["error"].as_str().unwrap()),
+                    "{name}"
+                ),
+                _ => assert_eq!(settled.unwrap_err(), UNCONFIRMED, "{name}"),
+            }
+        }
     }
 
     #[test]

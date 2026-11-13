@@ -5,7 +5,8 @@ import Foundation
 public enum SessionActionPolicies {
     public static let lifecycle: Set<String> = ["pause", "resume", "archive", "rename", "fork", "terminate", "restore", "forget"]
     public static let operations: Set<String> = lifecycle.union(["send_now", "settings", "process_stop", "terminal_input", "launch", "worktree_create",
-                                                                 "directory_create", RepositoryAcquisition.clone, "recovery_action", SessionNotificationPreferences.operation])
+                                                                 "directory_create", RepositoryAcquisition.clone, "recovery_action", SessionNotificationPreferences.operation,
+                                                                 SessionQuestionRouting.operation, SessionQuestionRouting.personOperation])
     public static let terminalKeys: Set<String> = ["Enter", "Escape", "Tab", "BTab", "BSpace", "Up", "Down", "Left", "Right", "Home", "End", "PPage",
                                                    "NPage", "DC", "C-c", "C-d", "C-l", "C-a", "C-e", "C-u", "C-w"]
     /// The relay's fixed effort levels; other native variants need `effortVariants`.
@@ -34,6 +35,8 @@ public enum SessionActionPolicies {
             return checked
         }
         if operation == SessionNotificationPreferences.operation { return try SessionNotificationPreferences.arguments(raw) }
+        if operation == SessionQuestionRouting.operation { return try SessionQuestionRouting.arguments(raw) }
+        if operation == SessionQuestionRouting.personOperation { return try SessionQuestionRouting.personArguments(raw) }
         guard operations.contains(operation) else { throw ZerusError.invalid("Unsupported session action.") }
         let allowed: Set<String>
         switch operation {
@@ -139,6 +142,8 @@ public enum SessionActionPolicies {
         let fields: [String]
         switch operation {
         case SessionNotificationPreferences.operation: fields = ["run_id","conversation_id","archive_id","notification_preferences"]
+        case SessionQuestionRouting.operation: fields = ["run_id","conversation_id","archive_id","question_routing","parent","state"]
+        case SessionQuestionRouting.personOperation: fields = ["run_id","conversation_id","archive_id","question_routing","parent","state","session_id"]
         case "settings": fields = ["model", "effort", "model_options", "effort_options", "pending_model", "pending_effort", "pending_settings_id",
                                    "settings_apply_when", "settings_change_supported"]
         case "send_now": fields = ["input_queue"]
@@ -152,6 +157,15 @@ public enum SessionActionPolicies {
 
     /// Why a fresh inspection no longer permits this action, or "" when it does.
     public static func inspectReason(_ target: Target, _ operation: String, _ args: JSONObject, _ raw: JSONObject) -> String {
+        if operation == SessionQuestionRouting.operation || operation == SessionQuestionRouting.personOperation {
+            let reason = SessionQuestionRouting.reason(target,raw)
+            if !reason.isEmpty { return reason }
+            if SessionQuestionRouting.parse(raw)?.revision != args.int64("expected_revision") { return SessionQuestionRouting.stale }
+            if operation == SessionQuestionRouting.personOperation && raw["session_id"] != args["session_id"] {
+                return SessionQuestionRouting.refusals["stale_identity"] ?? ""
+            }
+            return ""
+        }
         if operation == SessionNotificationPreferences.operation {
             let reason = SessionNotificationPreferences.reason(target,raw)
             if !reason.isEmpty { return reason }
@@ -225,6 +239,8 @@ public enum SessionActionPolicies {
             return copy
         }
         if action.operation == SessionNotificationPreferences.operation { return SessionNotificationPreferences.result(action,receipt) }
+        if action.operation == SessionQuestionRouting.operation { return SessionQuestionRouting.result(action,receipt) }
+        if action.operation == SessionQuestionRouting.personOperation { return SessionQuestionRouting.personResult(action,receipt) }
         if action.operation == MobileDelivery.operation { return MobileDelivery.result(action, receipt) }
         if action.operation == DirectoryCreation.operation { return DirectoryCreation.result(action, receipt) }
         let native = receipt.object("result")
@@ -316,6 +332,7 @@ public enum SessionControlPresentation {
     /// Native presentation decisions; exact-identity authorization remains with the model.
     public static func reason(_ target: Target, _ operation: String, _ raw: JSONObject?) -> String {
         if operation == SessionNotificationPreferences.operation { return SessionNotificationPreferences.reason(target,raw) }
+        if operation == SessionQuestionRouting.operation { return SessionQuestionRouting.reason(target,raw) }
         guard let raw else { return "Refresh native session details." }
         if !target.agentId.isEmpty { return "Session controls belong to the parent conversation." }
         guard let allowed = raw.array("allowed_actions") else {
@@ -691,6 +708,9 @@ public enum SessionActionsMenu {
             archived || !facts.target.agentId.isEmpty ? [] : [readItem(facts)],
             [SessionMenuItem(SessionNotificationPreferences.operation,SessionNotificationPreferences.label(SessionNotificationPreferences.parse(facts.row,facts.target)),
                 reason:notificationReason(facts),hint:"Applies to this conversation on all devices.")],
+            // The person's per-child question route switch (zerus-sa9qn.33): live Claude children only.
+            SessionQuestionRouting.applies(facts.target,facts.row) ? [SessionMenuItem(SessionQuestionRouting.operation,SessionQuestionRouting.label(facts.row),
+                reason:questionRoutingReason(facts),hint:SessionQuestionRouting.hint)] : [],
             lifecycle,
             [SessionMenuItem("copy_name", "Copy session name", reason: facts.target.session.isEmpty ? "The session name is not reported." : ""),
              SessionMenuItem("copy_reference", "Copy session reference", reason: facts.reference == nil
@@ -732,6 +752,18 @@ public enum SessionActionsMenu {
             return "OpenCode runs through its native server. Use the conversation instead of Terminal."
         }
         return ""
+    }
+    public static func questionRoutingReason(_ facts: SessionMenuFacts) -> String {
+        if !facts.blocked.isEmpty { return facts.blocked }
+        if !SessionQuestionRouting.applies(facts.target,facts.row) || facts.archived { return SessionQuestionRouting.notChild }
+        if !facts.online { return "The machine is offline." }
+        if !facts.supported.contains(SessionQuestionRouting.operation) { return SessionQuestionRouting.unavailable }
+        if !facts.busy.isEmpty { return facts.busy }
+        // A person's latch is cleared only by the person's latch statement (zerus-sa9qn.50).
+        if SessionQuestionRouting.parse(facts.row)?.personOff == true && !facts.supported.contains(SessionQuestionRouting.personOperation) {
+            return SessionQuestionRouting.personLatched
+        }
+        return SessionQuestionRouting.reason(facts.target,facts.row)
     }
     public static func notificationReason(_ facts: SessionMenuFacts) -> String {
         if !facts.blocked.isEmpty { return facts.blocked }

@@ -131,8 +131,8 @@ fn exact_previous_store_upgrade_adds_only_the_independent_compact_to_send_leaf()
         crate::desktop::store::SCHEMA
     );
     // Its own two tables, then the session resume leaf's two.
-    // ... and the question route leaves' tables (zerus-sa9qn.8 and .32).
-    assert_eq!(tables(&store.db), before + 2 + 2 + 1 + 2);
+    // ... and the question route leaves' tables (zerus-sa9qn.8, .32, .50 and .36).
+    assert_eq!(tables(&store.db), before + 2 + 2 + 1 + 2 + 2 + 1);
     assert_eq!(ledger::undrained(&store.db).unwrap(), 0);
     assert_eq!(
         store.operation_status()["kinds"]["compact_to_send"]["undrained"],
@@ -2626,9 +2626,18 @@ else:
         assert_eq!(sent.counts(), (0, 0));
         assert_eq!(super::reservation_budget::budget(&f.store.db).2, 32);
         f.runtime.request_stop();
-        f.until("queued originals retire without input", |f| {
-            f.runtime.drained()
-        });
+        // Each poll retires one queued original however long this host takes
+        // for it, so the drain is bounded in polls, not in seconds: in a
+        // loaded suite the fixture's eight seconds ran out with 6 to 18 of
+        // the 32 still queued (zerus-dha0w).
+        for _ in 0..32 {
+            f.runtime.poll(&mut f.store, Some(f.exclusion.clone()));
+        }
+        assert!(
+            f.runtime.drained(),
+            "queued originals retire without input, one per poll: {}",
+            f.runtime.status()
+        );
         assert_eq!(super::reservation_budget::budget(&f.store.db), (0, 0, 0));
         assert!(f.admit(&refused).not_admitted(&refused.intent));
         assert_eq!(sent.counts(), (0, 0));

@@ -152,11 +152,9 @@ fn accounted_read_cannot_release_input_if_scope_changes_during_observation() {
     });
 }
 
-pub(super) fn fixture(config: Value) -> Fixture {
-    let f = Fixture::new(config);
-    std::fs::remove_file(f.0.join("hgs")).unwrap();
-    std::fs::write(
-        f.0.join("hgs"),
+fn write_termination_image(f: &Fixture) {
+    crate::write_executable(
+        &f.0.join("hgs"),
         format!(
             "#!/usr/bin/env python3\n{}\n{}",
             include_str!("fixture.py").replace("FIXTURE_SOURCE", &serde_json::to_string(&f.0.join("hgs")).unwrap()),
@@ -166,10 +164,32 @@ pub(super) fn fixture(config: Value) -> Fixture {
                 1,
             )
         ),
-    )
-    .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(f.0.join("hgs"), std::fs::Permissions::from_mode(0o700)).unwrap();
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn termination_image_executes_while_its_parent_writer_is_retained() {
+    if crate::test_context::desktop_fixture() {
+        return;
+    }
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    let f = Fixture::new(serde_json::json!({}));
+    let held = crate::test_executable::HeldWriters::arm();
+    write_termination_image(&f);
+    let status = std::process::Command::new(f.0.join("hgs"))
+        .arg("--help")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    held.assert_separate(&[f.0.join("hgs")]);
+}
+
+pub(super) fn fixture(config: Value) -> Fixture {
+    let f = Fixture::new(config);
+    write_termination_image(&f);
     std::fs::write(
         f.0.join("termination-capture"),
         serde_json::to_vec(&capture()).unwrap(),
