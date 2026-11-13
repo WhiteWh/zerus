@@ -283,7 +283,9 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     // Refuse an agent's own process tree, the parent or the child itself
     // (zerus-sa9qn.32): a guard against accidental agent use, not a boundary
     // (zerus-sa9qn.49). `hgs @host` refuses before forwarding (cli.rs).
-    if session_graph::caller_record().is_some() {
+    // So is a resident DeepSeek host's tool call without a provable session
+    // (zerus-ppd26.1).
+    if session_graph::caller_record().is_some() || session_graph::hosted_agent_call() {
         println!("{}", json!({"ok": false, "error": "agent_refused"}));
         return Ok(1);
     }

@@ -146,6 +146,68 @@ class QuestionRouting(unittest.TestCase):
                     self.assertIn('Guarded calls do not support --dry-run', forwarded.stderr)
         self.assertIsNone(self.stored())
 
+    def test_a_hosted_deepseek_call_is_an_agent_and_another_unmarked_kind_the_person(self):
+        # zerus-ppd26.1: a resident DeepSeek host sets HGS_AGENT=dsh on every
+        # tool call. Without a provable session it is still an agent's, here and
+        # before any @host forwarding. HGS_AGENT of another kind alone marks no
+        # agent: such a command stays the person.
+        before = self.stored()
+        request = json.dumps(dict(expected_run_id='run-child', expected_conversation_id='conversation-child',
+                                  expected_revision=0, send_to_parent=True))
+        forms = (['@peer', 'question-routing', self.child['name'], '--json'],
+                 ['@peer', '--expect-machine', '55555555-5555-4555-8555-555555555555', 'question-routing',
+                  self.child['name'], '--json'])
+
+        def remote(form, env):
+            return subprocess.run([str(HGS), '--dry-run', *form], env=dict(env, HGS_PEERS='peer'), input=request,
+                                  capture_output=True, text=True, timeout=10)
+
+        hosted = dict(self.env, HGS_AGENT='dsh')
+        unprovable = dict(hosted, HGS_SESSION='dsh/example/hosted', HGS_RUN_ID='run-hosted')
+        for name, env in (('no markers', hosted), ('unprovable markers', unprovable)):
+            with self.subTest(name):
+                code, refused = self.change(False, 0, env=env)
+                self.assertEqual((code, refused), (1, {'ok': False, 'error': 'agent_refused'}))
+                self.assertEqual(self.stored(), before)
+                for form in forms:
+                    result = remote(form, env)
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    self.assertEqual(json.loads(result.stdout), {'ok': False, 'error': 'agent_refused'})
+                    self.assertNotIn('ssh', result.stdout + result.stderr)
+        person = dict(self.env, HGS_AGENT='claude')
+        forwarded = remote(forms[0], person)
+        self.assertEqual(forwarded.returncode, 0, forwarded.stderr)
+        self.assertIn('ssh', forwarded.stdout)
+        code, changed = self.change(False, 0, env=person)
+        self.assertEqual(code, 0, changed)
+        self.assertEqual(changed['question_routing'], {'send_to_parent': False, 'revision': 1})
+
+    def test_the_private_state_entry_refuses_an_agent_too(self):
+        # Hooks' private `hgs __state` entry reaches question routing without
+        # the public command's early check, so the change's own check refuses
+        # every agent there: a proven caller, and a resident DeepSeek host's
+        # tool call without a provable session (zerus-ppd26.1).
+        before = self.stored()
+        request = json.dumps(dict(expected_run_id=self.child['run_id'],
+                                  expected_conversation_id=self.child['conversation_id'],
+                                  expected_revision=0, send_to_parent=False))
+
+        def private(env):
+            return subprocess.run([str(HGS), '__state', 'question-routing', self.child['name'], '--json'], env=env,
+                                  input=request, capture_output=True, text=True, timeout=10)
+
+        agent = self.record('codex/example/parent', 'codex', 'run-parent', 'conversation-parent', PARENT_ID, owned=True)
+        for name, env in (('hosted', dict(self.env, HGS_AGENT='dsh')),
+                          ('proven', dict(self.env, HGS_SESSION=agent['name'], HGS_RUN_ID=agent['run_id']))):
+            with self.subTest(name):
+                result = private(env)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(json.loads(result.stdout), {'ok': False, 'error': 'agent_refused'})
+                self.assertEqual(self.stored(), before)
+        person = private(self.env)
+        self.assertEqual(person.returncode, 0, person.stderr)
+        self.assertEqual(json.loads(person.stdout)['question_routing'], {'send_to_parent': False, 'revision': 1})
+
     def test_the_gui_and_the_connector_are_not_agents(self):
         # Their hgs runs outside any agent's process tree. A shell that
         # inherited an agent's variables is still not that agent's process.
