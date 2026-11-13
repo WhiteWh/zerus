@@ -248,7 +248,7 @@
   .lazy-failed { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border-radius: var(--z-radius-md); font-size: var(--fs-sm); background: var(--z-color-info-bg); color: var(--z-color-text-2); }
   .lazy-failed.floating { position: fixed; left: 50%; bottom: 40px; transform: translateX(-50%); z-index: 71; border: 1px solid var(--z-color-border); background: var(--z-color-raised); box-shadow: var(--z-shadow-popover); }
   .toasts { position: fixed; right: 16px; bottom: 40px; z-index: 70; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
-  .toast { min-width: 260px; max-width: 380px; padding: 10px 12px; border-radius: var(--z-radius-lg); background: var(--z-color-raised); border: 1px solid var(--z-color-border); box-shadow: var(--z-shadow-popover); font-size: var(--fs-sm); animation: slideL var(--z-motion-base) var(--ease) both; }
+  .toast { pointer-events: auto; min-width: 260px; max-width: 380px; padding: 10px 12px; border-radius: var(--z-radius-lg); background: var(--z-color-raised); border: 1px solid var(--z-color-border); box-shadow: var(--z-shadow-popover); font-size: var(--fs-sm); animation: slideL var(--z-motion-base) var(--ease) both; }
   .toast b { display: block; margin-bottom: 2px; }
   .toast .busy-arc { display: inline-block; vertical-align: middle; margin: 0 7px 0 0; border-color: var(--z-color-accent); border-right-color: transparent; }
   .toast.error { border-color: color-mix(in srgb, var(--z-color-danger) 45%, transparent); }

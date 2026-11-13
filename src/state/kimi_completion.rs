@@ -48,12 +48,16 @@ fn terminal(bytes: &[u8], clipped: bool) -> Option<End> {
             let turn = event["turnId"]
                 .as_u64()
                 .filter(|id| *id <= i64::MAX as u64)?;
+            // Typed prompts are `msg_…`; Kimi 2.6 also starts a main turn of
+            // its own when a background task ends, `task:bash-…:completed`
+            // (zerus-cdhjm). A rejected id ends the whole parse, so every
+            // later turn of that session would stay busy.
             let id = event["promptId"].as_str().filter(|id| {
                 !id.is_empty()
                     && id.len() <= 160
                     && id
                         .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"_-:".contains(&byte))
             })?;
             if prompt
                 .as_ref()
@@ -306,6 +310,30 @@ mod tests {
         let mut partial = bytes(&[prompt(0), end(0)]);
         partial.pop();
         assert_eq!(terminal(&partial, false), None);
+    }
+    #[test]
+    fn a_background_task_turn_and_the_turns_after_it_complete() {
+        // Kimi 2.6.1 wire shape: a background bash task's end starts its own
+        // main turn, then the person's next message starts another.
+        let task = "task:bash-zrnz9oqm:completed";
+        let task_prompt = json!({"type":"turn.prompt","agentId":"main","turnId":0,"promptId":task,"time":1000});
+        let task_done = json!({"type":"prompt.completed","agentId":"main","promptId":task,"reason":"completed","time":1100});
+        assert_eq!(
+            terminal(&bytes(&[task_prompt.clone(), end(0), task_done.clone()]), false),
+            Some(End { turn: 0, prompt_at: 1.0, at: 1.1 })
+        );
+        let typed = json!({"type":"turn.prompt","agentId":"main","turnId":1,"promptId":"msg_1","time":1200});
+        let typed_end = json!({"type":"turn.ended","agentId":"main","turnId":1,"reason":"completed","time":1300});
+        assert_eq!(
+            terminal(&bytes(&[task_prompt, end(0), task_done, typed, typed_end]), false),
+            Some(End { turn: 1, prompt_at: 1.2, at: 1.3 })
+        );
+        // Spaces, slashes and other punctuation still refuse the parse.
+        for wrong in ["task bash", "task/bash", "task;bash", "task:bash\n"] {
+            let mut odd = prompt(0);
+            odd["promptId"] = json!(wrong);
+            assert_eq!(terminal(&bytes(&[odd, end(0)]), false), None, "{wrong}");
+        }
     }
     #[test]
     fn an_older_native_failure_never_hides_the_successful_current_turn() {

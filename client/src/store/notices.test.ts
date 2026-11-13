@@ -1,23 +1,40 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRoot } from "solid-js";
-import { MAX_NOTICES, NOTICE_MS, bus, createNoticeBus, toast } from "./notices";
+import { ERROR_NOTICE_MS, MAX_NOTICES, NOTICE_MS, bus, createNoticeBus, toast } from "./notices";
 
 describe("the window's notice bus", () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
-  it("shows a notice for the design's toast time; a sticky one stays until dismissed", () => {
+  it("shows a passing notice for the design's toast time and an error for its longer one", () => {
     createRoot((dispose) => {
       const b = createNoticeBus();
       b.notify("info", "Session ID copied");
-      const error = b.notify("error", "Stop failed. Open Terminal to check the agent.", true);
+      b.notify("error", "Stop failed. Open Terminal to check the agent.", true);
       vi.advanceTimersByTime(NOTICE_MS - 1);
       expect(b.notices().map((n) => n.text)).toEqual(["Session ID copied", "Stop failed. Open Terminal to check the agent."]);
       vi.advanceTimersByTime(1);
       expect(b.notices().map((n) => n.tone)).toEqual(["error"]);
+      vi.advanceTimersByTime(ERROR_NOTICE_MS - NOTICE_MS - 1);
+      expect(b.notices()).toHaveLength(1);
+      vi.advanceTimersByTime(1);
+      expect(b.notices()).toEqual([]);
+      dispose();
+    });
+  });
+
+  it("holds a toast's timer while hovered or focused and resumes the rest on release", () => {
+    createRoot((dispose) => {
+      const b = createNoticeBus();
+      const id = b.notify("error", "Stop failed.", true);
+      vi.advanceTimersByTime(ERROR_NOTICE_MS - 1_000);
+      b.hold(id, true);
       vi.advanceTimersByTime(60_000);
       expect(b.notices()).toHaveLength(1);
-      b.dismiss(error);
+      b.hold(id, false);
+      vi.advanceTimersByTime(999);
+      expect(b.notices()).toHaveLength(1);
+      vi.advanceTimersByTime(1);
       expect(b.notices()).toEqual([]);
       dispose();
     });
