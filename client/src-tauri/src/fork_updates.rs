@@ -61,8 +61,47 @@ fn changed(app: &AppHandle) {
     }
 }
 
+/// The fork update replaces only the portable folder, while Zerus runs the
+/// `hgs` in `~/.local/bin` first: after an update the new GUI talked to the old
+/// CLI (Activity did not start, folders were missing). At start, a fork
+/// build's portable `hgs.exe` replaces an older `~/.local/bin/hgs.exe`; the old
+/// file is renamed beside it (running copies keep running), and a newer one,
+/// such as a local build, is left alone.
+fn refresh_cli() {
+    if !cfg!(windows) || option_env!("ZERUS_FORK_BUILD").is_none_or(str::is_empty) {
+        return;
+    }
+    let Some(bundled) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("hgs.exe"))) else {
+        return;
+    };
+    let Some(home) = std::env::var_os("USERPROFILE").filter(|home| !home.is_empty()) else {
+        return;
+    };
+    let installed = PathBuf::from(home).join(".local").join("bin").join("hgs.exe");
+    let modified = |path: &Path| std::fs::metadata(path).and_then(|meta| meta.modified()).ok();
+    let (Some(new), Some(old)) = (modified(&bundled), modified(&installed)) else {
+        return;
+    };
+    if new <= old || zerus_client_core::default_hgs() != installed {
+        return;
+    }
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|time| time.as_secs()).unwrap_or(0);
+    let aside = installed.with_file_name(format!("hgs.exe.prev-{stamp}"));
+    let partial = installed.with_file_name("hgs.exe.partial");
+    let result = std::fs::copy(&bundled, &partial)
+        .and_then(|_| std::fs::rename(&installed, &aside))
+        .and_then(|_| std::fs::rename(&partial, &installed).inspect_err(|_| {
+            let _ = std::fs::rename(&aside, &installed);
+        }));
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(&partial);
+        eprintln!("zerus-client: ~/.local/bin/hgs.exe was not updated from this build: {error}");
+    }
+}
+
 /// Starts the automatic checks of a build that embeds the feed.
 pub fn start(app: &AppHandle) {
+    let _ = std::thread::Builder::new().name("fork-cli-refresh".into()).spawn(refresh_cli);
     if !lock(updater()).automatic() {
         return;
     }
