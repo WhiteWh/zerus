@@ -199,14 +199,14 @@ class WorkflowChannels(unittest.TestCase):
     def setUp(self):
         self.workflow = (ROOT / ".github/workflows/fork-windows.yml").read_text(encoding="utf-8")
 
-    def evaluate(self, expression, ref, channel, values):
+    def evaluate(self, expression, ref, channel, values, build=""):
         expression = expression.strip().removeprefix("${{").removesuffix("}}").strip()
         expression = expression.replace("&&", " and ").replace("||", " or ")
         expression = re.sub(r"!(?!=)", "not ", expression)
         return eval(expression, {"__builtins__": {}}, {
             "github": SimpleNamespace(repository="WhiteWh/zerus", event_name="workflow_dispatch",
                                       ref=ref, sha="a" * 40, run_number=41),
-            "inputs": SimpleNamespace(channel=channel), "env": SimpleNamespace(**values),
+            "inputs": SimpleNamespace(channel=channel, build=build), "env": SimpleNamespace(**values),
             "startsWith": lambda a, b: a.startswith(b),
         })
 
@@ -252,6 +252,25 @@ class WorkflowChannels(unittest.TestCase):
                     if run(re.search(r"(?m)^        if: (.*)$", step)[1]):
                         selected.append(name)
                 self.assertEqual(selected, expected)
+
+    def test_a_numbered_release_uses_the_named_build_or_the_run_number(self):
+        # Owner, 2026-11-14: local builds had passed the run numbers, so the
+        # dispatch may name the release build; every build site follows it.
+        sites = [self.expression("ZERUS_FORK_BUILD")]
+        for name in ("Check the release build number", "Update feed", "Publish the fork release"):
+            step = next(s for s in re.split(r"(?m)^      - ", self.workflow)
+                        if s.startswith("name: " + name + "\n"))
+            sites.append(re.search(r"(?m)^          BUILD: (.*)$", step)[1])
+        self.assertNotIn("BUILD: ${{ github.run_number }}", self.workflow)
+        for site in sites:
+            for build, expected in (("", 41), ("198", "198")):
+                with self.subTest(site=site, build=build):
+                    value = self.evaluate(site, "refs/heads/whitewh/main", "numbered", {"LATEST_BUILD": "false"}, build)
+                    self.assertEqual(value, expected)
+        check = next(s for s in re.split(r"(?m)^      - ", self.workflow)
+                     if s.startswith("name: Check the release build number\n"))
+        self.assertIn("must exceed the latest numbered release", check)
+        self.assertLess(self.workflow.index("name: Check the release build number"), self.workflow.index("name: Rust tests"))
 
     def test_the_manual_build_uses_the_release_candidate_and_no_qt(self):
         candidate = next(s for s in re.split(r"(?m)^      - ", self.workflow)

@@ -16,8 +16,14 @@ fn raw(catalog: &Catalog, n: u128, at: f64) -> PathBuf {
     fs::rename(&staged, &path).unwrap();
     path
 }
+/// Every catch-up entry costs a full unit of the step budget, so a listing of
+/// these 150+ originals always spans several steps by count (BATCH) instead
+/// of by the 25 ms slice, which a fast machine never reaches and a loaded
+/// runner reaches early.
 fn walker(state: &Path) -> Migration {
-    Migration::with_sources(state, vec![Source::Terminal], true).unwrap()
+    let mut migration = Migration::with_sources(state, vec![Source::Terminal], true).unwrap();
+    migration.light = 1;
+    migration
 }
 /// Step to the end, calling `between` after every unfinished step. Returns
 /// the most catch-up attempts the walk reached.
@@ -79,7 +85,11 @@ fn appends_and_rewrites_during_a_walk_converge_in_that_walk() {
             changed = true;
         }
     });
-    assert_eq!(attempts, 1);
+    // #5 is rewritten with a new `at`. When discovery had already passed it,
+    // the first catch-up rereads it, the rebound trigger rotates the epoch on
+    // purpose, and a second, quiet listing seals; when discovery had not, the
+    // first catch-up is quiet. Either way the walk converges by itself.
+    assert!((1..=2).contains(&attempts), "attempts: {attempts}");
     assert_eq!(state(&migration), (151, true));
     assert!(migration.catalog.coverage_verified());
     let directory = temp.path().join(Source::Terminal.directory());
@@ -198,6 +208,16 @@ fn a_rewrite_that_keeps_size_and_mtime_is_reread_near_the_walk_start() {
         .path()
         .join(Source::Terminal.directory())
         .join(format!("{}.json", uuid::Uuid::from_u128(9)));
+    // Near the walk start whatever the setup cost: writing 150 originals can
+    // take longer than the coarse clock on a slow runner.
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(std::time::SystemTime::now()))
+        .unwrap();
+    let value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    catalog.remember(Source::Terminal, &path, &value).unwrap();
     let mut migration = walker(temp.path());
     let mut rewritten = false;
     drive(&mut migration, |migration| {

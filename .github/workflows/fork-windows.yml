@@ -3,9 +3,13 @@ name: Fork Windows build
 # WhiteWh/zerus only; not part of upstream Zerus. Owner, 2026-11-09 ("build
 # only on a pin"): builds run ONLY on a manual dispatch - a push builds
 # nothing, and a pushed tag is no trigger either. The dispatch picks one channel:
-#   numbered  a `whitewh-<run number>` release with the Windows ZIP and the
+#   numbered  a `whitewh-<build>` release with the Windows ZIP and the
 #             stable `zerus-fork-feed.json` feed that existing fork builds
-#             update from (the default);
+#             update from (the default). <build> is the run number unless the
+#             dispatch names one: owner, 2026-11-14, local builds had already
+#             passed the run numbers, so an installed build never saw the next
+#             release as an update. A named build must exceed the latest
+#             numbered release;
 #   latest    a refresh of the single rolling `Latest` prerelease: fixed tag
 #             `latest`, one Windows ZIP, no feed, never the stable latest
 #             release (scripts/publish-fork-latest.py).
@@ -21,6 +25,11 @@ on:
         type: choice
         options: [numbered, latest]
         default: numbered
+      build:
+        description: Release build number (numbered only); empty uses the run number
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -54,7 +63,7 @@ jobs:
       # from whitewh/main gets both; the Latest channel and a probe from another
       # branch build the same zip with neither, so that build neither updates
       # itself nor is offered by an updater.
-      ZERUS_FORK_BUILD: ${{ github.ref == 'refs/heads/whitewh/main' && inputs.channel != 'latest' && github.run_number || '' }}
+      ZERUS_FORK_BUILD: ${{ github.ref == 'refs/heads/whitewh/main' && inputs.channel != 'latest' && (inputs.build || github.run_number) || '' }}
       ZERUS_FORK_FEED_URL: ${{ github.ref == 'refs/heads/whitewh/main' && inputs.channel != 'latest' && 'https://github.com/WhiteWh/zerus/releases/latest/download/zerus-fork-feed.json' || '' }}
     steps:
       - name: Check out text files unchanged
@@ -72,6 +81,20 @@ jobs:
           commit=$(git rev-parse HEAD)
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
           echo "Source commit: $commit (dispatch $GITHUB_SHA, channel ${CHANNEL:-numbered})" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check the release build number
+        if: env.LATEST_BUILD != 'true' && github.ref == 'refs/heads/whitewh/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD: ${{ inputs.build || github.run_number }}
+        run: |
+          case "$BUILD" in ''|*[!0-9]*) echo "::error::build must be a positive integer, got '$BUILD'"; exit 1;; esac
+          latest=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)
+          previous=${latest#whitewh-}
+          case "$previous" in ''|*[!0-9]*) previous=0;; esac
+          if [ "$BUILD" -le "$previous" ]; then
+            echo "::error::build $BUILD must exceed the latest numbered release $latest"; exit 1
+          fi
+          echo "Release build: $BUILD (latest numbered release: ${latest:-none})" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.13.15'
@@ -149,7 +172,7 @@ jobs:
       - name: Update feed
         if: env.LATEST_BUILD != 'true' && github.ref == 'refs/heads/whitewh/main'
         env:
-          BUILD: ${{ github.run_number }}
+          BUILD: ${{ inputs.build || github.run_number }}
           COMMIT: ${{ steps.source.outputs.commit }}
         run: |
           python - <<'EOF'
@@ -166,7 +189,7 @@ jobs:
         if: env.LATEST_BUILD != 'true' && github.ref == 'refs/heads/whitewh/main'
         env:
           GH_TOKEN: ${{ github.token }}
-          BUILD: ${{ github.run_number }}
+          BUILD: ${{ inputs.build || github.run_number }}
           COMMIT: ${{ steps.source.outputs.commit }}
         run: |
           gh release create "whitewh-$BUILD" artifacts/zerus-windows-x86_64.zip artifacts/zerus-fork-feed.json \

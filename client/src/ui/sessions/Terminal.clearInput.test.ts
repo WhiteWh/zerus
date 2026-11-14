@@ -36,6 +36,7 @@ vi.mock("@xterm/xterm", () => ({ Terminal: class {
   constructor(options: Record<string, unknown>) { this.options = options; }
   loadAddon() {} onData() {} onBinary() {} onResize() {} write(_bytes: unknown, done?: () => void) { done?.(); }
   attachCustomKeyEventHandler() {} getSelection() { return ""; } hasSelection() { return false; }
+  onSelectionChange() { return { dispose() {} }; } clearSelection() {} selectAll() {}
   get modes() { return { mouseTrackingMode: "none" }; }
   open(host: HTMLElement) { this.textarea = document.createElement("textarea"); host.append(this.textarea); }
   focus() {} dispose() { this.textarea?.remove(); } reset() {} paste() {}

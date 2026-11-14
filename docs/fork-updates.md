@@ -10,11 +10,14 @@ Builds run only on a manual dispatch (owner, 2026-11-09: "сборка толь�
 Start one in `WhiteWh/zerus` under **Actions -> Fork Windows build -> Run
 workflow**, from `whitewh/main`, and pick `channel`:
 
-- `numbered` (the default) publishes release `whitewh-<run number>` with
+- `numbered` (the default) publishes release `whitewh-<build>` with
   `zerus-windows-x86_64.zip` and `zerus-fork-feed.json`, marked as the latest
   release; that is the stable feed installed fork builds update from. It builds
-  the commit selected at dispatch and embeds the run number as
-  `ZERUS_FORK_BUILD`.
+  the commit selected at dispatch and embeds `<build>` as `ZERUS_FORK_BUILD`.
+  `<build>` is the run number unless the dispatch names one in `build`; a named
+  build must exceed the latest numbered release, and the run stops before
+  building otherwise. Name one when local builds have passed the run numbers:
+  an installed build only offers a release with a higher number.
 - `latest` refreshes the single rolling `Latest` prerelease (see below): fixed tag
   `latest`, one Windows ZIP, no feed, never the latest release.
 
@@ -88,7 +91,7 @@ It runs the builds, the Tauri build with `ZERUS_FORK_BUILD` and
 `scripts/check-windows-portable.py <zip> --run --selftest`, and publishes
 nothing.
 
-A failing step publishes nothing. The run number is embedded in `hgs-tray.exe` as
+A failing step publishes nothing. The release build is embedded in `hgs-tray.exe` as
 `ZERUS_FORK_BUILD`, together with the feed address `ZERUS_FORK_FEED_URL`
 (`client/src-tauri/build.rs`; the app accepts only release assets of
 `WhiteWh/zerus` for the latter). Until task #63 the fork shipped the Qt
