@@ -538,10 +538,64 @@ fn kimi_base(result: &mut Value) -> Option<(String, CurlPolicy)> {
     }
 }
 
+/// Where Kimi Code keeps this account's sign-in and which endpoint it uses:
+/// its managed provider in `config.toml`. The global region (api.kimi.ai)
+/// names its own OAuth key, so its credentials live in
+/// `credentials/<key>.json` rather than `credentials/kimi-code.json`.
+struct KimiEnvironment {
+    credentials: String,
+    base_url: String,
+}
+
+fn kimi_environment(home: &Path) -> KimiEnvironment {
+    let mut environment = KimiEnvironment {
+        credentials: "credentials/kimi-code.json".into(),
+        base_url: KIMI_API_BASE.into(),
+    };
+    let document = fs::read_to_string(home.join("config.toml"))
+        .ok()
+        .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok());
+    let provider = document
+        .as_ref()
+        .and_then(|document| document.get("providers"))
+        .and_then(toml_edit::Item::as_table_like)
+        .and_then(|providers| providers.get("managed:kimi-code"))
+        .and_then(toml_edit::Item::as_table_like);
+    if let Some(provider) = provider {
+        if let Some(name) = provider
+            .get("oauth")
+            .and_then(toml_edit::Item::as_table_like)
+            .and_then(|oauth| oauth.get("key"))
+            .and_then(toml_edit::Item::as_str)
+            .and_then(|key| key.strip_prefix("oauth/"))
+            .map(|name| format!("{name}.json"))
+            .filter(|name| kimi_credential_name(name))
+        {
+            environment.credentials = format!("credentials/{name}");
+        }
+        if let Some(base_url) = provider.get("base_url").and_then(toml_edit::Item::as_str) {
+            environment.base_url = base_url.trim_end_matches('/').into();
+        }
+    }
+    environment
+}
+
+fn kimi_credential_name(name: &str) -> bool {
+    name.ends_with(".json")
+        && !name.starts_with('.')
+        && name.len() <= 128
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+}
+
+/// Kimi's managed endpoints: only they receive the account's token.
+const KIMI_MANAGED_BASES: [&str; 2] = ["https://api.kimi.com/coding/v1", "https://api.kimi.ai/coding/v1"];
+
 fn kimi(home: &Path) -> Value {
     let mut result =
         json!({"identity":{},"windows":[],"source":"Kimi Code","status":"unavailable"});
-    let auth = read_json(&home.join("credentials/kimi-code.json"));
+    let environment = kimi_environment(home);
+    let credentials = home.join(&environment.credentials);
+    let auth = read_json(&credentials);
     let token = auth["access_token"].as_str().unwrap_or("");
     if token.is_empty() {
         result["status"] = json!("signed_out");
@@ -573,6 +627,16 @@ fn kimi(home: &Path) -> Value {
     // The live-token path resolves the base only after the refresh, as on main:
     // an expiring token still gets the native server's own answer.
     let Some((base, policy)) = kimi_base(&mut result) else {
+        return result;
+    };
+    // Without the test seam the account's own managed endpoint is used (the
+    // global region's api.kimi.ai); a custom gateway gets no token.
+    let base = if policy.isolated {
+        base
+    } else if KIMI_MANAGED_BASES.contains(&environment.base_url.as_str()) {
+        environment.base_url.clone()
+    } else {
+        result["detail"] = json!("The Kimi account uses a custom endpoint; its usage is not read.");
         return result;
     };
     // The same token goes to the default provider or to a validated loopback
@@ -659,12 +723,16 @@ pub(super) fn signature(home: &Path, provider: &str) -> String {
             }
         }
     }
-    for name in [
-        "auth.json",
-        ".credentials.json",
-        "credentials/kimi-code.json",
-        ".credentials.yaml",
-    ] {
+    let kimi = (provider == "kimi").then(|| kimi_environment(home));
+    let names: Vec<&str> = if let Some(environment) = &kimi {
+        // The region decides which account a sign-in is.
+        fingerprint.update(environment.credentials.as_bytes());
+        fingerprint.update(environment.base_url.as_bytes());
+        vec![&environment.credentials]
+    } else {
+        vec!["auth.json", ".credentials.json", "credentials/kimi-code.json", ".credentials.yaml"]
+    };
+    for name in names {
         if let Ok(bytes) = fs::read(home.join(name)) {
             match signed_in(provider, name, &bytes) {
                 Some(account) => fingerprint.update(account),
@@ -680,7 +748,7 @@ pub(super) fn signature(home: &Path, provider: &str) -> String {
 fn signed_in(provider: &str, name: &str, bytes: &[u8]) -> Option<String> {
     let credentials = serde_json::from_slice::<Value>(bytes).ok()?;
     match (provider, name) {
-        ("kimi", "credentials/kimi-code.json") => {
+        ("kimi", name) if name.starts_with("credentials/") => {
             use base64::Engine;
             ["access_token", "refresh_token"].iter().find_map(|key| {
                 let payload = credentials[*key].as_str()?.split('.').nth(1)?;
@@ -1882,6 +1950,40 @@ fi
         use base64::Engine;
         let part = |v: Value| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string());
         format!("{}.{}.signature", part(json!({"alg":"none"})), part(claims))
+    }
+
+    #[test]
+    fn kimi_global_region_reads_its_scoped_credentials_and_endpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        fs::create_dir_all(home.join("credentials")).unwrap();
+        fs::write(home.join("config.toml"), r#"[providers."managed:kimi-code"]
+type = "kimi"
+base_url = "https://api.kimi.ai/coding/v1"
+[providers."managed:kimi-code".oauth]
+storage = "file"
+key = "oauth/kimi-code-env-0e4f99c69cc27850"
+oauth_host = "https://auth.kimi.ai"
+"#).unwrap();
+        let environment = kimi_environment(home);
+        assert_eq!(environment.credentials, "credentials/kimi-code-env-0e4f99c69cc27850.json");
+        assert_eq!(environment.base_url, "https://api.kimi.ai/coding/v1");
+        // The scoped file's user decides the signature; the default file does not.
+        let token = |user: &str| {
+            use base64::Engine;
+            let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json!({"user_id": user}).to_string());
+            format!("e30.{claims}.sig")
+        };
+        fs::write(home.join(&environment.credentials), json!({"access_token": token("user-a")}).to_string()).unwrap();
+        fs::write(home.join("credentials/kimi-code.json"), r#"{"access_token":"old-default"}"#).unwrap();
+        let first = signature(home, "kimi");
+        fs::write(home.join("credentials/kimi-code.json"), r#"{"access_token":"changed-default"}"#).unwrap();
+        assert_eq!(signature(home, "kimi"), first);
+        fs::write(home.join(&environment.credentials), json!({"access_token": token("user-b")}).to_string()).unwrap();
+        assert_ne!(signature(home, "kimi"), first);
+        // A malformed key never leaves the credentials folder.
+        fs::write(home.join("config.toml"), "[providers.\"managed:kimi-code\".oauth]\nkey = \"oauth/../secret\"\n").unwrap();
+        assert_eq!(kimi_environment(home).credentials, "credentials/kimi-code.json");
     }
 
     #[test]
