@@ -68,7 +68,33 @@ pub(crate) struct Server {
     /// it compacts at the server's limit instead of an assumed one.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub contexts: std::collections::BTreeMap<String, u64>,
+    /// Owner spec 2026-11-14: empty (the v1 contract) or `model-catalog/2`,
+    /// whose catalog gives each service's variants, live context and API names.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub protocol: String,
+    /// model-catalog/2 through the SSH transport: an argv printing the catalog.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub catalog: Vec<String>,
+    /// model-catalog/2 through HTTP: the catalog API root and its private key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api: Option<CatalogApi>,
+    /// Selects a service's variant: an argv with `{model}` and `{variant}`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub variant: Vec<String>,
 }
+
+/// The HTTP door of a model-catalog/2 server (`GET /v1/catalog`, model actions).
+/// The key stays in the private file, as the API key does.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct CatalogApi {
+    pub base_url: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub key: String,
+}
+
+/// The catalog protocol this hgs reads.
+pub(crate) const CATALOG_PROTOCOL: &str = "model-catalog/2";
 
 #[derive(Default, Deserialize, Serialize)]
 struct Store {
@@ -153,7 +179,7 @@ pub(crate) fn checked_model(value: &str) -> Result<String> {
 
 /// `http://` or `https://` followed by `HOST[:PORT][/path]`, no credentials and
 /// no query.
-fn checked_base_url(value: &str) -> bool {
+pub(super) fn checked_base_url(value: &str) -> bool {
     let Some(rest) = value.strip_prefix("http://").or_else(|| value.strip_prefix("https://")) else { return false };
     if rest.is_empty() || rest.contains(['?', '#', '@', ' ', '\t', '\n']) || value.len() > 2000 {
         return false;
@@ -215,7 +241,7 @@ pub(crate) fn checked(server: Server) -> Result<Server> {
     if server.key.chars().count() > MAX_KEY || server.key.chars().any(char::is_control) {
         return Err(Error::new(1, "The API key is at most 8192 characters without control characters"));
     }
-    for (field, argv) in [("status", &server.status), ("up", &server.up), ("down", &server.down), ("logs", &server.logs)] {
+    for (field, argv) in [("status", &server.status), ("up", &server.up), ("down", &server.down), ("logs", &server.logs), ("catalog", &server.catalog), ("variant", &server.variant)] {
         if argv.len() > 64 || argv.iter().any(|arg| arg.len() > 2000 || arg.chars().any(|ch| ch.is_control())) {
             return Err(Error::new(1, format!("The {field} command is an argv list of at most 64 arguments")));
         }
@@ -225,17 +251,47 @@ pub(crate) fn checked(server: Server) -> Result<Server> {
                 while let Some(at) = rest.find('{') {
                     let tail = &rest[at + 1..];
                     let Some(end) = tail.find('}') else { return Err(Error::new(1, format!("The {field} command has an unclosed placeholder"))) };
-                    if !matches!(&tail[..end], "model" | "server") {
-                        return Err(Error::new(1, format!("The {field} command names a placeholder other than {{model}} or {{server}}")));
+                    let placeholder = &tail[..end];
+                    if !(matches!(placeholder, "model" | "server") || (field == "variant" && placeholder == "variant")) {
+                        return Err(Error::new(1, if field == "variant" {
+                            "The variant command names a placeholder other than {model}, {variant} or {server}".to_owned()
+                        } else {
+                            format!("The {field} command names a placeholder other than {{model}} or {{server}}")
+                        }));
                     }
                     rest = &tail[end + 1..];
                 }
             }
         }
-        if !argv.is_empty() && !argv.iter().any(|arg| arg.contains("{model}")) && matches!(field, "up" | "down" | "logs") {
+        if !argv.is_empty() && !argv.iter().any(|arg| arg.contains("{model}")) && matches!(field, "up" | "down" | "logs" | "variant") {
             return Err(Error::new(1, format!("The {field} command names the model with {{model}}")));
         }
+        if field == "variant" && !argv.is_empty() && !argv.iter().any(|arg| arg.contains("{variant}")) {
+            return Err(Error::new(1, "The variant command names the variant with {variant}"));
+        }
     }
+    if !server.protocol.is_empty() && server.protocol != CATALOG_PROTOCOL {
+        return Err(Error::new(1, format!("The protocol is {CATALOG_PROTOCOL}, or empty for the plain status contract")));
+    }
+    let api = match server.api {
+        Some(api) => {
+            if !checked_base_url(&api.base_url) {
+                return Err(Error::new(1, "The catalog API URL must be http:// or https://HOST[:PORT][/path], without credentials or a query"));
+            }
+            if api.key.chars().count() > MAX_KEY || api.key.chars().any(char::is_control) {
+                return Err(Error::new(1, "The catalog API key is at most 8192 characters without control characters"));
+            }
+            Some(CatalogApi { base_url: api.base_url.trim_end_matches('/').to_owned(), key: api.key })
+        }
+        None => None,
+    };
+    if server.protocol.is_empty() && (api.is_some() || !server.catalog.is_empty() || !server.variant.is_empty()) {
+        return Err(Error::new(1, format!("catalog, api and variant need protocol {CATALOG_PROTOCOL}")));
+    }
+    if server.protocol == CATALOG_PROTOCOL && api.is_none() && server.catalog.is_empty() {
+        return Err(Error::new(1, format!("A {CATALOG_PROTOCOL} server reads its catalog with a catalog command or an api")));
+    }
+    let server = Server { api, ..server };
     if server.contexts.len() > MAX_MODELS {
         return Err(Error::new(1, "At most 500 model context windows"));
     }
@@ -269,8 +325,13 @@ pub(crate) fn public(server: &Server) -> Value {
         },
         "up_minutes": server.up_minutes,
         // U60 (#656): the argv templates Settings edits; never the key.
-        "argv": {"status": server.status, "up": server.up, "down": server.down, "logs": server.logs},
+        "argv": {"status": server.status, "up": server.up, "down": server.down, "logs": server.logs,
+            "catalog": server.catalog, "variant": server.variant},
         "contexts": server.contexts,
+        "protocol": server.protocol,
+        // The catalog API's root and whether its key is set; never the key.
+        "api": server.api.as_ref().map(|api| json!({"base_url": api.base_url, "key": !api.key.is_empty()})),
+        "variant": !server.variant.is_empty() || server.api.is_some(),
     })
 }
 
@@ -291,6 +352,24 @@ fn requested(mut entry: Value, stored: &[Server]) -> Result<(Server, String)> {
         Some(Value::String(key)) => key,
         Some(_) => return Err(Error::new(1, format!("Server {label}: key is a string, or null to remove it"))),
     };
+    // The catalog API key follows the API key's rule: absent keeps the key
+    // stored under `was` while its API root is unchanged, null removes it.
+    let previous_api = stored.iter().find(|server| !was.is_empty() && server.name == was).and_then(|server| server.api.clone());
+    if let Some(api) = entry.get_mut("api").and_then(Value::as_object_mut) {
+        match api.get("key") {
+            None => {
+                let root = api.get("base_url").and_then(Value::as_str).unwrap_or_default().trim_end_matches('/').to_owned();
+                if let Some(previous) = previous_api.filter(|previous| previous.base_url == root) {
+                    api.insert("key".into(), Value::String(previous.key));
+                }
+            }
+            Some(Value::Null) => {
+                api.remove("key");
+            }
+            Some(Value::String(_)) => {}
+            Some(_) => return Err(Error::new(1, format!("Server {label}: api.key is a string, or null to remove it"))),
+        }
+    }
     let mut server: Server = serde_json::from_value(entry).map_err(|error| Error::new(1, format!("Server {label}: {error}")))?;
     server.key = key;
     let server = checked(server).map_err(|error| Error::new(1, format!("Server {label}: {}", error.message)))?;
@@ -343,7 +422,7 @@ fn test_server(input: &Value, stored: &[Server]) -> Result<Server> {
 
 /// Substitutes `{model}` and `{server}` in every argument; the values are
 /// validated names, so the argv reaches the server as an argv, never a shell.
-fn filled(argv: &[String], model: &str, server: &str) -> Vec<String> {
+pub(super) fn filled(argv: &[String], model: &str, server: &str) -> Vec<String> {
     argv.iter()
         .map(|arg| arg.replace("{model}", model).replace("{server}", server))
         .collect()
@@ -451,7 +530,7 @@ fn windows_machine(config: &Config, server: &Server) -> bool {
 /// Runs one control template: an argv locally, or the same argv over hgs's own
 /// SSH transport (BatchMode, no shell on this side). A non-zero exit is a
 /// refusal; SSH's own 255 is an unreachable host.
-fn run_template(config: &Config, server: &Server, argv: &[String], timeout: Duration) -> std::result::Result<Run, Failure> {
+pub(super) fn run_template(config: &Config, server: &Server, argv: &[String], timeout: Duration) -> std::result::Result<Run, Failure> {
     if argv.is_empty() {
         return Err(Failure::Refused("The command is empty".into()));
     }
@@ -496,6 +575,9 @@ fn first_line(text: &str) -> Option<String> {
 /// model list. A command may print the Zerus JSON contract or `NAME: STATE`
 /// lines with an optional memory line; other lines are kept raw.
 pub(crate) fn status(config: &Config, server: &Server) -> std::result::Result<Value, Failure> {
+    if super::model_catalog::is_catalog(server) {
+        return super::model_catalog::status(config, server);
+    }
     let value = if server.status.is_empty() {
         let models = api_models(config, server)?;
         json!({"server": server.name, "source": "api", "models": models, "memory": Value::Null, "raw": []})
@@ -700,6 +782,11 @@ fn curl_failure(code: Option<u16>, body: &str, stderr: &str) -> Failure {
 /// same failures as the http client: 6/7 unreachable, 28 timed out, 22 an HTTP
 /// error (401/403 unauthorized), anything else refused.
 fn curl_get(config: &Config, server: &Server, url: &str) -> std::result::Result<(u16, String), Failure> {
+    curl_send(config, server, url, None)
+}
+
+/// `curl_get` with an optional JSON body, sent as a POST.
+pub(super) fn curl_send(config: &Config, server: &Server, url: &str, body: Option<&str>) -> std::result::Result<(u16, String), Failure> {
     let timeout = http_timeout();
     let mut argv = vec![
         "-sS".to_owned(),
@@ -724,6 +811,9 @@ fn curl_get(config: &Config, server: &Server, url: &str) -> std::result::Result<
         argv.push("--config".into());
         argv.push(file.path().display().to_string());
         header_file = Some(file);
+    }
+    if let Some(body) = body {
+        argv.extend(["-X".to_owned(), "POST".to_owned(), "-H".to_owned(), "Content-Type: application/json".to_owned(), "--data-binary".to_owned(), body.to_owned()]);
     }
     argv.push(url.to_owned());
     let run = curl_run(&argv, header.as_deref(), timeout + Duration::from_secs(5));
@@ -775,6 +865,11 @@ pub(crate) fn set_http_timeout(timeout: Option<Duration>) {
 /// 401/403 is unauthorized, another failure is refused, a connect error
 /// unreachable and a read timeout timed_out.
 fn http_get(url: &str, server: &Server, timeout: Duration) -> std::result::Result<(u16, String), Failure> {
+    http_send("GET", url, server, timeout, None)
+}
+
+/// `http_get` with a method and an optional JSON body (model-catalog/2 actions).
+pub(super) fn http_send(method: &str, url: &str, server: &Server, timeout: Duration, body: Option<&str>) -> std::result::Result<(u16, String), Failure> {
     let Some(rest) = url.strip_prefix("http://") else {
         return Err(Failure::Refused("The API URL must be http:// or https://".into()));
     };
@@ -805,8 +900,11 @@ fn http_get(url: &str, server: &Server, timeout: Duration) -> std::result::Resul
     stream.set_read_timeout(Some(timeout)).map_err(|error| Failure::Refused(error.to_string()))?;
     stream.set_write_timeout(Some(timeout)).map_err(|error| Failure::Refused(error.to_string()))?;
     let mut request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {authority}\r\nAccept: application/json\r\nConnection: close\r\nUser-Agent: hgs model-server\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: {authority}\r\nAccept: application/json\r\nConnection: close\r\nUser-Agent: hgs model-server\r\n"
     );
+    if let Some(body) = body {
+        request.push_str(&format!("Content-Type: application/json\r\nContent-Length: {}\r\n", body.len()));
+    }
     if !server.key.is_empty() {
         match server.kind.as_str() {
             "anthropic" => {
@@ -816,6 +914,9 @@ fn http_get(url: &str, server: &Server, timeout: Duration) -> std::result::Resul
         }
     }
     request.push_str("\r\n");
+    if let Some(body) = body {
+        request.push_str(body);
+    }
     stream.write_all(request.as_bytes()).map_err(|error| Failure::Refused(error.to_string()))?;
     let mut bytes = Vec::new();
     let mut buffer = [0u8; 8192];
@@ -908,6 +1009,9 @@ fn http_failure(code: u16, body: &str) -> Failure {
 pub(crate) fn up(config: &Config, server: &Server, model: &str, detach: bool) -> std::result::Result<Value, Failure> {
     let model = checked_model(model).map_err(|error| Failure::Refused(error.message))?;
     if server.up.is_empty() {
+        if let Some(api) = server.api.as_ref().filter(|_| super::model_catalog::is_catalog(server)) {
+            return super::model_catalog::api_up(config, server, api, &model);
+        }
         return Err(Failure::Refused(format!("{} has no up command; it is read only", server.name)));
     }
     if windows_machine(config, server) {
@@ -969,10 +1073,22 @@ const UP_TAIL_CHARS: usize = 1000;
 /// #703: this computer's live sessions that run on a server, with their model,
 /// so Down can say whose sessions stop getting answers. Only live sessions are
 /// read: their bindings, one each.
-pub(crate) fn server_sessions(server: &str) -> std::result::Result<Value, Failure> {
+pub(crate) fn server_sessions(config: &Config, server: &Server) -> std::result::Result<Value, Failure> {
+    let records = live_records()?;
+    // model-catalog/2: a session uses a service by any of its API names, and
+    // an account whose own gateway is this catalog's counts too.
+    if super::model_catalog::is_catalog(server) {
+        if let Some((_, catalog)) = super::model_catalog::cached(config, server) {
+            return Ok(json!({"server":server.name,"sessions":super::model_catalog::sessions_using(server, &catalog, records.into_iter())}));
+        }
+    }
+    Ok(json!({"server":server.name,"sessions":sessions_using(&server.name, records.into_iter())}))
+}
+
+/// This computer's live session records (name, binding), bounded.
+pub(super) fn live_records() -> std::result::Result<Vec<(String, Value)>, Failure> {
     let live = super::storage::live().map_err(Failure::Refused)?;
-    let records = live.keys().take(MAX_LIVE_SESSIONS).filter_map(|name| super::storage::read(name).ok().map(|record| (name.clone(), record)));
-    Ok(json!({"server":server,"sessions":sessions_using(server, records)}))
+    Ok(live.keys().take(MAX_LIVE_SESSIONS).filter_map(|name| super::storage::read(name).ok().map(|record| (name.clone(), record))).collect())
 }
 
 /// The sessions among `records` (name, binding) whose binding names `server`.
@@ -990,12 +1106,21 @@ const MAX_LIVE_SESSIONS: usize = 2000;
 /// (the receipt says what it would do).
 pub(crate) fn down(config: &Config, server: &Server, model: &str, yes: bool) -> std::result::Result<Value, Failure> {
     let model = checked_model(model).map_err(|error| Failure::Refused(error.message))?;
-    if server.down.is_empty() {
+    let catalog = super::model_catalog::is_catalog(server);
+    let api = server.api.as_ref().filter(|_| catalog && server.down.is_empty());
+    if server.down.is_empty() && api.is_none() {
         return Err(Failure::Refused(format!("{} has no down command; it is read only", server.name)));
     }
     if !yes {
-        return Ok(json!({"status":"confirm","server":server.name,"model":model,
-            "note":format!("Down stops a model on {}; it may be shared. Pass --yes to run the down command.", server.name)}));
+        let mut receipt = json!({"status":"confirm","server":server.name,"model":model,
+            "note":format!("Down stops a model on {}; it may be shared. Pass --yes to run the down command.", server.name)});
+        if catalog {
+            receipt["sessions"] = json!(super::model_catalog::down_sessions(config, server, &model));
+        }
+        return Ok(receipt);
+    }
+    if let Some(api) = api {
+        return super::model_catalog::api_down(config, server, api, &model);
     }
     let argv = filled(&server.down, &model, &server.name);
     let run = run_template(config, server, &argv, Duration::from_secs(UP_SECS))?;
@@ -1008,13 +1133,17 @@ pub(crate) fn logs(config: &Config, server: &Server, model: Option<&str>, lines:
         Some(model) => checked_model(model).map_err(|error| Failure::Refused(error.message))?,
         None => String::new(),
     };
-    if server.logs.is_empty() {
-        return Err(Failure::Refused(format!("{} has no logs command", server.name)));
-    }
-    let argv = filled(&server.logs, &model, &server.name);
-    let run = run_template(config, server, &argv, Duration::from_secs(LOGS_SECS))?;
     let lines = lines.clamp(1, MAX_LINES);
-    let collected: Vec<String> = run.stdout.lines().map(str::to_owned).collect();
+    let text = if server.logs.is_empty() {
+        match server.api.as_ref().filter(|_| super::model_catalog::is_catalog(server) && !model.is_empty()) {
+            Some(api) => super::model_catalog::api_logs(config, api, &model, lines)?,
+            None => return Err(Failure::Refused(format!("{} has no logs command", server.name))),
+        }
+    } else {
+        let argv = filled(&server.logs, &model, &server.name);
+        run_template(config, server, &argv, Duration::from_secs(LOGS_SECS))?.stdout
+    };
+    let collected: Vec<String> = text.lines().map(str::to_owned).collect();
     let truncated = collected.len() > lines;
     let taken: Vec<String> = collected.into_iter().rev().take(lines).collect::<Vec<_>>().into_iter().rev().collect();
     Ok(json!({"status":"ran","server":server.name,"model":model,"lines":taken,"truncated":truncated}))
@@ -1031,6 +1160,8 @@ pub(crate) struct SessionSettings {
     pub env: Vec<String>,
     pub secrets: Vec<String>,
     pub args: Vec<String>,
+    /// model-catalog/2: what the catalog resolved for this launch.
+    pub resolved: Option<super::model_catalog::Resolved>,
 }
 
 /// The provider id a session uses for its server, safe for an agent's config
@@ -1056,13 +1187,37 @@ pub(crate) fn session_settings(config: &Config, server_name: &str, agent: &str, 
         .ok_or_else(|| Error::new(1, format!("Unknown model server {server_name}")))?;
     let model = checked_model(model)?;
     let key = if server.key.is_empty() { "local".to_owned() } else { server.key.clone() };
-    let mut settings = SessionSettings { env: Vec::new(), secrets: Vec::new(), args: Vec::new() };
+    let mut settings = SessionSettings { env: Vec::new(), secrets: Vec::new(), args: Vec::new(), resolved: None };
+    // model-catalog/2: the API name of this agent's wire, that wire's base URL
+    // and the service's live window come from the catalog (one server row for
+    // both agents); without any catalog read the row's own fields apply.
+    let resolved = if super::model_catalog::is_catalog(&server) && matches!(agent, "claude" | "codex") {
+        super::model_catalog::resolve(config, &server, agent, &model)?
+    } else {
+        None
+    };
+    let model = resolved.as_ref().map_or(model, |resolved| resolved.api_model.clone());
+    let context = match &resolved {
+        Some(resolved) => resolved.context,
+        None => server.contexts.get(&model).copied(),
+    };
+    if let Some(resolved) = &resolved {
+        settings.env.push(format!("HGS_MODEL_SERVER_SERVICE={}", resolved.service));
+        settings.env.push(format!("HGS_MODEL_SERVER_API_MODEL={}", resolved.api_model));
+        if !resolved.variant.is_empty() {
+            settings.env.push(format!("HGS_MODEL_SERVER_VARIANT={}", resolved.variant));
+        }
+        if let Some(tokens) = resolved.context {
+            settings.env.push(format!("HGS_MODEL_SERVER_CONTEXT={tokens}"));
+        }
+    }
     match agent {
         "claude" => {
-            if server.kind != "anthropic" {
+            if resolved.is_none() && server.kind != "anthropic" {
                 return Err(Error::new(1, "Claude Code needs an Anthropic-compatible server"));
             }
-            settings.env.push(format!("ANTHROPIC_BASE_URL={}", anthropic_base(&server)));
+            let base = resolved.as_ref().map_or_else(|| anthropic_base(&server), |resolved| resolved.base_url.clone());
+            settings.env.push(format!("ANTHROPIC_BASE_URL={base}"));
             for slot in ["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_SMALL_FAST_MODEL"] {
                 settings.env.push(format!("{slot}={model}"));
             }
@@ -1071,7 +1226,7 @@ pub(crate) fn session_settings(config: &Config, server_name: &str, agent: &str, 
             // Claude Code assumes 200k for a model it does not know; the
             // server's own window replaces that (CLAUDE_CODE_MAX_CONTEXT_TOKENS
             // applies to an ID without claude- and [1m]).
-            if let Some(tokens) = server.contexts.get(&model) {
+            if let Some(tokens) = context {
                 settings.env.push(format!("CLAUDE_CODE_MAX_CONTEXT_TOKENS={tokens}"));
             }
             // Its gateway discovery keeps only claude/anthropic IDs, so /model
@@ -1083,7 +1238,7 @@ pub(crate) fn session_settings(config: &Config, server_name: &str, agent: &str, 
             settings.secrets.push(format!("ANTHROPIC_AUTH_TOKEN={key}"));
         }
         "codex" => {
-            if server.kind != "openai" {
+            if resolved.is_none() && server.kind != "openai" {
                 return Err(Error::new(1, "Codex needs an OpenAI-compatible server"));
             }
             // A session-scoped provider: the built-in openai provider speaks the
@@ -1098,7 +1253,7 @@ pub(crate) fn session_settings(config: &Config, server_name: &str, agent: &str, 
             let table = format!(
                 "{{name={},base_url={},env_key=\"HGS_MODEL_SERVER_KEY\",wire_api=\"{wire}\"}}",
                 toml_string(&server.name),
-                toml_string(&openai_base(&server)),
+                toml_string(&resolved.as_ref().map_or_else(|| openai_base(&server), |resolved| resolved.base_url.clone())),
             );
             settings.args.extend([
                 "-c".to_owned(),
@@ -1108,7 +1263,7 @@ pub(crate) fn session_settings(config: &Config, server_name: &str, agent: &str, 
                 "--model".to_owned(),
                 model.clone(),
             ]);
-            if let Some(tokens) = server.contexts.get(&model) {
+            if let Some(tokens) = context {
                 settings.args.extend(["-c".to_owned(), format!("model_context_window={tokens}")]);
             }
             settings.secrets.push(format!("HGS_MODEL_SERVER_KEY={key}"));
@@ -1118,6 +1273,7 @@ pub(crate) fn session_settings(config: &Config, server_name: &str, agent: &str, 
         }
         other => return Err(Error::new(1, format!("A model server session starts claude or codex, not {other}"))),
     }
+    settings.resolved = resolved;
     Ok(settings)
 }
 
@@ -1128,12 +1284,22 @@ pub(crate) fn session_settings(config: &Config, server_name: &str, agent: &str, 
 /// cannot be read within PICKER_SECS: the session still starts on its model.
 pub(crate) fn picker_settings(config: &Config, server: &Server, model: &str) -> Option<PathBuf> {
     let started = std::time::Instant::now();
-    let mut names: Vec<String> = api_models_within(config, server, Duration::from_secs(PICKER_SECS))
-        .ok()?
+    // model-catalog/2: only anthropic-wire API names, with their live window.
+    let catalog_names = super::model_catalog::is_catalog(server).then(|| super::model_catalog::picker_names(config, server)).flatten();
+    let windows: std::collections::BTreeMap<String, u64> = catalog_names
         .iter()
-        .filter_map(|entry| entry["name"].as_str().map(str::to_owned))
-        .filter(|name| checked_model(name).is_ok())
+        .flatten()
+        .filter_map(|(name, tokens)| tokens.map(|tokens| (name.clone(), tokens)))
         .collect();
+    let mut names: Vec<String> = match catalog_names {
+        Some(names) => names.into_iter().map(|(name, _)| name).filter(|name| checked_model(name).is_ok()).collect(),
+        None => api_models_within(config, server, Duration::from_secs(PICKER_SECS))
+            .ok()?
+            .iter()
+            .filter_map(|entry| entry["name"].as_str().map(str::to_owned))
+            .filter(|name| checked_model(name).is_ok())
+            .collect(),
+    };
     if started.elapsed() > Duration::from_secs(PICKER_SECS) {
         return None;
     }
@@ -1149,7 +1315,7 @@ pub(crate) fn picker_settings(config: &Config, server: &Server, model: &str) -> 
         .iter()
         .map(|name| {
             let mut row = json!({"model": name, "description": format!("{} model server", server.name)});
-            if let Some(tokens) = server.contexts.get(name) {
+            if let Some(tokens) = server.contexts.get(name).or_else(|| windows.get(name)) {
                 row["description"] = json!(format!("{} model server, {}k context", server.name, tokens / 1000));
             }
             row
@@ -1371,13 +1537,24 @@ pub(crate) fn dispatch(config: &Config, args: &[String]) -> Result<i32> {
                 Err(failure) => fail(&failure),
             }
         }
+        "variant" => {
+            let usage = || Error::new(2, "hgs model-server variant SERVER MODEL VARIANT [--restart] [--yes] [--detach]");
+            let positional: Vec<&String> = args.iter().skip(1).filter(|arg| !arg.starts_with('-')).collect();
+            let [name, model, variant] = positional.as_slice() else { return Err(usage()) };
+            let server = servers.iter().find(|server| &server.name == *name).ok_or_else(|| Error::new(1, format!("Unknown model server {name}")))?;
+            let has = |flag: &str| args.iter().any(|arg| arg == flag);
+            match super::model_catalog::variant(config, server, model, variant, has("--restart"), has("--yes"), has("--detach")) {
+                Ok(value) => { println!("{value}"); Ok(0) }
+                Err(failure) => fail(&failure),
+            }
+        }
         "status" | "up" | "down" | "logs" | "sessions" => {
             let name = args.get(1).filter(|arg| !arg.starts_with('-')).ok_or_else(|| Error::new(2, format!("hgs model-server {command} SERVER {}", if command == "status" { "" } else { "MODEL" })))?;
             let server = servers.iter().find(|server| &server.name == name).ok_or_else(|| Error::new(1, format!("Unknown model server {name}")))?;
             let json_out = args.iter().any(|arg| arg == "--json");
             let flag = |name: &str| args.iter().position(|arg| arg == name).and_then(|at| args.get(at + 1)).map(String::as_str);
             match command {
-                "sessions" => match server_sessions(&server.name) {
+                "sessions" => match server_sessions(config, server) {
                     Ok(value) => { println!("{value}"); Ok(0) }
                     Err(failure) => fail(&failure),
                 },
@@ -1431,7 +1608,7 @@ pub(crate) fn dispatch(config: &Config, args: &[String]) -> Result<i32> {
             let _ = servers;
             Err(Error::new(1, "The model servers are configured in Settings > Model servers; the file is model-servers.json in the private config folder"))
         }
-        other => Err(Error::new(2, format!("Unknown model-server command {other}; use list, status, up, up-result, sessions, down, logs, save or test"))),
+        other => Err(Error::new(2, format!("Unknown model-server command {other}; use list, status, up, up-result, sessions, down, variant, logs, save or test"))),
     }
 }
 

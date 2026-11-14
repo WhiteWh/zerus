@@ -1034,6 +1034,13 @@ fn session_spec(
         let config = crate::config::Config::load().map_err(|error| error.message)?;
         let (env, secrets) = super::model_servers::resume_environment(&config, server, string(record, "agent"), model)
             .map_err(|error| format!("{name}: model server {server} cannot start this session again: {}", error.message))?;
+        // model-catalog/2: a variant change since the launch changes the window.
+        let window = |lines: &[String]| lines.iter().find_map(|line| line.strip_prefix("HGS_MODEL_SERVER_CONTEXT=").and_then(|tokens| tokens.parse::<u64>().ok()));
+        if let (Some(before), Some(now)) = (model_server["context"].as_u64(), window(&env)) {
+            if before != now {
+                eprintln!("hgs: {name}: model server {server} now runs {model} with a {now}-token context (it started with {before}); the session continues with the new window");
+            }
+        }
         model_server_vars.extend(env);
         model_server_secrets.extend(secrets);
         environment.insert("HGS_MODEL_SERVER", server.to_owned());
@@ -1521,7 +1528,17 @@ pub(super) fn resume_scoped(names: &[String], dry: bool, scope: Option<&session_
 /// U60 (#658 N4): the model server a launch names, for the binding.
 fn model_server_record() -> Option<Value> {
     nonempty_env("HGS_MODEL_SERVER").map(|server| {
-        json!({"server": server, "model": nonempty_env("HGS_MODEL_SERVER_MODEL").unwrap_or_default()})
+        let mut binding = json!({"server": server, "model": nonempty_env("HGS_MODEL_SERVER_MODEL").unwrap_or_default()});
+        // model-catalog/2: the service, API name, variant and window at launch.
+        for (field, var) in [("service", "HGS_MODEL_SERVER_SERVICE"), ("api_model", "HGS_MODEL_SERVER_API_MODEL"), ("variant", "HGS_MODEL_SERVER_VARIANT")] {
+            if let Some(value) = nonempty_env(var) {
+                binding[field] = json!(value);
+            }
+        }
+        if let Some(tokens) = nonempty_env("HGS_MODEL_SERVER_CONTEXT").and_then(|tokens| tokens.parse::<u64>().ok()) {
+            binding["context"] = json!(tokens);
+        }
+        binding
     })
 }
 

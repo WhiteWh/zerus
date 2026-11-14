@@ -31,6 +31,7 @@ mod claude_approval;
 mod attempts;
 pub(crate) mod backend;
 pub(crate) mod dsh;
+pub(crate) mod model_catalog;
 pub(crate) mod model_servers;
 pub(crate) mod opencode;
 mod effort;

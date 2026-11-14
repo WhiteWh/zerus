@@ -9092,6 +9092,79 @@ A session records its model server and model. `hgs resume` applies those
 settings again; when the server is no longer configured the resume is refused
 with a message naming it instead of falling back to the cloud account.
 
+### Model servers on model-catalog/2
+
+A server row with `"protocol": "model-catalog/2"` reads one catalog document
+instead of the plain status contract. The catalog comes from `catalog`, an argv
+run like the other control commands (through hgs's SSH transport), or from
+`api`, `{"base_url": "http://HOST:4010", "key": "<private>"}`, whose
+`GET base_url/v1/catalog` carries the key as a Bearer token. The API key follows
+the server key's rules: it stays in the private file, `list --json` shows only
+`"api": {"base_url": ..., "key": true}`, a Settings save without `api.key` keeps
+the stored key while the API root is unchanged and `"key": null` removes it. A
+row without `protocol` behaves exactly as before; `catalog`, `api` and `variant`
+need the protocol.
+
+```json
+{"name":"gb10","base_url":"http://192.0.2.79:4000","kind":"anthropic","ssh":"gb10",
+ "protocol":"model-catalog/2","catalog":["gb10-model","catalog"],
+ "variant":["gb10-model","engine","{model}","{variant}"],
+ "up":["gb10-model","up","{model}"],"down":["gb10-model","down","{model}"],
+ "logs":["gb10-model","logs","{model}"]}
+```
+
+`status SERVER --json` then lists the catalog's services with the plain fields
+(`name`, a lowercased `state`, `since`, `memory` with its `unit`) and the
+catalog's own: `variant`, `variant_selected`, `variants` (each with `context`,
+`needs_gib`, `tok_s`, `code_tok_s`, `selected`, `running`), `context` (the live
+window, or the selected variant's while stopped), `context_max`, `api_models`,
+`managed`, `fit`, `memory_gib`, `needs_gib` and `actions`, plus `speed` (the
+selected variant's `tok_s` and `code_tok_s`), `gateway` and `fetched_at`. A
+manual entry in `contexts` for the service or one of its API names overrides
+the catalog's window and appears as `context_manual`. Every successful read is
+cached privately under the state folder; when the server does not answer,
+`status` returns the cached catalog with `"stale": true`, its `fetched_at` and
+the failure's `error` and `detail` (unreachable, refused, timed out or
+unauthorized, as before). With no cache the failure is the answer.
+
+A session on a catalog server names a service (or one of its API names) with
+`--model`. The API name follows the agent's wire: Claude Code takes the
+service's first `api_models` entry with `"wire": "anthropic"` and
+`ANTHROPIC_BASE_URL` from `gateway.anthropic_base_url`; Codex takes the
+`"wire": "openai"` entry and `gateway.openai_base_url`. A service without a
+name for the agent's wire is refused with that reason, so one row serves both
+agents and `kind` only matters for a server without a catalog. The window comes
+from the catalog at launch: Claude Code gets `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
+and Codex `model_context_window` from the service's `context`, so switching a
+variant needs no edit of `contexts`. A launch waits at most 5 s for a fresh
+catalog and otherwise uses the cached one. The Claude Code `/model` picker
+offers only anthropic-wire API names, each with its window. The session
+records the server, the requested model and the resolved `service`,
+`api_model`, `variant` and `context`; a resume resolves them again and warns
+when the window changed since the launch.
+
+```text
+hgs model-server variant SERVER MODEL VARIANT [--restart] [--yes] [--detach]
+```
+
+`variant` selects one of the service's `variants[].id`, or `auto` to drop the
+manual choice. The variant is validated by the model-name rules and against the
+fresh catalog before anything runs; a service with `managed: false` or without
+`actions.variant` is refused. A stopped service changes its selection at once.
+A running service restarts, so it needs `--restart` and then confirms first:
+without `--yes` the receipt is `{"status":"confirm",...}` with the `sessions`
+the restart interrupts. Through `api` it posts `/v1/models/MODEL/engine`
+(`{"engine":VARIANT,"restart":BOOL,"wait":false}`); through the command door
+it runs `down`, the `variant` argv and `up` (`--detach` as for `up`). Up, Down
+and Logs fall back to the API (`start`, `stop`, `logs?lines=N`) when the row has
+no command for them.
+
+`sessions SERVER --json` of a catalog server adds each session's `service` and
+`via`: `server` for a session started on the row (matched by any API name of
+the service), `account` for a session whose account settings point
+`ANTHROPIC_BASE_URL` at the catalog's gateway. Down's confirmation lists the
+sessions of the service it stops.
+
 <a id="deepseek"></a>
 
 ## Official DeepSeek Harness
