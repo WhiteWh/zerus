@@ -762,7 +762,10 @@ fn prepare(
             "A task input goes to the session itself, not to a child".into(),
         ));
     }
-    let content = message_content(request).map_err(host)?;
+    let content = message_content(request, || {
+        ask(&record, "ping", json!({}), Duration::from_secs(10)).is_ok_and(|ping| ping["fileAttachments"] == true)
+    })
+    .map_err(host)?;
     if unsafe_content(&content) {
         return Err((NotOfferedCode::UnsafeContent, "The task text mentions a native DeepSeek session (dsh-session:), which the host rewrites".into()));
     }

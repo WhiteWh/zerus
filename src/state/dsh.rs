@@ -2202,7 +2202,10 @@ fn interrupt_refusal(error: String) -> String {
 
 /// The native content of a message request: its text, interleaved with its
 /// image attachments and their references, in order.
-fn message_content(request: &Value) -> Result<Vec<Value>> {
+/// A message's prompt parts. Images go inline; another file goes by the
+/// host's own upload service when the bridge advertises `fileAttachments`
+/// (asked only then), and an older bridge takes images only.
+fn message_content(request: &Value, files_supported: impl FnOnce() -> bool) -> Result<Vec<Value>> {
     let text = string(request, "text");
     if text.len() > 65536 {
         return Err("Message exceeds 64 KiB".into());
@@ -2216,10 +2219,9 @@ fn message_content(request: &Value) -> Result<Vec<Value>> {
         .map(|f| string(f, "reference"))
         .collect::<Vec<_>>();
     attachments::validate_references(&references)?;
-    for file in &files {
-        if !["image/png", "image/jpeg", "image/webp", "image/gif"].contains(&string(file, "mime")) {
-            return Err("This DeepSeek composer supports image attachments; use the native UI for other files".into());
-        }
+    let image = |file: &Value| ["image/png", "image/jpeg", "image/webp", "image/gif"].contains(&string(file, "mime"));
+    if !files.iter().all(image) && !files_supported() {
+        return Err("This DeepSeek composer supports image attachments; use the native UI for other files".into());
     }
     let mut content = Vec::new();
     for part in attachments::ordered_parts(text, &references) {
@@ -2234,7 +2236,11 @@ fn message_content(request: &Value) -> Result<Vec<Value>> {
                 if !references[index].is_empty() && !text.contains(references[index]) {
                     content.push(json!({"type":"text","text":references[index]}));
                 }
-                content.push(json!({"type":"image","mediaType":file["mime"],"data":file["data_base64"],"name":file["name"]}));
+                if image(file) {
+                    content.push(json!({"type":"image","mediaType":file["mime"],"data":file["data_base64"],"name":file["name"]}));
+                } else {
+                    content.push(json!({"type":"file","data":file["data_base64"],"name":file["name"]}));
+                }
             }
         }
     }
@@ -2421,7 +2427,9 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
             if command == "send" {
                 let agent_id = string(&request, "agent_id");
                 let text = string(&request, "text");
-                let content = message_content(&request)?;
+                let content = message_content(&request, || {
+                    rpc(&record, "ping", json!({})).is_ok_and(|ping| ping["fileAttachments"] == true)
+                })?;
                 let receipt_path = root()
                     .join("dsh/receipts")
                     .join(format!("{}.json", string(&request, "request_id")));

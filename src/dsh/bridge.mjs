@@ -884,7 +884,7 @@ export function apply(ctx, config) {
     if (closing) throw new Error('Native host is stopping');
     const p = request.params ?? {};
     switch (request.method) {
-      case 'ping': return { protocol: 1, version: '0.2.1-rc.2', generation, accountPermissions: true, sessionActions: true, inputWitness: true, listJobs: true, teamLifecycle: true,
+      case 'ping': return { protocol: 1, version: '0.2.1-rc.2', generation, accountPermissions: true, sessionActions: true, inputWitness: true, fileAttachments: true, listJobs: true, teamLifecycle: true,
         shellIdentity: callEnvironmentInstalled(), callTokens: callEnvironmentInstalled(),
         nativeOperations: ['fork', 'history-search', 'schedules'], schedule: Boolean(scheduleService()) };
       case 'list': {
@@ -1081,7 +1081,18 @@ export function apply(ctx, config) {
           : (await api.projections({ sessionId: p.sessionId }, new AbortController().signal))?.values);
         if (needsSignIn(selection, await accountStatus()))
           throw new Error('Sign in to DeepSeek in the native UI before sending a message');
-        return api.prompt(p, new AbortController().signal);
+        // A file from hgs is stored by the host's own upload service, as the
+        // native composer stores it, and sent by its receipt.
+        const content = [];
+        for (const part of p.content ?? []) {
+          if (part?.type !== 'file' || part.receiptId !== undefined) { content.push(part); continue; }
+          const uploads = ctx.get('fileUploads');
+          if (!uploads) throw new Error('This DeepSeek host cannot take file attachments; use the native UI');
+          const { receiptId } = await uploads.upload(agent, { data: part.data, ...(part.name ? { name: part.name } : {}) },
+            new AbortController().signal);
+          content.push({ type: 'file', receiptId });
+        }
+        return api.prompt({ ...p, content }, new AbortController().signal);
       });
       case 'settings': {
         // A launch applying account defaults binds the exact host generation
