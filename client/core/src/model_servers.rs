@@ -986,6 +986,19 @@ impl Form {
             if old.contexts.is_object() {
                 out.insert("contexts".into(), old.contexts.clone());
             }
+            // model-catalog/2: Settings does not edit the catalog fields yet,
+            // so a save keeps them (hgs keeps the API key of the same root).
+            if !old.protocol.is_empty() {
+                out.insert("protocol".into(), json!(old.protocol));
+            }
+            for (field, argv) in [("catalog", &old.catalog), ("variant", &old.variant)] {
+                if !argv.is_empty() {
+                    out.insert(field.into(), json!(argv));
+                }
+            }
+            if !old.api_url.is_empty() {
+                out.insert("api".into(), json!({"base_url": old.api_url}));
+            }
         }
         if !self.was.is_empty() {
             out.insert("was".into(), json!(self.was));

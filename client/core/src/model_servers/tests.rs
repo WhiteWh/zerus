@@ -487,3 +487,18 @@ fn a_variant_change_is_one_confirmed_call() {
     assert_eq!(by["qwen"], ["claude/a/x", "codex/a/y"]);
     assert_eq!(by["small"], ["codex/a/z"]);
 }
+
+#[test]
+fn a_settings_save_keeps_the_catalog_fields_it_does_not_edit() {
+    let row = json!({"name": "gb10", "base_url": "http://gb10.example:4000", "kind": "anthropic", "ssh": "gb10",
+        "protocol": "model-catalog/2", "api": {"base_url": "http://gb10.example:4010", "key": true},
+        "argv": {"status": [], "up": [], "down": [], "logs": [], "catalog": ["gb10-model", "catalog"], "variant": ["gb10-model", "engine", "{model}", "{variant}"]}});
+    let stored = parse_list(&json!({"servers": [row]}));
+    let form = Form { was: "gb10".into(), name: "gb10".into(), base_url: "http://gb10.example:4000".into(), kind: "anthropic".into(), ssh: "gb10".into(), ..Default::default() };
+    let sent = form.server(&stored, true);
+    assert_eq!(sent["protocol"], "model-catalog/2");
+    assert_eq!(sent["catalog"], json!(["gb10-model", "catalog"]));
+    assert_eq!(sent["variant"], json!(["gb10-model", "engine", "{model}", "{variant}"]));
+    assert_eq!(sent["api"], json!({"base_url": "http://gb10.example:4010"}));
+    assert!(sent.get("key").is_none());
+}
