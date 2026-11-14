@@ -13587,6 +13587,12 @@ fn ensure_worker_now() -> anyhow::Result<()> {
     }
     let mut command = Command::new(std::env::current_exe()?);
     command.args(["team", "worker"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    // The worker outlives its caller: started from the caller's folder it would
+    // hold that folder (on Windows a fork update could not move the
+    // installation), so it runs from the home folder.
+    if let Some(home) = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).filter(|home| !home.is_empty()) {
+        command.current_dir(home);
+    }
     // N10: Zerus' own children are no session's own - the worker, its runner
     // and the hgs calls it makes must carry no agent marker at all.
     for name in ["TMUX", "HGS_HOST_PANE", "HGS_SESSION", "HGS_RUN_ID", "DSH_SESSION_ID"] {

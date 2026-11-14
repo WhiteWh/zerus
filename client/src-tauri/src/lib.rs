@@ -391,9 +391,24 @@ pub fn run() {
     {
         std::process::exit(status);
     }
+    // Children inherit the working folder, and some (the team worker, a
+    // terminal's attach) outlive this process: started from the installation
+    // they hold it, and a fork update cannot move it aside. Run from home.
+    // A relative --hgs is read against the folder Zerus started in.
     let args: Vec<String> = std::env::args().skip(1).collect();
     let options = match cli::parse(&args) {
-        Ok(cli::Command::Run(options)) => options,
+        Ok(cli::Command::Run(mut options)) => {
+            #[cfg(windows)]
+            if let Some(home) = std::env::var_os("USERPROFILE").filter(|home| !home.is_empty()) {
+                if let Some(hgs) = options.hgs.as_mut().filter(|hgs| hgs.components().count() > 1 && hgs.is_relative()) {
+                    if let Ok(started) = std::env::current_dir() {
+                        *hgs = started.join(&*hgs);
+                    }
+                }
+                let _ = std::env::set_current_dir(home);
+            }
+            options
+        }
         Ok(cli::Command::Help) => {
             print!("{}", cli::usage());
             return;
