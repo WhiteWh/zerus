@@ -47,6 +47,15 @@ pub enum Op {
         #[serde(default)]
         model: String,
     },
+    /// model-catalog/2: select a service's variant, confirmed by the owner
+    /// first (`--yes`); a running service restarts (`--restart`).
+    Variant {
+        server: String,
+        model: String,
+        variant: String,
+        #[serde(default)]
+        restart: bool,
+    },
     Save {
         servers: Vec<Value>,
     },
@@ -122,6 +131,28 @@ impl Op {
                 }
                 args.extend(["--lines".into(), "200".into()]);
                 60
+            }
+            Op::Variant {
+                server,
+                model,
+                variant,
+                restart,
+            } => {
+                if !word(server) || !word(model) || !word(variant) {
+                    return Err("Not a model server, model and variant.".into());
+                }
+                args.extend([
+                    "variant".into(),
+                    server.clone(),
+                    model.clone(),
+                    variant.clone(),
+                    "--yes".into(),
+                    "--detach".into(),
+                ]);
+                if *restart {
+                    args.push("--restart".into());
+                }
+                180
             }
             Op::Save { servers } => {
                 if servers.len() > MAX_SERVERS {
@@ -277,6 +308,13 @@ pub struct Server {
     pub up: Vec<String>,
     pub down: Vec<String>,
     pub logs: Vec<String>,
+    /// model-catalog/2 (owner spec 2026-11-14), empty for the plain contract.
+    pub protocol: String,
+    pub catalog: Vec<String>,
+    pub variant: Vec<String>,
+    /// The catalog API's root and whether its key is set (never the key).
+    pub api_url: String,
+    pub has_api_key: bool,
     /// Without control commands: read only, no Up, Down or Logs.
     pub read_only: bool,
     pub agent_url: String,
@@ -303,8 +341,15 @@ impl Server {
         );
         let base_url = text(row, "base_url");
         let kind = text(row, "kind");
+        let protocol = text(row, "protocol");
+        let api_url = row["api"]["base_url"].as_str().unwrap_or_default().to_owned();
         Some(Self {
-            read_only: status.is_empty() && up.is_empty() && down.is_empty() && logs.is_empty(),
+            read_only: status.is_empty() && up.is_empty() && down.is_empty() && logs.is_empty() && api_url.is_empty(),
+            catalog: strings(&argv["catalog"]),
+            variant: strings(&argv["variant"]),
+            has_api_key: row["api"]["key"] == true,
+            api_url,
+            protocol,
             agent_url: agent_url(&base_url, &kind),
             models_url: models_url(&base_url),
             status_text: argv_text(&status),
@@ -346,12 +391,26 @@ impl Server {
             ("up", &self.up),
             ("down", &self.down),
             ("logs", &self.logs),
+            ("catalog", &self.catalog),
+            ("variant", &self.variant),
         ] {
             if !argv.is_empty() {
                 out[field] = json!(argv);
             }
         }
+        if !self.protocol.is_empty() {
+            out["protocol"] = json!(self.protocol);
+        }
+        // Without `key` the stored catalog key stays (same API root).
+        if !self.api_url.is_empty() {
+            out["api"] = json!({"base_url": self.api_url});
+        }
         out
+    }
+
+    /// A model-catalog/2 server.
+    pub fn catalog_server(&self) -> bool {
+        self.protocol == "model-catalog/2"
     }
 }
 
@@ -379,6 +438,102 @@ pub struct Model {
     pub usable: bool,
     pub can_down: bool,
     pub can_up: bool,
+    /// model-catalog/2: what the catalog says of this service.
+    pub catalog: Option<CatalogModel>,
+}
+
+/// One variant ("quality") of a catalog service.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Variant {
+    pub id: String,
+    pub context: u64,
+    pub needs_gib: f64,
+    pub tok_s: f64,
+    pub code_tok_s: f64,
+    pub selected: bool,
+    pub running: bool,
+}
+
+/// One API name of a catalog service and its wire (anthropic or openai).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ApiModel {
+    pub id: String,
+    pub wire: String,
+}
+
+/// The catalog's own facts of a service, as the Model servers tab shows them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct CatalogModel {
+    /// Started outside the server's tool: shown without actions.
+    pub managed: bool,
+    pub variant: String,
+    pub variants: Vec<Variant>,
+    /// The live window (the selected variant's while stopped); 0 when unknown.
+    pub context: u64,
+    pub context_max: u64,
+    /// A manual `contexts` entry that overrides the catalog.
+    pub context_manual: u64,
+    pub memory_gib: f64,
+    pub needs_gib: f64,
+    /// fits, does not fit, unloads all others, blocked by exclusive; empty while running.
+    pub fit: String,
+    pub tok_s: f64,
+    pub code_tok_s: f64,
+    pub api_models: Vec<ApiModel>,
+    pub can_variant: bool,
+    pub use_for: String,
+}
+
+fn catalog_model(row: &Value) -> CatalogModel {
+    let number = |value: &Value| value.as_f64().unwrap_or(0.0);
+    CatalogModel {
+        managed: row["managed"] != false,
+        variant: text(row, "variant"),
+        variants: row["variants"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(64)
+            .filter_map(|variant| {
+                let id = variant["id"].as_str().filter(|id| word(id))?.to_owned();
+                Some(Variant {
+                    id,
+                    context: variant["context"].as_u64().unwrap_or(0),
+                    needs_gib: number(&variant["needs_gib"]),
+                    tok_s: number(&variant["tok_s"]),
+                    code_tok_s: number(&variant["code_tok_s"]),
+                    selected: variant["selected"] == true,
+                    running: variant["running"] == true,
+                })
+            })
+            .collect(),
+        context: row["context"].as_u64().unwrap_or(0),
+        context_max: row["context_max"].as_u64().unwrap_or(0),
+        context_manual: row["context_manual"].as_u64().unwrap_or(0),
+        memory_gib: number(&row["memory_gib"]),
+        needs_gib: number(&row["needs_gib"]),
+        fit: text(row, "fit"),
+        tok_s: number(&row["speed"]["tok_s"]),
+        code_tok_s: number(&row["speed"]["code_tok_s"]),
+        api_models: row["api_models"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(16)
+            .filter_map(|api| Some(ApiModel { id: api["id"].as_str()?.to_owned(), wire: text(api, "wire") }))
+            .collect(),
+        can_variant: row["managed"] != false && row["actions"]["variant"] != false,
+        use_for: text(row, "use_for").chars().take(400).collect(),
+    }
+}
+
+/// A catalog state in the tab's words: ready is running, starting is loading.
+fn catalog_state(state: &str) -> String {
+    match state {
+        "ready" => "running".into(),
+        "starting" => "loading".into(),
+        other => other.into(),
+    }
 }
 
 /// Qt's stateLabel: Running, Loading, Stopped, Listed (API), else the state.
@@ -429,6 +584,10 @@ pub struct Status {
     pub running: usize,
     /// Running or loading: what Down all stops.
     pub active: Vec<String>,
+    /// model-catalog/2: the server did not answer; this is its cached catalog.
+    pub stale: bool,
+    /// When the shown catalog was read (seconds since the epoch), 0 otherwise.
+    pub fetched_at: i64,
 }
 
 fn error_label(error: &str) -> Text {
@@ -474,6 +633,17 @@ pub fn parse_status(server: &Server, reply: Result<&Value, &str>) -> Status {
         return out;
     }
     out.source = text(value, "source");
+    let catalog = out.source == "catalog";
+    if catalog {
+        out.stale = value["stale"] == true;
+        out.fetched_at = value["fetched_at"].as_f64().unwrap_or(0.0) as i64;
+        if out.stale {
+            out.error = text(value, "error");
+            out.detail = text(value, "detail").chars().take(2000).collect();
+            out.error_label = error_label(&out.error);
+        }
+    }
+    let api = !server.api_url.is_empty();
     for row in value["models"].as_array().into_iter().flatten().take(256) {
         let name = text(row, "name");
         if name.is_empty() {
@@ -482,16 +652,29 @@ pub fn parse_status(server: &Server, reply: Result<&Value, &str>) -> Status {
         let raw_state = text(row, "state").to_lowercase();
         let state = if raw_state.is_empty() && out.source == "api" {
             "listed".to_owned()
+        } else if catalog {
+            catalog_state(&raw_state)
         } else {
             raw_state
         };
+        let facts = catalog.then(|| catalog_model(row));
+        let managed = facts.as_ref().is_none_or(|facts| facts.managed);
+        // A catalog row says which actions it allows; the server needs a
+        // command or the API for them.
+        let allows = |action: &str| !catalog || row["actions"][action] != false;
         out.models.push(Model {
             label: state_label(&state, &out.source),
-            usable: state == "running" || state == "listed",
-            can_down: !server.down.is_empty() && (state == "running" || state == "loading"),
-            can_up: !server.up.is_empty()
+            usable: managed && (state == "running" || state == "listed"),
+            can_down: managed
+                && allows("down")
+                && (!server.down.is_empty() || (catalog && api))
+                && (state == "running" || state == "loading"),
+            can_up: managed
+                && allows("up")
+                && (!server.up.is_empty() || (catalog && api))
                 && matches!(state.as_str(), "stopped" | "unloaded" | "idle"),
             since: row["since"].as_f64().unwrap_or(0.0) as i64,
+            catalog: facts,
             name,
             state,
         });
@@ -707,9 +890,11 @@ pub fn sessions_by_model(
         .flatten()
         .take(4096)
     {
-        out.entry(text(row, "model"))
-            .or_default()
-            .push(text(row, "name"));
+        // model-catalog/2: a session belongs to its service, whichever API
+        // name it uses.
+        let service = text(row, "service");
+        let key = if service.is_empty() { text(row, "model") } else { service };
+        out.entry(key).or_default().push(text(row, "name"));
     }
     Ok(out)
 }

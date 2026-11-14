@@ -1,6 +1,6 @@
 import { tr } from "../../i18n";
 import { trText } from "../../text";
-import type { ModelServer, ModelServerForm } from "../../bridge";
+import type { ModelServer, ModelServerForm, ModelServerModel, ModelServerCatalogModel, ModelServerVariant } from "../../bridge";
 import type { StatusEntry } from "../../store/modelServers";
 import { machineCards } from "../../store/machines";
 
@@ -103,7 +103,17 @@ export function tagFor(model: string): string {
 
 export interface AgentChoice { id: "codex" | "claude"; name: string; ok: boolean; how: string }
 /** Codex needs an OpenAI-compatible API, Claude Code an Anthropic one. */
-export function agentChoices(server: ModelServer): AgentChoice[] {
+export function agentChoices(server: ModelServer, model?: ModelServerModel): AgentChoice[] {
+  // model-catalog/2: the service's API names decide, one row for both agents.
+  const apis = model?.catalog?.api_models;
+  if (server.protocol === "model-catalog/2" && apis) {
+    const name = (wire: string) => apis.find((api) => api.wire === wire)?.id;
+    const openaiName = name("openai"), anthropicName = name("anthropic");
+    return [
+      { id: "codex", name: tr("Codex"), ok: !!openaiName, how: openaiName ? tr("OpenAI API name %1 for this session", openaiName) : tr("%1 has no OpenAI API name on %2", model!.name, server.name) },
+      { id: "claude", name: tr("Claude Code"), ok: !!anthropicName, how: anthropicName ? tr("Anthropic API name %1 for this session", anthropicName) : tr("%1 has no Anthropic API name on %2", model!.name, server.name) },
+    ];
+  }
   const openai = server.kind === "openai";
   return [
     { id: "codex", name: tr("Codex"), ok: openai, how: openai ? tr("OpenAI-compatible provider for this session") : tr("needs an OpenAI-compatible API; %1 serves Anthropic", server.name) },
@@ -112,8 +122,50 @@ export function agentChoices(server: ModelServer): AgentChoice[] {
 }
 
 /** What a model-server session gets, as its dialog shows it. */
-export function sessionSummary(agent: string, server: ModelServer, model: string): string {
+export function sessionSummary(agent: string, server: ModelServer, model: string, row?: ModelServerModel): string {
+  const facts = row?.catalog;
+  if (server.protocol === "model-catalog/2" && facts) {
+    const wire = agent === "codex" ? "openai" : "anthropic";
+    const api = facts.api_models.find((entry) => entry.wire === wire)?.id ?? model;
+    const window = facts.context_manual || facts.context;
+    return `agent     ${agent}, ${tr("on this computer")}\nprovider  ${server.name}\nservice   ${model}  ${facts.variant}\nmodel     ${api}\ncontext   ${window ? contextText(window) : tr("not reported")}${facts.context_manual ? `  ${tr("manual")}` : ""}\nkey       ${server.has_key ? tr("from the private store") : tr("none")}`;
+  }
   return `agent     ${agent}, ${tr("on this computer")}\nprovider  ${server.name}  ${server.agent_url}\nmodel     ${model}\nkey       ${server.has_key ? tr("from the private store") : tr("none")}`;
+}
+
+/** A context window as the tab shows it: 262k, 1M. */
+export function contextText(tokens: number): string {
+  if (tokens >= 1_000_000) return `${+(tokens / 1_000_000).toFixed(2)}M`;
+  return `${Math.round(tokens / 1024)}k`;
+}
+
+/** The catalog facts of a service as one line of the Model servers tab. */
+export function catalogLine(facts: ModelServerCatalogModel): string {
+  const parts: string[] = [];
+  const window = facts.context_manual || facts.context;
+  if (window) parts.push(facts.context_manual ? tr("%1 context, manual", contextText(window)) : tr("%1 context", contextText(window)));
+  if (facts.memory_gib > 0 || facts.needs_gib > 0) parts.push(tr("%1 of %2 GiB", facts.memory_gib.toFixed(1), facts.needs_gib.toFixed(0)));
+  if (facts.fit) parts.push(fitText(facts.fit));
+  if (facts.tok_s > 0) parts.push(facts.code_tok_s > 0 ? tr("%1 tok/s, code %2", facts.tok_s.toFixed(0), facts.code_tok_s.toFixed(0)) : tr("%1 tok/s", facts.tok_s.toFixed(0)));
+  return parts.join("   ");
+}
+
+export function fitText(fit: string): string {
+  switch (fit) {
+    case "fits": return tr("fits");
+    case "does not fit": return tr("does not fit");
+    case "unloads all others": return tr("unloads all others");
+    case "blocked by exclusive": return tr("blocked by an exclusive model");
+    default: return fit;
+  }
+}
+
+/** One variant in the quality menu: its window, memory and speed. */
+export function variantText(variant: ModelServerVariant): string {
+  const parts = [variant.id, tr("%1 context", contextText(variant.context))];
+  if (variant.needs_gib > 0) parts.push(tr("%1 GiB", variant.needs_gib.toFixed(0)));
+  if (variant.tok_s > 0) parts.push(variant.code_tok_s > 0 ? tr("%1 tok/s, code %2", variant.tok_s.toFixed(0), variant.code_tok_s.toFixed(0)) : tr("%1 tok/s", variant.tok_s.toFixed(0)));
+  return parts.join("   ");
 }
 
 export function canStart(agent: string, model: string, state: string | undefined, folder: string, tag: string): boolean {

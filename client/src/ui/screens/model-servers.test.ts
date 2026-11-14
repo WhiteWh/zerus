@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentChoices, ago, canStart, downUse, footText, formOf, hostText, keyMode, pill, projectOf, rootOf, sessionSummary, sshMode, summary, tagFor, urlHint, usedBy } from "./model-servers";
+import { agentChoices, ago, canStart, catalogLine, contextText, variantText, downUse, footText, formOf, hostText, keyMode, pill, projectOf, rootOf, sessionSummary, sshMode, summary, tagFor, urlHint, usedBy } from "./model-servers";
 import type { ModelServer } from "../../bridge";
 import type { StatusEntry } from "../../store/modelServers";
 
@@ -79,5 +79,31 @@ describe("Settings > Model servers", () => {
     expect(sshMode("gpu", ["gpu"])).toBe("machine");
     expect(sshMode("box", ["gpu"])).toBe("alias");
     expect(sshMode("", ["gpu"])).toBe("none");
+  });
+});
+
+describe("a model-catalog/2 server (owner spec 2026-11-14)", () => {
+  const facts = {
+    managed: true, variant: "strata-1m", context: 1_000_000, context_max: 1_000_000, context_manual: 0, memory_gib: 58.6, needs_gib: 100,
+    fit: "", tok_s: 42.2, code_tok_s: 64, can_variant: true, use_for: "",
+    variants: [{ id: "strata", context: 262_144, needs_gib: 100, tok_s: 46.1, code_tok_s: 72.2, selected: false, running: false }],
+    api_models: [{ id: "qwen", wire: "openai" }, { id: "qwen-coder", wire: "anthropic" }],
+  };
+  const model = { name: "qwen", state: "running", label: { source: "Running" }, since: 0, usable: true, can_down: true, can_up: false, catalog: facts };
+  it("offers each agent the API name of its wire, on one row", () => {
+    const [codex, claude] = agentChoices(server({ protocol: "model-catalog/2", kind: "anthropic" }), model);
+    expect(codex.ok && claude.ok).toBe(true);
+    expect(claude.how).toContain("qwen-coder");
+    const openaiOnly = { ...model, catalog: { ...facts, api_models: [{ id: "qwen", wire: "openai" }] } };
+    const [, noClaude] = agentChoices(server({ protocol: "model-catalog/2" }), openaiOnly);
+    expect(noClaude.ok).toBe(false);
+    expect(noClaude.how).toContain("no Anthropic API name");
+  });
+  it("says the window, memory and speed, and marks a manual window", () => {
+    expect(contextText(1_000_000)).toBe("1M");
+    expect(contextText(262_144)).toBe("256k");
+    expect(catalogLine(facts)).toBe("1M context   58.6 of 100 GiB   42 tok/s, code 64");
+    expect(catalogLine({ ...facts, context_manual: 131_072 })).toContain("128k context, manual");
+    expect(variantText(facts.variants[0])).toBe("strata   256k context   100 GiB   46 tok/s, code 72");
   });
 });

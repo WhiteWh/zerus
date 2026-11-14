@@ -430,3 +430,60 @@ fn a_session_starts_through_hgs_with_the_server_and_model() {
     assert!(session_launch("codex", "/w", "-t", "lab", "m", id).is_err());
     assert!(session_launch("codex", "/w", "t", "lab", "m", "x").is_err());
 }
+
+/// Owner spec 2026-11-14: a model-catalog/2 status carries each service's
+/// variants, window, API names and actions; ready reads as running; a service
+/// outside the server's control offers nothing; a stale read keeps its rows.
+#[test]
+fn a_catalog_status_reads_services_with_their_variants_and_actions() {
+    let row = json!({"name": "gb10", "base_url": "http://gb10.example:4000", "kind": "anthropic", "ssh": "gb10",
+        "protocol": "model-catalog/2", "api": {"base_url": "http://gb10.example:4010", "key": true},
+        "argv": {"status": [], "up": ["gb10-model", "up", "{model}"], "down": ["gb10-model", "down", "{model}"], "logs": [],
+                 "catalog": ["gb10-model", "catalog"], "variant": ["gb10-model", "engine", "{model}", "{variant}"]}});
+    let server = parse_list(&json!({"servers": [row]})).remove(0);
+    assert!(server.catalog_server() && server.has_api_key && !server.read_only);
+    assert_eq!(server.json()["api"], json!({"base_url": "http://gb10.example:4010"}));
+    assert_eq!(server.json()["variant"], json!(["gb10-model", "engine", "{model}", "{variant}"]));
+    let status = json!({"source": "catalog", "stale": true, "error": "unreachable", "detail": "no route", "fetched_at": 1794621120.0,
+        "memory": {"free": 14.2, "total": 121.6, "unit": "GiB"},
+        "models": [
+            {"name": "qwen", "state": "ready", "managed": true, "variant": "strata-1m", "context": 1000000, "context_max": 1000000,
+             "memory_gib": 58.6, "needs_gib": 100.0, "speed": {"tok_s": 42.2, "code_tok_s": 64.0},
+             "variants": [{"id": "strata", "context": 262144, "needs_gib": 100, "tok_s": 46.1, "code_tok_s": 72.2, "selected": false, "running": false},
+                          {"id": "strata-1m", "context": 1000000, "needs_gib": 100, "tok_s": 42.2, "code_tok_s": 64.0, "selected": true, "running": true}],
+             "api_models": [{"id": "qwen", "wire": "openai"}, {"id": "qwen-coder", "wire": "anthropic"}],
+             "actions": {"up": false, "down": true, "variant": true, "logs": true}},
+            {"name": "glm", "state": "stopped", "managed": true, "fit": "fits", "actions": {"up": true, "down": false, "variant": true}},
+            {"name": "runtime:comfy", "state": "external", "managed": false, "actions": {"up": false, "down": false, "variant": false}}]});
+    let read = parse_status(&server, Ok(&status));
+    assert!(read.stale);
+    assert_eq!((read.error.as_str(), read.fetched_at), ("unreachable", 1794621120));
+    let qwen = &read.models[0];
+    assert_eq!(qwen.state, "running");
+    assert!(qwen.usable && qwen.can_down && !qwen.can_up);
+    let facts = qwen.catalog.as_ref().unwrap();
+    assert_eq!((facts.variant.as_str(), facts.context, facts.variants.len()), ("strata-1m", 1_000_000, 2));
+    assert_eq!(facts.api_models[1].wire, "anthropic");
+    assert!(facts.can_variant);
+    assert!(read.models[1].can_up && !read.models[1].can_down);
+    let comfy = &read.models[2];
+    assert!(!comfy.usable && !comfy.can_up && !comfy.can_down && !comfy.catalog.as_ref().unwrap().can_variant);
+    // A plain status has no catalog facts.
+    assert!(parse_status(&server, Ok(&json!({"source": "command", "models": [{"name": "x", "state": "running"}]}))).models[0].catalog.is_none());
+}
+
+#[test]
+fn a_variant_change_is_one_confirmed_call() {
+    let op = Op::Variant { server: "gb10".into(), model: "qwen".into(), variant: "strata".into(), restart: true };
+    assert_eq!(op.invocation().unwrap().args, ["model-server", "variant", "gb10", "qwen", "strata", "--yes", "--detach", "--restart"]);
+    let stopped = Op::Variant { server: "gb10".into(), model: "glm".into(), variant: "auto".into(), restart: false };
+    assert!(!stopped.invocation().unwrap().args.contains(&"--restart".to_owned()));
+    assert!(Op::Variant { server: "gb10".into(), model: "qwen".into(), variant: "-x".into(), restart: false }.invocation().is_err());
+    // Sessions group by their service, whichever API name they use.
+    let by = sessions_by_model(Ok(&json!({"sessions": [
+        {"name": "claude/a/x", "model": "qwen-coder", "service": "qwen"},
+        {"name": "codex/a/y", "model": "qwen", "service": "qwen"},
+        {"name": "codex/a/z", "model": "small"}]}))).unwrap();
+    assert_eq!(by["qwen"], ["claude/a/x", "codex/a/y"]);
+    assert_eq!(by["small"], ["codex/a/z"]);
+}

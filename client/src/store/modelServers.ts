@@ -3,7 +3,7 @@ import { tr } from "../i18n";
 import { trText, type Text } from "../text";
 import {
   modelServerDelete, modelServerDown, modelServerLogs, modelServerSave, modelServerSession, modelServerSessions, modelServerStatus,
-  modelServersList, modelServerTest, modelServerTestLogs, modelServerUp, modelServerUpResult,
+  modelServersList, modelServerTest, modelServerTestLogs, modelServerUp, modelServerUpResult, modelServerVariant,
   type ModelServer, type ModelServerForm, type ModelServerLogs, type ModelServerStatus, type ModelServerTest,
   type ModelServerUpPoll, type ModelServerUpStart,
 } from "../bridge";
@@ -20,6 +20,8 @@ export interface Port {
   upResult(server: string, model: string, id: string, expired: boolean): Promise<ModelServerUpPoll>;
   sessions(server: string): Promise<Record<string, string[]>>;
   down(server: string, model: string): Promise<Text | null>;
+  /** model-catalog/2: a confirmed variant change; a running service restarts. */
+  variant?(server: string, model: string, variant: string, restart: boolean): Promise<Text | null>;
   logs(server: string, model: string): Promise<ModelServerLogs>;
   save(form: ModelServerForm): Promise<ModelServer[]>;
   remove(name: string): Promise<ModelServer[]>;
@@ -46,6 +48,11 @@ export interface Notice { text: string; error: boolean }
 export const MAX_READS = 2;
 export const INTERVAL = 60_000;
 export const UP_POLL = 5_000;
+/** Owner spec 2026-11-14: a catalog server is read every 8 s while the tab shows. */
+export const CATALOG_INTERVAL = 8_000;
+/** After an action, a catalog server is read until no service is starting or stopping. */
+export const SETTLE_POLL = 5_000;
+export const SETTLE_LIMIT = 20 * 60_000;
 
 /** A core Text error, an Error or anything else, as words. */
 export function words(error: unknown): string {
@@ -59,7 +66,7 @@ export function createModelServers(port: Port, clock: Clock = realClock) {
   const [statuses, setStatuses] = createSignal<Record<string, StatusEntry>>({});
   const [upping, setUpping] = createSignal<ReadonlySet<string>>(new Set());
   const [notice, setNoticeSignal] = createSignal<Notice>();
-  let listing = false, active = false, stop: (() => void) | undefined;
+  let listing = false, active = false, stop: (() => void) | undefined, stopCatalog: (() => void) | undefined;
   const queue: string[] = [];
   const reading = new Set<string>();
 
@@ -97,6 +104,16 @@ export function createModelServers(port: Port, clock: Clock = realClock) {
     pump();
   }
   const refreshAll = () => { for (const s of servers()) refreshStatus(s.name); };
+  const catalogServer = (s: ModelServer) => s.protocol === "model-catalog/2";
+  const refreshCatalogs = () => { for (const s of servers()) if (catalogServer(s)) refreshStatus(s.name); };
+  /** After an action: read again until no service is starting or stopping, within SETTLE_LIMIT. */
+  function settle(target: string, until = clock.now() + SETTLE_LIMIT) {
+    clock.after(SETTLE_POLL, () => {
+      refreshStatus(target);
+      const moving = entry(target).status?.models.some((m) => m.state === "loading" || m.state === "stopping");
+      if ((moving || entry(target).reading) && clock.now() < until) settle(target, until);
+    });
+  }
 
   function pollUp(target: string, model: string, id: string, until: number) {
     clock.after(UP_POLL, () => {
@@ -132,8 +149,10 @@ export function createModelServers(port: Port, clock: Clock = realClock) {
       if (active === on) return;
       active = on;
       stop?.(); stop = undefined;
+      stopCatalog?.(); stopCatalog = undefined;
       if (!on) return;
       stop = clock.every(INTERVAL, refreshAll);
+      stopCatalog = clock.every(CATALOG_INTERVAL, refreshCatalogs);
       // The first look reads every server once; later ones follow the timer.
       for (const s of servers()) if (!entry(s.name).known) refreshStatus(s.name);
     },
@@ -163,6 +182,18 @@ export function createModelServers(port: Port, clock: Clock = realClock) {
       if (failures.length) say(tr("Down on %1 failed: %2", target, failures.join("; ")), true);
       else say(models.length === 1 ? tr("Down ran once on %1.", target) : tr("Down ran once for %1 models on %2.", models.length, target));
     },
+    /** model-catalog/2: one confirmed variant change, then reads until it settles. */
+    async variant(target: string, model: string, variant: string, restart: boolean) {
+      if (!port.variant) return;
+      say(restart ? tr("Restarting %1 on %2 as %3…", model, target, variant) : tr("Selecting %3 for %1 on %2…", model, target, variant));
+      try {
+        const why = await port.variant(target, model, variant, restart);
+        if (why) say(tr("The variant of %1 on %2 did not change: %3", model, target, trText(why)), true);
+        else say(restart ? tr("%1 on %2 restarts as %3; its state shows here.", model, target, variant) : tr("%1 on %2 now uses %3.", model, target, variant));
+      } catch (error) { say(tr("The variant of %1 on %2 did not change: %3", model, target, words(error)), true); }
+      refreshStatus(target);
+      settle(target);
+    },
     logs: (target: string, model: string) => port.logs(target, model),
     async save(form: ModelServerForm) { const list = await port.save(form); setServers(list); setListed(true); return list; },
     async remove(name: string) { const list = await port.remove(name); adopt(list); return list; },
@@ -189,6 +220,6 @@ function failedStatus(why: string): ModelServerStatus {
 
 export const modelServers = createModelServers({
   list: modelServersList, status: modelServerStatus, up: modelServerUp, upResult: modelServerUpResult, sessions: modelServerSessions,
-  down: modelServerDown, logs: modelServerLogs, save: modelServerSave, remove: modelServerDelete, test: modelServerTest,
+  down: modelServerDown, variant: modelServerVariant, logs: modelServerLogs, save: modelServerSave, remove: modelServerDelete, test: modelServerTest,
   testLogs: modelServerTestLogs, session: modelServerSession,
 });

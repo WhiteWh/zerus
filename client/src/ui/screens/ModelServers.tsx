@@ -1,9 +1,9 @@
-import { For, Show, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount, type JSX } from "solid-js";
 import { tr } from "../../i18n";
 import { trText } from "../../text";
 import { Icon } from "../lib/icons";
 import * as bridge from "../../bridge";
-import type { ModelServer, ModelServerLogs } from "../../bridge";
+import type { ModelServer, ModelServerLogs, ModelServerModel } from "../../bridge";
 import { modelServers as store, words, type StatusEntry } from "../../store/modelServers";
 import { machineCards } from "../../store/machines";
 import { projectsPage, loadProjects } from "../../store/projects";
@@ -12,7 +12,8 @@ import { FolderBrowserDialog } from "../components/FolderBrowser";
 import { openSettings } from "./settings/sections";
 import { openModelServer } from "./settings/model-server-section";
 import {
-  agentChoices, ago, canStart, downUse, footText, hostText, machineNames, pill, projectOf, sessionSummary, sinceText, stateTone, summary, tagFor,
+  agentChoices, ago, canStart, catalogLine, downUse, footText, hostText, machineNames, pill, projectOf, sessionSummary, sinceText, stateTone, summary, tagFor,
+  usedBy, variantText,
 } from "./model-servers";
 import "../styles/model-servers.css";
 import { TextInput } from "../lib/TextField";
@@ -106,9 +107,10 @@ function SessionDialog(props: { server: ModelServer; model: string; onClose(): v
     const rows = status()?.models ?? [];
     return rows.some((m) => m.name === props.model) ? rows : [...rows, { name: props.model, state: "", label: { source: "" }, since: 0, usable: true, can_down: false, can_up: false }];
   };
-  const agents = agentChoices(props.server);
   const [model, setModel] = createSignal(props.model);
-  const [agent, setAgent] = createSignal<string>(agents.find((a) => a.ok)?.id ?? "");
+  const row = () => models().find((m) => m.name === model());
+  const agents = () => agentChoices(props.server, row());
+  const [agent, setAgent] = createSignal<string>(agents().find((a) => a.ok)?.id ?? "");
   const local = () => { const s = selected(); return s && s.computer === "" && s.cwdPath ? [s.cwdPath] : []; };
   const host = () => machineCards[""]?.host ?? "";
   const folders = createMemo(() => {
@@ -122,7 +124,12 @@ function SessionDialog(props: { server: ModelServer; model: string; onClose(): v
   const [tagEdited, setTagEdited] = createSignal(false);
   const [browsing, setBrowsing] = createSignal(false);
   const state = () => models().find((m) => m.name === model())?.state;
-  const choose = (name: string) => { setModel(name); if (!tagEdited()) setTag(tagFor(name)); };
+  const choose = (name: string) => {
+    setModel(name);
+    if (!tagEdited()) setTag(tagFor(name));
+    // A service without the chosen agent's wire picks the other agent.
+    if (!agents().find((a) => a.id === agent())?.ok) setAgent(agents().find((a) => a.ok)?.id ?? "");
+  };
   const name = () => (agent() === "codex" ? tr("Codex") : tr("Claude Code"));
   const start = () => {
     if (!canStart(agent(), model(), state(), folder(), tag())) return;
@@ -142,7 +149,7 @@ function SessionDialog(props: { server: ModelServer; model: string; onClose(): v
         </select>
         <span>{tr("Agent")}</span>
         <div class="ms-agents" role="radiogroup" aria-label={tr("Agent")}>
-          <For each={agents}>{(choice) => (
+          <For each={agents()}>{(choice) => (
             <label class="ms-agent" classList={{ off: !choice.ok, on: agent() === choice.id }}>
               <input type="radio" name="ms-agent" value={choice.id} checked={agent() === choice.id} disabled={!choice.ok} onChange={() => setAgent(choice.id)} />
               <b>{choice.name}</b><span class="muted">{choice.how}</span>
@@ -159,7 +166,7 @@ function SessionDialog(props: { server: ModelServer; model: string; onClose(): v
         <div class="row"><span class="mono muted">{`${agent()}/${projectOf(folder())}/`}</span>
           <TextInput id="ms-tag" class="field mono grow" maxLength={60} value={tag()} onInput={(e) => { setTag(e.currentTarget.value); setTagEdited(true); }} /></div>
         <span>{tr("For this session")}</span>
-        <pre class="ms-summary mono">{sessionSummary(agent(), props.server, model())}</pre>
+        <pre class="ms-summary mono">{sessionSummary(agent(), props.server, model(), row())}</pre>
       </div>
       <p class="muted">{tr("Your %1 configuration is not changed: the provider is set for this session only. If %2 stops, the session waits; Zerus does not start the model again on its own.", name(), model())}</p>
     </Modal>
@@ -170,10 +177,40 @@ function SessionDialog(props: { server: ModelServer; model: string; onClose(): v
   </>;
 }
 
+/** model-catalog/2: a running service restarts in its new variant; its sessions lose answers meanwhile. */
+function VariantDialog(props: { server: ModelServer; model: string; variant: string; onClose(): void }) {
+  const [by, setBy] = createSignal<Record<string, string[]>>();
+  const [why, setWhy] = createSignal<string>();
+  void store.sessions(props.server.name).then(setBy, (error) => setWhy(words(error)));
+  const confirm = () => { props.onClose(); void store.variant(props.server.name, props.model, props.variant, true); };
+  return <Modal id="ms-variant" title={tr("Restart %1 as %2", props.model, props.variant)} onClose={props.onClose}
+    foot={<>
+      <button type="button" class="btn" data-initial onClick={props.onClose}>{tr("Cancel")}</button>
+      <button type="button" class="btn danger" onClick={confirm}><Icon name="rotate-ccw" size={13} />{tr("Restart")}</button>
+    </>}>
+    <h3 class="ms-down-title">{tr("Restart %1 on %2 as %3?", props.model, props.server.name, props.variant)}</h3>
+    <p class="ms-shared">{tr("%1 is running: a new variant restarts it, which can take many minutes. Its sessions get no answers until it is ready, and %2 may be shared.", props.model, props.server.name)}</p>
+    <p class="muted">{why() ? tr("Your sessions were not read: %1", why()!) : by() ? usedBy(by()![props.model] ?? []) : tr("Reading your sessions…")}</p>
+  </Modal>;
+}
+
 function ServerCard(props: { server: ModelServer; entry: StatusEntry; ask(dialog: Dialog): void }) {
   const s = () => props.server;
   const st = () => props.entry.status;
-  const failed = () => props.entry.known && !!st()?.error;
+  const failed = () => props.entry.known && !!st()?.error && !st()?.stale;
+  const catalog = () => s().protocol === "model-catalog/2";
+  const canLogs = () => s().logs.length > 0 || (catalog() && !!s().api_url);
+  const canDown = () => s().down.length > 0 || (catalog() && !!s().api_url);
+  // model-catalog/2: who uses each service, read with every status read.
+  const [users, setUsers] = createSignal<Record<string, string[]>>({});
+  createEffect(on(() => (catalog() ? props.entry.readAt : 0), (at) => {
+    if (at) void store.sessions(s().name).then(setUsers, () => setUsers({}));
+  }));
+  const variantChange = (m: ModelServerModel, variant: string) => {
+    if (!variant || variant === m.catalog?.variant) return;
+    if (m.state === "running" || m.state === "loading") props.ask({ kind: "variant", server: s().name, model: m.name, variant });
+    else void store.variant(s().name, m.name, variant, false);
+  };
   const p = () => pill(s(), props.entry);
   const [copied, setCopied] = createSignal(false);
   const copy = () => { void bridge.copyVerbatim(s().agent_url).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }); };
@@ -202,7 +239,7 @@ function ServerCard(props: { server: ModelServer; entry: StatusEntry; ask(dialog
       <span class="grow" />
       <Show when={failed()} fallback={<>
         <Show when={s().logs.length}><button type="button" class="btn small ghost" onClick={() => props.ask({ kind: "logs", server: s().name, model: "" })}><Icon name="file-text" size={13} />{tr("Logs")}</button></Show>
-        <Show when={s().down.length && st()?.active.length}><button type="button" class="btn small danger" onClick={() => props.ask({ kind: "down", server: s().name, models: [...st()!.active] })}><Icon name="power" size={13} />{tr("Down all…")}</button></Show>
+        <Show when={canDown() && st()?.active.length}><button type="button" class="btn small danger" onClick={() => props.ask({ kind: "down", server: s().name, models: [...st()!.active] })}><Icon name="power" size={13} />{tr("Down all…")}</button></Show>
         <Show when={s().read_only}><button type="button" class="btn small ghost" onClick={() => store.refreshStatus(s().name)}><Icon name="refresh-cw" size={13} />{tr("Refresh")}</button></Show>
       </>}>
         <button type="button" class="btn small" onClick={() => store.refreshStatus(s().name)}><Icon name="refresh-cw" size={13} />{tr("Try again")}</button>
@@ -211,15 +248,31 @@ function ServerCard(props: { server: ModelServer; entry: StatusEntry; ask(dialog
     </header>
     <Show when={!folded()}>
     <Show when={!failed()} fallback={<p class="ms-problem selectable"><Icon name="triangle-alert" size={14} />{st() ? trText(st()!.problem) : ""}</p>}>
+      <Show when={st()?.stale}>
+        <p class="ms-problem selectable"><Icon name="triangle-alert" size={14} />{tr("%1: %2. This is the catalog read %3.", trText(st()!.error_label), st()!.detail, ago((st()!.fetched_at ?? 0) * 1000, Date.now()))}</p>
+      </Show>
       <For each={st()?.models ?? []}>{(m) => (
-        <div class="ms-model" data-model={m.name} data-state={m.state}>
+        <div class="ms-model" data-model={m.name} data-state={m.state} classList={{ unmanaged: m.catalog?.managed === false }}>
           <Icon name="box" size={12} />
           <b class="mono ms-model-name">{m.name}</b>
           <span class={`ms-state tone-${stateTone(m.state)}`}><span class="dot" aria-hidden="true" />{trText(m.label)}</span>
           <Show when={st()!.source === "api"} fallback={<Show when={m.since > 0}><span class="muted">{sinceText(m.since)}</span></Show>}><span class="muted">{tr("from GET /v1/models")}</span></Show>
+          <Show when={m.catalog}>{(facts) => <>
+            <Show when={facts().managed} fallback={<span class="muted">{tr("runs outside the server's control")}</span>}>
+              <Show when={facts().can_variant && facts().variants.length > 1} fallback={<Show when={facts().variant}><span class="mono muted">{facts().variant}</span></Show>}>
+                <select class="field small mono ms-variant" aria-label={tr("Quality of %1", m.name)} title={tr("Quality: the engine and context the server runs %1 with", m.name)}
+                  value={facts().variant} onChange={(e) => { const next = e.currentTarget.value; e.currentTarget.value = facts().variant; variantChange(m, next); }}>
+                  <For each={facts().variants}>{(v) => <option value={v.id}>{variantText(v)}</option>}</For>
+                  <option value="auto">{tr("auto: the server chooses")}</option>
+                </select>
+              </Show>
+              <span class="muted ms-facts">{catalogLine(facts())}</span>
+              <Show when={(users()[m.name] ?? []).length}><span class="muted" title={(users()[m.name] ?? []).join("\n")}>{usedBy(users()[m.name] ?? [])}</span></Show>
+            </Show>
+          </>}</Show>
           <span class="grow" />
           <Show when={m.usable}><button type="button" class="btn small" onClick={() => props.ask({ kind: "session", server: s().name, model: m.name })}><Icon name="plus" size={13} />{tr("New session…")}</button></Show>
-          <Show when={s().logs.length}><button type="button" class="btn small ghost" onClick={() => props.ask({ kind: "logs", server: s().name, model: m.name })}><Icon name="file-text" size={13} />{tr("Logs")}</button></Show>
+          <Show when={canLogs() && m.catalog?.managed !== false}><button type="button" class="btn small ghost" onClick={() => props.ask({ kind: "logs", server: s().name, model: m.name })}><Icon name="file-text" size={13} />{tr("Logs")}</button></Show>
           <Show when={m.can_down}><button type="button" class="btn small danger" onClick={() => props.ask({ kind: "down", server: s().name, models: [m.name] })}><Icon name="power" size={13} />{tr("Down…")}</button></Show>
           <Show when={m.can_up}><button type="button" class="btn small" disabled={store.upRunning(s().name, m.name)} onClick={() => store.up(s().name, m.name)}><Icon name="power" size={13} />{store.upRunning(s().name, m.name) ? tr("Up running") : tr("Up")}</button></Show>
         </div>
@@ -236,7 +289,8 @@ function ServerCard(props: { server: ModelServer; entry: StatusEntry; ask(dialog
   </section>;
 }
 
-type Dialog = { kind: "down"; server: string; models: string[] } | { kind: "logs"; server: string; model: string } | { kind: "session"; server: string; model: string };
+type Dialog = { kind: "down"; server: string; models: string[] } | { kind: "logs"; server: string; model: string } | { kind: "session"; server: string; model: string }
+  | { kind: "variant"; server: string; model: string; variant: string };
 
 export function ModelServersScreen() {
   const [dialog, setDialog] = createSignal<Dialog>();
@@ -273,6 +327,7 @@ export function ModelServersScreen() {
       const shown = d();
       return shown.kind === "down" ? <DownDialog server={target} models={shown.models} onClose={close} />
         : shown.kind === "logs" ? <LogsDialog server={shown.server} model={shown.model} onClose={close} />
+        : shown.kind === "variant" ? <VariantDialog server={target} model={shown.model} variant={shown.variant} onClose={close} />
         : <SessionDialog server={target} model={shown.model} onClose={close} />;
     }}</Show>
   </div>;

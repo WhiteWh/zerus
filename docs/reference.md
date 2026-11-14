@@ -9165,6 +9165,26 @@ the service), `account` for a session whose account settings point
 `ANTHROPIC_BASE_URL` at the catalog's gateway. Down's confirmation lists the
 sessions of the service it stops.
 
+The Model servers tab reads a catalog server every 8 s while it shows, and
+after an action until no service is starting or stopping. Each service row
+shows its state with `since`, a Quality menu of its variants (window, memory and
+speed of each, plus `auto`), its window (marked manual when `contexts`
+overrides it), memory in use of needed, `fit`, the selected variant's speed and
+which of your sessions use it. Choosing a variant of a stopped service applies
+it at once; a running one asks first, naming its sessions, and restarts. A
+`managed: false` service is greyed, without actions, as running outside the
+server's control. A stale read shows its cached rows under the failure and the
+time of that read. New session on a service offers each agent only when the
+service has an API name of its wire, and shows the API name and window the
+session will get.
+
+Claude Code's Auto permission mode asks its safety classifier the same model,
+which a local server answers too slowly (`auto mode cannot determine the safety
+of Bash`). A Claude session on a model server, or on an account whose settings
+point at a gateway, whose default mode would be Auto starts in acceptEdits
+instead and says so; an explicit `--permissions` or native permission flag is
+kept.
+
 <a id="deepseek"></a>
 
 ## Official DeepSeek Harness

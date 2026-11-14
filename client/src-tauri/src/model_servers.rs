@@ -138,6 +138,20 @@ pub async fn model_server_down(
     Ok(core::down_failure(reply.as_ref().map_err(String::as_str)))
 }
 
+/// model-catalog/2: one confirmed variant change (a running service restarts
+/// with `restart`); its failure, if any.
+#[tauri::command]
+pub async fn model_server_variant(
+    servers: State<'_, ModelServers>,
+    server: String,
+    model: String,
+    variant: String,
+    restart: bool,
+) -> Result<Option<Text>, String> {
+    let reply = call(servers.replay, Op::Variant { server, model, variant, restart }).await;
+    Ok(core::down_failure(reply.as_ref().map_err(String::as_str)))
+}
+
 #[tauri::command]
 pub async fn model_server_logs(
     servers: State<'_, ModelServers>,

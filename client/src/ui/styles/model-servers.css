@@ -89,3 +89,9 @@
 .ms-card.folded .ms-head { border-bottom: 0; }
 .ms-fold { flex: none; margin-right: 2px; }
 @media (min-width: 1500px) { .ms-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(640px, 1fr)); align-content: start; } }
+
+/* model-catalog/2 (owner spec 2026-11-14): a service run outside the server's
+   tool is shown without actions; the quality menu and facts sit in the row. */
+.ms-model.unmanaged { opacity: .55; }
+.ms-variant { max-width: 260px; }
+.ms-facts { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }

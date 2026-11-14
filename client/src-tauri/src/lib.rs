@@ -1999,6 +1999,7 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         model_servers::model_server_up_result,
         model_servers::model_server_sessions,
         model_servers::model_server_down,
+        model_servers::model_server_variant,
         model_servers::model_server_logs,
         model_servers::model_server_save,
         model_servers::model_server_delete,

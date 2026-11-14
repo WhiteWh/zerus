@@ -3640,6 +3640,24 @@ fn launch(
         let id = options.account.as_deref().ok_or_else(|| Error::new(1, "--local-model needs --account"))?;
         account_environment.extend(crate::accounts::local_model_session(config, id, &command_name, model)?);
     }
+    // Owner spec 2026-11-14: Claude's Auto mode asks its safety classifier the
+    // same local model, which times out ("auto mode cannot determine the safety
+    // of Bash"). A local-model session (a model server, or an account whose own
+    // settings point at a gateway) whose default would be Auto starts in
+    // acceptEdits instead; an explicit choice is left alone.
+    if command_name == "claude" && options.permissions.is_none() && !crate::accounts::explicit_permissions(&command_name, &options.extra) {
+        let home = account_environment
+            .iter()
+            .find_map(|line| line.strip_prefix("CLAUDE_CONFIG_DIR="))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(&config.home).join(".claude"));
+        let local = options.model_server.is_some() || crate::state::model_servers::account_gateway(&home).is_some();
+        let account = options.account.as_deref().unwrap_or("");
+        if local && crate::accounts::permission_mode(config, account, "claude").ok().as_deref() == Some("auto") {
+            eprintln!("hgs: this local-model session starts in acceptEdits, not Auto: Auto's safety classifier asks the same model and times out. Choose --permissions bypass to skip approvals.");
+            options.permissions = Some(r#"native:{"permission_mode":"acceptEdits"}"#.to_owned());
+        }
+    }
     // U60: this session runs on a model server's API; the settings are this
     // launch's environment only, so the global agent configuration is untouched.
     // The key is not part of that environment: it goes to a private file that
