@@ -20,6 +20,8 @@ const MigrationReportDialog = lazyView(() => import("../../components/MigrationR
 // whenever the section opens, and the repository.
 
 const zerus = () => installedAppName(appBuildInfo());
+// WhiteWh fork: a fork build opens the fork's repository (settings.rs).
+const repository = () => ((appBuildInfo()?.forkBuild ?? 0) > 0 ? "WhiteWh/zerus" : "ufna/zerus");
 const [cli, setCli] = createSignal("hgs CLI version unavailable");
 // HgsClient::requestVersion: one `hgs --version` at a time.
 let checking = false;
@@ -58,9 +60,9 @@ export function AboutSection() {
         </button>
       </div>
       <div>
-        <button class="btn" title="https://github.com/ufna/zerus" aria-label={tr("Open Zerus repository on GitHub")}
+        <button class="btn" title={`https://github.com/${repository()}`} aria-label={tr("Open Zerus repository on GitHub")}
           onClick={() => { if (inTauri()) void invoke("open_repository").catch(() => {}); }}>
-          <Icon name="github" size={16} />ufna/zerus
+          <Icon name="github" size={16} />{repository()}
         </button>
       </div>
       <Show when={reportOrigin()}>{(origin) => <LazyBoundary floating><MigrationReportDialog origin={origin()} close={() => setReportOrigin(undefined)} /></LazyBoundary>}</Show>

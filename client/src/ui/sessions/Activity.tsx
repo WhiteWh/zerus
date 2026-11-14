@@ -1326,9 +1326,11 @@ export function ActivityView(props: { source?: ActivitySource; session?: () => S
   // session works: what it does now and how long the turn has run.
   const working = createMemo(() => {
     const row = s();
-    if (!row || source().readOnly || subagentOpen() || props.session) return undefined;
-    const details = followedFor(row.key).value;
-    const line = workingLine(details, { online: !computerOffline(row.computer), state: row.state, processState: row.processState }, !!composer.view()?.inspect_error);
+    if (!row || source().readOnly || subagentOpen()) return undefined;
+    // A pane's own session (the team lead in Team Designer and New Team, owner
+    // feedback 2026-11-14) reads its working state from the source it follows.
+    const details = props.session ? source().summary() : followedFor(row.key).value;
+    const line = workingLine(details, { online: !computerOffline(row.computer), state: row.state, processState: row.processState }, !props.session && !!composer.view()?.inspect_error);
     const started = Number(details?.turn_started);
     return line === undefined ? undefined : { line, started: Number.isFinite(started) && started > 0 ? started : 0 };
   });

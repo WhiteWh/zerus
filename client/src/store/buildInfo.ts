@@ -8,6 +8,8 @@ export interface BuildInfo {
   sourceCommit?: string | null;
   sourceDirty?: boolean | null;
   previewLabel?: string;
+  /** WhiteWh fork: the fork release build this binary embeds (ZERUS_FORK_BUILD). */
+  forkBuild?: number;
 }
 
 /** One immutable native identity for the rail and About, never an update preference. */

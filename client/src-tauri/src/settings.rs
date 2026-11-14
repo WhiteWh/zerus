@@ -82,11 +82,15 @@ pub async fn hgs_version() -> Option<String> {
 /// The repository Settings > About opens (SettingsPage.h:151-154). The
 /// address is fixed here: the webview cannot pass one.
 pub const REPOSITORY: &str = "https://github.com/ufna/zerus";
+pub const FORK_REPOSITORY: &str = "https://github.com/WhiteWh/zerus";
 
 /// Opens the repository in the default browser.
 #[tauri::command]
 pub fn open_repository() -> Result<(), String> {
-    open_url(REPOSITORY).map_err(|error| format!("Could not open {REPOSITORY}: {error}"))
+    // WhiteWh fork: a fork build opens the fork, as About names it.
+    let fork = option_env!("ZERUS_FORK_BUILD").is_some_and(|build| build.trim().parse::<u64>().is_ok_and(|build| build > 0));
+    let repository = if fork { FORK_REPOSITORY } else { REPOSITORY };
+    open_url(repository).map_err(|error| format!("Could not open {repository}: {error}"))
 }
 
 /// Opens an address the client fixed (never one from the webview) in the

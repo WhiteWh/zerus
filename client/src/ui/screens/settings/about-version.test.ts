@@ -17,6 +17,15 @@ describe("the installed version", () => {
   });
 });
 
+describe("a WhiteWh fork build", () => {
+  it("names its fork build number in About and in the title bar", () => {
+    const fork = { version: "0.49.0", versionName: "0.49.0", devBuildNumber: 0, sourceCommit: commit, sourceDirty: false, forkBuild: 198 };
+    expect(installedAppName(fork)).toBe("Zerus fork build 198, 0.49.0 (abcdef0)");
+    expect(railVersion(fork)).toBe("Build 198");
+    expect(railVersion({ ...fork, forkBuild: 0 })).toBe("0.49.0");
+  });
+});
+
 describe("the rail's installed build", () => {
   it("a Stable build never says Dev, even with a source commit or local changes", () => {
     for (const sourceDirty of [false, true]) {
