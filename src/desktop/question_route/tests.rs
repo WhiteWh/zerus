@@ -34,6 +34,7 @@ mod inventory {
         ("Zerus safe-call rule", NotACard),
         ("api", NotACard),
         ("builtin", NotACard),
+        ("catalog", NotACard),
         ("compact", NotACard),
         ("default", NotACard),
         ("dsh", NotACard),

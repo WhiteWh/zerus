@@ -431,6 +431,34 @@ pub fn mobile_local_relay(app: AppHandle, on: bool) -> Result<LocalServices, Str
     Ok(local_view(&app))
 }
 
+/// Before a fork update replaces the installation: the bundled connector runs
+/// from that folder, so the update helper would wait for it and give up
+/// ("Programs still run from the installation"). Ask it to stop through its
+/// own interface (the current phone request finishes first; the helper waits
+/// for it to exit). Zerus starts it again at the next start when the Mobile
+/// choice says so. Returns whether a stop was requested.
+pub fn stop_connector_for_update() -> bool {
+    if !cfg!(windows) {
+        return false;
+    }
+    use zerus_client_core::mobile::legacy::windows;
+    let (connector, config) = workspace_runtime();
+    let inside = client_dir().is_some_and(|dir| connector.starts_with(&dir));
+    if !inside || !connector.is_file() || !config.is_file() {
+        return false;
+    }
+    match windows::status(&connector, &config) {
+        Ok(status) if status.running => match windows::apply(&connector, &config, &status, "stop", None) {
+            Ok(_) => true,
+            Err(error) => {
+                eprintln!("zerus-client: the mobile connector did not stop for the update: {error:?}");
+                false
+            }
+        },
+        _ => false,
+    }
+}
+
 /// At Zerus start, off the UI thread (Qt's `ensureInBackground`): the chosen
 /// relay when none answers, then a configured connector that is not
 /// running, through its own management interface.

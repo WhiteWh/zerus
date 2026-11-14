@@ -181,6 +181,9 @@ pub fn fork_updates_confirm(app: AppHandle) {
 /// Restart to finish the fork update: the helper starts detached without a
 /// console window, then Zerus quits as Quit does (drafts saved).
 pub fn restart(app: &AppHandle) -> Result<(), String> {
+    // The bundled mobile connector runs from the installation; without this
+    // the helper waits for it and the update never lands.
+    crate::mobile::stop_connector_for_update();
     let temp = std::env::temp_dir();
     let mut updater = lock(updater());
     let script = temp.join(format!("zerus-fork-install-{}.ps1", updater.ready_build()));
