@@ -372,6 +372,19 @@ pub enum Private {
     File,
 }
 
+/// What `repair_private` found at a path and did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PrivateRepair {
+    /// Nothing to do: the entry is private.
+    Private,
+    /// The entry was this user's and only too open: it is private now. Each item
+    /// names an access that was removed (a Windows account, or Unix mode bits).
+    Repaired(Vec<String>),
+    /// The entry stays as it is: owned by another account, a link or reparse
+    /// point, the wrong kind of entry, or not closable by this user.
+    Refused(String),
+}
+
 /// Why a bounded child process gave no result.
 #[derive(Debug)]
 pub enum RunError {

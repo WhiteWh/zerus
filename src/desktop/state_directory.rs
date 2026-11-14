@@ -14,8 +14,24 @@ pub(super) fn prepare(config: &Config, location: &Location) -> Result<()> {
     }
     #[cfg(not(unix))]
     {
+        use anyhow::Context;
         let _ = config;
-        // Windows ACLs are never repaired by this Unix compatibility migration.
+        // The state folder may inherit a sandbox group's read access (Codex
+        // grants one on ~/.local) or a second drive's Authenticated Users
+        // Modify, and the service would refuse to start. A folder this user
+        // owns that Windows only left too open is made private in place; a
+        // missing one is not created here, and one that stays open (another
+        // owner, a link) is still refused.
+        for path in [location.root.parent().context("missing state folder")?, &location.root] {
+            match crate::platform::repair_private(path, crate::platform::Private::Directory) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Ok(crate::platform::PrivateRepair::Private | crate::platform::PrivateRepair::Repaired(_)) => {}
+                Ok(crate::platform::PrivateRepair::Refused(why)) => {
+                    anyhow::bail!("desktop folders must be private directories: {} ({why})", path.display())
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
         location.check_existing()?;
     }
     Ok(())

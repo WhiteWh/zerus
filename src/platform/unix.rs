@@ -1,6 +1,6 @@
 //! Unix (Linux and macOS) process, terminal, clipboard and file primitives.
 use super::{
-    available, capture, silent, ExitInfo, FileIdentity, Presence, Private, ProcessIdentity,
+    available, capture, silent, ExitInfo, FileIdentity, Presence, Private, PrivateRepair, ProcessIdentity,
     ProcessImage, ProcessRow, RunError,
 };
 use crate::{
@@ -185,6 +185,41 @@ fn private_metadata(metadata: &fs::Metadata, kind: Private) -> bool {
         Private::File => metadata.is_file() && metadata.nlink() == 1,
     }) && metadata.uid() == unsafe { libc::geteuid() }
         && metadata.mode() & 0o077 == 0
+}
+/// Makes the entry at `path` private when it is this user's and only too
+/// open: its mode becomes 0600 (a file) or 0700 (a folder), set through a
+/// descriptor that never follows a link. Another owner, a link, another kind
+/// of entry or a second link is refused and the entry is left as it is.
+pub fn repair_private(path: &Path, kind: Private) -> io::Result<PrivateRepair> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Ok(PrivateRepair::Refused("it is a symbolic link".into()));
+    }
+    match kind {
+        Private::Directory if !metadata.is_dir() => return Ok(PrivateRepair::Refused("it is not a folder".into())),
+        Private::File if !metadata.is_file() => return Ok(PrivateRepair::Refused("it is not a regular file".into())),
+        Private::File if metadata.nlink() != 1 => {
+            return Ok(PrivateRepair::Refused(format!("the file has {} links", metadata.nlink())));
+        }
+        _ => {}
+    }
+    if metadata.uid() != unsafe { libc::geteuid() } {
+        return Ok(PrivateRepair::Refused(format!("it is owned by uid {}", metadata.uid())));
+    }
+    let mode = metadata.mode() & 0o7777;
+    if mode & 0o077 == 0 {
+        return Ok(PrivateRepair::Private);
+    }
+    let wanted = if kind == Private::Directory { 0o700 } else { 0o600 };
+    let flags = libc::O_NOFOLLOW | libc::O_NONBLOCK | if kind == Private::Directory { libc::O_DIRECTORY } else { 0 };
+    let entry = fs::OpenOptions::new().read(true).custom_flags(flags).open(path)?;
+    // The entry opened is the one checked: never another one renamed into place.
+    let opened = entry.metadata()?;
+    if opened.ino() != metadata.ino() || opened.dev() != metadata.dev() {
+        return Ok(PrivateRepair::Refused("it changed while it was checked".into()));
+    }
+    entry.set_permissions(fs::Permissions::from_mode(wanted))?;
+    Ok(PrivateRepair::Repaired(vec![format!("mode {mode:04o} (now {wanted:04o})")]))
 }
 /// Create files owner-only.
 pub fn private_open(options: &mut fs::OpenOptions) -> &mut fs::OpenOptions {

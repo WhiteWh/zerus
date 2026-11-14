@@ -1191,6 +1191,9 @@ fn wait_interactive_from(command: &mut Command, input: Option<fs::File>) -> Resu
 }
 
 pub use self::process::*;
+#[path = "windows_repair.rs"]
+mod repair;
+pub use repair::repair_private;
 /// Process, file and control primitives for `state`.
 mod process {
     use super::*;
@@ -1506,7 +1509,7 @@ mod process {
         let user = unsafe { &*(buffer.as_ptr() as *const TOKEN_USER) };
         Some(unsafe { sid_bytes(user.User.Sid) }.to_vec())
     }
-    fn current_user() -> Option<&'static [u8]> {
+    pub(super) fn current_user() -> Option<&'static [u8]> {
         static USER: OnceLock<Option<Vec<u8>>> = OnceLock::new();
         USER.get_or_init(|| token_user(unsafe { GetCurrentProcess() }))
             .as_deref()
