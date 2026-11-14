@@ -335,6 +335,8 @@ export function apply(ctx, config) {
     while (endedAgents.size > 4096) endedAgents.delete(endedAgents.keys().next().value);
   });
   const shellContext = new AsyncLocalStorage(), shellCalls = new Map(), jobCalls = new Map();
+  // Windows composes the official pwsh tools instead of bash; both run shell jobs.
+  const shellTools = new Set(['bash', 'pwsh']);
   const callContext = new AsyncLocalStorage(), tokens = callTokens();
   const identities = typeof config.shellIdentities === 'string' && config.shellIdentities ? config.shellIdentities : null;
   let spawns = null, spawnService = null;
@@ -356,7 +358,7 @@ export function apply(ctx, config) {
     if (event.type === 'registered' && token) tokens.job(token, event.job.id);
     if (event.type === 'settled' || event.type === 'removed') tokens.settled(event.job.id);
     const call = shellContext.getStore();
-    if (event.type === 'registered' && event.job.kind === 'bash' && call?.owner === event.job.owner) {
+    if (event.type === 'registered' && shellTools.has(event.job.kind) && call?.owner === event.job.owner) {
       call.jobId=event.job.id;jobCalls.set(event.job.id,call);
     }
     if (event.type === 'removed') jobCalls.delete(event.job.id);
@@ -372,7 +374,7 @@ export function apply(ctx, config) {
     finally { if (token) tokens.close(token); }
   });
   function observeShell(exec, next) {
-    if (exec.name !== 'bash' || !exec.agent?.session?.id) return next();
+    if (!shellTools.has(exec.name) || !exec.agent?.session?.id) return next();
     const call={callId:exec.callId,owner:exec.agent.session.id,command:String(exec.arguments?.command ?? '').slice(0,16000),
       cwd:exec.arguments?.workdir?.slice(0,4096),startedAt:Date.now(),status:'running'};
     const key=JSON.stringify([call.owner,call.callId]);shellCalls.set(key,call);
@@ -612,7 +614,7 @@ export function apply(ctx, config) {
     const jobs = ctx.get('jobs');
     return { generation, baseline, page,
       lifecycleActions: agentId ? [] : ["rename", ...(!parentLive ? ["resume", "forget"] : owned.get(sessionId)?.agent === parentLive ? [...(lifecycleIdle ? ["pause"] : []), "forget"] : [])],
-      jobs: jobs && request.includeProcesses !== false ? jobOwners.flatMap(owner => jobs.list(owner).filter(job => job.kind === 'bash' && job.owner === owner)
+      jobs: jobs && request.includeProcesses !== false ? jobOwners.flatMap(owner => jobs.list(owner).filter(job => shellTools.has(job.kind) && job.owner === owner)
         .map(job => ({ ...job, callId:jobCalls.get(job.id)?.callId, controllable: owned.has(sessionId) && Boolean(ctx.agents.get(owner)) }))) : undefined,
       shellCalls:request.includeProcesses !== false ? [...shellCalls.values()].filter(call=>jobOwners.includes(call.owner)) : undefined,
       childMode: child?.mode, childSendSupported: !unstarted && child?.mode === 'continuable' && Boolean(parentLive), goal,
@@ -863,7 +865,7 @@ export function apply(ctx, config) {
   // ping advertises listJobs: true. A host without both is unknown, never idle.
   // Kept apart from the rest of the list builder.
   const LIST_JOB_LIMIT = 32;
-  const runningJob = job => job.kind === 'bash' && ['starting', 'running', 'stopping'].includes(job.status);
+  const runningJob = job => shellTools.has(job.kind) && ['starting', 'running', 'stopping'].includes(job.status);
   function listJobs(items) {
     const registry = ctx.get('jobs');
     const owners = new Map(items.map(row => [row.sessionId, [row.sessionId]]));
@@ -1136,8 +1138,10 @@ export function apply(ctx, config) {
     }
   }
 
-  // A private Unix socket is a local plugin transport, never an HTTP endpoint.
-  // The native web application's own authentication remains untouched.
+  // A private Unix socket (a named pipe on Windows) is a local plugin
+  // transport, never an HTTP endpoint. The native web application's own
+  // authentication remains untouched.
+  const pipe = process.platform === 'win32';
   const server = net.createServer(socket => {
     let bytes = 0, chunks = [], handled = false;
     socket.setTimeout(45000, () => socket.destroy());
@@ -1163,11 +1167,13 @@ export function apply(ctx, config) {
     await new Promise((resolve, reject) => {
       server.once('error', reject); server.listen(config.socket, resolve);
     });
-    await fs.chmod(config.socket, 0o600);
+    // A pipe has no file mode; its default security admits only readers from
+    // other accounts, who cannot send a request.
+    if (!pipe) await fs.chmod(config.socket, 0o600);
     return async () => {
       closing = true; server.close();
       for (const handle of owned.values()) await handle.dispose();
-      owned.clear(); await fs.unlink(config.socket).catch(() => {});
+      owned.clear(); if (!pipe) await fs.unlink(config.socket).catch(() => {});
     };
   }, 'hgs.native-dsh');
 }

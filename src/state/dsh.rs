@@ -94,20 +94,20 @@ pub(crate) fn host_refusal() -> Option<String> {
     host_check().sentence()
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 // Resident bridge identity is independent of the installed harness release.
 const ADAPTER_VERSION: &str = "0.2.1-rc.2";
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const REVIEWED_VERSIONS: &[&str] = &["0.2.1-rc.2", "0.2.1-rc.5", "0.2.2-rc.1"];
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn reviewed_harness_version(version: &str) -> bool {
     REVIEWED_VERSIONS.contains(&version)
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn compatible_adapter(ping: &Value) -> bool {
     ping["version"] == ADAPTER_VERSION && ping["protocol"] == 1
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const BRIDGE: &str = include_str!("../dsh/bridge.mjs");
 fn binding_path(name: &str) -> PathBuf {
     PROVIDER.label_path(name)
@@ -439,27 +439,34 @@ fn host_peer(stream: &UnixStream) -> Option<u32> {
 fn host_peer(_: &UnixStream) -> Option<u32> {
     None
 }
-/// The native host listens on a Unix socket; DeepSeek is a Phase 2 non-goal on
-/// Windows, so nothing there starts or reaches a host.
+/// The native host listens on a Unix socket, or on Windows on a named pipe
+/// (`windows_host`); nothing else starts or reaches a host.
+/// What a DeepSeek operation that needs the Unix host identity (the caller
+/// proof, a team's capture) answers elsewhere.
 #[cfg(not(unix))]
 const UNSUPPORTED: &str =
-    "DeepSeek sessions are not supported on Windows yet; run them on a Linux or macOS machine.";
-#[cfg(not(unix))]
+    "This DeepSeek operation needs a Linux or macOS machine.";
+#[cfg(not(any(unix, windows)))]
 fn rpc(_: &Value, _: &str, _: Value) -> Result<Value> {
     Err(UNSUPPORTED.into())
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn search_rpc(_: &Value, _: Value) -> Result<Value> {
     Err(UNSUPPORTED.into())
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn rpc_within(_: &Value, _: &str, _: Value, _: std::time::Duration) -> Result<Value> {
     Err(UNSUPPORTED.into())
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn ensure_host(_: &Value) -> Result<()> {
     Err(UNSUPPORTED.into())
 }
+#[cfg(windows)]
+#[path = "dsh/windows_host.rs"]
+mod windows_host;
+#[cfg(windows)]
+use windows_host::{ensure_host, rpc, rpc_within, search_rpc};
 const HOST_UNAVAILABLE: &str = "DeepSeek host is unavailable; resume the session to reconnect";
 /// A request the host never got whole. Every `bridge.mjs` since the first
 /// runs a request only once a chunk holds its terminating newline and has no
@@ -757,7 +764,7 @@ pub(crate) fn native_ui_url(name: &str) -> Result<String> {
     Ok(url)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn bridge_config(socket: &Path, hint: Option<&str>) -> Value {
     let mut config = json!({"socket": socket, "recoveryPolicy": recovery::policy_path()});
     if let Some(hint) = hint {

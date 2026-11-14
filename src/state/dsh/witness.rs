@@ -2159,10 +2159,9 @@ mod tests {
     /// bindings lock, so it can never hold a request lock while waiting for it.
     #[test]
     fn the_witness_path_never_takes_the_bindings_lock() {
-        let production = include_str!("witness.rs")
-            .split("#[cfg(test)]\nmod tests")
-            .next()
-            .unwrap();
+        // A CRLF checkout (Windows) keeps the same split.
+        let source = include_str!("witness.rs").replace("\r\n", "\n");
+        let production = source.split("#[cfg(test)]\nmod tests").next().unwrap();
         assert!(!production.contains("bindings.lock"));
         assert!(!production.contains("lock(Some("));
         assert!(!production.contains("dispatch_lock::"));

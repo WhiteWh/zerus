@@ -18,18 +18,45 @@ use std::{
     process::{Command, Stdio},
 };
 
-/// The tunnels rely on OpenSSH connection sharing (ControlMaster), which the
-/// Windows OpenSSH client does not provide.
+/// Another machine's UI needs a tunnel, which relies on OpenSSH connection
+/// sharing (ControlMaster) that the Windows OpenSSH client does not provide.
+/// This computer's own UI is already on its loopback.
 #[cfg(not(unix))]
 const UNSUPPORTED: &str =
-    "The native DeepSeek UI is not available from Windows yet; open it on that machine.";
+    "The native DeepSeek UI of another machine is not available from Windows yet; open it on that machine.";
 #[cfg(not(unix))]
-pub fn address(_: &Config, _: &str, _: &str, _: Option<&str>) -> Result<String> {
-    Err(Error::new(2, UNSUPPORTED))
+pub fn address(config: &Config, target: &str, name: &str, _selector: Option<&str>) -> Result<String> {
+    if !target.is_empty() && !config.is_self(target) {
+        return Err(Error::new(2, UNSUPPORTED));
+    }
+    if !crate::platform::local_sessions() {
+        return Err(Error::new(
+            2,
+            "The native DeepSeek UI needs local sessions on this computer; enable them in Machines.",
+        ));
+    }
+    let url = crate::state::dsh::native_ui_url(name).map_err(|e| Error::new(1, e))?;
+    let pattern =
+        regex::Regex::new(r"^http://127\.0\.0\.1:[0-9]+/\?token=[A-Za-z0-9_%.-]+$").unwrap();
+    if !pattern.is_match(&url) {
+        return Err(Error::new(1, "Invalid native loopback URL"));
+    }
+    Ok(url)
 }
 #[cfg(not(unix))]
-pub fn open(_: &Config, _: &str, _: &str, _: Option<&str>, _: bool) -> Result<i32> {
-    Err(Error::new(2, UNSUPPORTED))
+pub fn open(config: &Config, target: &str, name: &str, selector: Option<&str>, dry: bool) -> Result<i32> {
+    if dry {
+        println!("Open official DeepSeek UI for {name}");
+        return Ok(0);
+    }
+    let url = address(config, target, name, selector)?;
+    // Explorer hands the URL to the default browser; its exit code says nothing.
+    std::process::Command::new("explorer.exe")
+        .arg(&url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+    Ok(0)
 }
 
 // Shared by the embedded view and external browser. The returned launch URL
@@ -38,6 +65,9 @@ pub fn open(_: &Config, _: &str, _: &str, _: Option<&str>, _: bool) -> Result<i3
 // selector receives and resolves itself; `name` may then be empty.
 #[cfg(unix)]
 pub fn address(config: &Config, target: &str, name: &str, selector: Option<&str>) -> Result<String> {
+    if crate::wsl::profile(config, target).is_some() {
+        return Err(Error::new(2, "Open the native UI in the selected WSL environment; this transport does not create SSH tunnels"));
+    }
     let remote = !target.is_empty() && !config.is_self(target);
     let mut url = if remote {
         if target.starts_with('-') || target.chars().any(char::is_whitespace) {

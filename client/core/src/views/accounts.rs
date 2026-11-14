@@ -301,10 +301,11 @@ pub fn hosts(fleet: &[FleetEntry]) -> Vec<Host> {
         .collect()
 }
 
-/// The local Windows computer runs neither DeepSeek nor OpenCode
-/// (AccountCatalog::launchable). Its folder style is the computer's
-/// (`paths::of`, MachinePlatform::of): this computer before it reports a
-/// platform is the build's, a peer POSIX.
+/// The local Windows computer does not run OpenCode (AccountCatalog::launchable).
+/// It runs DeepSeek through the host's named pipe, so New session offers its
+/// DeepSeek account. Its
+/// folder style is the computer's (`paths::of`, MachinePlatform::of): this
+/// computer before it reports a platform is the build's, a peer POSIX.
 pub fn launchable(entry: &FleetEntry, provider: &str) -> bool {
     launchable_for(entry, provider, paths::build())
 }
@@ -316,7 +317,7 @@ fn launchable_for(entry: &FleetEntry, provider: &str, build: Style) -> bool {
         None | Some("") if local => build,
         platform => paths::of(platform, local),
     };
-    style == Style::Posix || !matches!(provider, "dsh" | "opencode")
+    style == Style::Posix || provider != "opencode"
 }
 
 fn usage_ref(host: &ComputerId, raw: &Value) -> UsageRef {
@@ -1593,11 +1594,12 @@ mod tests {
             .map(|h| h.label)
             .collect();
         assert_eq!(labels, ["workstation (this machine)", "studio"]);
-        // The local Windows computer lists neither DeepSeek nor OpenCode.
+        // The local Windows computer lists DeepSeek and never OpenCode.
         let mut windows = entry("", "live", 0);
         windows.platform = Some("windows".into());
         let view = project(&[windows], &loaded(), &mut AccountsDisplay::default());
-        assert!(view.accounts.iter().all(|a| a.provider != "dsh"));
+        assert!(view.accounts.iter().any(|a| a.provider == "dsh"));
+        assert!(view.accounts.iter().all(|a| a.provider != "opencode"));
     }
 
     #[test]
@@ -1905,14 +1907,15 @@ mod tests {
         // Each comes with its raw row, for the OpenCode fields.
         assert_eq!(profiles[5].1["id"], "native-opencode");
         assert_eq!(profiles[0].0.key, "\u{1f}native-codex");
-        // The local Windows computer starts neither DeepSeek nor OpenCode; a peer does.
+        // The local Windows computer does not start OpenCode; a peer does. It
+        // starts DeepSeek through the host's named pipe.
         let mut windows = entry("", "live", 0);
         windows.platform = Some("windows".into());
-        assert!(!launchable(&windows, "dsh") && !launchable(&windows, "opencode"));
+        assert!(launchable(&windows, "dsh") && !launchable(&windows, "opencode"));
         assert!(launchable(&windows, "codex"));
         let shown = ids(&host_profiles(&windows, &catalog, &state, &agents));
         assert!(
-            !shown.contains(&"native-dsh".to_owned())
+            shown.contains(&"native-dsh".to_owned())
                 && !shown.contains(&"native-opencode".to_owned())
         );
         let mut peer = entry("studio", "live", 0);
@@ -1936,13 +1939,11 @@ mod tests {
     fn this_computer_without_a_platform_follows_the_build() {
         let mut bare = entry("", "live", 0);
         bare.platform = None;
+        assert!(!launchable_for(&bare, "opencode", Style::Windows));
         for provider in ["dsh", "opencode"] {
-            assert!(
-                !launchable_for(&bare, provider, Style::Windows),
-                "{provider}"
-            );
             assert!(launchable_for(&bare, provider, Style::Posix), "{provider}");
         }
+        assert!(launchable_for(&bare, "dsh", Style::Windows));
         assert!(launchable_for(&bare, "codex", Style::Windows));
         let mut linux = entry("", "live", 0);
         linux.platform = Some("linux".into());
