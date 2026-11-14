@@ -549,6 +549,49 @@ export async function setProjectCollapsed(project: string, collapsed: boolean): 
 
 /** What the browser build shows instead of the screen reads. */
 const DESKTOP_ONLY = "Reads need the desktop app.";
+const desktopOnly = <T>(run: () => Promise<T>): Promise<T> => (inTauri() ? run() : Promise.reject(new Error(DESKTOP_ONLY)));
+/** This computer's model servers (client/core model_servers over `hgs model-server`). */
+export interface ModelServer {
+  name: string; base_url: string; kind: string; ssh: string; has_key: boolean; up_minutes: number; contexts: unknown;
+  status: string[]; up: string[]; down: string[]; logs: string[]; read_only: boolean; agent_url: string; models_url: string;
+  status_text: string; up_text: string; down_text: string; logs_text: string;
+  /** model-catalog/2 (owner spec 2026-11-14): empty for the plain contract. */
+  protocol?: string; catalog?: string[]; variant?: string[]; api_url?: string; has_api_key?: boolean;
+}
+export interface ModelServerVariant { id: string; context: number; needs_gib: number; tok_s: number; code_tok_s: number; selected: boolean; running: boolean }
+export interface ModelServerCatalogModel {
+  managed: boolean; variant: string; variants: ModelServerVariant[]; context: number; context_max: number; context_manual: number;
+  memory_gib: number; needs_gib: number; fit: string; tok_s: number; code_tok_s: number; api_models: { id: string; wire: string }[];
+  can_variant: boolean; use_for: string;
+}
+export interface ModelServerModel { name: string; state: string; label: Text; since: number; usable: boolean; can_down: boolean; can_up: boolean; catalog?: ModelServerCatalogModel | null }
+export interface ModelServerStatus {
+  error: string; detail: string; error_label: Text; problem: Text; source: string; models: ModelServerModel[];
+  free: number; total: number; memory: Text; low: boolean; used: number; raw: string[]; running: number; active: string[];
+  /** model-catalog/2: the cached catalog of a server that did not answer, and when it was read. */
+  stale?: boolean; fetched_at?: number;
+}
+export interface ModelServerOutcome { text: Text; error: boolean }
+export interface ModelServerUpStart { started: boolean; id: string; limit_ms: number; outcome: ModelServerOutcome | null }
+export interface ModelServerUpPoll { running: boolean; outcome: ModelServerOutcome | null }
+export interface ModelServerLogs { lines: string[]; truncated: boolean }
+export interface ModelServerForm { was: string; name: string; base_url: string; kind: string; ssh: string; key_change: "" | "replace" | "remove"; key: string; status: string; up: string; down: string; logs: string }
+export interface ModelServerTest { tone: "ok" | "warn" | "error"; text: Text; raw: string[] }
+export const modelServersList = () => desktopOnly(() => invoke<ModelServer[]>("model_servers_list"));
+export const modelServerStatus = (server: string) => desktopOnly(() => invoke<ModelServerStatus>("model_server_status", { server }));
+export const modelServerUp = (server: string, model: string) => desktopOnly(() => invoke<ModelServerUpStart>("model_server_up", { server, model }));
+export const modelServerUpResult = (server: string, model: string, id: string, expired: boolean) =>
+  desktopOnly(() => invoke<ModelServerUpPoll>("model_server_up_result", { server, model, id, expired }));
+export const modelServerSessions = (server: string) => desktopOnly(() => invoke<Record<string, string[]>>("model_server_sessions", { server }));
+export const modelServerDown = (server: string, model: string) => desktopOnly(() => invoke<Text | null>("model_server_down", { server, model }));
+export const modelServerVariant = (server: string, model: string, variant: string, restart: boolean) => desktopOnly(() => invoke<Text | null>("model_server_variant", { server, model, variant, restart }));
+export const modelServerLogs = (server: string, model: string) => desktopOnly(() => invoke<ModelServerLogs>("model_server_logs", { server, model }));
+export const modelServerSave = (form: ModelServerForm) => desktopOnly(() => invoke<ModelServer[]>("model_server_save", { form }));
+export const modelServerDelete = (name: string) => desktopOnly(() => invoke<ModelServer[]>("model_server_delete", { name }));
+export const modelServerTest = (form: ModelServerForm, what: "api" | "status") => desktopOnly(() => invoke<ModelServerTest>("model_server_test", { form, what }));
+export const modelServerTestLogs = (form: ModelServerForm, model: string) => desktopOnly(() => invoke<ModelServerTest>("model_server_test_logs", { form, model }));
+export const modelServerSession = (agent: string, folder: string, tag: string, server: string, model: string) =>
+  desktopOnly(() => invoke<void>("model_server_session", { agent, folder, tag, server, model }));
 
 /** Tells the screens hub which screen shows; its reads run only while it does. */
 export async function screenVisible(screen: Screen, visible: boolean): Promise<void> {

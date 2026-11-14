@@ -32,6 +32,8 @@ mod attempts;
 pub(crate) mod backend;
 pub(crate) mod dsh;
 pub(crate) mod opencode;
+pub(crate) mod model_catalog;
+pub(crate) mod model_servers;
 mod effort;
 mod end_children;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -350,6 +352,47 @@ pub(super) fn stdin_json() -> Result<Value> {
 
 pub(super) fn nonempty_env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
+}
+
+/// A change only the person makes: refused inside an agent session, and the
+/// request says `"by":"human"`.
+pub(crate) fn owner_request(input: &Value, what: &str) -> Result<()> {
+    #[cfg(test)]
+    let as_owner = TEST_OWNER.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    let as_owner = false;
+    if !as_owner
+        && (session_graph::caller_record().is_some()
+            || ["DSH_SESSION_ID", "HGS_SESSION", "HGS_RUN_ID"].iter().any(|name| nonempty_env(name).is_some()))
+    {
+        return Err(format!("An agent session cannot change {what}"));
+    }
+    if string(input, "by") != "human" {
+        return Err("Add \"by\":\"human\" to act as yourself".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_OWNER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `run` with `root` as the state root on this thread, acting as the
+/// owner whatever session runs the tests; both are restored even on panic.
+#[cfg(test)]
+pub(crate) fn with_test_state_root<T>(root: &Path, run: impl FnOnce() -> T) -> T {
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            storage::set_test_root(None);
+            TEST_OWNER.with(|owner| owner.set(false));
+        }
+    }
+    storage::set_test_root(Some(root.to_path_buf()));
+    TEST_OWNER.with(|owner| owner.set(true));
+    let _restore = Restore;
+    run()
 }
 
 pub(super) fn home() -> PathBuf {

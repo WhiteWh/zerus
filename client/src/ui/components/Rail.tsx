@@ -1,4 +1,4 @@
-import { For, Show, onMount } from "solid-js";
+import { For, Show, createEffect, onMount } from "solid-js";
 import { Icon } from "../lib/icons";
 import { ZerusLogo } from "./ZerusLogo";
 import { page, setPage, counts, setMenu, logoMotion, type Page } from "../../store/ui";
@@ -14,6 +14,7 @@ import { trNoop, tr } from "../../i18n";
 import { appBuildInfo, refreshAppBuildInfo } from "../../store/buildInfo";
 import { installedAppName, railVersion } from "../screens/settings/about-version";
 import { teams } from "../../store/teams";
+import { modelServers } from "../../store/modelServers";
 
 // The side screen switcher stays on the side (owner decision 2026-10-27).
 // Order follows SessionsWindow: brand -> Overview, New session, Sessions,
@@ -26,6 +27,8 @@ const ITEMS: { id: Page; icon: string; label: string; tip: string; command: stri
   { id: "projects", icon: "projects", label: "Projects", tip: "Projects", command: "go.projects" },
   { id: "machines", icon: "machines", label: "Machines", tip: trNoop("Machines and connection status"), command: "go.machines" },
   { id: "accounts", icon: "accounts", label: "Accounts", tip: trNoop("Agent accounts"), command: "go.accounts" },
+  // Model servers, shown while this computer has one.
+  { id: "modelservers", icon: "hard-drive", label: trNoop("Model servers"), tip: trNoop("Model servers"), command: "go.modelservers" },
 ];
 
 export function Rail() {
@@ -33,7 +36,9 @@ export function Rail() {
     const count = teams.waitingCount();
     return count > 0 ? tr("Waiting for you — %1", count) : tr("Waiting for you");
   };
-  onMount(() => { void refreshAppBuildInfo(); });
+  onMount(() => { void refreshAppBuildInfo(); void modelServers.refreshList(); });
+  createEffect(() => { if (!modelServers.available() && modelServers.listed() && page() === "modelservers") setPage("sessions"); });
+  const shown = () => ITEMS.filter((item) => item.id !== "modelservers" || modelServers.available());
   const labeled = () => skin().layout.rail === "labeled";
   return (
     <nav class="rail" classList={{ labeled: labeled() }} aria-label={tr("Screens")}>
@@ -59,7 +64,7 @@ export function Rail() {
           <Show when={labeled()}><span>{tr("New team")}</span></Show>
         </button>
       </Show>
-      <For each={ITEMS}>
+      <For each={shown()}>
         {(item) => (
           <button class="rail-btn" classList={{ on: page() === item.id }} aria-current={page() === item.id ? "page" : undefined}
             aria-label={item.id === "sessions" && counts().attention > 0 ? tr("Sessions — %1 need attention", counts().attention) : tr(item.label)}

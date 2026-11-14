@@ -1,0 +1,97 @@
+/* the Model servers tab and Settings > Model servers (design/model-servers). Skin tokens only. */
+@layer components {
+  .ms-page { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+  .ms-header { display: flex; align-items: center; gap: 10px; padding: 14px 24px; border-bottom: 1px solid var(--z-color-card-border); }
+  .ms-header h1 { margin: 0; font-size: 20px; font-weight: 600; }
+  .ms-tile { display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid var(--z-color-card-border); border-radius: 8px; color: var(--z-color-text-2); flex: none; }
+  .ms-card .ms-tile { width: 26px; height: 26px; border-radius: 7px; }
+  .ms-notice { margin: 0; padding: 6px 24px; color: var(--z-color-muted); white-space: pre-wrap; }
+  .ms-notice.error { color: var(--z-color-danger); }
+  .ms-list { flex: 1; min-height: 0; overflow: auto; padding: 18px 24px 24px; display: flex; flex-direction: column; gap: 14px; }
+  .ms-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 60px; text-align: center; color: var(--z-color-text-2); }
+  .ms-card { border: 1px solid var(--z-color-card-border); border-radius: 12px; background: var(--z-color-card); }
+  .ms-card.unreachable { border-color: color-mix(in srgb, var(--z-color-danger) 60%, transparent); }
+  .ms-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 16px; }
+  .ms-name { font-size: 15px; }
+  .ms-pill { padding: 1px 8px; border-radius: 999px; font-size: var(--fs-sm); border: 1px solid currentColor; }
+  .tone-accent { color: var(--z-color-accent); }
+  .tone-warn { color: var(--z-color-warn); }
+  .tone-folder { color: var(--z-color-text-2); }
+  .tone-danger { color: var(--z-color-danger); }
+  .tone-muted { color: var(--z-color-muted); }
+  .ms-host { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 7px; font-size: var(--fs-sm); color: var(--z-color-text-2); background: color-mix(in srgb, var(--z-color-text) 5%, transparent); }
+  .ms-api { display: inline-flex; align-items: center; gap: 7px; padding: 2px 4px 2px 9px; border: 1px solid var(--z-color-card-border); border-radius: 7px; font-size: var(--fs-sm); min-width: 0; overflow-wrap: anywhere; }
+  .ms-kind { font-size: 10px; font-weight: 700; color: var(--z-color-muted); }
+  .ms-memory { width: 130px; height: 6px; border-radius: 3px; background: var(--z-color-card-border); overflow: hidden; }
+  .ms-memory > i { display: block; height: 100%; background: var(--z-color-accent); }
+  .ms-memory.low > i { background: var(--z-color-warn); }
+  .ms-memtext { font-size: var(--fs-sm); color: var(--z-color-text-2); }
+  .ms-memtext.low { color: var(--z-color-warn); }
+  .ms-problem { display: flex; gap: 8px; margin: 0 16px 14px; padding: 9px 12px; border-radius: 8px; color: var(--z-color-text); background: color-mix(in srgb, var(--z-color-danger) 10%, transparent); }
+  .ms-problem > svg { color: var(--z-color-danger); flex: none; margin-top: 2px; }
+  .ms-model { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 7px 16px; border-top: 1px solid var(--z-color-card-border); }
+  .ms-model-name { min-width: 220px; }
+  .ms-state { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; }
+  .ms-state .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .ms-raw { margin: 6px 16px; max-height: 160px; overflow: auto; padding: 8px; border: 1px solid var(--z-color-card-border); border-radius: 8px; white-space: pre-wrap; font-size: 12px; }
+  .ms-foot { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-top: 1px solid var(--z-color-card-border); font-size: var(--fs-sm); }
+  .ms-dlg { width: min(560px, calc(100vw - 32px)); }
+  .ms-dlg.wide { width: min(820px, calc(100vw - 32px)); }
+  .ms-dlg .dlg-body { display: flex; flex-direction: column; gap: 12px; }
+  .ms-down-title { margin: 0; font-size: 16px; }
+  .ms-shared { margin: 0; padding: 10px 12px; border-radius: 8px; color: var(--z-color-warn); border: 1px solid color-mix(in srgb, var(--z-color-warn) 45%, transparent); background: color-mix(in srgb, var(--z-color-warn) 10%, transparent); }
+  .ms-down-row { display: flex; align-items: center; gap: 10px; }
+  .ms-down-model { min-width: 200px; font-weight: 600; }
+  .ms-logs { margin: 0; height: 380px; overflow: auto; padding: 8px; border: 1px solid var(--z-color-card-border); border-radius: 8px; white-space: pre-wrap; font-size: 12px; }
+  .ms-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 10px 14px; align-items: start; }
+  .ms-grid > label, .ms-grid > span { text-align: right; color: var(--z-color-text-2); padding-top: 6px; }
+  .ms-agents { display: flex; gap: 8px; flex-wrap: wrap; }
+  .ms-agent { flex: 1 1 200px; display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; border: 1px solid var(--z-color-card-border); border-radius: 9px; cursor: pointer; }
+  .ms-agent.on { border-color: var(--z-color-accent); }
+  .ms-agent.off { opacity: 0.6; cursor: default; }
+  .ms-summary { margin: 0; padding: 8px 12px; border: 1px solid var(--z-color-card-border); border-radius: 8px; font-size: 12px; white-space: pre-wrap; }
+  /* Task Qt's ModelServerSettings uses the window: the section is not
+     held to the settings column's 850 px, which left the editor a sliver. */
+  .set-content:has(> .ms-settings) { max-width: none; }
+  /* Task the list keeps its 260 px as Qt's fixed-width list does, and the
+     editor takes the remaining width at every window size. A grid, not a
+     wrapping flex row, so the list can never shrink to a character per line. */
+  .ms-settings-body { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 16px; align-items: start; }
+  .ms-server-list { list-style: none; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .ms-server-list > li { padding: 8px 10px; border: 1px solid transparent; border-radius: 9px; cursor: pointer; overflow-wrap: anywhere; }
+  .ms-server-list > li.on { border-color: var(--z-color-accent); }
+  /* One labelled field per row, the control taking the editor's width as Qt's
+     row spans its grid; nothing depends on auto-placement across results. */
+  .ms-form { min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 16px 18px; border: 1px solid var(--z-color-card-border); border-radius: 12px; }
+  .ms-field { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px 14px; align-items: center; }
+  .ms-field > label, .ms-field > span { text-align: right; color: var(--z-color-text-2); }
+  .ms-control { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+  .ms-control > .field { flex: 1 1 220px; min-width: 0; }
+  .ms-note { margin: 0; font-size: var(--fs-sm); color: var(--z-color-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .ms-control-title { margin: 6px 0 0; font-size: var(--fs-sm); color: var(--z-color-text-2); }
+  .ms-formats { margin: 0; padding: 8px 10px; border: 1px solid var(--z-color-card-border); border-radius: 8px; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .ms-buttons { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+  .ms-raw { margin: 0; max-height: 160px; overflow: auto; padding: 8px; border: 1px solid var(--z-color-card-border); border-radius: 8px; white-space: pre-wrap; font-size: 12px; }
+  @media (max-width: 720px) {
+    .ms-settings-body { grid-template-columns: minmax(0, 1fr); }
+    .ms-field { grid-template-columns: max-content minmax(0, 1fr); }
+  }
+  .ms-result { margin: 0; font-size: var(--fs-sm); white-space: pre-wrap; }
+  .ms-result.ok { color: var(--z-color-accent); }
+  .ms-result.warn { color: var(--z-color-warn); }
+  .ms-result.error { color: var(--z-color-danger); }
+  .ms-seg { display: inline-flex; border: 1px solid var(--z-color-card-border); border-radius: 8px; padding: 2px; }
+  .ms-seg > button { padding: 3px 10px; border-radius: 6px; }
+  .ms-seg > button.on { background: color-mix(in srgb, var(--z-color-accent) 18%, transparent); }
+}
+
+/* Owner, 2026-11-09: a folded server shows its header only; wide windows lay the servers out side by side. Unlayered on purpose (packaged layer order). */
+.ms-card.folded .ms-head { border-bottom: 0; }
+.ms-fold { flex: none; margin-right: 2px; }
+@media (min-width: 1500px) { .ms-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(640px, 1fr)); align-content: start; } }
+
+/* model-catalog/2: a service run outside the server's
+   tool is shown without actions; the quality menu and facts sit in the row. */
+.ms-model.unmanaged { opacity: .55; }
+.ms-variant { max-width: 260px; }
+.ms-facts { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }

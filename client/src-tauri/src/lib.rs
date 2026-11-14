@@ -71,6 +71,7 @@ mod macos_notification_diagnostics;
 mod metrics;
 #[cfg(feature = "live")]
 mod mobile;
+mod model_servers;
 #[cfg(feature = "live")]
 mod native_text;
 pub mod native_ui;
@@ -754,6 +755,8 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                 }
                 app.manage(speech_settings::SpeechPage::default());
                 app.manage(teams::Teams::new());
+                // The Model servers tab and Settings > Model servers.
+                app.manage(model_servers::ModelServers::new(replay));
                 app.manage(termination_cleanup::TerminationCleanup::default());
                 app.manage(worktree_cleanup::WorktreeCleanup::default());
                 app.manage(recovery::start(app.handle()));
@@ -1747,6 +1750,19 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         task_details::task_board_action,
         task_details::task_cancel_execution,
         task_details::task_cancel_attempt,
+        model_servers::model_servers_list,
+        model_servers::model_server_status,
+        model_servers::model_server_up,
+        model_servers::model_server_up_result,
+        model_servers::model_server_sessions,
+        model_servers::model_server_down,
+        model_servers::model_server_variant,
+        model_servers::model_server_logs,
+        model_servers::model_server_save,
+        model_servers::model_server_delete,
+        model_servers::model_server_test,
+        model_servers::model_server_test_logs,
+        model_servers::model_server_session,
         task_start::task_start_open,
         task_start::task_start,
         task_start::task_start_release,

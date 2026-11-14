@@ -1,4 +1,5 @@
 import { showQtUpgradeNotice } from "./store/qtUpgrade";
+import { ModelServersScreen } from "./ui/screens/ModelServers";
 import { DesktopServiceStatus } from "./ui/components/DesktopServiceStatus";
 import { MachinesStatus } from "./ui/components/MachinesStatus";
 import { BackgroundTasksChip } from "./ui/screens/BackgroundTasks";
@@ -164,6 +165,7 @@ export function App(props: { mode: () => BridgeMode | "starting" }) {
           <Match when={page() === "accounts"}><Suspense><AccountsScreen /></Suspense></Match>
           <Match when={page() === "projects"}><Suspense><ProjectsScreen /></Suspense></Match>
           <Match when={page() === "waiting"}><Suspense><WaitingScreen /></Suspense></Match>
+          <Match when={page() === "modelservers"}><ModelServersScreen /></Match>
           <Match when={page() === "settings"}><Suspense><SettingsScreen /></Suspense></Match>
         </Switch>
       </main>

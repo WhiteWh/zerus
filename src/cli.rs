@@ -183,6 +183,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        hgs swarm preference get --json   shared phone notification timing
        hgs swarm preference set mobile_delivery VALUE --json   immediate|away|away_5|away_10|away_15|away_30
        hgs machine check <alias> | ssh <alias> [--directory PATH] | setup <alias> [--source <checkout>]
+       hgs model-server list [--json] | status SERVER [--json] | up SERVER MODEL [--detach] | up-result REQUEST_ID | down SERVER MODEL [--yes] | logs SERVER [MODEL] [--lines N] | variant SERVER MODEL VARIANT [--restart] [--yes] | save --json | test --json   model servers on this computer (local private configuration)
        hgs [@host] account ls | add ID --provider AGENT --label NAME | rm ID | restore ID | login ID
        hgs [@host] account rename ID --label NAME | inspect ID [--refresh]
        hgs [@host] account default [ID]   show or select the default account for new sessions
@@ -277,6 +278,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
   -c ID    resume this exact conversation UUID; --resume=ID is also accepted
   -n tag   separate session <cmd>/<project>/<tag>
   --account ID   use a named native agent profile for this session
+  --model-server NAME   this session runs on a model server's API (Claude Code or Codex; needs --model MODEL; a new session)
   --model PROVIDER/MODEL   OpenCode native model for a new session
   --effort VARIANT   OpenCode effort; needs --model, one of that model's effort_options (omit for the model's default)
   --new    always create a separate session; generate a name unless -n is given
@@ -998,6 +1000,16 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
         "--version" | "version" => return crate::status::version(&config, &target, args),
         // Read-only on every machine; never routed as an agent launch.
         "status" => return crate::status::run(&config, &target, args, dry),
+        // Model servers are configured on this computer, privately.
+        "model-server" => {
+            if !target.is_empty() && !config.is_self(&target) {
+                return Err(Error::new(2, "model-server is configured on this computer; omit @host"));
+            }
+            if dry {
+                return Err(Error::new(2, "model-server does not support --dry-run"));
+            }
+            return state::model_servers::dispatch(&config, args);
+        }
         // Text compiled into this hgs; a peer answers with its own.
         "guide" => {
             if !target.is_empty() && !config.is_self(&target) {
@@ -1257,6 +1269,9 @@ fn run(args: &[String]) -> Result<i32> {
     let _stops = platform::ShutdownGuard::install()?;
     #[cfg(windows)]
     crate::host::supervisor::open();
+    // An untracked launch takes the model server's secret environment from
+    // the private file the launch left, and removes it.
+    crate::state::model_servers::apply_session_secrets()?;
     if n != 0 {
         let start = Instant::now();
         let rc = run_resume(resume)?;
@@ -3060,6 +3075,8 @@ fn absolute_directory(path: &str) -> std::io::Result<PathBuf> {
 struct LaunchOptions {
     account: Option<String>,
     model: Option<String>,
+    /// `--model-server NAME`: this new session runs on a model server's API.
+    model_server: Option<String>,
     effort: Option<String>,
     launch_id: Option<String>,
     project: String,
@@ -3110,6 +3127,10 @@ impl LaunchOptions {
                 }
                 "--parent" => {
                     state::parent_link::accept_claimed(require(args, i + 1, "--parent needs a JSON identity")?).map_err(|e| Error::new(1, e))?;
+                    i += 1;
+                }
+                "--model-server" => {
+                    options.model_server = Some(require(args, i + 1, "--model-server needs a server name")?.into());
                     i += 1;
                 }
                 "--launch-id" => {
@@ -3346,7 +3367,16 @@ fn launch(
         if !options.dry { record_native_launch(options.launch_id.as_deref(), &name); }
         if !options.dry {println!("OpenCode session ready: {name}\nOpen this session in Zerus.");}return Ok(0);
     }
-    if options.model.is_some() || options.effort.is_some() {return Err(Error::new(1,"--model and --effort are OpenCode launch options; other agent flags go after --"));}
+    if options.model_server.is_some() {
+        if options.model.is_none() { return Err(Error::new(1, "--model-server needs --model MODEL")); }
+        if options.effort.is_some() { return Err(Error::new(1, "--effort is an OpenCode launch option; other agent flags go after --")); }
+        if !matches!(command_name.as_str(), "claude" | "codex") {
+            return Err(Error::new(1, "A model server session runs Claude Code or Codex"));
+        }
+        if options.resume || options.resume_id.is_some() || options.fresh {
+            return Err(Error::new(1, "--model-server starts a new session; resume keeps the conversation's original provider"));
+        }
+    } else if options.model.is_some() || options.effort.is_some() {return Err(Error::new(1,"--model and --effort are OpenCode launch options; other agent flags go after --"));}
     if command_name == "dsh" {
         if options
             .account
@@ -3474,6 +3504,22 @@ fn launch(
             account_environment = crate::accounts::select(config, id, &command_name)?;
         }
     }
+    // A model server session runs on the server's API; the settings are this
+    // launch's environment only, so the global agent configuration is
+    // untouched. The key is not part of that environment: it goes to a private
+    // file that `hgs --run` reads and removes, so no command line, terminal
+    // start command or dry-run carries it.
+    let mut model_server_args: Vec<String> = Vec::new();
+    let mut model_server_secrets: Vec<String> = Vec::new();
+    let mut model_server_name = String::new();
+    if let Some(server) = options.model_server.as_deref() {
+        let model = options.model.as_deref().ok_or_else(|| Error::new(1, "--model-server needs --model MODEL"))?;
+        let settings = crate::state::model_servers::session_settings(config, server, &command_name, model)?;
+        account_environment.extend(settings.env);
+        model_server_args = settings.args;
+        model_server_secrets = settings.secrets;
+        model_server_name = server.to_owned();
+    }
     #[cfg(unix)]
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     let (mut base, mut resume): (Vec<String>, Vec<String>) = match command_name.as_str() {
@@ -3495,6 +3541,29 @@ fn launch(
         ),
         _ => (vec![command.into()], Vec::new()),
     };
+    // Codex takes the server's model as a flag; Claude takes its model from
+    // the environment and the /model picker from a --settings file. A Claude
+    // account whose own settings point at a gateway gets the gateway's models
+    // the same way.
+    if command_name == "claude" && options.model_server.is_none() {
+        let home = account_environment
+            .iter()
+            .find_map(|line| line.strip_prefix("CLAUDE_CONFIG_DIR="))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(&config.home).join(".claude"));
+        if let Some(server) = crate::state::model_servers::account_gateway(&home) {
+            let model = options.model.clone().unwrap_or_default();
+            if let Some(path) = crate::state::model_servers::picker_settings(config, &server, &model) {
+                model_server_args.extend(["--settings".to_owned(), path.to_string_lossy().into_owned()]);
+            }
+        }
+    }
+    if matches!(command_name.as_str(), "claude" | "codex") {
+        base.extend(model_server_args.iter().cloned());
+        if command_name == "claude" && !resume.is_empty() {
+            resume.extend(model_server_args.iter().cloned());
+        }
+    }
     let program = if command_name == "sh" && cfg!(windows) { base.len() } else { 1 };
     crate::project_launcher::apply(&directory, &command_name, options.bare, program, &mut base, &mut resume)
         .map_err(|error| Error::new(1, error))?;
@@ -3608,6 +3677,12 @@ fn launch(
         environment.push(format!("HGS_LAUNCH_ID={id}"));
     }
     environment.extend(account_environment);
+    // The record names the server; the key reaches the agent only through the
+    // private file `hgs --run` reads and removes.
+    if !model_server_name.is_empty() {
+        environment.push(format!("HGS_MODEL_SERVER={model_server_name}"));
+        environment.push(format!("HGS_MODEL_SERVER_MODEL={}", options.model.as_deref().unwrap_or_default()));
+    }
     environment.extend(hint_environment);
     environment.extend(platform::gui_env());
     if !options.fresh
@@ -3692,6 +3767,14 @@ fn launch(
         println!("{}", terminal().describe(&DryRun::Launch(&spec)));
         return Ok(0);
     }
+    // The key file is written only here, right before the backend launch, and
+    // removed if that launch fails; `hgs --run` removes it on success.
+    let mut secret_path: Option<PathBuf> = None;
+    if !model_server_secrets.is_empty() {
+        let path = crate::state::model_servers::write_secret_file(&config.state, &model_server_secrets)?;
+        spec.env.push(format!("HGS_MODEL_SERVER_ENV={}", path.display()));
+        secret_path = Some(path);
+    }
     if tracked {
         spec.env.extend([
             format!("HGS_SESSION={session}"),
@@ -3731,6 +3814,11 @@ fn launch(
     }
     if options.detached {
         let rc = terminal().launch(&spec)?.code;
+        if rc != 0 {
+            if let Some(path) = &secret_path {
+                let _ = std::fs::remove_file(path);
+            }
+        }
         if rc == 0 {
             if let Some(id) = &options.launch_id {
                 // A session that ends before a listing shows it still ends

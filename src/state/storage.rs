@@ -24,6 +24,10 @@ pub(super) mod job_round;
 pub(super) mod owner_transfer;
 
 pub(super) fn root() -> PathBuf {
+    #[cfg(test)]
+    if let Some(root) = TEST_ROOT.with(|root| root.borrow().clone()) {
+        return root;
+    }
     nonempty_env("HGS_STATE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -32,6 +36,17 @@ pub(super) fn root() -> PathBuf {
                 .unwrap_or_else(|| home().join(".local/state"))
                 .join("hgs/sessions")
         })
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// A test's own state root on this thread (`with_test_state_root`).
+    static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn set_test_root(root: Option<PathBuf>) {
+    TEST_ROOT.with(|value| *value.borrow_mut() = root);
 }
 
 pub(super) fn private_dir(path: &Path) -> Result<()> {
@@ -104,6 +119,12 @@ pub(super) fn atomic(path: &Path, contents: &str) -> Result<()> {
     temp.as_file().sync_all().map_err(|e| e.to_string())?;
     crate::platform::persist(temp, path).map_err(|e| e.to_string())?;
     crate::platform::sync_dir(parent).map_err(|e| e.to_string())
+}
+
+/// `atomic` for a file read back as private (model servers, their catalog
+/// cache): the folder is private and a Unix temp file is created 0600.
+pub(super) fn atomic_private(path: &Path, contents: &str) -> Result<()> {
+    atomic(path, contents)
 }
 
 pub(super) type Guard = crate::platform::FileLock;

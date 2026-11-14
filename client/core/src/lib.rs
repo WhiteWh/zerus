@@ -47,6 +47,8 @@ pub mod marks;
 pub mod menubar;
 pub mod migration;
 pub mod mobile;
+pub mod model_servers;
+pub mod model_catalog;
 pub mod native_notice;
 pub mod notification_preferences;
 pub mod operation_recovery;

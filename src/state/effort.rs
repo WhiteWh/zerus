@@ -653,6 +653,44 @@ fn options(record: &Value, model: &str) -> Vec<String> {
     }
 }
 
+/// A Claude session behind a gateway (a model server, or an account whose
+/// settings set ANTHROPIC_BASE_URL) has no signed cloud catalog, so its model
+/// switch would offer nothing. Its models are the gateway's list, read within
+/// 3 s and kept for a minute.
+fn gateway_catalog(record: &Value) -> Vec<ModelOption> {
+    type CatalogCache = Mutex<BTreeMap<String, (Instant, Vec<ModelOption>)>>;
+    static CACHE: OnceLock<CatalogCache> = OnceLock::new();
+    let Some(server) = gateway_server(record) else { return vec![] };
+    let key = super::model_servers::root(&server);
+    let cache = CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+    if let Some((at, models)) = cache.lock().ok().as_ref().and_then(|cache| cache.get(&key).cloned()) {
+        if at.elapsed() < Duration::from_secs(60) {
+            return models;
+        }
+    }
+    let Ok(config) = crate::config::Config::load() else { return vec![] };
+    let models: Vec<ModelOption> = super::model_servers::model_names(&config, &server, Duration::from_secs(3))
+        .into_iter()
+        .filter(|id| safe_model(id))
+        .take(64)
+        .map(|id| ModelOption { label: id.clone(), id, efforts: vec![], default_effort: String::new() })
+        .collect();
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(key, (Instant::now(), models.clone()));
+    }
+    models
+}
+
+/// The gateway a Claude session talks to: its model server, else the base URL
+/// and token its account's settings give Claude Code.
+fn gateway_server(record: &Value) -> Option<super::model_servers::Server> {
+    if let Some(name) = record["model_server"]["server"].as_str().filter(|name| !name.is_empty()) {
+        let config = crate::config::Config::load().ok()?;
+        return super::model_servers::load(&config).ok()?.into_iter().find(|server| server.name == name);
+    }
+    super::model_servers::account_gateway(&agent_home(record))
+}
+
 #[derive(Clone, Debug)]
 struct ModelOption {
     id: String,
@@ -670,7 +708,8 @@ fn safe_model(value: &str) -> bool {
 
 fn catalog(record: &Value) -> Vec<ModelOption> {
     if string(record, "agent") == "claude" {
-        return claude_catalog(record);
+        let models = claude_catalog(record);
+        return if models.is_empty() { gateway_catalog(record) } else { models };
     }
     let mut result = Vec::new();
     if string(record, "agent") == "codex" {

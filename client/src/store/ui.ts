@@ -19,7 +19,7 @@ export type MenuEntry =
   | { separator: true }
   | { heading: string };
 
-export type Page = "dashboard" | "sessions" | "projects" | "machines" | "accounts" | "waiting" | "settings";
+export type Page = "dashboard" | "sessions" | "projects" | "machines" | "accounts" | "waiting" | "modelservers" | "settings";
 export type StateFilter = "all" | "attention" | "active" | "paused" | "archived";
 /** The Zerus mark's motion; the owner chose the two-turn spin-up (2026-10-27). */
 export type LogoMotion = "spin";

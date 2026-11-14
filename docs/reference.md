@@ -6645,6 +6645,245 @@ SSH launches; an `opencode` found earlier on PATH keeps precedence.
 
 <a id="deepseek"></a>
 
+## Model servers
+
+A model server is any computer on the LAN, or this one, that serves LLMs through
+an OpenAI- or Anthropic-compatible API. The agent and its tools run on this
+computer; the server only answers inference requests. Configuration is per
+computer, local and never committed: `model-servers.json` in the private config
+folder (`~/.config/hgs/` by default), written owner-only. A missing file means
+no server and no extra tab.
+
+Each server row has a `name`; the API `base_url`
+(`http://` or `https://HOST[:PORT][/path]`, no credentials or query) and its
+`kind` (`openai` or `anthropic`); an optional `key` (stored only in this private
+file, never shown by a listing); an optional `ssh` host, either one of this
+computer's Machines or an SSH alias, always reached through hgs's own SSH
+transport (BatchMode, `-n`, never a piped `ssh.exe` on Windows); and optional
+control commands as argv templates for `status`, `up`, `down` and `logs`.
+`{model}` is the only input a command receives and `{server}` its server name.
+Commands are argv lists, never shell lines: locally hgs starts the program
+itself and over SSH it quotes each argument for the peer's login shell.
+`up_minutes` bounds a detached `up` (30 by default, 1
+to 240).
+
+`base_url` names the server root, without `/v1`: the root is stored and each
+consumer derives its own URL from it — `GET root/v1/models` for the model list,
+`root/v1` for an OpenAI-compatible client, `root` for Claude Code (which appends
+`/v1/messages` itself). Both spellings, with and without `/v1`, are accepted and
+name the same server; the trailing `/v1` is not stored.
+
+```json
+{"version":1,"servers":[
+  {"name":"lab","base_url":"https://192.0.2.10:8443","kind":"openai","key":"<private>",
+   "ssh":"labhost","up_minutes":30,
+   "status":["serve","status"],"up":["serve","up","{model}"],
+   "down":["serve","down","{model}"],"logs":["serve","logs","{model}"]}
+]}
+```
+
+Without control commands the server is read only: `status` reads `root/v1/models`
+(with `Authorization: Bearer` for an OpenAI kind, `x-api-key` for Anthropic) and
+lists the models it returns. An `http://` server is read by hgs itself; an
+`https://` server is read through the system `curl` (`curl.exe` on Windows 10+,
+`curl` elsewhere), run with an argv list, `--fail-with-body` and `--max-time`,
+with the key in a private `--config` file in the config folder so it never
+appears on the command line. Curl's exit codes keep the errors distinct (6 and 7
+unreachable, 28 timed out, 22 an HTTP error with 401/403 unauthorized); when
+curl is missing, `status` says so as a refusal naming curl, and sessions still
+work because the agents speak TLS themselves. A control command may print the
+Zerus JSON contract
+`{"models":[{"name":"small","state":"running"}],"memory":{"free":12.5,"total":64}}`
+or plain lines `NAME: STATE`, with an optional `memory: FREE/TOTAL GB` line;
+a model in the JSON contract may carry `since`, when its state began (seconds
+since the epoch, or an RFC 3339 time), which the tab shows as "since 09:12";
+any other line is kept as raw text. States are shown lowercased. A `NAME: STATE`
+line splits at the last `": "`, so a model named with a tag (`coder-a:q4:
+running`) keeps its whole name and `Down` targets exactly that model; a name
+starting with `-` is offered by no list and refused by `up` and `down`.
+
+Commands (all local to the configured computer; `--json` is available on `list`
+and `status`):
+
+```text
+hgs model-server list [--json]
+hgs model-server status SERVER [--json]
+hgs model-server up SERVER MODEL [--detach]
+hgs model-server up-result REQUEST_ID --json
+hgs model-server sessions SERVER --json
+hgs model-server down SERVER MODEL [--yes]
+hgs model-server logs SERVER [MODEL] [--lines N]
+hgs model-server save --json      (JSON on stdin)
+hgs model-server test --json      (JSON on stdin)
+```
+
+Settings > Model servers writes the configuration with `save --json`: stdin
+`{"by":"human","servers":[...]}` replaces the whole list atomically. Only you
+save it (an agent session cannot, as for other owner settings). Each server
+may carry `was`, its previous name: a server without `key` keeps the key stored
+under `was`, and `"key":null` removes it. Every error names the server and the
+field, nothing is written on an error, and the receipt lists the servers as
+`list --json` does, never with a key. `test --json` takes one server as
+Settings shows it, saved or not (an absent `key` means the stored key of
+`was`, kept only while its root is unchanged — a test with another root never
+sends the stored key), runs `status` once and prints what `status --json`
+would, saving nothing. Settings tests the status and logs commands only; `up`
+and `down` belong to the Model servers tab with its confirmations. `list --json`
+also carries each server's command templates in `argv`.
+
+`list` shows `name`, `base_url`, `kind`, its SSH host and which control commands
+exist, never the key. `up` and `down` accept only a validated model name (letters,
+digits and `-_.:/@+`, no leading `-`) and return a receipt; `up --detach` starts
+the command in a detached `hgs model-server __up-run` process with the server's
+time limit, recorded under the state folder's `model-servers/runs/`, so the
+receipt carries its `request_id`. The run receives an argv, not a shell line, so a
+Windows path or a quoted remote command arrives as one argument. `up-result
+REQUEST_ID --json` reads that run's outcome: `status` `running`, `ran` (with
+`exit`, `timed_out` and the last 1000 characters of its output in `tail`) or
+`refused`, with its `server` and `model`; it reads only a detached up's own run
+and refuses any other id. The Model servers tab reads it every few seconds
+until the run ends, within its time limit, and shows the exit (with the last
+line of a failure's output), the time limit or the refusal. `sessions SERVER
+--json` lists this computer's live sessions whose binding names the server, as
+`{"server":...,"sessions":[{"name":...,"model":...}]}`; Down and Down all name
+them beside each model. A server may be
+shared, so `down` asks first and says so: without `--yes` it returns
+`{"status":"confirm",...}` and runs nothing. `logs` keeps the last `--lines`
+lines (200 by default, at most 2000) within a fixed time and output bound.
+
+Unreachable (the SSH host or API address does not answer), refused (the command
+or the API answered with a failure), timed out (the fixed limit passed) and
+unauthorized (`HTTP 401/403`) are distinct errors in `--json` output, for
+example `{"status":"error","error":"unauthorized","detail":"..."}`. Nothing
+retries on its own.
+
+Choose a server's API and model for a new session with
+`hgs codex DIRECTORY --new -n TAG --model-server lab --model small`. The launch
+carries this session's provider settings only. Codex gets a session-scoped
+custom provider, `-c model_providers.hgs-lab={name,base_url,env_key,wire_api}`
+and `-c model_provider=hgs-lab` with `--model small`: its `wire_api` follows
+the installed Codex (`chat` before 0.100, `responses` from then on, where
+`chat` is deprecated and removed from the newest releases), and it reads its
+key from `HGS_MODEL_SERVER_KEY`, so neither the built-in OpenAI provider nor a
+ChatGPT login is used.
+Claude Code gets `ANTHROPIC_BASE_URL` (the root) and its model variables, with
+the token in `ANTHROPIC_AUTH_TOKEN`. OpenCode is not offered for a model server
+until it has a per-session provider contract; a global provider entry would
+break the session scope. The user's global agent configuration is never
+changed.
+
+The key never travels on a command line: the launch leaves the session's secret
+environment in a private file and passes only its path to `hgs --run`, which
+reads it, gives it to the agent and removes the file. It is therefore absent
+from the tmux start command, from the session's environment listing and from
+`--dry-run` (which prints `NAME=***` for a secret). Only the agent's own
+environment inherits it.
+
+A server may carry `contexts`, each model's context window in tokens as the
+server runs it (`{"coder": 262144}`; 4096 to 10,000,000, at most 500 models).
+Settings keeps it on save without editing it. A session on such a model tells
+its agent the window: Claude Code gets `CLAUDE_CODE_MAX_CONTEXT_TOKENS` (it
+otherwise assumes 200k for a model it does not know, and compacts there), Codex
+`-c model_context_window=N`. Change the value when the server's engine changes
+the window. A Claude Code launch also reads the server's model list (5 s at
+most) into a settings file of that launch, passed with `--settings`: its
+`/model` picker offers the server's models, the session's own first, instead
+of the cloud models that answer nothing behind this server (Claude Code's own
+gateway discovery keeps only `claude`/`anthropic` IDs). An unreadable list
+leaves the picker as it is; the session still starts.
+
+A session records its model server and model. `hgs resume` applies those
+settings again; when the server is no longer configured the resume is refused
+with a message naming it instead of falling back to the cloud account.
+
+### Model servers on model-catalog/2
+
+A server row with `"protocol": "model-catalog/2"` reads one catalog document
+instead of the plain status contract. The catalog comes from `catalog`, an argv
+run like the other control commands (through hgs's SSH transport), or from
+`api`, `{"base_url": "http://HOST:4010", "key": "<private>"}`, whose
+`GET base_url/v1/catalog` carries the key as a Bearer token. The API key follows
+the server key's rules: it stays in the private file, `list --json` shows only
+`"api": {"base_url": ..., "key": true}`, a Settings save without `api.key` keeps
+the stored key while the API root is unchanged and `"key": null` removes it. A
+row without `protocol` behaves exactly as before; `catalog`, `api` and `variant`
+need the protocol.
+
+```json
+{"name":"gb10","base_url":"http://192.0.2.79:4000","kind":"anthropic","ssh":"gb10",
+ "protocol":"model-catalog/2","catalog":["gb10-model","catalog"],
+ "variant":["gb10-model","engine","{model}","{variant}"],
+ "up":["gb10-model","up","{model}"],"down":["gb10-model","down","{model}"],
+ "logs":["gb10-model","logs","{model}"]}
+```
+
+`status SERVER --json` then lists the catalog's services with the plain fields
+(`name`, a lowercased `state`, `since`, `memory` with its `unit`) and the
+catalog's own: `variant`, `variant_selected`, `variants` (each with `context`,
+`needs_gib`, `tok_s`, `code_tok_s`, `selected`, `running`), `context` (the live
+window, or the selected variant's while stopped), `context_max`, `api_models`,
+`managed`, `fit`, `memory_gib`, `needs_gib` and `actions`, plus `speed` (the
+selected variant's `tok_s` and `code_tok_s`), `gateway` and `fetched_at`. A
+manual entry in `contexts` for the service or one of its API names overrides
+the catalog's window and appears as `context_manual`. Every successful read is
+cached privately under the state folder; when the server does not answer,
+`status` returns the cached catalog with `"stale": true`, its `fetched_at` and
+the failure's `error` and `detail` (unreachable, refused, timed out or
+unauthorized, as before). With no cache the failure is the answer.
+
+A session on a catalog server names a service (or one of its API names) with
+`--model`. The API name follows the agent's wire: Claude Code takes the
+service's first `api_models` entry with `"wire": "anthropic"` and
+`ANTHROPIC_BASE_URL` from `gateway.anthropic_base_url`; Codex takes the
+`"wire": "openai"` entry and `gateway.openai_base_url`. A service without a
+name for the agent's wire is refused with that reason, so one row serves both
+agents and `kind` only matters for a server without a catalog. The window comes
+from the catalog at launch: Claude Code gets `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
+and Codex `model_context_window` from the service's `context`, so switching a
+variant needs no edit of `contexts`. A launch waits at most 5 s for a fresh
+catalog and otherwise uses the cached one. The Claude Code `/model` picker
+offers only anthropic-wire API names, each with its window. The session
+records the server, the requested model and the resolved `service`,
+`api_model`, `variant` and `context`; a resume resolves them again and warns
+when the window changed since the launch.
+
+```text
+hgs model-server variant SERVER MODEL VARIANT [--restart] [--yes] [--detach]
+```
+
+`variant` selects one of the service's `variants[].id`, or `auto` to drop the
+manual choice. The variant is validated by the model-name rules and against the
+fresh catalog before anything runs; a service with `managed: false` or without
+`actions.variant` is refused. A stopped service changes its selection at once.
+A running service restarts, so it needs `--restart` and then confirms first:
+without `--yes` the receipt is `{"status":"confirm",...}` with the `sessions`
+the restart interrupts. Through `api` it posts `/v1/models/MODEL/engine`
+(`{"engine":VARIANT,"restart":BOOL,"wait":false}`); through the command door
+it runs `down`, the `variant` argv and `up` (`--detach` as for `up`). Up, Down
+and Logs fall back to the API (`start`, `stop`, `logs?lines=N`) when the row has
+no command for them.
+
+`sessions SERVER --json` of a catalog server adds each session's `service` and
+`via`: `server` for a session started on the row (matched by any API name of
+the service), `account` for a session whose account settings point
+`ANTHROPIC_BASE_URL` at the catalog's gateway. Down's confirmation lists the
+sessions of the service it stops.
+
+The Model servers tab reads a catalog server every 8 s while it shows, and
+after an action until no service is starting or stopping. Each service row
+shows its state with `since`, a Quality menu of its variants (window, memory and
+speed of each, plus `auto`), its window (marked manual when `contexts`
+overrides it), memory in use of needed, `fit`, the selected variant's speed and
+which of your sessions use it. Choosing a variant of a stopped service applies
+it at once; a running one asks first, naming its sessions, and restarts. A
+`managed: false` service is greyed, without actions, as running outside the
+server's control. A stale read shows its cached rows under the failure and the
+time of that read. New session on a service offers each agent only when the
+service has an API name of its wire, and shows the API name and window the
+session will get.
+
+<a id="deepseek"></a>
+
 ## Official DeepSeek Harness
 
 The native adapter accepts exactly the reviewed `@deepseek-ai/dsh` releases

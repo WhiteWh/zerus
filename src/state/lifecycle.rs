@@ -117,6 +117,10 @@ pub(super) fn run(args: &[String]) -> Result<i32> {
             std::env::remove_var(key);
         }
     }
+    // The model server's secret environment comes from the private file the
+    // launch left; it is applied after the account's variables so a managed
+    // account cannot strip it, and the file is removed here.
+    crate::state::model_servers::apply_session_secrets().map_err(|error| error.message)?;
     if agent == "claude" {
         // The tmux server may predate this SSH connection and still belong to
         // another security session. Join immediately before the native launch.
@@ -235,6 +239,11 @@ pub(super) fn run(args: &[String]) -> Result<i32> {
             home: nonempty_env(home_var(&agent)?),
             session: allocation.as_ref().map(|allocation| allocation.session()),
         });
+        // A session on a model server names the server and model it runs on,
+        // so a later resume applies the same provider or refuses.
+        if let Some(model_server) = model_server_record() {
+            record["model_server"] = model_server;
+        }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if agent == "claude" {
             if let Some(directory) = continuations::launch_registry_home() {
@@ -879,6 +888,12 @@ fn session_spec(
     dry: bool,
 ) -> Result<backend::LaunchSpec> {
     let name = string(record, "name");
+    // A Claude session behind a gateway started before its launch carried the
+    // /model picker; its resume adds it.
+    let mut argv = argv;
+    if !argv.iter().any(|arg| arg == "--settings") {
+        argv.extend(super::model_servers::resume_picker_args(record));
+    }
     if !(Path::new(string(record, "launch_dir")).is_dir() || archive_id.is_some() && super::worktree_lifecycle::restorable(record)) {
         return Err(format!(
             "{name}: directory is missing: {}",
@@ -935,6 +950,31 @@ fn session_spec(
         home_var(string(record, "agent"))?,
         string(record, "agent_home").to_owned(),
     );
+    // A session started on a model server resumes with the same provider and
+    // model. Its key goes to a private file `hgs --run` reads and removes; a
+    // server that is gone refuses the resume instead of silently falling back
+    // to the cloud account.
+    let mut model_server_vars: Vec<String> = Vec::new();
+    if let Some(model_server) = record["model_server"].as_object() {
+        let server = model_server["server"].as_str().unwrap_or_default();
+        let model = model_server["model"].as_str().unwrap_or_default();
+        let config = crate::config::Config::load().map_err(|error| error.message)?;
+        let (env, secrets) = super::model_servers::resume_environment(&config, server, string(record, "agent"), model)
+            .map_err(|error| format!("{name}: model server {server} cannot start this session again: {}", error.message))?;
+        let window = |lines: &[String]| lines.iter().find_map(|line| line.strip_prefix("HGS_MODEL_SERVER_CONTEXT=").and_then(|tokens| tokens.parse::<u64>().ok()));
+        if let (Some(before), Some(now)) = (model_server["context"].as_u64(), window(&env)) {
+            if before != now {
+                eprintln!("hgs: {name}: model server {server} now runs {model} with a {now}-token context (it started with {before}); the session continues with the new window");
+            }
+        }
+        model_server_vars.extend(env);
+        if !dry && !secrets.is_empty() {
+            let path = super::model_servers::write_secret_file(&absolute_root()?, &secrets).map_err(|error| error.message)?;
+            model_server_vars.push(format!("HGS_MODEL_SERVER_ENV={}", path.display()));
+        }
+        model_server_vars.push(format!("HGS_MODEL_SERVER={server}"));
+        model_server_vars.push(format!("HGS_MODEL_SERVER_MODEL={model}"));
+    }
     Ok(backend::LaunchSpec {
         name: terminal,
         cwd: string(record, "launch_dir").to_owned(),
@@ -943,6 +983,7 @@ fn session_spec(
             .map(|(key, value)| format!("{key}={value}"))
             .chain(account_variables(record))
             .chain(hint_environment)
+            .chain(model_server_vars)
             .collect(),
         command: launch,
         detached: true,
@@ -999,7 +1040,7 @@ pub(super) fn started_record(s: Started<'_>) -> Value {
 }
 /// What a resume carries from the record it resumes, beside its transcript,
 /// journal and agent hint.
-const RESUMED: [&str; 21] = [
+const RESUMED: [&str; 22] = [
     "prompt",
     "launch_id",
     "last_message",
@@ -1020,6 +1061,7 @@ const RESUMED: [&str; 21] = [
     "launch_label",
     "layout",
     "parent",
+    "model_server",
     // Keep recorded evidence with its original run; this grants no live control.
     "shell_jobs",
 ];
@@ -1234,6 +1276,22 @@ pub(super) fn resume_scoped(names: &[String], dry: bool, scope: Option<&session_
         }
     }
     Ok(0)
+}
+
+fn model_server_record() -> Option<Value> {
+    nonempty_env("HGS_MODEL_SERVER").map(|server| {
+        let mut binding = json!({"server": server, "model": nonempty_env("HGS_MODEL_SERVER_MODEL").unwrap_or_default()});
+        // model-catalog/2: the service, API name, variant and window at launch.
+        for (field, var) in [("service", "HGS_MODEL_SERVER_SERVICE"), ("api_model", "HGS_MODEL_SERVER_API_MODEL"), ("variant", "HGS_MODEL_SERVER_VARIANT")] {
+            if let Some(value) = nonempty_env(var) {
+                binding[field] = json!(value);
+            }
+        }
+        if let Some(tokens) = nonempty_env("HGS_MODEL_SERVER_CONTEXT").and_then(|tokens| tokens.parse::<u64>().ok()) {
+            binding["context"] = json!(tokens);
+        }
+        binding
+    })
 }
 
 /// `hgs resume <session> --fresh`: the stopped session's own launch recipe,
