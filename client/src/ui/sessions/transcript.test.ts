@@ -307,6 +307,32 @@ describe("main message window outside the tool-event tail", () => {
   });
 });
 
+describe("a Stop that comes seconds after its transcript reply", () => {
+  it("shows the reply once (the hook 6 s after the transcript)", () => {
+    const reply = "DeepSeek 2.25 bits is only at the start: 20 tool calls in 18 minutes.";
+    const events = [
+      { seq: 1, type: "UserPromptSubmit", agent_id: "main", detail: "how is it going?", at: 100 },
+      { seq: 2, type: "Stop", agent_id: "main", detail: reply, at: 106.6 },
+    ];
+    const items = buildTranscript(events, { provider_messages: [
+      { type: "AgentMessage", source: "claude_transcript", message_id: "msg-1", agent_id: "main", at: 101, detail: reply },
+    ] });
+    expect(items.filter(item => item.kind === "agent" && item.body === reply)).toHaveLength(1);
+  });
+
+  it("keeps a later reply with the same opening that follows another agent message", () => {
+    const events = [
+      { seq: 1, type: "Stop", agent_id: "main", detail: "Done.", at: 100 },
+      { seq: 2, type: "UserPromptSubmit", agent_id: "main", detail: "again", at: 110 },
+      { seq: 3, type: "Stop", agent_id: "main", detail: "Done.", at: 130 },
+    ];
+    const items = buildTranscript(events, { provider_messages: [
+      { type: "AgentMessage", source: "claude_transcript", message_id: "msg-1", agent_id: "main", at: 100, detail: "Done." },
+    ] });
+    expect(items.filter(item => item.kind === "agent" && item.body === "Done.")).toHaveLength(2);
+  });
+});
+
 describe("bounded message-window input", () => {
   it("renders main UserMessage rows and excludes nested child messages and operational rows", () => {
     const items = buildTranscript([], { message_events: [

@@ -414,6 +414,8 @@ export function mergeMessages(given: readonly ActivityEvent[], summary?: Record<
   else if (events.every(event => typeof event.at === "number" && Number.isFinite(event.at) && event.at > 0)) events.sort((a, b) => a.at! - b.at!);
   return events;
 }
+/** How long after a reply reached the transcript its Stop hook may still come. */
+const STOP_LAG_SECONDS = 120;
 const isExcerpt = (excerpt: string, full: string) => {
   const prefix = excerpt.endsWith("…") ? excerpt.slice(0, -1) : excerpt;
   return !!prefix && full.startsWith(prefix);
@@ -469,9 +471,23 @@ export function mergeProvider(given: readonly ActivityEvent[], summary?: Record<
     if (same) continue;
     // The hook's final excerpt and the provider's full response are one row.
     // An empty Stop never absorbs commentary immediately before completion.
-    const stop = message.type === "AgentMessage" ? nearby.find((i) => !matchedStops.has(i) && events[i].type === "Stop"
+    let stop = message.type === "AgentMessage" ? nearby.find((i) => !matchedStops.has(i) && events[i].type === "Stop"
       && Math.abs(at(events[i]) - when) <= 2
       && (events[i].detail ? isExcerpt(events[i].detail!, message.detail ?? "") : message.message_phase !== "commentary")) : undefined;
+    // Claude's Stop hook can fire seconds after the reply
+    // reached its transcript (05:16:54 and 05:17:00), and the reply showed
+    // twice. A later Stop whose own text is this reply's excerpt is the same
+    // reply, within two minutes and with no other agent message between.
+    if (stop === undefined && message.type === "AgentMessage" && message.detail) {
+      for (let i = 0; i < events.length; i++) {
+        const e = events[i];
+        const gap = at(e) - when;
+        if (e.type !== "Stop" || matchedStops.has(i) || !e.detail || gap < 0 || gap > STOP_LAG_SECONDS || childEvent(e)) continue;
+        if (!isExcerpt(e.detail, message.detail)) continue;
+        const between = events.some((other) => other !== e && !childEvent(other) && messageRole(other) && at(other) > when && at(other) < at(e));
+        if (!between) { stop = i; break; }
+      }
+    }
     if (stop !== undefined) {
       matchedStops.add(stop);
       events[stop] = { ...events[stop], detail: message.detail, source: message.source, message_id: message.message_id };
