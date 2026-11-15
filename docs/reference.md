@@ -8495,6 +8495,30 @@ own queue, the refusal says so. `agent_id` is supported only for
 verified DeepSeek continuable children. Questions carry request identity/hash
 through `pending_questions`; answers use the exact unchanged request.
 
+Until the agent confirms the previous input, a further send is refused, unless
+the request sets `queue_when_unconfirmed: true` and the inspection reports
+`input_hold_supported`: hgs then holds the message (at most 8 per session, in
+order) and answers `status: queued` under its request ID. One deliverer per
+session sends each held message through the same checks once the previous input
+is confirmed; `held_inputs` in the inspection lists those still waiting and
+`held_settled` the latest that were not delivered. A held message's receipt ends
+`submitted`, `cancelled` or `failed`. `hgs [@host] send-cancel SESSION --json`
+with `{"request_id"}` cancels one still held; a cancelled message is never sent.
+After an uncertain delivery nothing more is sent automatically, and a held
+message is never replayed. The desktop shows held messages above the message
+field with Cancel.
+
+Text left in Claude's or Codex's own input holds every message sent from
+Activity. When a send is refused for it, after an outcome the desktop service
+could not confirm, or while messages wait for an agent that is not working,
+Activity shows that draft above the message field with **Send it** and **Open
+Terminal**, and reads it again while it shows. Send it presses Enter in Terminal
+only while the input still holds exactly the draft shown (`hgs terminal
+<session> --json` with `"action":"draft"`, then `"action":"submit_draft"` and its
+`draft_hash`; a replayed request ID returns its receipt and presses nothing).
+Your own message stays in its field. HGS never types into, edits or clears the
+draft.
+
 An inspection indexes the Codex question transcript and recovers earlier
 submitted answers from this session's question receipts within one shared
 one-second budget, saving its progress so the next inspection resumes. Its

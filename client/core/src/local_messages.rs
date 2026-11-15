@@ -434,6 +434,21 @@ impl LocalMessages {
             .collect()
     }
 
+    /// A send hgs holds until the agent takes the previous message (U35):
+    /// its row goes, since the held-messages bar shows it instead of a sent
+    /// card (`SessionsWindow::finishMessage`). Returns the row it took.
+    pub fn take(&mut self, key: &str, id: &str) -> Option<LocalMessage> {
+        let rows = self.rows.get_mut(key)?;
+        let at = rows.iter().position(|row| row.id == id)?;
+        let row = rows.remove(at);
+        if rows.is_empty() {
+            self.drop_key(key);
+        } else {
+            self.touch(key);
+        }
+        Some(row)
+    }
+
     /// Delete removes a failed row only.
     pub fn delete(&mut self, key: &str, id: &str) -> bool {
         let Some(rows) = self.rows.get_mut(key) else {

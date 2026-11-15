@@ -451,6 +451,7 @@ fn pending_reserves_the_existing_write_lane_without_blocking_messages() {
         attachments: Vec::new(),
         agent_id: None,
         expected_compaction_id: None,
+        queue_when_unconfirmed: false,
     };
     assert!(actions.begin(Lane::key(&c.target, &send), &send).is_some());
     assert!(delays

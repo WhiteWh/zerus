@@ -1013,6 +1013,34 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                 app.manage(task_executor::TaskExecutors::start(app.handle()));
                 let composers = app.state::<composer::Composers>();
                 app.state::<actions::Actions>().on_writes(composers.changed_hook());
+                // U35 Cancel and the Terminal draft (`hgs send-cancel`,
+                // `hgs terminal`): a replay without an explicit
+                // ZERUS_CLIENT_HGS never reaches the real CLI.
+                {
+                    let allowed = actions::actions_allowed(
+                        std::env::var("ZERUS_CLIENT_REPLAY").ok().as_deref(),
+                        std::env::var("ZERUS_CLIENT_HGS").ok().as_deref(),
+                    );
+                    let hgs = zerus_client_core::default_hgs();
+                    composers.set_hgs(std::sync::Arc::new(
+                        move |inv: &zerus_client_core::Invocation| {
+                            if !allowed {
+                                return zerus_client_core::Exit::StartFailed(
+                                    actions::REPLAY_NEEDS_HGS.to_owned(),
+                                );
+                            }
+                            zerus_client_core::run_limited(
+                                &hgs,
+                                inv,
+                                &[],
+                                zerus_client_core::held_input::REPLY_BYTES,
+                            )
+                            .unwrap_or_else(|_| zerus_client_core::Exit::Abnormal {
+                                stderr: "The reply was too large.".into(),
+                            })
+                        },
+                    ));
+                }
                 // Sends the desktop service takes (deferred_send) on Linux and
                 // macOS in desktop-service mode; every other Send stays direct.
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1962,6 +1990,8 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         composer::send::send_cancel,
         composer::send::send_interrupted,
         composer::send::send_interrupt_failed,
+        composer::held::held_cancel,
+        composer::held::terminal_draft_submit,
         composer::send::clear_context,
         composer::questions::question_edit,
         composer::questions::question_page,

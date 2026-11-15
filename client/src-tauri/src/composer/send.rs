@@ -1078,6 +1078,11 @@ impl Composers {
         self.edit(handle, rev, epoch, text.clone(), position, anchor);
         let mut hub = self.lock();
         let reply = self.send_held(&mut hub, handle, epoch, &text);
+        // A Send that did nothing says why when its composer knows: the
+        // previous message is unconfirmed or still on its way.
+        if reply == SendReply::Busy {
+            self.busy_notice(&mut hub, handle);
+        }
         if matches!(reply, SendReply::Busy | SendReply::Blocked { .. }) {
             self.hand_back(hub, handle);
         } else {
@@ -1520,6 +1525,14 @@ impl Composers {
                 .as_ref()
                 .map(|child| child.agent_id.clone()),
             expected_compaction_id: delivery.compaction.clone(),
+            // U35 (`SessionsWindow.cpp:6304`): only the session's own agent,
+            // and only when the details it was checked against say this hgs
+            // holds messages; an older hgs refuses the field.
+            queue_when_unconfirmed: delivery.session.subagent.is_none()
+                && delivery
+                    .evidence
+                    .as_deref()
+                    .is_some_and(|details| flag(details, "input_hold_supported")),
         };
         // The desktop service takes it, decided before any offer; once
         // offered, its answer stands and nothing falls back.
@@ -1562,6 +1575,28 @@ impl Composers {
     /// `service`: the desktop service's own line, shown as is.
     pub(super) fn delivered(&self, delivery: &Delivery, outcome: &Outcome, service: bool) {
         let (key, request_id) = (&delivery.key, &delivery.request_id);
+        let open = || self.lock().open_key.as_deref() == Some(key.as_str());
+        // U35 (`finishMessage`): a message hgs holds leaves the composer like
+        // a sent one, but shows in the held bar, not as a sent card.
+        if let Outcome::Done { receipt, .. } = outcome {
+            if receipt["status"] == "queued" && delivery.session.subagent.is_none() {
+                self.held_queued(key, request_id, receipt, &delivery.text);
+                self.push_finished(request_id, true, false);
+                self.ended(delivery, true, "", false);
+                if open() {
+                    self.refresh_details();
+                }
+                return;
+            }
+        }
+        // Text left in the agent's Terminal input refused it, or the desktop
+        // service could not tell what happened: show that draft, if any.
+        let draft = delivery.session.subagent.is_none()
+            && match outcome {
+                Outcome::Failed { detail } => detail.contains("has a draft"),
+                Outcome::Uncertain { .. } => service,
+                Outcome::Done { .. } => false,
+            };
         let detail = if service {
             self.lock().local.finished_as_is(key, request_id, outcome)
         } else {
@@ -1572,8 +1607,11 @@ impl Composers {
         self.push_finished(request_id, ok, uncertain);
         self.ended(delivery, ok, &detail, uncertain);
         // `finishMessage`: the open session is read again (`inspect()`).
-        if self.lock().open_key.as_deref() == Some(key.as_str()) {
+        if open() {
             self.refresh_details();
+            if draft {
+                self.draft_check(false);
+            }
         }
     }
 
@@ -5433,6 +5471,7 @@ pub(crate) mod tests {
             attachments,
             agent_id,
             expected_compaction_id,
+            ..
         } = action
         else {
             panic!("not a send")

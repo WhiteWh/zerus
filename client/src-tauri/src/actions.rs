@@ -4216,6 +4216,7 @@ mod tests {
             attachments: Vec::new(),
             agent_id: None,
             expected_compaction_id: None,
+            queue_when_unconfirmed: false,
         };
         for (action, code, stderr) in [
             (
@@ -4290,6 +4291,7 @@ mod tests {
             attachments: Vec::new(),
             agent_id: None,
             expected_compaction_id: None,
+            queue_when_unconfirmed: false,
         };
         // As the composer's dispatch dep runs it: `block_on` on a blocking
         // thread of the app's runtime.
@@ -5385,6 +5387,7 @@ mod tests {
             attachments: vec![],
             agent_id: agent.map(str::to_owned),
             expected_compaction_id: None,
+            queue_when_unconfirmed: false,
         };
         assert_eq!(Lane::of(&send(None)), Lane::Send);
         let flight = InFlight::default();
@@ -5445,6 +5448,7 @@ mod tests {
                     attachments: Vec::new(),
                     agent_id: None,
                     expected_compaction_id: None,
+                    queue_when_unconfirmed: false,
                 },
             ))
             .unwrap();

@@ -54,6 +54,10 @@ struct Request {
     attachments: Vec<Attachment>,
     #[serde(default)]
     expected_compaction_id: String,
+    /// Hold the message in hgs while the previous input is unconfirmed
+    /// (clients that read `input_hold_supported`); otherwise it is refused.
+    #[serde(default)]
+    queue_when_unconfirmed: bool,
 }
 
 fn validate(request: &Request) -> Result<Vec<Vec<u8>>> {
@@ -127,7 +131,7 @@ pub(super) fn validate_launch_prompt(text: &str) -> Result<()> {
     validate(&Request {
         request_id: uuid::Uuid::new_v4().to_string(), text: text.into(),
         expected_run_id: "launch".into(), expected_conversation_id: String::new(),
-        attachments: Vec::new(), expected_compaction_id: String::new(),
+        attachments: Vec::new(), expected_compaction_id: String::new(), queue_when_unconfirmed: false,
     }).map(|_| ())
 }
 
@@ -532,15 +536,15 @@ fn checked_bound_record_gate(
         idle_only(&record)?;
     }
     if ordinary_typing(&record).is_some() {
-        return Err("previous input has not been confirmed yet: another message is being entered into this session; try again in a few seconds".into());
+        return Err(TYPING_REFUSAL.into());
     }
     if input_unconfirmed(&record) {
         // zerus-iitw8.6: a busy agent may hold it in its own queue until it
         // takes it, which only then confirms it.
         if string(&record, "activity") == "busy" {
-            return Err("previous input has not been confirmed by the agent; a busy agent may keep it queued until it accepts it. Send again once it does, or inspect Terminal".into());
+            return Err(UNCONFIRMED_BUSY.into());
         }
-        return Err("previous input has not been confirmed by the agent; inspect Terminal before sending again".into());
+        return Err(UNCONFIRMED.into());
     }
     if settings_unconfirmed(&record) {
         return Err(SETTINGS_UNCONFIRMED.into());
@@ -1305,6 +1309,110 @@ pub(super) fn codex_draft(record: &Value, screen: &str, cursor_y: usize) -> Opti
     Some(std::iter::once(first).chain(rows).collect::<Vec<_>>().join("\n").trim_end().to_owned())
 }
 
+/// The whole draft in Claude's input: the prompt row right under its upper
+/// separator, then indented rows up to the lower separator. The cursor must
+/// stand inside it, so a dialog or the transcript's own prompt rows never
+/// count; dim placeholder text is not a draft. `screen` is the styled capture.
+pub(super) fn claude_draft(screen: &str, cursor_y: usize) -> Option<String> {
+    let mut style = TerminalStyle::default();
+    let rows: Vec<String> = screen
+        .lines()
+        .map(|row| styled_cells(row, &mut style).into_iter().map(|(ch, cell)| if cell.dim { ' ' } else { ch }).collect())
+        .collect();
+    let separator = |row: &str| {
+        let row = row.trim_end();
+        !row.starts_with(char::is_whitespace) && row.chars().count() >= 12 && row.chars().all(|ch| "─━╌".contains(ch))
+    };
+    let tail = |row: &str| -> Option<String> {
+        let mut chars = row.strip_prefix('❯').or_else(|| row.strip_prefix('>'))?.chars();
+        match chars.next() {
+            None => Some(String::new()),
+            // Native Claude uses a non-breaking space after its prompt glyph.
+            Some(ch) if ch.is_whitespace() => Some(chars.collect()),
+            _ => None,
+        }
+    };
+    let start = (1..=cursor_y.min(rows.len().checked_sub(1)?)).rev().find(|&i| tail(&rows[i]).is_some())?;
+    if !separator(&rows[start - 1]) {
+        return None;
+    }
+    let end = (start + 1..rows.len().min(start + 400)).find(|&i| separator(&rows[i]))?;
+    if !(start..end).contains(&cursor_y) {
+        return None;
+    }
+    let first = tail(&rows[start])?;
+    let rest = rows[start + 1..end].iter().map(|row| row.strip_prefix("  ").unwrap_or(row.trim_start()));
+    let text = std::iter::once(first.as_str()).chain(rest).map(str::trim_end).collect::<Vec<_>>().join("\n");
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+/// Task 121: the draft in Kimi's input, from a recorded Kimi screen. Two
+/// layouts speak: Kimi 2.5.x draws the composer as a `│…│` box closed by a
+/// `╰…╯` border; older ones write a `>` prompt row with indented continuation
+/// rows ended by a full-width rule. The box's rows are read up from the border
+/// under the cursor; the plain prompt row is the last `>` row. A dialog or a
+/// trust panel has neither and reads as no draft.
+pub(super) fn kimi_draft(screen: &str, cursor_y: usize) -> Option<String> {
+    let lines: Vec<&str> = screen.lines().map(str::trim_end).collect();
+    let border = (cursor_y + 1..lines.len()).find(|&index| {
+        let row = lines[index].trim_start();
+        row.starts_with('╰') && row.ends_with('╯') && row.chars().all(|ch| "╰─╯".contains(ch))
+    });
+    if let Some(border) = border {
+        let mut rows: Vec<&str> = Vec::new();
+        for row in lines[..border].iter().rev() {
+            let Some(inner) = row
+                .strip_prefix(' ')
+                .and_then(|row| row.strip_prefix('│'))
+                .and_then(|row| row.strip_suffix('│'))
+            else {
+                break;
+            };
+            rows.push(inner.trim_end());
+        }
+        rows.reverse();
+        let text = rows.join("\n");
+        let text = text.trim_start();
+        let text = text.strip_prefix('>').unwrap_or(text).trim_start().trim_end();
+        return (!text.is_empty()).then(|| text.to_owned());
+    }
+    let prompt = lines.iter().rposition(|row| {
+        let row = row.trim_start();
+        row.starts_with('>') && !row.starts_with(">>")
+    })?;
+    let mut rows = vec![lines[prompt].trim_start().trim_start_matches('>').trim_start()];
+    for row in &lines[prompt + 1..] {
+        let trimmed = row.trim();
+        if trimmed.is_empty() {
+            break;
+        }
+        if trimmed.chars().count() >= 12 && trimmed.chars().all(|ch| "─━╌".contains(ch)) {
+            break;
+        }
+        if !row.starts_with(char::is_whitespace) {
+            break;
+        }
+        rows.push(row.trim_start());
+    }
+    let text = rows.join("\n");
+    let text = text.trim_end();
+    (!text.trim().is_empty()).then(|| text.to_owned())
+}
+
+/// The draft in the native composer, for the owner to see and submit from any
+/// window (owner, 2026-10-28: text left in Terminal blocked every send).
+/// Claude reads the styled capture, Codex the plain one, Kimi the plain one
+/// (both its box and its plain prompt row); other agents none.
+pub(super) fn native_draft(record: &Value, styled: &str, plain: &str, cursor_y: usize) -> Option<String> {
+    match string(record, "agent") {
+        "claude" => claude_draft(styled, cursor_y),
+        "codex" => codex_draft(record, plain, cursor_y).filter(|draft| !draft.trim().is_empty()),
+        "kimi" => kimi_draft(plain, cursor_y),
+        _ => None,
+    }
+}
+
 pub(super) fn safe_filename(name: &str, index: usize) -> String {
     let name: String = name
         .chars()
@@ -1611,6 +1719,19 @@ enum Origin<'a> {
     Answer,
     Recovery(&'a str),
     KeepWarm(&'a str),
+    /// A message hgs held, sent by its deliverer (`input_hold`).
+    Held,
+}
+
+/// The refusals a message the person sent may wait behind instead
+/// (`queue_when_unconfirmed`): the previous input is not taken yet.
+pub(super) const UNCONFIRMED: &str = "previous input has not been confirmed by the agent; inspect Terminal before sending again";
+pub(super) const UNCONFIRMED_BUSY: &str = "previous input has not been confirmed by the agent; a busy agent may keep it queued until it accepts it. Send again once it does, or inspect Terminal";
+pub(super) const TYPING_REFUSAL: &str = "previous input has not been confirmed yet: another message is being entered into this session; try again in a few seconds";
+
+/// A held message, by its deliverer, through the same checks as any send.
+pub(super) fn submit_held(name: &str, input: &[u8]) -> Result<Value> {
+    submit_with(name, input, Origin::Held, false)
 }
 
 /// A keep-warm ping (`keep_warm::TEXT`) for ping `id`. Like a task reply it
@@ -1728,7 +1849,7 @@ enum Existing {
     Unknown(String),
 }
 
-fn existing(receipt_path: &Path, digest: &str, name: &str) -> Existing {
+fn existing(receipt_path: &Path, digest: &str, name: &str, held: bool) -> Existing {
     match fs::symlink_metadata(receipt_path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Existing::Absent,
         Err(error) => return Existing::Unknown(error.to_string()),
@@ -1741,17 +1862,28 @@ fn existing(receipt_path: &Path, digest: &str, name: &str) -> Existing {
         Ok(receipt) => receipt,
         Err(error) => return Existing::Unknown(error),
     };
-    existing_value(receipt, digest, name)
+    existing_value_for(receipt, digest, name, held)
 }
 
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 fn existing_value(receipt: Value, digest: &str, name: &str) -> Existing {
+    existing_value_for(receipt, digest, name, false)
+}
+
+/// `held` is the held-message deliverer's own read.
+fn existing_value_for(receipt: Value, digest: &str, name: &str, held: bool) -> Existing {
     if string(&receipt, "digest") != digest || string(&receipt, "name") != name {
         return Existing::Unknown("request ID was already used for different content".into());
     }
-    if receipt["status"] == "submitted" {
+    match string(&receipt, "status") {
         // Replay the exact durable acknowledgement. Reformatting parsed
         // floats can round its subsecond timestamp differently.
-        return Existing::Submitted(receipt);
+        "submitted" => return Existing::Submitted(receipt),
+        // A held message answers with its receipt until its deliverer takes it.
+        "queued" if held => return Existing::Absent,
+        "cancelled" if held => return Existing::Unknown(input_hold::CANCELLED.into()),
+        "queued" | "cancelled" | "failed" => return Existing::Submitted(receipt),
+        _ => {}
     }
     Existing::Unknown(
         "delivery uncertain: this request may already be in Terminal; do not resend automatically"
@@ -1888,7 +2020,7 @@ fn submit_core(
             return Err(Failure::TerminalRefusal(value));
         }
     }
-    match refusal::admit(&receipt_path, &digest, name, &request_id, &request, retain_refusal) {
+    match refusal::admit(&receipt_path, &digest, name, &request_id, &request, retain_refusal, matches!(origin, Origin::Held)) {
         Existing::Absent => {}
         Existing::Submitted(receipt) => return Ok(receipt),
         Existing::Unknown(error) => return Err(unknown(error)),
@@ -1915,7 +2047,30 @@ fn submit_core(
         let dialog = gate.dialog().map(|d| d.name());
         remember_send_refusal(typed, witness(gate.reason(), waiting, dialog), retain_refusal, terminal_outcome)
     };
-    let record = checked_record_gate(name, &request).map_err(|gate| gated(typed, gate))?;
+    // A message the person sent that opted in waits behind held ones and while
+    // the previous input is unconfirmed; every other refusal stays.
+    let opted = request.queue_when_unconfirmed
+        && !matches!(origin, Origin::Held | Origin::Recovery(_) | Origin::KeepWarm(_));
+    let checked = if opted && !input_hold::items(name).is_empty() {
+        Err(Gate::Other(UNCONFIRMED.to_owned()))
+    } else {
+        checked_record_gate(name, &request)
+    };
+    let holds = |gate: &Gate| match gate {
+        Gate::Waiting { reason, .. } | Gate::Other(reason) => [UNCONFIRMED, UNCONFIRMED_BUSY, TYPING_REFUSAL].contains(&reason.as_str()),
+    };
+    let record = match checked {
+        Err(gate) if opted && holds(&gate) => {
+            let record = read(name).map_err(|e| refused(typed, e))?;
+            if string(&record, "run_id") != request.expected_run_id
+                || string(&record, "conversation_id") != request.expected_conversation_id
+            {
+                return Err(refused(typed, "session identity changed; refresh before sending".into()));
+            }
+            return input_hold::hold(name, &request_id, &digest, input, &record, request.text.trim()).map_err(unknown);
+        }
+        checked => checked.map_err(|gate| gated(typed, gate))?,
+    };
     if matches!(origin, Origin::Answer) && effort::pending_applies(&record) {
         return Err(refused(
             typed,
@@ -1933,7 +2088,7 @@ fn submit_core(
     match origin {
         Origin::Recovery(id) => recovery::check_submission(&record, id).map_err(|e| refused(typed, e))?,
         Origin::KeepWarm(id) => keep_warm::check_submission(&record, id).map_err(|e| refused(typed, e))?,
-        Origin::Person | Origin::Answer => {}
+        Origin::Person | Origin::Answer | Origin::Held => {}
     }
     checked_send_gate(&record).map_err(|gate| gated(typed, gate))?;
     let attachments_root = root.join("attachments");
@@ -2036,14 +2191,14 @@ fn submit_core(
     let checked = match origin {
         Origin::Recovery(id) => read(name).and_then(|record| recovery::check_submission(&record, id)),
         Origin::KeepWarm(id) => read(name).and_then(|record| keep_warm::check_submission(&record, id)),
-        Origin::Person | Origin::Answer => Ok(()),
+        Origin::Person | Origin::Answer | Origin::Held => Ok(()),
     };
     if let Err(error) = checked {
         cleanup();
         return Err(refused(typed, error));
     }
     let submitted_at = now();
-    if matches!(origin, Origin::Person | Origin::Answer) {
+    if matches!(origin, Origin::Person | Origin::Answer | Origin::Held) {
         recovery::cancel_for_input(&record).map_err(unknown)?;
     }
     let mut receipt = json!({"request_id":request_id,"name":name,"run_id":request.expected_run_id,
@@ -2264,6 +2419,27 @@ pub(crate) const OBSERVE_SENDS: [[&str; 4]; 4] = [
 mod tests {
     use super::*;
 
+    #[test]
+    fn claude_draft_reads_the_composer_only() {
+        let rule = "────────────────────────────────────────";
+        let screen = |input: &str| format!("❯ Use the tool now.\n\n● Done.\n\n{rule}\n{input}\n{rule}\n  ⏸ manual mode on · ? for shortcuts\n");
+        assert_eq!(claude_draft(&screen("❯\u{a0}fix the build"), 5).as_deref(), Some("fix the build"));
+        let multi = screen("❯ first line\n  second line\n    indented");
+        assert_eq!(claude_draft(&multi, 7).as_deref(), Some("first line\nsecond line\n  indented"));
+        // Empty, a dim placeholder, the cursor outside, or a chooser: no draft.
+        assert_eq!(claude_draft(&screen("❯\u{a0}"), 5), None);
+        assert_eq!(claude_draft(&screen("❯ \x1b[2mTry \"fix lint errors\"\x1b[0m"), 5), None);
+        assert_eq!(claude_draft(&screen("❯ fix the build"), 0), None);
+        assert_eq!(claude_draft(&screen("❯ fix the build"), 7), None);
+        let chooser = format!("{rule}\n ☐ Model switch\n\n❯ 1. Switch automatically\n  2. Stay\n{rule}\n  3. Chat about this\n");
+        assert_eq!(claude_draft(&chooser, 3), None);
+        // No lower separator: an unknown layout is unread.
+        assert_eq!(claude_draft(&format!("{rule}\n❯ draft\n"), 1), None);
+        let record = json!({"agent":"claude"});
+        assert_eq!(native_draft(&record, &screen("❯ fix it"), "", 5).as_deref(), Some("fix it"));
+        assert_eq!(native_draft(&json!({"agent":"kimi"}), &screen("❯ fix it"), "", 5), None);
+    }
+
     /// zerus-5wmh.66.4.10.1: a send carrying --observe that reaches the state
     /// dispatch by any route but the CLI's first gate (`cli::observe_gate`)
     /// refuses there, before the OpenCode and DeepSeek routing whose own
@@ -2359,11 +2535,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("input_receipts").join("id.json");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        assert!(matches!(existing(&path, "d", "n"), Existing::Absent));
+        assert!(matches!(existing(&path, "d", "n", false), Existing::Absent));
         let write = |receipt: Value| fs::write(&path, receipt.to_string()).unwrap();
         write(json!({"digest": "d", "name": "n", "status": "submitted"}));
         assert!(
-            matches!(existing(&path, "d", "n"), Existing::Submitted(r) if r["status"] == "submitted")
+            matches!(existing(&path, "d", "n", false), Existing::Submitted(r) if r["status"] == "submitted")
         );
         for (receipt, digest, name) in [
             (
@@ -2384,15 +2560,15 @@ mod tests {
         ] {
             write(receipt);
             assert!(matches!(
-                existing(&path, digest, name),
+                existing(&path, digest, name, false),
                 Existing::Unknown(_)
             ));
         }
         fs::write(&path, b"{corrupt").unwrap();
-        assert!(matches!(existing(&path, "d", "n"), Existing::Unknown(_)));
+        assert!(matches!(existing(&path, "d", "n", false), Existing::Unknown(_)));
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
-        assert!(matches!(existing(&path, "d", "n"), Existing::Unknown(_)));
+        assert!(matches!(existing(&path, "d", "n", false), Existing::Unknown(_)));
         // A store that cannot even be inspected is unknown, never absent.
         #[cfg(unix)]
         {
@@ -2400,7 +2576,7 @@ mod tests {
             fs::remove_dir(&path).unwrap();
             let store = path.parent().unwrap();
             fs::set_permissions(store, fs::Permissions::from_mode(0o000)).unwrap();
-            let inspected = existing(&path, "d", "n");
+            let inspected = existing(&path, "d", "n", false);
             fs::set_permissions(store, fs::Permissions::from_mode(0o700)).unwrap();
             assert!(matches!(inspected, Existing::Unknown(_)));
         }
@@ -2466,7 +2642,7 @@ mod tests {
             for key in ["text", "attachments", "status", "pre_send_compaction"] {
                 assert_eq!(kept[key], original[key]);
             }
-            assert!(matches!(existing(&path, "d", "n"), Existing::Unknown(_)));
+            assert!(matches!(existing(&path, "d", "n", false), Existing::Unknown(_)));
         }
     }
 
@@ -2923,6 +3099,7 @@ mod tests {
             expected_run_id: "run".into(),
             expected_conversation_id: String::new(),
             expected_compaction_id: String::new(),
+            queue_when_unconfirmed: false,
             attachments: vec![],
         };
         assert!(validate(&r).is_ok());

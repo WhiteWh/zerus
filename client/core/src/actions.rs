@@ -88,6 +88,12 @@ pub enum Action {
         agent_id: Option<String>,
         /// The compaction this message waits for (compact-to-send).
         expected_compaction_id: Option<String>,
+        /// hgs holds the message while the agent has not taken the
+        /// previous one, instead of refusing it. Set only for a session whose
+        /// inspection reports `input_hold_supported` (an older hgs refuses the
+        /// field), and only for the session's own agent.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        queue_when_unconfirmed: bool,
     },
     /// `hgs processes NAME --stop ID --run RUN --conversation C [--archive A]
     /// [--generation G]` (`requestProcess` with stop): one stop request,
@@ -539,8 +545,9 @@ pub fn invocation(
             attachments,
             agent_id,
             expected_compaction_id,
+            queue_when_unconfirmed,
         } => {
-            let input = send_input(
+            let mut input = send_input(
                 target,
                 text,
                 attachments,
@@ -548,6 +555,9 @@ pub fn invocation(
                 expected_compaction_id.as_deref(),
                 request_id,
             )?;
+            if *queue_when_unconfirmed && agent_id.as_deref().unwrap_or("").is_empty() {
+                input = held_send_input(&input)?;
+            }
             (
                 vec!["send".to_owned(), name, "--json".to_owned()],
                 Some(input),
@@ -867,6 +877,14 @@ pub fn send_input(
         input["expected_compaction_id"] = json!(compaction);
     }
     serde_json::to_vec(&input).map_err(|error| error.to_string())
+}
+
+/// `send_input` with the opt-in: hgs holds
+/// the message until the agent takes the previous one.
+fn held_send_input(input: &[u8]) -> Result<Vec<u8>, String> {
+    let mut value: Value = serde_json::from_slice(input).map_err(|error| error.to_string())?;
+    value["queue_when_unconfirmed"] = json!(true);
+    serde_json::to_vec(&value).map_err(|error| error.to_string())
 }
 
 /// `requestStageFiles`: 1-8 absolute paths of regular, readable, nonempty
@@ -1224,8 +1242,13 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
             &["staged"],
             stage_created(target, *expected_created),
         ),
-        Action::Send { agent_id, .. } => {
-            classify_send(target, invocation, agent_id.as_deref(), exit)
+        Action::Send {
+            agent_id,
+            queue_when_unconfirmed,
+            ..
+        } => {
+            let held = *queue_when_unconfirmed && agent_id.as_deref().unwrap_or("").is_empty();
+            classify_send(target, invocation, agent_id.as_deref(), held, exit)
         }
         Action::StopProcess { process_id, .. } => classify_stop(target, process_id, exit),
         Action::SendNow { queue_id } => classify_send_now(target, invocation, queue_id, exit),
@@ -1688,11 +1711,14 @@ fn classify_remove_queued(target: &Target, invocation: &Invocation, exit: Exit) 
 /// start or a plain exit 1 without "delivery uncertain" is a definite
 /// failure; anything else may have reached the agent. Success needs the
 /// receipt to echo the request, agent, session, run and conversation, and a
-/// first message (no conversation yet) to say so.
+/// first message (no conversation yet) to say so. A request that asked hgs
+/// to hold it (`held`) may also come back "queued", with the same
+/// identity: hgs holds it until the agent takes the previous message.
 fn classify_send(
     target: &Target,
     invocation: &Invocation,
     agent_id: Option<&str>,
+    held: bool,
     exit: Exit,
 ) -> Outcome {
     let detail = |stderr: &str, code: i32| {
@@ -1721,16 +1747,22 @@ fn classify_send(
         Exit::Code { stdout, .. } => {
             let receipt: Value = serde_json::from_slice(&stdout).unwrap_or(Value::Null);
             let field = |key: &str| receipt.get(key).and_then(Value::as_str);
-            let valid = receipt.is_object()
-                && field("status") == Some("submitted")
+            let identity = receipt.is_object()
                 && invocation.request_id.is_some()
                 && field("request_id") == invocation.request_id.as_deref()
                 && field("agent_id").unwrap_or("") == agent_id.unwrap_or("")
                 && field("name") == Some(target.name.as_str())
                 && field("run_id") == Some(target.run_id.as_str())
-                && field("conversation_id") == Some(target.conversation_id.as_str())
-                && (!target.conversation_id.is_empty()
-                    || receipt.get("first_message") == Some(&Value::Bool(true)));
+                && field("conversation_id") == Some(target.conversation_id.as_str());
+            let valid = identity
+                && match field("status") {
+                    Some("submitted") => {
+                        !target.conversation_id.is_empty()
+                            || receipt.get("first_message") == Some(&Value::Bool(true))
+                    }
+                    Some("queued") => held,
+                    _ => false,
+                };
             if valid {
                 done(receipt, None)
             } else {
@@ -2323,6 +2355,7 @@ mod tests {
             attachments,
             agent_id: None,
             expected_compaction_id: None,
+            queue_when_unconfirmed: false,
         }
     }
 
@@ -2421,6 +2454,7 @@ mod tests {
             }],
             agent_id: Some("agent-7".into()),
             expected_compaction_id: Some("compaction-1".into()),
+            queue_when_unconfirmed: false,
         };
         let inv = invocation(&target("mac"), &action, "req-1").unwrap();
         assert_eq!(
@@ -2453,6 +2487,7 @@ mod tests {
                 attachments: vec![],
                 agent_id: agent_id.map(String::from),
                 expected_compaction_id: None,
+                queue_when_unconfirmed: false,
             };
             for (computer, seconds) in [("", 30), ("mac", 45)] {
                 let call = invocation(&target(computer), &action, "original-request").unwrap();
@@ -2543,6 +2578,73 @@ mod tests {
         assert_eq!(outcome(&receipt), invalid);
         receipt["first_message"] = json!(true);
         assert!(matches!(outcome(&receipt), Outcome::Done { .. }));
+    }
+
+    fn held_send(agent: Option<&str>) -> Action {
+        Action::Send {
+            text: "next".into(),
+            attachments: vec![],
+            agent_id: agent.map(str::to_owned),
+            expected_compaction_id: None,
+            queue_when_unconfirmed: true,
+        }
+    }
+
+    #[test]
+    fn a_send_asks_hgs_to_hold_it_only_when_asked_and_only_for_the_own_agent() {
+        let t = target("");
+        let input = |action: &Action| -> Value {
+            serde_json::from_slice(invocation(&t, action, "req-1").unwrap().stdin.as_ref().unwrap())
+                .unwrap()
+        };
+        assert_eq!(input(&held_send(None))["queue_when_unconfirmed"], json!(true));
+        assert!(input(&send("next", vec![])).get("queue_when_unconfirmed").is_none());
+        // A subagent's message is never held: hgs routes it with agent_id.
+        assert!(input(&held_send(Some("agent-7"))).get("queue_when_unconfirmed").is_none());
+        // The rest of the stdin is send_input's, unchanged.
+        let mut plain = input(&held_send(None));
+        plain.as_object_mut().unwrap().remove("queue_when_unconfirmed");
+        assert_eq!(plain, input(&send("next", vec![])));
+        // The webview never sees nor sets the flag on an ordinary send.
+        assert!(serde_json::to_value(send("next", vec![]))
+            .unwrap()
+            .get("queue_when_unconfirmed")
+            .is_none());
+    }
+
+    #[test]
+    fn a_held_send_accepts_a_queued_receipt_with_the_same_identity() {
+        let t = target("");
+        let action = held_send(None);
+        let inv = invocation(&t, &action, "req-1").unwrap();
+        let outcome = |receipt: &Value| {
+            classify(&t, &action, &inv, exit(0, receipt.to_string().as_bytes(), ""))
+        };
+        let queued = json!({"status": "queued", "request_id": "req-1", "name": "claude/sample-project/review",
+            "run_id": "run-1", "conversation_id": "conv-1", "first_message": false, "digest": "d",
+            "queued_at": 1_793_000_000.0, "text": "next", "transport": "hgs_queue", "position": 1});
+        let Outcome::Done { receipt, .. } = outcome(&queued) else {
+            panic!("a queued receipt is a held send")
+        };
+        assert_eq!(receipt["status"], "queued");
+        // A submitted receipt still is a send.
+        let mut submitted = queued.clone();
+        submitted["status"] = json!("submitted");
+        assert!(matches!(outcome(&submitted), Outcome::Done { .. }));
+        let invalid =
+            uncertain("Delivery acknowledgement is invalid. Inspect Terminal before retrying.");
+        for (key, value) in [
+            ("status", json!("cancelled")),
+            ("request_id", json!("req-2")),
+            ("name", json!("claude/sample-project/other")),
+            ("run_id", json!("run-2")),
+            ("conversation_id", json!("conv-2")),
+            ("agent_id", json!("agent-7")),
+        ] {
+            let mut changed = queued.clone();
+            changed[key] = value;
+            assert_eq!(outcome(&changed), invalid, "{key}");
+        }
     }
 
     #[test]

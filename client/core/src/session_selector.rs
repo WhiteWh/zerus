@@ -251,6 +251,7 @@ mod tests {
             attachments: vec![],
             agent_id: None,
             expected_compaction_id: None,
+            queue_when_unconfirmed: false,
         }
     }
 

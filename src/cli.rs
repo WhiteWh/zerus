@@ -1173,7 +1173,7 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
             }
             state_command(command, &args)
         }
-        "inspect" | "processes" | "worktrees" | "git-status" | "repository" | "dirs" | "send" | "send-now" | "session-action" | "session-action-status" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "read" | "notifications" | "keep-warm" | "question-routing"
+        "inspect" | "processes" | "worktrees" | "git-status" | "repository" | "dirs" | "send" | "send-now" | "send-cancel" | "session-action" | "session-action-status" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "read" | "notifications" | "keep-warm" | "question-routing"
         | "attachment" | "file-read" | "recovery" | "voice" | "schedules" | "graph" | "wait" | "parent" | "delivery" => {
             if command == "delivery" && dry { return Err(Error::new(1,"Delivery receipt reads do not support --dry-run")); }
             if command == "session-action-status" && dry { return Err(Error::new(1,"Lifecycle receipt reads do not support --dry-run")); }
@@ -1186,7 +1186,7 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
             if command == "worktrees" && args.first().is_some_and(|s| s == "create" || s == "cancel" || s == "remove" || s == "sweep" || s == "policy" && args.get(1).is_some_and(|s|s=="set")) && dry {
                 return Err(Error::new(1, "worktree creation, removal and policy changes do not support --dry-run"));
             }
-            if (matches!(command.as_str(), "processes" | "send" | "send-now" | "session-action" | "terminal" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "recovery" | "read" | "notifications" | "keep-warm" | "question-routing" | "voice" | "schedules" | "parent") || (command=="attachment" && has(args,"--stage"))) && dry {
+            if (matches!(command.as_str(), "processes" | "send" | "send-now" | "send-cancel" | "session-action" | "terminal" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "recovery" | "read" | "notifications" | "keep-warm" | "question-routing" | "voice" | "schedules" | "parent") || (command=="attachment" && has(args,"--stage"))) && dry {
                 return Err(Error::new(1, "message input does not support --dry-run"));
             }
             state_command(command, args)
@@ -1555,7 +1555,7 @@ fn is_reference_call(command: &str, args: &[String]) -> bool {
 /// `notify` and `paste` are the tray's and tmux's own entry points, and
 /// `subagent retire` names its session second; they keep names only.
 const SESSION_COMMANDS: &[&str] = &[
-    "inspect", "reference", "processes", "send", "send-now", "history", "history-projection",
+    "inspect", "reference", "processes", "send", "send-now", "send-cancel", "history", "history-projection",
     "terminal", "session-action", "session-action-status", "compact-context", "clear-context",
     "interrupt", "attachment", "file-read", "answer", "read", "notifications", "keep-warm", "question-routing", "fork", "effort",
     "settings", "schedules", "voice", "hooks", "a", "kill", "rename", "archive", "terminate",
@@ -2152,7 +2152,7 @@ fn remote_via(
         }
         "session-action-status" if machine.is_none() => return Err(Error::new(2,"A remote lifecycle receipt read requires --expect-machine ID before session-action-status")),
         "archives" | "session-action-status" | "kill" | "terminate" | "pause" | "inspect" | "reference" | "processes" | "worktrees" | "git-status" | "repository" | "dirs" | "project" | "archive" | "rename"
-        | "send" | "send-now" | "session-action" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "schedules" | "graph" | "wait" | "guide" | "dsh" | "opencode" | "attachment" | "file-read" | "recovery" | "swarm" | "read" | "notifications" | "keep-warm" | "question-routing" | "speech" | "analytics" | "voice" | "hooks" | "parent" | "delivery" | "path-info" | "--help" => {
+        | "send" | "send-now" | "send-cancel" | "session-action" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "schedules" | "graph" | "wait" | "guide" | "dsh" | "opencode" | "attachment" | "file-read" | "recovery" | "swarm" | "read" | "notifications" | "keep-warm" | "question-routing" | "speech" | "analytics" | "voice" | "hooks" | "parent" | "delivery" | "path-info" | "--help" => {
             flags = vec![
                 "-o".into(),
                 "BatchMode=yes".into(),

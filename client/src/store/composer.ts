@@ -78,6 +78,9 @@ export interface ComposerPort {
   localInspect(handle: number, id: string): Promise<Inspect | null>;
   /** Remove of a not-delivered OpenCode message (src-tauri `inbox_remove`). */
   inboxRemove(handle: number, run: string, conversation: string, messageId: string): Promise<InboxRemoveReply>;
+  /** U35 Cancel on a held row, and Send it on the Terminal draft bar (src-tauri composer/held.rs): false when nothing started. */
+  heldCancel?(handle: number, requestId: string): Promise<boolean>;
+  draftSubmit?(handle: number): Promise<boolean>;
 }
 
 /** Image decoding for pastes that are not PNG; tests pass their own. */
@@ -230,6 +233,17 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
   const queue = () => opening() > 0 ? null : view()?.queue ?? null;
   /** The message a Compact and continue holds (zerus-pabah): like the queue, the open composer's own, never a successor's while it opens. */
   const heldNow = () => opening() > 0 ? null : view()?.held ?? null;
+  /** what hgs holds for the open composer's session, never a successor's while it opens. */
+  const heldInputs = () => opening() > 0 ? [] : view()?.held_inputs ?? [];
+  /** The open run's Terminal draft, likewise. */
+  const terminalDraft = () => opening() > 0 ? null : view()?.terminal_draft ?? null;
+  /** A held-row Cancel or Send it under the composer it started on; a rejected call says why. */
+  async function heldCall(call: (h: number) => Promise<boolean> | undefined) {
+    const h = handle();
+    if (h === undefined || closing() || opening() > 0) return;
+    try { await call(h); }
+    catch (e) { notices("error", typeof e === "string" ? e : e instanceof Error ? e.message : String(e), true); }
+  }
 
   /** The composer goes or changes: its open question answers Cancel, as its modal dialog would. */
   function dropDialog() {
@@ -446,7 +460,11 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
   }
 
   return {
-    view, text, selection, dialog, locked, operationLocked, sendEnabled, pushEnabled, queue, held: heldNow, hint,
+    view, text, selection, dialog, locked, operationLocked, sendEnabled, pushEnabled, queue, held: heldNow, hint, heldInputs, terminalDraft,
+    /** Cancel on a held row: Rust disables it until hgs answers. */
+    cancelHeld: (requestId: string) => heldCall((h) => port.heldCancel?.(h, requestId)),
+    /** Send it: Enter in Terminal for the draft shown, once. */
+    submitDraft: () => heldCall((h) => port.draftSubmit?.(h)),
     /** The status line: Qt's order, with the composer's own error and the typed length. */
     status: (): StatusLine => statusLine(view(), error(), tooLong()),
     apply, receive,
@@ -654,6 +672,7 @@ export const composer = createRoot(() => createComposer({
   allowRetry: bridge.composerAllowRetry, cancelSend: bridge.sendCancel, interrupted: bridge.sendInterrupted, interruptFailed: bridge.sendInterruptFailed, clear: bridge.clearContext,
   refresh: bridge.composerRefresh, openAttachment: (path) => bridge.attachmentOpenDraft(path), localRetry: bridge.localRetry, localDelete: bridge.localDelete, localInspect: bridge.localInspect,
   inboxRemove: bridge.inboxRemove,
+  heldCancel: bridge.heldCancel, draftSubmit: bridge.terminalDraftSubmit,
 }, realTimers, browserImages, appNotices, suggestions.dismiss, async (session, control, execute) => {
   const [{ endActions }, { catalog, rowId }, { captureEnd, sameEnd }] = await Promise.all([import("./endActions"), import("./catalog"), import("./endActionBusy")]);
   const row = session ? catalog.rows[rowId(session.computer, session.key)] : undefined;

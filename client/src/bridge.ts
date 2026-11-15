@@ -1035,6 +1035,10 @@ export const sendCancel = (handle: number) => desktop<void>("send_cancel", { han
 export const sendInterrupted = (handle: number) => desktop<number>("send_interrupted", { handle });
 /** That Stop's interrupt was refused: its prompt alone goes, whichever session is open by then. */
 export const sendInterruptFailed = (stop: number) => desktop<void>("send_interrupt_failed", { stop });
+/** Cancel on a held row (`hgs send-cancel`); false when nothing started. */
+export const heldCancel = (handle: number, requestId: string) => desktop<boolean>("held_cancel", { handle, request_id: requestId });
+/** Send it on the Terminal draft bar: Enter in Terminal for the draft shown; false when nothing started. */
+export const terminalDraftSubmit = (handle: number) => desktop<boolean>("terminal_draft_submit", { handle });
 /** Answers once the clear ended (up to 45 s). */
 export const clearContext = (handle: number, run: string, conversation: string, dismiss: boolean, delay?: import("./store/endActionBusy").EndReference) =>
   desktop<SendReply>("clear_context", { handle, run, conversation, dismiss, delay });

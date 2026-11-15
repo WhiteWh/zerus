@@ -28,6 +28,9 @@ struct Request {
     key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     expires_at: Option<f64>,
+    /// submit_draft: the hash of the draft the person saw.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    draft_hash: Option<String>,
 }
 fn validate(request: &Request) -> Result<()> {
     let id =
@@ -45,17 +48,24 @@ fn validate(request: &Request) -> Result<()> {
     {
         return Err("Invalid terminal identity".into());
     }
+    let bare = request.terminal_binding_id.is_none()
+        && request.text.is_none()
+        && request.enter.is_none()
+        && request.key.is_none()
+        && request.expires_at.is_none();
     match request.action.as_str() {
-        "snapshot" | "composer"
-            if request.terminal_binding_id.is_none()
-                && request.text.is_none()
-                && request.enter.is_none()
-                && request.key.is_none()
-                && request.expires_at.is_none() =>
+        "snapshot" | "draft" | "composer" if bare && request.draft_hash.is_none() => Ok(()),
+        // Enter in the native composer, only while it still holds exactly the
+        // draft the person was shown.
+        "submit_draft"
+            if bare
+                && request.draft_hash.as_deref().is_some_and(|hash| {
+                    hash.len() == 64 && hash.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+                }) =>
         {
             Ok(())
         }
-        "input" => {
+        "input" if request.draft_hash.is_none() => {
             let binding = request
                 .terminal_binding_id
                 .as_deref()
@@ -98,7 +108,7 @@ fn validate(request: &Request) -> Result<()> {
             Ok(())
         }
         // zerus-wkj9l: the exact composer text the person confirmed to discard.
-        "clear-input" => {
+        "clear-input" if request.draft_hash.is_none() => {
             let binding = request.terminal_binding_id.as_deref().ok_or("Clear input needs a verified binding")?;
             if binding.len() != 64 || !binding.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
                 return Err("Invalid terminal binding".into());
@@ -506,6 +516,35 @@ fn input(name: &str, request: &Request, path: &Path, hash: &str) -> Result<Value
     atomic(path, &answer.to_string())?;
     Ok(answer)
 }
+/// The native composer's draft and its hash, bound to this exact run.
+pub(super) fn read_draft(record: &Value) -> Result<(Option<String>, String)> {
+    let pane = string(record, "pane");
+    let cursor_y = frame(record)?["cursor"]["y"].as_u64().ok_or("invalid terminal cursor")? as usize;
+    let terminal = backend::current();
+    let styled = String::from_utf8_lossy(&terminal.capture(pane, backend::Capture::Styled)?).into_owned();
+    let plain = String::from_utf8_lossy(&terminal.capture(pane, backend::Capture::Plain)?).into_owned();
+    let draft = input::native_draft(record, &styled, &plain, cursor_y);
+    let hash = format!("{:x}", Sha256::digest(json!([record["run_id"], record["conversation_id"], pane, record["pid"], draft]).to_string()));
+    Ok((draft, hash))
+}
+fn submit_draft(name: &str, request: &Request, path: &Path, hash: &str) -> Result<Value> {
+    let _guard = lock(None)?;
+    let record = checked(name, request)?;
+    let (draft, current) = read_draft(&record)?;
+    if draft.is_none() || request.draft_hash.as_deref() != Some(current.as_str()) {
+        return Err("The Terminal draft changed; nothing was sent".into());
+    }
+    let mut answer = identity(request, name, "claimed");
+    answer["request_hash"] = json!(hash);
+    atomic(path, &answer.to_string())?;
+    let result = backend::current().send(string(&record, "pane"), &[backend::Key::Named("Enter")]);
+    answer["status"] = json!(if result.is_ok() { "submitted" } else { "uncertain" });
+    if let Err(error) = result {
+        answer["error"] = json!(error);
+    }
+    atomic(path, &answer.to_string())?;
+    Ok(answer)
+}
 pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     if args.len() != 2 || args[1] != "--json" {
         return Err("usage: hgs terminal <session> --json".into());
@@ -521,7 +560,16 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     let request: Request = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     validate(&request)?;
     let name = &args[0];
-    let mut answer = if matches!(request.action.as_str(), "snapshot" | "composer") {
+    let mut answer = if request.action == "draft" {
+        let _guard = lock(None)?;
+        let record = checked(name, &request)?;
+        let (draft, hash) = read_draft(&record)?;
+        let mut answer = identity(&request, name, "draft");
+        answer["draft_supported"] = json!(["claude", "codex"].contains(&string(&record, "agent")));
+        answer["draft"] = json!(draft);
+        answer["draft_hash"] = json!(hash);
+        answer
+    } else if matches!(request.action.as_str(), "snapshot" | "composer") {
         let _guard = lock(None)?;
         let record = checked(name, &request)?;
         let metadata = frame(&record)?;
@@ -588,7 +636,9 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
             }
             receipt
         } else {
-            let attempt = if request.action == "clear-input" {
+            let attempt = if request.action == "submit_draft" {
+                submit_draft(name, &request, &path, &hash)
+            } else if request.action == "clear-input" {
                 clear(name, &request, &path, &hash)
             } else {
                 input(name, &request, &path, &hash)

@@ -44,7 +44,7 @@ impl Fixture {
 fn old_reader(path: &std::path::Path) {
     assert!(
         matches!(
-            super::super::existing(path, &scope().digest, &scope().name),
+            super::super::existing(path, &scope().digest, &scope().name, false),
             super::super::Existing::Unknown(_)
         ),
         "an unsupported retained refusal must never become absent or fresh input"
@@ -150,7 +150,7 @@ fn existing_pending_submitted_and_damaged_targets_are_never_repaired() {
         assert!(matches!(f.publish(), Err(_) | Ok(Observed::Existing)));
         assert_eq!(fs::read(f.file()).unwrap(), bytes);
         assert!(!matches!(
-            super::super::existing(&f.file(), &scope().digest, &scope().name),
+            super::super::existing(&f.file(), &scope().digest, &scope().name, false),
             super::super::Existing::Absent
         ));
     }

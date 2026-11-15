@@ -21,6 +21,7 @@ import { startScreens } from "./screens";
 import { documentVisibility, pageHidden } from "./visibility";
 import { processes, trackFollow, trackShown } from "./processes";
 import type { Batch, ComposerEvent, ProcessTarget } from "../types";
+import { trText } from "../text";
 
 // Wires the stores together: batches go to the catalog, the grouping, the
 // followed Activity and the open composer, the selected session is the
@@ -86,6 +87,8 @@ export function receive(b: Batch) {
 function composerEvent(e: ComposerEvent) {
   // An error stays until dismissed unless it is transient (showNotice, SessionsWindow.cpp:5210).
   if (e.kind === "notice") notify(e.error ? "error" : "info", e.text, e.error && !e.transient);
+  // Held messages, the Terminal draft and a Send that did nothing (src-tauri composer/held.rs).
+  else if (e.kind === "said") notify(e.error ? "error" : "info", trText(e.text), e.sticky);
   // Codex's hooks review and Update now continue in Terminal (1157-1178); showing the tab connects it.
   else if (composer.view()?.key === e.key) { terminal.opened(); setDetailTab("terminal"); }
 }

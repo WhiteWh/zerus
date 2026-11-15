@@ -54,6 +54,7 @@ pub(crate) use input::{Lookup as ReceiptLookup, Submission};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use input::{first_message_ready, resumed_readiness, Readiness as ResumedReadiness};
 mod input_queue;
+mod input_hold;
 mod journal;
 mod keep_warm;
 mod kimi_cache_hint;
@@ -350,6 +351,21 @@ pub(super) fn stdin_json() -> Result<Value> {
 
 pub(super) fn nonempty_env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
+}
+
+/// Runs `run` with `root` as the state root on this thread; restored even on
+/// panic.
+#[cfg(test)]
+pub(crate) fn with_test_state_root<T>(root: &Path, run: impl FnOnce() -> T) -> T {
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            storage::set_test_root(None);
+        }
+    }
+    storage::set_test_root(Some(root.to_path_buf()));
+    let _restore = Restore;
+    run()
 }
 
 pub(super) fn home() -> PathBuf {
@@ -1615,6 +1631,8 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
         return Err("Native schedule management is available for DeepSeek sessions; other agents report schedules read-only".into());
     }
     if command == "send-now" { return input_queue::dispatch(args); }
+    if command == "send-cancel" { return input_hold::dispatch_cancel(args); }
+    if command == "deliver-held" { return input_hold::deliver(args); }
     if command == "send" {
         return input::dispatch(args);
     }

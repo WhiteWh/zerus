@@ -276,6 +276,15 @@
   .act-queue-message + .act-queue-message { padding-top: 8px; border-top: 1px dashed var(--z-color-border); }
   .act-held-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
   .act-held-note { margin: 8px 0 0; color: var(--z-color-muted); font-size: 12px; }
+  /* U35 held messages and the Terminal draft bar (Qt HeldInputBar, TerminalDraftBar). */
+  .held-inputs { display: flex; flex-direction: column; gap: 4px; padding: 6px 10px; }
+  .held-input, .terminal-draft { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; }
+  .terminal-draft { padding: 6px 10px; }
+  .held-input > svg, .terminal-draft > svg { color: var(--z-color-muted); flex-shrink: 0; }
+  .held-input-label { flex: 1 1 auto; min-width: 0; }
+  .held-input-preview { flex: 0 1 220px; min-width: 0; color: var(--z-color-muted); }
+  .terminal-draft-text { flex: 1 1 auto; min-width: 0; }
+  .held-input .btn, .terminal-draft .btn { flex-shrink: 0; }
 
   /* Composer: toolbar 34, editor 76, action row 34. */
   .cmp-col { width: min(var(--col), calc(100% - 32px)); margin: 0 auto 10px; }
@@ -422,7 +431,7 @@
   .irow-val.mono { font-size: .94em; }
   .irow-label { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--z-color-dim); }
   .irow .icon-btn.small { flex: none; margin-right: -4px; }
-  /* A copyable row highlights on hover or keyboard focus and shows its copy mark (owner 2026-11-07).
+  /* A copyable row highlights on hover or keyboard focus and shows its copy mark.
      The mark takes no space, so labels and numbers stay aligned with plain rows: in a Details
      row it replaces the label at the right end; in Session usage it sits just left of the number. */
   .copy-mark { position: absolute; display: grid; place-items: center; color: var(--z-color-muted); opacity: 0; pointer-events: none; transition: opacity .12s; }

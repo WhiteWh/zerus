@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { heldMessage, withoutHeld } from "./held-message";
+import { heldInputs, heldMessage, simplified, terminalDraftBar, withoutHeld } from "./held-message";
 import { buildTranscript } from "./transcript";
 import type { LocalMessage } from "../../types";
 import type { Session } from "./types";
@@ -33,5 +33,38 @@ describe("a Compact and continue message held while the agent compacts (zerus-pa
     const shown = JSON.stringify(buildTranscript([], {}, withoutHeld(rows, held)));
     expect(shown).not.toContain(held.text);
     expect(shown).toContain("An earlier message");
+  });
+});
+
+describe("messages hgs holds until the agent takes the previous one (U35)", () => {
+  const rows = [{ request_id: "11111111-2222-4333-8444-555555555555", text: "first\n\n  of two", cancelling: false },
+    { request_id: "11111111-2222-4333-8444-666666666666", text: "second", cancelling: true }];
+  const main = { subagent: null };
+
+  it("shows on a main composer of a live session only, oldest first", () => {
+    expect(heldInputs(rows, main, session, false)).toBe(rows);
+    expect(heldInputs([], main, session, false)).toEqual([]);
+    expect(heldInputs(undefined, main, session, false)).toEqual([]);
+    expect(heldInputs(rows, { subagent: { agent_id: "child", send_supported: true, hint: "" } }, session, false)).toEqual([]);
+    expect(heldInputs(rows, main, session, true)).toEqual([]);
+    expect(heldInputs(rows, main, { ...session, state: "archived", archiveId: "a1" } as Session, false)).toEqual([]);
+    expect(heldInputs(rows, undefined, session, false)).toEqual([]);
+    // One empty value, so a memo over it does not change while nothing is held.
+    expect(heldInputs(undefined, main, session, false)).toBe(heldInputs([], main, undefined, false));
+  });
+
+  it("previews a message on one line, as Qt's simplified text", () => {
+    expect(simplified(rows[0].text)).toBe("first of two");
+    expect(simplified("  \t tabbed\r\nlines  ")).toBe("tabbed lines");
+    expect(simplified("")).toBe("");
+  });
+
+  it("shows the Terminal draft bar under the same rule", () => {
+    const bar = { draft: "half a thought", can_send: true, submitting: false, error: null };
+    expect(terminalDraftBar(bar, main, session, false)).toBe(bar);
+    expect(terminalDraftBar(null, main, session, false)).toBeUndefined();
+    expect(terminalDraftBar(bar, main, session, true)).toBeUndefined();
+    expect(terminalDraftBar(bar, { subagent: { agent_id: "child", send_supported: true, hint: "" } }, session, false)).toBeUndefined();
+    expect(terminalDraftBar(bar, main, { ...session, state: "archived", archiveId: "a1" } as Session, false)).toBeUndefined();
   });
 });

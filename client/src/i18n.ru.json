@@ -4194,5 +4194,21 @@
   "▸ Show the received message": "▸ Показать полученное сообщение",
   "▾ Hide report": "▾ Скрыть отчет",
   "▾ Hide the received message": "▾ Скрыть полученное сообщение",
-  "✓ %1": "✓ %1"
+  "✓ %1": "✓ %1",
+  "Cancel this message; hgs will not send it": "Отменить это сообщение; hgs его не отправит",
+  "Delivery unconfirmed: check the conversation before sending again. %1": "Доставка не подтверждена: проверьте разговор перед повторной отправкой. %1",
+  "Enter may have reached Terminal; check it before sending again. %1": "Нажатие Enter могло дойти до терминала; проверьте его перед повторной отправкой. %1",
+  "Held messages": "Удержанные сообщения",
+  "Invalid Terminal response": "Некорректный ответ терминала",
+  "Not delivered: %1 The text is back in the composer.": "Не доставлено: %1 Текст возвращён в поле сообщения.",
+  "Not sent: another message to this session is on its way.": "Не отправлено: другое сообщение этой сессии уже в пути.",
+  "Not sent: the previous message is not confirmed yet. Check Terminal, then use Allow retry before sending again.": "Не отправлено: предыдущее сообщение ещё не подтверждено. Проверьте терминал, затем нажмите «Разрешить повторную попытку» перед повторной отправкой.",
+  "Not sent: the previous message is still being delivered. Wait for it, or check Terminal.": "Не отправлено: предыдущее сообщение ещё доставляется. Дождитесь его или проверьте терминал.",
+  "Press Enter in Terminal: the agent gets this text as your message": "Нажать Enter в терминале: агент получит этот текст как ваше сообщение",
+  "Queued until %1 takes your previous message": "В очереди, пока %1 не примет ваше предыдущее сообщение",
+  "Send it": "Отправить его",
+  "Terminal has unsent text: “%1”": "В терминале есть неотправленный текст: «%1»",
+  "The message could not be cancelled.": "Не удалось отменить сообщение.",
+  "The message could not be cancelled. %1": "Не удалось отменить сообщение. %1",
+  "Unsent text in Terminal": "Неотправленный текст в терминале"
 }

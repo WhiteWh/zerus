@@ -663,6 +663,38 @@ mod tests {
         // any gate also fails this guard. before_input owns the common
         // post-publication refusal persistence for both kinds of gate.
         let mut original = format!("fn submit_core({body}");
+        // Held messages add only their own lines: the hold before the record
+        // gate, the deliverer's receipt read and its origin. Undo them first.
+        let held = r###"    // A message the person sent that opted in waits behind held ones and while
+    // the previous input is unconfirmed; every other refusal stays.
+    let opted = request.queue_when_unconfirmed
+        && !matches!(origin, Origin::Held | Origin::Recovery(_) | Origin::KeepWarm(_));
+    let checked = if opted && !input_hold::items(name).is_empty() {
+        Err(Gate::Other(UNCONFIRMED.to_owned()))
+    } else {
+        checked_record_gate(name, &request)
+    };
+    let holds = |gate: &Gate| match gate {
+        Gate::Waiting { reason, .. } | Gate::Other(reason) => [UNCONFIRMED, UNCONFIRMED_BUSY, TYPING_REFUSAL].contains(&reason.as_str()),
+    };
+    let record = match checked {
+        Err(gate) if opted && holds(&gate) => {
+            let record = read(name).map_err(|e| refused(typed, e))?;
+            if string(&record, "run_id") != request.expected_run_id
+                || string(&record, "conversation_id") != request.expected_conversation_id
+            {
+                return Err(refused(typed, "session identity changed; refresh before sending".into()));
+            }
+            return input_hold::hold(name, &request_id, &digest, input, &record, request.text.trim()).map_err(unknown);
+        }
+        checked => checked.map_err(|gate| gated(typed, gate))?,
+    };
+"###;
+        assert_eq!(original.matches(held).count(), 1, "held message projection changed");
+        original = original.replacen(held, "    let record = checked_record_gate(name, &request).map_err(|gate| gated(typed, gate))?;\n", 1);
+        assert_eq!(original.matches(", retain_refusal, matches!(origin, Origin::Held))").count(), 1, "held message projection changed");
+        original = original.replacen(", retain_refusal, matches!(origin, Origin::Held))", ", retain_refusal)", 1);
+        original = original.replace("Origin::Person | Origin::Answer | Origin::Held", "Origin::Person | Origin::Answer");
         // The public send's durable negative adds only a retention parameter
         // and routes the same two live witnesses through its publisher. Exact
         // negative retries re-enter the guards and retire before settings input. Keep

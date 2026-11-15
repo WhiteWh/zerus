@@ -44,8 +44,9 @@ pub(super) fn admit(
     id: &str,
     request: &Request,
     public: bool,
+    held: bool,
 ) -> Existing {
-    let previous = super::existing(path, digest, name);
+    let previous = super::existing(path, digest, name, held);
     if public && matches!(previous, Existing::Unknown(_)) {
         let exact = (|| -> Result<bool> {
             let receipts = Directory::open(path.parent().ok_or("Invalid input receipt path")?)?;
@@ -210,7 +211,7 @@ mod tests {
         );
         assert!(before.len() <= refusal::BYTES);
         assert!(
-            matches!(existing(&path, &digest, &name), Existing::Unknown(_)),
+            matches!(existing(&path, &digest, &name, false), Existing::Unknown(_)),
             "negative evidence is never a submitted acknowledgement"
         );
         let mut duplicate = witness(&root, "replacement reason");
@@ -257,6 +258,7 @@ mod tests {
             expected_conversation_id: w.conversation_id.clone(),
             attachments: vec![],
             expected_compaction_id: String::new(),
+            queue_when_unconfirmed: false,
         }
     }
 
@@ -275,6 +277,7 @@ mod tests {
                 &w.request_id,
                 &request(&w),
                 public,
+                false,
             )
         };
         assert!(matches!(inspect(true), Existing::Absent));
@@ -378,7 +381,8 @@ mod tests {
                 &w.name,
                 &w.request_id,
                 &request(&w),
-                true
+                true,
+                false,
             ),
             Existing::Unknown(_)
         ));

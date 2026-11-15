@@ -32,6 +32,7 @@ pub mod file_download;
 pub mod fleet;
 pub mod fsx;
 pub mod git;
+pub mod held_input;
 pub mod image;
 pub mod input_queue;
 pub mod keep_warm;

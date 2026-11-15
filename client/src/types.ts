@@ -905,6 +905,10 @@ export type InboxRemoveReply = { outcome: "removed" | "changed" | "busy" } | { o
 
 /** A held message: the request of its local row, its exact text and its file names. */
 export interface HeldMessageView { request_id: string; text: string; attachments: string[] }
+/** a message hgs holds until the agent takes the previous one (src-tauri composer/held.rs). */
+export interface HeldInputView { request_id: string; text: string; cancelling: boolean }
+/** Text left in the agent's own Terminal input; `error` says why the last Send it did not go. */
+export interface TerminalDraftView { draft: string; can_send: boolean; submitting: boolean; error: Text | null }
 export interface ComposerView {
   handle: number; key: string; subagent?: { agent_id: string; send_supported: boolean; hint: string } | null; loaded: boolean; rev: number; text_epoch: number; text: string; position: number; anchor: number;
   attachments: AttachmentView[]; removed: string | null; attaching: boolean; sending: boolean; recording?: boolean; waiting: string | null; uncertain: boolean;
@@ -920,6 +924,10 @@ export interface ComposerView {
   cancel_send: boolean; cancel_locked?: boolean; compacting: boolean; clear: ClearControl;
   /** The message a "Compact and continue" holds while the desktop service compacts first: it left the composer but is not sent yet (zerus-pabah). */
   held?: HeldMessageView | null;
+  /** the messages hgs holds until the agent takes the previous one, oldest first. */
+  held_inputs?: HeldInputView[];
+  /** Text left in the agent's own Terminal input, which holds every send. */
+  terminal_draft?: TerminalDraftView | null;
   /** The agent's question card shown in the composer (A2). */
   question: QuestionView | null;
   /** False while a required card stands in for the editor and the action row (Qt's setInputVisible). */
@@ -953,7 +961,9 @@ export type QuestionEdit = { kind: "option"; item: string; option: string; check
 export interface ColdAnswer { title: string; text: string; proceed: string }
 export type QuestionReply = { kind: "sending" } | { kind: "busy" } | { kind: "cold"; token: number; prompt: ColdAnswer } | { kind: "notice"; text: string };
 /** Notices and Terminal requests that arrive after their call (`next_batch`'s `composer_events`). */
-export type ComposerEvent = { kind: "notice"; text: string; error: boolean; transient: boolean } | { kind: "open_terminal"; key: string };
+export type ComposerEvent = { kind: "notice"; text: string; error: boolean; transient: boolean } | { kind: "open_terminal"; key: string }
+  /** A notice whose prose is translated here: held messages, the Terminal draft, a Send that did nothing. */
+  | { kind: "said"; text: Text; error: boolean; sticky: boolean };
 /** A Codex question reply, parsed in Rust (`question_replies`, `prompt_replies`). */
 export interface Reply { question: string; answer: string }
 export type ColdAction = "send" | "compact" | "clear";

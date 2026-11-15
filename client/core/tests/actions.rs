@@ -423,6 +423,7 @@ fn send(text: &str) -> Action {
         }],
         agent_id: Some("agent-7".into()),
         expected_compaction_id: None,
+        queue_when_unconfirmed: false,
     }
 }
 

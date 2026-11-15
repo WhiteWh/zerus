@@ -532,6 +532,9 @@ impl Composers {
         if let Some(run) = run {
             hub.local.rebind_run(key, plan.row(), run);
         }
+        // The service could not tell what happened: a Terminal draft may hold
+        // it (hgs refuses a send while one is there), so it is read once.
+        let unknown = matches!(outcome, Outcome::Uncertain { .. });
         let detail = hub.local.finished_as_is(key, plan.row(), &outcome);
         if let Some(composer) = hub.composers.get_mut(key) {
             composer.handed = None;
@@ -571,6 +574,9 @@ impl Composers {
         drop(hub);
         self.reconcile();
         self.changed();
+        if unknown {
+            self.draft_check(false);
+        }
     }
 
     /// The compaction call of a "Compact and continue" (`request`), offered

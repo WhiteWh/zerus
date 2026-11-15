@@ -24,6 +24,10 @@ pub(super) mod job_round;
 pub(super) mod owner_transfer;
 
 pub(super) fn root() -> PathBuf {
+    #[cfg(test)]
+    if let Some(root) = TEST_ROOT.with(|root| root.borrow().clone()) {
+        return root;
+    }
     nonempty_env("HGS_STATE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -32,6 +36,17 @@ pub(super) fn root() -> PathBuf {
                 .unwrap_or_else(|| home().join(".local/state"))
                 .join("hgs/sessions")
         })
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// A test's own state root on this thread (`with_test_state_root`).
+    static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn set_test_root(root: Option<PathBuf>) {
+    TEST_ROOT.with(|value| *value.borrow_mut() = root);
 }
 
 pub(super) fn private_dir(path: &Path) -> Result<()> {
