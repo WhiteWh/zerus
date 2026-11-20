@@ -1385,7 +1385,7 @@ pub fn run_bounded_stdin(
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     helper_group::admit().map_err(RunError::Spawn)?;
     let turn = spawn_turn_before(deadline, cancelled).map_err(|_| RunError::Stopped)?;
-    run_bounded_in_turn(command, limits, deadline, cancelled, turn)
+    run_bounded_in_turn(command, input, limits, deadline, cancelled, turn)
 }
 /// A failed turn reservation proves no child started. Callers may wait
 /// before taking their own write admission; no store lock is held here.
@@ -1418,6 +1418,7 @@ pub(crate) fn spawn_turn_before(
 /// after obtaining that turn and retains its own admission until this returns.
 pub(crate) fn run_bounded_in_turn(
     command: &mut Command,
+    input: Stdio,
     limits: [usize; 2],
     deadline: Instant,
     cancelled: &dyn Fn() -> bool,

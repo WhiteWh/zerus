@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 use zerus_team_plan::{problem::code, Problem};
 
@@ -696,6 +696,7 @@ impl Git {
         let result = match turn {
             Some(turn) => crate::platform::run_bounded_in_turn(
                 &mut command,
+                Stdio::null(),
                 [8 * 1024 * 1024, 64 * 1024],
                 deadline,
                 &cancelled,

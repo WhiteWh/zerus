@@ -18,7 +18,8 @@ fn a_reserved_turn_runs_the_same_bounded_child() {
     let mut command = Command::new("sh");
     command.args(["-c", "read value || printf closed; printf error >&2"]);
     let (status, out, error) =
-        run_bounded_in_turn(&mut command, [64, 64], until, &|| false, turn).unwrap();
+        run_bounded_in_turn(&mut command, Stdio::null(), [64, 64], until, &|| false, turn)
+            .unwrap();
     assert!(status.success());
     assert_eq!(out, b"closed");
     assert_eq!(error, b"error");
