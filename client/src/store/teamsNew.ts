@@ -63,11 +63,15 @@ export interface ComputerChoice {
 
 export type RowError = { code: "role" } | { code: "computer-offline"; alias: string };
 
-/** A member row's live error: no role, or a computer that is not online. */
-export function memberRowErrors(member: DraftMember, computers: ComputerChoice[]): RowError[] {
+/**
+ * A member row's live error: no role, or a computer that is not online.
+ * Without `computers` (a form for another computer, whose aliases this one
+ * does not know) only the role is checked.
+ */
+export function memberRowErrors(member: DraftMember, computers?: ComputerChoice[]): RowError[] {
   const errors: RowError[] = [];
   if (!member.role.trim()) errors.push({ code: "role" });
-  if (member.computer) {
+  if (member.computer && computers) {
     const computer = computers.find((candidate) => candidate.alias === member.computer);
     if (!computer || !computer.online) errors.push({ code: "computer-offline", alias: member.computer });
   }

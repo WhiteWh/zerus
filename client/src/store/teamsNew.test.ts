@@ -147,6 +147,11 @@ describe("New team creation rules", () => {
     ]);
     expect(memberRowErrors(member({ computer: "studio" }), COMPUTERS)).toEqual([]);
   });
+
+  it("leaves another computer's aliases to its hgs and still asks for a role", () => {
+    expect(memberRowErrors(member({ computer: "only-the-peer-knows" }))).toEqual([]);
+    expect(memberRowErrors(member({ role: "", computer: "only-the-peer-knows" }))).toEqual([{ code: "role" }]);
+  });
 });
 
 describe("draft polling", () => {

@@ -250,7 +250,10 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
     if (result.ok) props.onDiscarded?.(id);
   };
 
-  const badRows = () => members().filter((member) => memberRowErrors(member, props.computers).length > 0).length;
+  // WhiteWh fork: a form for another computer cannot judge that computer's
+  // aliases; its hgs checks them, and the preflight says so.
+  const rowErrors = (member: DraftMember) => memberRowErrors(member, computer() ? undefined : props.computers);
+  const badRows = () => members().filter((member) => rowErrors(member).length > 0).length;
   const counted = () => members().filter((member) => !member.lead && member.id !== "lead").length;
   const createWhy = () => createReason({ drafting: !!draft(), goal: fields().goal, name: fields().name, folderOk: folderOk(), badRows: badRows(),
     // Owner, 2026-11-09: the limit counts the members besides the lead, as hgs does; counting the lead blocked a valid team.
@@ -259,8 +262,12 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
   // Task 200 (Qt m_accounts[host]): a member's accounts are those of its computer.
   // WhiteWh fork (owner, 2026-11-18): a team made on another computer lives
   // there; "" in its rows is that computer, whose accounts and models apply.
+  // A row placed on a third computer names it by the other computer's alias,
+  // which this window cannot ask: no accounts or models are offered for it.
   const placed = <T extends { computer: string }>(item: T): T => ({ ...item, computer: item.computer || computer() });
+  const reachable = (item: { computer: string }) => !computer() || !item.computer;
   const accountsFor = (agent: string, at: ComputerId = "") => {
+    if (!reachable({ computer: at })) return [];
     const where = at || computer();
     return (where && props.accountsFor ? props.accountsFor(where) : props.accounts ?? []).filter((account) => account.provider === agent);
   };
@@ -268,21 +275,21 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
   const [modelTick, setModelTick] = createSignal(0);
   const models = createModelCatalogs((at, agent, account) => teamRoleModels(at, agent, account), () => setModelTick((n) => n + 1));
   interface ModelItem { [key: string]: unknown; computer: string; agent: string; account: string; model: string; effort: string }
-  const modelsFor = (shown: ModelItem) => {
+  const catalogFor = (shown: ModelItem) => {
+    if (!reachable(shown)) return undefined;
     const item = placed(shown);
     modelTick();
     models.request(item);
-    return modelOptions(item, models.get(item));
+    return models.get(item);
   };
+  const modelsFor = (shown: ModelItem) => modelOptions(placed(shown), catalogFor(shown));
   const effortsFor = (shown: ModelItem) => {
     const item = placed(shown);
-    modelTick();
-    models.request(item);
-    return effortOptions(item.model, models.get(item), item.effort, item.agent);
+    return effortOptions(item.model, catalogFor(shown), item.effort, item.agent);
   };
   const changedModel = (shown: ModelItem, value: string) => {
     const item = placed(shown);
-    const next = selectModel(normalizeModelCatalog(models.get(item) ?? []), value, item.effort);
+    const next = selectModel(normalizeModelCatalog((reachable(shown) && models.get(item)) || []), value, item.effort);
     return { model: next.modelId, effort: next.effortId };
   };
   const leadModelInput = (value: string) => setLead({ ...lead(), ...changedModel({ computer: "", ...lead(), model: value }, value) });
@@ -368,7 +375,7 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
       <header class="nt-head">
         <h2>{tr("New team")}</h2>
         <span class="grow" />
-        <Show when={props.onAskDesigner}>
+        <Show when={props.onAskDesigner && !computer()}>
           <button type="button" class="btn ghost small" title={tr("The Team designer keeps the templates and roles; the lead plans this team with you")}
             onClick={() => props.onAskDesigner?.()}>{tr("Templates and roles: Team designer")}</button>
         </Show>
@@ -489,7 +496,7 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
               <select class="nt-computer" value={member.computer} aria-label={tr("Computer")} onChange={(event) => setMember(index(), { computer: event.currentTarget.value, account: "", model: "", effort: "" })}>
                 <option value="">{computer() ? props.computers.find((choice) => choice.alias === computer())?.label || computer() : tr("this computer")}</option>
                 {/* A team on another computer names its members' computers by that computer's aliases, which this one does not know. */}
-                <For each={computer() ? [] : props.computers.filter((choice) => choice.alias)}>{(choice) => <option value={choice.alias}>{choice.label}</option>}</For>
+                <For each={computer() ? (member.computer ? [{ alias: member.computer, label: member.computer }] : []) : props.computers.filter((choice) => choice.alias)}>{(choice) => <option value={choice.alias}>{choice.label}</option>}</For>
               </select>
               <select class="nt-account" value={member.account} aria-label={tr("Account")} onChange={(event) => setMember(index(), { account: event.currentTarget.value, model: "", effort: "" })}>
                 <option value="" selected={!member.account}>{tr("Default account")}</option>
@@ -503,8 +510,8 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
                 onClick={() => setMembers([...members().slice(0, index() + 1), { ...member, id: "" }, ...members().slice(index() + 1)])}><Icon name="copy" size={13} /></button>
               <button type="button" class="icon-btn small" aria-label={tr("Remove member")} title={tr("Remove member")}
                 onClick={() => setMembers(members().filter((_, at) => at !== index()))}><Icon name="x" size={13} /></button>
-              <Show when={memberRowErrors(member, props.computers).length > 0}>
-                <span class="nt-error">{memberRowErrors(member, props.computers).map((error) => (error.code === "role" ? tr("Pick a role") : tr("Computer %1 is offline", error.alias))).join(", ")}</span>
+              <Show when={rowErrors(member).length > 0}>
+                <span class="nt-error">{rowErrors(member).map((error) => (error.code === "role" ? tr("Pick a role") : tr("Computer %1 is offline", error.alias))).join(", ")}</span>
               </Show>
             </div>
           )}</For>
