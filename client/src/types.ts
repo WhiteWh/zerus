@@ -137,6 +137,7 @@ export interface ViewRow {
   /** The operations the computer reports as allowed; null when it reports none. */
   allowed_actions?: string[] | null;
   action_reasons?: Record<string, string>;
+  restore_pending?: boolean;
   /** The raw working directory (`folder` is the name people know the checkout by). */
   cwd?: string;
   /** Recorded listing binding; never inferred from a default account. */

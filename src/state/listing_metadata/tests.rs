@@ -1,6 +1,7 @@
 use super::*;
 use std::fs;
 mod bench;
+mod child_detail;
 mod mobile;
 mod parity;
 mod readers;

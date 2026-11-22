@@ -197,6 +197,7 @@ export function createRestores(deps: RestoreDeps) {
       } else {
         if (followed === id) followed = undefined;
         drop(id);
+        if (live.cmd === "deepseek") deps.refreshArchive();
       }
     });
   }

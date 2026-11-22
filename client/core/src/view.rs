@@ -214,6 +214,9 @@ pub struct ViewRow {
     /// The operations the computer reports as allowed, None when it reports none.
     pub allowed_actions: Option<Vec<String>>,
     pub action_reasons: BTreeMap<String, String>,
+    /// This archive can check the original native restore of its exact conversation.
+    #[serde(skip_serializing_if = "is_false")]
+    pub restore_pending: bool,
     /// The raw working directory (`folder` is the name people know it by).
     pub cwd: String,
     /// The canonical working directory (`cwd_canonical`), empty when the row
@@ -1554,6 +1557,7 @@ pub fn row(value: &Value) -> ViewRow {
                     .collect()
             })
             .unwrap_or_default(),
+        restore_pending: value["restore_pending"] == true,
         cwd: text(value, "cwd").to_owned(),
         cwd_canonical: text(value, "cwd_canonical").to_owned(),
         git_root: text(value, "git_root").to_owned(),

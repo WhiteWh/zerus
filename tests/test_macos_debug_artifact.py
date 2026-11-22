@@ -215,7 +215,15 @@ class CliPhases(unittest.TestCase):
                     with self.subTest(system=system,phase=phase):
                         self.assertEqual(result.returncode, 2 if phase=='unknown' else 0,result.stderr)
                     results[phase]=log.read_text().splitlines() if log.exists() else []
-                debug=['python3:-','cargo:test --locked','cargo:build --locked']
+                debug=['python3:-']
+                if system=='Linux':
+                    # zerus-5sl7r: the pinned-image real-child resume test runs
+                    # before the full suite, so its failures never hide it.
+                    debug+=['cargo:build --locked','cargo:build --locked --example fake_agent',
+                            'cargo:test --locked --bin hgs desktop::session_resume::tests::actor::real_cli::'
+                            'real_cli_resume_from_the_pinned_image_starts_its_supervisor_and_sends'
+                            ' -- --ignored --exact --test-threads=1']
+                debug+=['cargo:test --locked','cargo:build --locked']
                 native_cases=[
                     'real_cli_recover_only_reconciles_the_original_receipt_and_never_falls_back_to_terminal_input',
                     'real_cli_original_child_kill_and_revoke_never_release_input_or_replay_after_reopen',

@@ -34,8 +34,11 @@ fn row_facts(table: &str) -> String {
         "{holder},(SELECT d.kind FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled'),(SELECT d.state FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled'),(SELECT i.text FROM inbox i WHERE i.team={table}.team AND i.node={table}.id AND i.kind LIKE 'unstaffed:%' AND i.reply IS NULL ORDER BY i.seq DESC LIMIT 1),(SELECT o.state FROM cancel_outcomes o JOIN decisions d ON d.seq=o.decision AND d.stop=(SELECT stop_seq FROM teams WHERE id={table}.team) WHERE o.team={table}.team AND o.node={table}.id ORDER BY o.decision DESC LIMIT 1),(SELECT o.reason FROM cancel_outcomes o JOIN decisions d ON d.seq=o.decision AND d.stop=(SELECT stop_seq FROM teams WHERE id={table}.team) WHERE o.team={table}.team AND o.node={table}.id ORDER BY o.decision DESC LIMIT 1),(SELECT CASE WHEN EXISTS(SELECT 1 FROM cancel_outcomes o JOIN decisions d ON d.seq=o.decision AND d.stop=(SELECT stop_seq FROM teams WHERE id={table}.team) WHERE o.team={table}.team AND o.node={table}.id AND o.state IN ('cancelled','released')) THEN k.state END FROM key_clears k WHERE k.team={table}.team AND k.node={table}.id),(SELECT CASE WHEN EXISTS(SELECT 1 FROM cancel_outcomes o JOIN decisions d ON d.seq=o.decision AND d.stop=(SELECT stop_seq FROM teams WHERE id={table}.team) WHERE o.team={table}.team AND o.node={table}.id AND o.state IN ('cancelled','released')) THEN k.reason END FROM key_clears k WHERE k.team={table}.team AND k.node={table}.id),(SELECT EXISTS(SELECT 1 FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.kind='cancel' AND d.state='pending' AND d.stop=(SELECT stop_seq FROM teams WHERE id={table}.team))),(SELECT stop_seq FROM teams WHERE id={table}.team)",
         table = table
     );
+    // zerus-3u5yu (5): a stage row's target's earlier implementers, whom the
+    // stage's Reassign and hand-out refuse; an empty array for other rows.
+    let earlier = format!("(SELECT json_group_array(member) FROM (SELECT t.member FROM target_implementers t WHERE t.team={table}.team AND t.target=json_extract({table}.data,'$.stage_of') ORDER BY t.member LIMIT 200))");
     format!(
-        "{facts},{},{base}",
+        "{facts},{},{base},{earlier}",
         super::dependency_edit::eligible_sql(table)
     )
 }
@@ -282,6 +285,7 @@ impl Store {
                         Ok(QueueRow {
                             deps_editable: r.get(17)?,
                             assigned_base: r.get(18)?,
+                            earlier_implementers: sql_json(r, 19)?,
                             node: rows::node_row(r)?,
                             holder: r.get(7)?,
                             pending_replaceable: pending

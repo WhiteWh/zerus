@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 
 
 # A user manager for the --mobile-connector actions: it reports a Python
@@ -80,6 +81,37 @@ def isolated_environment(home, sockets, inherited):
                HGS_CONFIG_DIR=str(home / "config"), HGS_SELF="fixture", HGS_PEERS="", HGS_TAB="0")
     return env
 
+
+def listed_sessions(cli, env, timeout=20):
+    """Wait for one whole private listing under a single bootstrap deadline.
+
+    The first supported Linux listing starts its metadata worker. Its initial
+    database may not exist yet, or its immutable cut may still be building.
+    Only these closed, zero-output refusals may be read again; other errors
+    and any partial output remain failures of the installed package.
+    """
+    transient = {
+        "hgs: Missing private file",
+        "hgs: Session listing is building, stale or unavailable; no complete body returned",
+        "hgs: Session listing changed before publication; no complete body returned",
+    }
+    deadline = time.monotonic() + timeout
+    args = [cli, "ls", "--local", "--json"]
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Installed package listing did not finish metadata bootstrap")
+        result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=remaining)
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Installed package listing exceeded its original deadline")
+        if result.returncode == 0:
+            return json.loads(result.stdout)["sessions"]
+        if result.returncode != 1 or result.stdout or result.stderr.strip() not in transient:
+            raise subprocess.CalledProcessError(result.returncode, args,
+                                                result.stdout, result.stderr)
+        time.sleep(min(.1, max(0, deadline - time.monotonic())))
+
+
 def main():
     if os.geteuid() == 0:
         raise SystemExit("Run the installed-package check as an unprivileged user.")
@@ -111,7 +143,7 @@ def main():
         # non-Git project and a socket that cannot reach an existing server.
         try:
             run(str(links[0]), "sh", str(project), "-n", "package-fixture", "-d")
-            sessions = json.loads(run(str(links[0]), "ls", "--local", "--json"))["sessions"]
+            sessions = listed_sessions(str(links[0]), env)
             assert len(sessions) == 1 and sessions[0]["name"] == "sh/project/package-fixture"
             assert Path(sessions[0]["cwd"]).resolve() == project
             assert not (project / ".git").exists()

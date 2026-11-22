@@ -13,6 +13,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from zerus_mobile.connector import Connector, ConnectorError
 from zerus_mobile.context import OPERATIONS, validate_core
+from zerus_mobile.send_outcome import OPERATIONS as SEND_OUTCOME_OPERATIONS
 from zerus_mobile.speech import OPERATIONS as SPEECH_OPERATIONS
 from zerus_mobile.speech_config import OPERATIONS as SPEECH_CONFIG_OPERATIONS
 from zerus_mobile.voice import OPERATIONS as VOICE_OPERATIONS
@@ -283,12 +284,16 @@ class ContextFixtureTests(unittest.IsolatedAsyncioTestCase):
         hint = {"status": "cold", "source": "native_footer", "tokens": 60000}
         self.config(all_states=True, session_usage=usage, cache_hint=hint)
         snapshot = await self.connector.snapshot()
-        # This retained fixture deliberately has no projection, shared notifications, hook health, analytics,
-        # speech, file read, folder creation or logical project assignment ABI in its CLI help.
+        # The synthetic CLI lacks the send-outcome markers and these optional ABIs.
         self.assertFalse(self.connector.history_projection_supported)
         self.assertNotIn("history_projection", snapshot["mobile_capabilities"]["operations"])
-        self.assertEqual(set(snapshot["mobile_capabilities"]["operations"]),
-                         OPERATIONS - SPEECH_OPERATIONS - SPEECH_CONFIG_OPERATIONS - VOICE_OPERATIONS - {"history_projection", "session_notifications", "directory_create", "file_read", "archive_list", "hooks_status", "analytics_read", "project_assignment", "project_assign"})
+        self.assertSetEqual(
+            set(snapshot["mobile_capabilities"]["operations"]),
+            OPERATIONS - SEND_OUTCOME_OPERATIONS - SPEECH_OPERATIONS - SPEECH_CONFIG_OPERATIONS
+            - VOICE_OPERATIONS - {"history_projection", "session_notifications", "directory_create",
+                                  "file_read", "archive_list", "hooks_status", "analytics_read",
+                                  "project_assignment", "project_assign"},
+        )
         self.assertEqual(len(snapshot["sessions"]), 7)
         inspect = await self.connector.native(["inspect", NAME])
         self.assertEqual(inspect["session_usage"], usage)

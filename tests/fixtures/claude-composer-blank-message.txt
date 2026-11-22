@@ -1,0 +1,3 @@
+Paragraph one of the fixture draft wraps onto a second row of the composer at eighty columns here.
+
+Paragraph three of the fixture draft is long enough to fill several composer rows: it names the example-work session, the review of the scrolled composer, the rows Claude hides below the cursor and the bar that says how many there are, then it keeps going with plain words so that the wrapped text takes six rows of seventy-six cells before it finally ends here.

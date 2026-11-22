@@ -2,15 +2,15 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::json;
 use zerus_replica::{
-    phone::{answer, Exchange},
-    Actor, Document, NewTask, ProjectStore, Stage, Target, TaskDoc, Update,
+    phone::{answer, Exchange, Request},
+    Actor, Document, Inventory, NewTask, ProjectStore, Stage, Target, TaskDoc, Update,
 };
 
 const NODE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 fn task(host: &ProjectStore) -> TaskDoc {
     let mut task = TaskDoc::create(NewTask {
-        project: "project-1",
+        project: host.project_id(),
         id: "T-mobile",
         text: "The admitted original",
         stage: Stage::Todo,
@@ -287,6 +287,87 @@ fn an_unqualified_sealed_task_does_not_stop_an_unrelated_legacy_document() {
     );
 }
 
+fn empty_request(project: &str) -> Request {
+    Request {
+        schema: 1,
+        project: project.into(),
+        inventory: Inventory::default(),
+        range: None,
+        updates: vec![],
+        resume: None,
+    }
+}
+
+#[test]
+fn native_mobile_ingress_cannot_receive_unadopted_sealed_state() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let host = ProjectStore::open(a.path(), "project-1").unwrap();
+    let task = task(&host);
+    let native = ProjectStore::open(b.path(), "project-1").unwrap();
+    let request = empty_request("project-1");
+    let offered = answer(&host, request.clone()).unwrap();
+    assert_eq!(offered.updates.len(), 1);
+    let refused = answer(
+        &native,
+        Request {
+            updates: offered.updates,
+            ..request
+        },
+    )
+    .unwrap();
+    assert_eq!(refused.imported, 0);
+    assert_eq!(refused.refused.len(), 1);
+    assert_eq!(refused.refused[0].uuid, task.uuid());
+    assert!(refused.refused[0]
+        .error
+        .contains("has not adopted the admitted attempts cutover"));
+    assert_eq!(native.live_inventory().unwrap().0, Inventory::default());
+    assert_eq!(refused.digest, Inventory::default().digest());
+    assert_ne!(refused.digest, offered.digest);
+    let (updates, _) = host
+        .updates_for(
+            &host.live_inventory().unwrap().0,
+            &Inventory::default(),
+            usize::MAX,
+        )
+        .unwrap();
+    let native_import = native.import_updates(updates).unwrap();
+    assert_eq!(native_import.changed, 0);
+    assert_eq!(native_import.refused.len(), 1);
+    assert_eq!(native_import.refused[0].uuid, task.uuid());
+    assert_eq!(native.live_inventory().unwrap().0, Inventory::default());
+}
+
+#[test]
+fn the_phone_refuses_updates_for_another_task_or_project() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let host = ProjectStore::open(a.path(), "project-1").unwrap();
+    let task = task(&host);
+    for (project, wrong_id, expected_refusal) in [
+        ("project-1", Some(NODE), "the update is for another task"),
+        ("project-2", None, "the task belongs to another project"),
+    ] {
+        let phone = ProjectStore::open_phone(b.path(), project).unwrap();
+        let mut exchange = Exchange::new();
+        assert!(exchange.next_request(&phone).unwrap().is_some());
+        let mut offered = answer(&host, empty_request("project-1")).unwrap();
+        if let Some(wrong_id) = wrong_id {
+            offered.updates[0].task = Some(wrong_id.into());
+        }
+        let progress = exchange.accept(&phone, offered).unwrap();
+        assert_eq!(progress.changed, 0);
+        assert_eq!(progress.refused_here.len(), 1);
+        assert_eq!(
+            progress.refused_here[0].uuid,
+            wrong_id.unwrap_or(task.uuid())
+        );
+        assert_eq!(progress.refused_here[0].error, expected_refusal);
+        assert_eq!(phone.live_inventory().unwrap().0, Inventory::default());
+    }
+}
+
 #[test]
 fn a_phone_receives_the_admitted_task_without_obtaining_native_authority() {
     let a = tempfile::tempdir().unwrap();
@@ -295,17 +376,27 @@ fn a_phone_receives_the_admitted_task_without_obtaining_native_authority() {
     let task = task(&host);
     let phone = ProjectStore::open_phone(b.path(), "project-1").unwrap();
     let mut exchange = Exchange::new();
+    let mut changed = 0;
     while let Some(request) = exchange.next_request(&phone).unwrap() {
         let progress = exchange
             .accept(&phone, answer(&host, request).unwrap())
             .unwrap();
+        changed += progress.changed;
+        assert_eq!(changed, 1, "the first phone page must adopt the one task");
         assert!(progress.refused_here.is_empty());
         assert!(progress.refused_there.is_empty());
     }
+    let host_inventory = host.live_inventory().unwrap().0;
+    assert!(host_inventory.project.is_empty());
+    assert_eq!(host_inventory.tasks.len(), 1);
+    drop(phone);
+    let phone = ProjectStore::open_phone(b.path(), "project-1").unwrap();
+    assert_eq!(phone.live_inventory().unwrap().0, host_inventory);
     let mut received = phone.load(task.uuid()).unwrap();
     assert_eq!(received.view().unwrap().text, "The admitted original");
     assert!(!received.view().unwrap().writable);
     assert!(received.edit_text("No permit", &Actor::Person, 2).is_err());
+    assert!(phone.save(&mut received).is_err());
     assert!(phone.prepare_cutover(task.uuid(), NODE).is_err());
     assert!(phone.export_cutover(task.uuid()).is_err());
     assert!(phone

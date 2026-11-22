@@ -4,9 +4,13 @@ use super::*;
 use crate::teams::ops::tests::{Harness, TEAM};
 use zerus_client_core::upstream_teams::action::TeamAction;
 mod controls;
+mod placement;
 
 fn sample() -> (Harness, Runtime, Arc<wire::Plan>, Arc<platform::FileLock>) {
-    let h = Harness::new();
+    sample_for(Harness::new())
+}
+
+fn sample_for(h: Harness) -> (Harness, Runtime, Arc<wire::Plan>, Arc<platform::FileLock>) {
     let config = Config {
         home: h.temp.path().display().to_string(),
         dir: h.temp.path().join("config"),

@@ -141,7 +141,7 @@ fn operation(key: &str, error: &Problem) -> Operation {
                 message.trim_end_matches('.'),
                 timing
             )
-        } else if key.starts_with("held:") || key.starts_with("unreadable:") {
+        } else if key.starts_with("held:") || unreadable::key_is_unreadable(key) {
             cut(&error.message, 3000)
         } else {
             let message = cut(&error.message, 2000);

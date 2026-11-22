@@ -1,6 +1,6 @@
-//! A ready node that no member can take (zerus-63rru.45). The plan kernel
-//! names these nodes (`ready::unstaffed`); the lead is told once per
-//! episode, which is a node, its generation and the kernel's reason.
+//! Ready nodes without staffing or with only unreadable eligible members.
+//! The plan kernel names them (`ready::unstaffed`). The lead is told once
+//! per episode, identified by node, generation and reason.
 //!
 //! The service's hand-out pass compares the kernel's set, over its uncooled
 //! readiness view, with the told items through [`unstaffed_changes`], and
@@ -11,10 +11,11 @@
 //! ends when its node leaves the set or its reason or generation changes,
 //! and only the reconcile ends it: it closes the item with a reply that says
 //! why (see `store::unstaffed`). The lead closing its item ends nothing and
-//! is not told again. An unstaffed stage is retired and its parent handed to
-//! the lead with the kernel's reason, as at the stage's creation.
+//! is not told again. A stage with a permanent staffing gap is retired and
+//! its parent handed to the lead with the kernel's reason.
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+use store::member_readability;
 use store::unstaffed::Told;
 use zerus_team_plan::ready::{self, MemberView, PlanView, Unstaffed};
 
@@ -41,9 +42,17 @@ impl UnstaffedChanges {
         self.end.is_empty() && self.tell.is_empty() && self.stages.is_empty()
     }
 }
-fn text(node: u32, reason: &str) -> String {
+fn text(node: &Unstaffed, stage: bool) -> String {
+    if node.unreadable {
+        let subject = if stage { "Pipeline stage" } else { "Task" };
+        return format!(
+            "{subject} {} is ready. {} It will check again.",
+            node.node, node.reason
+        );
+    }
     format!(
-        "Task {node} is ready, but no member can take it: {reason} Route it to another role, reassign or cancel it."
+        "Task {} is ready, but no member can take it: {} Route it to another role, reassign or cancel it.",
+        node.node, node.reason
     )
 }
 /// The one comparison of the kernel's set with the told episodes, for the
@@ -59,8 +68,8 @@ pub fn unstaffed_changes(
 ) -> UnstaffedChanges {
     let wanted: BTreeMap<u32, String> = now
         .iter()
-        .filter(|u| !stages.contains(&u.node))
-        .map(|u| (u.node, text(u.node, &u.reason)))
+        .filter(|u| u.unreadable || !stages.contains(&u.node))
+        .map(|u| (u.node, text(u, stages.contains(&u.node))))
         .collect();
     let mut newest: BTreeMap<u32, &Told> = BTreeMap::new();
     for t in told {
@@ -90,23 +99,20 @@ pub fn unstaffed_changes(
     }
     changes.stages = now
         .iter()
-        .filter(|u| stages.contains(&u.node))
+        .filter(|u| !u.unreadable && stages.contains(&u.node))
         .map(|u| (u.node, u.reason.clone()))
         .collect();
     changes
 }
 
-/// The ready nodes that no member can take, by the kernel's rule, without
-/// the nodes that have an open effect: such a node is in somebody's hands or
-/// on its way and is never reconciled. Busy, paused and not yet created
-/// members count as members who could take a node, as the kernel says. One
-/// function for the store's reconcile and the service's comparison, so the
-/// two cannot drift.
+/// Staffing and readability notices for ready nodes without an open effect.
+/// The store's reconcile and the service comparison use the same kernel view.
 pub fn unstaffed_of(
     team: &Team,
     readiness: &Readiness,
     members: &[Member],
     open_effects: &BTreeSet<u32>,
+    unreadable_members: &BTreeSet<String>,
 ) -> Vec<Unstaffed> {
     let members: Vec<MemberView> = members
         .iter()
@@ -124,10 +130,51 @@ pub fn unstaffed_of(
         lead: &team.lead,
         integration: team.settings.integration,
     };
-    ready::unstaffed(&view)
+    ready::unstaffed(&view, unreadable_members)
         .into_iter()
         .filter(|u| !open_effects.contains(&u.node))
         .collect()
+}
+
+pub(super) fn record_readability(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::RecordMemberReadability { readings } = ctx.op else {
+        unreachable!()
+    };
+    if ctx.team.status != TeamStatus::Running || readings.is_empty() {
+        return Err(invalid(
+            "Readability needs observations from a running team.",
+        ));
+    }
+    if readings.len() > member_readability::MAX_READINGS {
+        return Err(over("Too many member readability observations."));
+    }
+    let previous = member_readability::read(ctx.db, &ctx.team.id)?;
+    let mut seen = BTreeSet::new();
+    let mut changed = false;
+    for reading in readings {
+        if !seen.insert(&reading.member) || reading.member == ctx.team.lead {
+            return Err(invalid(
+                "Readability observations must name distinct non-lead members.",
+            ));
+        }
+        let member = ctx.member(&reading.member)?;
+        if member.state != MemberState::Active || member.session.as_ref() != Some(&reading.session)
+        {
+            return Err(stale());
+        }
+        let state = previous.get(&member.id).copied().unwrap_or_default();
+        let next = state.observe(reading.unreadable, ctx.now);
+        if next != state {
+            member_readability::save(ctx.db, &ctx.team.id, &member.id, next)?;
+            changed = true;
+        }
+    }
+    if !changed {
+        return Err(invalid("The team's member readability is unchanged."));
+    }
+    // Bound cumulative rows across batches as well as the incoming request.
+    member_readability::read(ctx.db, &ctx.team.id)?;
+    Ok(())
 }
 
 pub(super) fn reconcile(ctx: &mut Context<'_>) -> Result<()> {
@@ -139,7 +186,8 @@ pub(super) fn reconcile(ctx: &mut Context<'_>) -> Result<()> {
     let readiness = readiness::load(ctx.db, &ctx.team.id)?;
     let members = members(ctx)?;
     let effects = store::unstaffed::open_effect_nodes(ctx.db, &ctx.team.id)?;
-    let now = unstaffed_of(ctx.team, &readiness, &members, &effects);
+    let marked = member_readability::marked(ctx.db, &ctx.team.id)?;
+    let now = unstaffed_of(ctx.team, &readiness, &members, &effects, &marked);
     if now.len() > store::unstaffed::MAX_OPEN {
         return Err(over(
             "More than 500 unstaffed nodes: the reconcile fails closed.",
@@ -171,7 +219,7 @@ pub(super) fn reconcile(ctx: &mut Context<'_>) -> Result<()> {
         ctx.inbox(*node, &format!("{UNSTAFFED_KIND}{revision}"), text)?;
     }
     for (stage, reason) in &changes.stages {
-        stage_to_lead(ctx, *stage, reason)?;
+        stage_to_lead(ctx, *stage, reason, None)?;
     }
     Ok(())
 }
@@ -203,7 +251,8 @@ pub(super) fn end_stale(ctx: &mut Context<'_>) -> Result<()> {
     Ok(())
 }
 
-/// The stage nodes of a readiness view, which are retired, never told.
+/// Stage nodes are retired for permanent staffing gaps and get a notice for
+/// unreadability.
 pub fn unstaffed_stages(readiness: &Readiness) -> BTreeSet<u32> {
     readiness
         .nodes
@@ -218,7 +267,12 @@ pub fn unstaffed_stages(readiness: &Readiness) -> BTreeSet<u32> {
 /// creation superseded), retired through the one retirement function, and
 /// its parent is handed to the lead with the kernel's reason. A stage that is
 /// no longer its parent's current one is retired alone.
-fn stage_to_lead(ctx: &mut Context<'_>, stage: u32, reason: &str) -> Result<()> {
+pub(super) fn stage_to_lead(
+    ctx: &mut Context<'_>,
+    stage: u32,
+    reason: &str,
+    note: Option<ReportNote>,
+) -> Result<()> {
     let n = ctx.node(stage)?;
     let parent = n.stage_of.ok_or_else(missing)?;
     let current = pipeline::current_stage(ctx, stage, parent)?;
@@ -230,7 +284,7 @@ fn stage_to_lead(ctx: &mut Context<'_>, stage: u32, reason: &str) -> Result<()> 
         // hand-back (`want_stage`); handing the run to the lead ends that
         // hand-back, as at the stage's creation, and never an explicit
         // hold: a person's or the lead's Hold stays its owner's.
-        pipeline::to_lead(ctx, &parent, reason)?;
+        pipeline::to_lead_with_note(ctx, &parent, reason, note)?;
     }
     Ok(())
 }

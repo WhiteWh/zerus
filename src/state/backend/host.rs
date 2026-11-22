@@ -77,9 +77,9 @@
 // Only Windows builds use the host backend; its mapping is tested everywhere.
 #![cfg_attr(not(windows), allow(dead_code))]
 use super::{
-    ClientExit, ClientRow, DryRun, InputClaim, InputState, Key, LaunchSpec, Listing, PaneField,
-    PaneInfo, PanePath, PaneRow, Paste, SessionRow, StageErrors, Target, TerminalBackend,
-    RUN_CHANGED,
+    ClientExit, ClientRow, DryRun, InputClaim, InputState, Key, LaunchSpec, Launched, Listing,
+    PaneField, PaneInfo, PanePath, PaneRow, Paste, SessionRow, StageErrors, Target,
+    TerminalBackend, TerminalState, RUN_CHANGED,
 };
 use crate::{
     cli::{Error, Result as CliResult},
@@ -214,12 +214,33 @@ impl Failure {
     }
 }
 
+/// A host's identity, as its hello answers it: its pid and creation time.
+pub(crate) fn host_identity(host: &protocol::HelloReply) -> String {
+    format!("{}:{}", host.pid, host.created)
+}
+
 /// How the backend reaches the host and what it reads of this process.
 pub(crate) trait Connector: Sync {
     /// Send one request to the running host; never starts one.
     fn call(&self, op: Op) -> std::result::Result<Value, Failure>;
     /// Send a `create_session`, starting the host when none runs (D3).
     fn create(&self, op: Op) -> std::result::Result<Value, Failure>;
+    /// [`Self::create`], with the identity of the host that answered it
+    /// ([`host_identity`]) when known.
+    fn create_identified(&self, op: Op) -> std::result::Result<(Value, Option<String>), Failure> {
+        self.create(op).map(|answer| (answer, None))
+    }
+    /// One request to the running host within `wait`, its connection
+    /// included; never starts one. With the answer goes the identity of the
+    /// host that gave it ([`host_identity`]), None when no host answered the
+    /// connection (zerus-5sl7r).
+    fn call_within(
+        &self,
+        op: Op,
+        _wait: std::time::Duration,
+    ) -> (Option<String>, std::result::Result<Value, Failure>) {
+        (None, self.call(op))
+    }
     /// Attach to a session on a connection of its own, which then carries
     /// the stream (D13); never starts a host.
     fn attach(&self, request: Attach) -> std::result::Result<(Attached, AttachStream), Failure>;
@@ -336,6 +357,17 @@ impl<C: Connector> HostBackend<C> {
     /// Start the session `spec` describes at `size`; the host's answer and
     /// the launch ID.
     fn create(&self, spec: &LaunchSpec, size: Size) -> Result<(Created, String)> {
+        self.create_identified(spec, size)
+            .map(|(created, launch_id, _)| (created, launch_id))
+    }
+
+    /// [`Self::create`], with the identity of the host that created it, when
+    /// known.
+    fn create_identified(
+        &self,
+        spec: &LaunchSpec,
+        size: Size,
+    ) -> Result<(Created, String, Option<String>)> {
         let environment = session_environment(
             self.connector.environment_for_session(&spec.env)?,
             &spec.env,
@@ -343,12 +375,12 @@ impl<C: Connector> HostBackend<C> {
         )?;
         let request = create_request(spec, environment, size, || uuid::Uuid::new_v4().to_string());
         let launch_id = request.launch_id.clone();
-        let created = self
+        let (created, host) = self
             .connector
-            .create(Op::CreateSession(request))
+            .create_identified(Op::CreateSession(request))
             .map_err(Failure::message)?;
         serde_json::from_value::<Created>(created)
-            .map(|created| (created, launch_id))
+            .map(|created| (created, launch_id, host))
             .map_err(|error| format!("invalid session host answer: {error}"))
     }
 
@@ -757,6 +789,30 @@ impl<C: Connector> TerminalBackend for HostBackend<C> {
             Ok(Some(_))
         )
     }
+    /// One `pane_info` of the launched pane within `wait`, its connection
+    /// included (zerus-5sl7r). Only the host that created the pane (same pid
+    /// and creation time) says it is gone, by its own not-found answer; no
+    /// host, another host, a failed or late call is unknown. A live pane is
+    /// the launch only while its root process is the one the launch started.
+    fn terminal_state(&self, launched: &Launched, wait: std::time::Duration) -> TerminalState {
+        let (host, answer) = self.connector.call_within(
+            Op::PaneInfo {
+                target: protocol::Target::Pane(launched.pane.clone()),
+            },
+            wait,
+        );
+        if host.as_deref() != Some(launched.server.as_str()) {
+            return TerminalState::Unknown;
+        }
+        match answer.map(serde_json::from_value::<PaneDetails>) {
+            Ok(Ok(details)) if details.pane != launched.pane => TerminalState::Unknown,
+            Ok(Ok(details)) if details.dead => TerminalState::DeadPane,
+            Ok(Ok(details)) if details.pane_pid != launched.process => TerminalState::Replaced,
+            Ok(Ok(_)) => TerminalState::Alive,
+            Err(failure) if failure.not_found() => TerminalState::Absent,
+            Ok(Err(_)) | Err(_) => TerminalState::Unknown,
+        }
+    }
     fn session_name(&self, id: &str) -> Result<Option<String>> {
         self.resolve(protocol::Target::Session(id.into()))
             .map(|resolved| resolved.map(|resolved| resolved.name))
@@ -771,6 +827,17 @@ impl<C: Connector> TerminalBackend for HostBackend<C> {
     }
     fn start(&self, spec: &LaunchSpec) -> Result<()> {
         self.create(spec, SIZE).map(drop)
+    }
+    fn start_observed(&self, spec: &LaunchSpec) -> Result<Option<Launched>> {
+        self.create_identified(spec, SIZE)
+            .map(|(created, _, host)| {
+                host.map(|server| Launched {
+                    server,
+                    pane: created.pane,
+                    process: created.pid,
+                    birth: None,
+                })
+            })
     }
     fn set_run_marker(&self, name: &str, run_id: &str) -> Result<()> {
         self.act(Op::SetEnvironment {
@@ -1062,9 +1129,52 @@ mod windows {
             connection.request(op).map_err(Failure::Host)
         }
 
+        /// The pipe, the hello and the request end by one absolute deadline:
+        /// the connection is shut down then, however the host spread its
+        /// answers over reads that each came in time
+        /// ([`client::connect_until`]). A request that ended so leaves only
+        /// this connection out of step, and it is dropped.
+        fn call_within(
+            &self,
+            op: Op,
+            wait: Duration,
+        ) -> (Option<String>, std::result::Result<Value, Failure>) {
+            let until = Instant::now() + wait;
+            let state = match server::existing_state_dir() {
+                Ok(Some(state)) => state,
+                Ok(None) => return (None, Err(Failure::NoHost)),
+                Err(error) => return (None, Err(Failure::Unreachable(error.to_string()))),
+            };
+            let mut connection = match client::connect_until(&state, Role::Cli, until) {
+                Ok(connection) => connection,
+                Err(error) => return (None, Err(error.into())),
+            };
+            let host = Some(host_identity(connection.host()));
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return (
+                    host,
+                    Err(Failure::Unreachable(
+                        "the observation's deadline passed".into(),
+                    )),
+                );
+            }
+            if let Err(error) = connection.set_read_timeout(Some(left)) {
+                return (host, Err(Failure::Unreachable(error.to_string())));
+            }
+            (host, connection.request(op).map_err(Failure::Host))
+        }
+
+        fn create(&self, op: Op) -> std::result::Result<Value, Failure> {
+            self.create_identified(op).map(|(answer, _)| answer)
+        }
+
         /// A host that has decided to exit refuses the create as `busy`; the
         /// create then goes to the host that replaces it.
-        fn create(&self, op: Op) -> std::result::Result<Value, Failure> {
+        fn create_identified(
+            &self,
+            op: Op,
+        ) -> std::result::Result<(Value, Option<String>), Failure> {
             let state =
                 server::state_dir().map_err(|error| Failure::Unreachable(error.to_string()))?;
             let deadline = Instant::now() + EXITING_HOST;
@@ -1077,7 +1187,12 @@ mod windows {
                         drop(connection);
                         thread::sleep(Duration::from_millis(200));
                     }
-                    result => return result.map_err(Failure::Host),
+                    result => {
+                        let host = host_identity(connection.host());
+                        return result
+                            .map(|answer| (answer, Some(host)))
+                            .map_err(Failure::Host);
+                    }
                 }
             }
         }
@@ -1141,6 +1256,8 @@ mod tests {
         requests: Mutex<Vec<(bool, Op)>>,
         variables: BTreeMap<&'static str, String>,
         parents: BTreeMap<u32, u32>,
+        /// The identity of the host that answers, when it says one.
+        host: Option<String>,
     }
 
     impl Fake {
@@ -1152,6 +1269,7 @@ mod tests {
                 requests: Mutex::new(Vec::new()),
                 variables: BTreeMap::new(),
                 parents: BTreeMap::new(),
+                host: None,
             }
         }
 
@@ -1170,6 +1288,19 @@ mod tests {
             let answer = (self.answer)(&op);
             self.requests.lock().unwrap().push((true, op));
             answer
+        }
+        fn create_identified(
+            &self,
+            op: Op,
+        ) -> std::result::Result<(Value, Option<String>), Failure> {
+            self.create(op).map(|answer| (answer, self.host.clone()))
+        }
+        fn call_within(
+            &self,
+            op: Op,
+            _wait: Duration,
+        ) -> (Option<String>, std::result::Result<Value, Failure>) {
+            (self.host.clone(), self.call(op))
         }
         fn attach(
             &self,
@@ -1242,6 +1373,132 @@ mod tests {
             bracketed_paste: true,
             tty: "conpty:%4".into(),
         }
+    }
+
+    /// zerus-5sl7r: a resume observes the pane it created on the host that
+    /// created it, within the observation's deadline. Only that host's own
+    /// not-found answer says the pane is gone; no host, another host (one
+    /// started in its place), a failed call or an answer about another pane
+    /// says nothing.
+    #[test]
+    fn only_the_creating_host_says_its_pane_is_gone() {
+        use TerminalState::{Absent, Alive, DeadPane, Replaced, Unknown};
+        let launched = Launched {
+            server: "70:133".into(),
+            pane: "%4".into(),
+            process: 71,
+            birth: None,
+        };
+        type Reply = fn() -> std::result::Result<Value, Failure>;
+        let cases: [(Option<&str>, Reply, TerminalState); 12] = [
+            (
+                Some("70:133"),
+                || Ok(serde_json::to_value(details()).unwrap()),
+                Alive,
+            ),
+            (
+                Some("70:133"),
+                || {
+                    let mut d = details();
+                    d.dead = true;
+                    Ok(serde_json::to_value(d).unwrap())
+                },
+                DeadPane,
+            ),
+            // Its pane alive with another root process than the launch's.
+            (
+                Some("70:133"),
+                || {
+                    let mut d = details();
+                    d.pane_pid = 72;
+                    Ok(serde_json::to_value(d).unwrap())
+                },
+                Replaced,
+            ),
+            (
+                Some("70:133"),
+                || Err(host_error(ErrorCode::NotFound, "can't find pane: %4")),
+                Absent,
+            ),
+            (
+                Some("71:140"),
+                || Err(host_error(ErrorCode::NotFound, "can't find pane: %4")),
+                Unknown,
+            ),
+            (
+                Some("70:999"),
+                || Err(host_error(ErrorCode::NotFound, "can't find pane: %4")),
+                Unknown,
+            ),
+            (
+                None,
+                || Err(host_error(ErrorCode::NotFound, "can't find pane: %4")),
+                Unknown,
+            ),
+            (None, || Err(Failure::NoHost), Unknown),
+            (
+                Some("70:133"),
+                || Err(Failure::Unreachable("timed out".into())),
+                Unknown,
+            ),
+            (
+                Some("70:133"),
+                || Err(host_error(ErrorCode::Internal, "lost")),
+                Unknown,
+            ),
+            (Some("70:133"), || Ok(json!({})), Unknown),
+            (
+                Some("70:133"),
+                || {
+                    let mut d = details();
+                    d.pane = "%5".into();
+                    Ok(serde_json::to_value(d).unwrap())
+                },
+                Unknown,
+            ),
+        ];
+        for (host, reply, state) in cases {
+            let mut fake = Fake::new(move |_| reply());
+            fake.host = host.map(Into::into);
+            let backend = HostBackend::new(fake);
+            assert_eq!(
+                backend.terminal_state(&launched, Duration::from_secs(1)),
+                state,
+                "{host:?}"
+            );
+            assert_eq!(
+                calls(&backend),
+                [Op::PaneInfo {
+                    target: protocol::Target::Pane("%4".into())
+                }]
+            );
+        }
+        // The launch names the pane and the host that answered it; without
+        // that host's identity nothing is observed later.
+        let created = || {
+            Ok(
+                json!({"session": "$3", "pane": "%4", "name": "claude/p/t", "pid": 71, "existing": false}),
+            )
+        };
+        let spec = LaunchSpec {
+            name: "claude/p/t".into(),
+            cwd: r"C:\work".into(),
+            env: Vec::new(),
+            command: vec![r"C:\Users\u\.local\bin\hgs.exe".into()],
+            detached: true,
+        };
+        let mut fake = Fake::new(move |_| created());
+        fake.host = Some("70:133".into());
+        assert_eq!(
+            HostBackend::new(fake).start_observed(&spec).unwrap(),
+            Some(launched.clone())
+        );
+        assert_eq!(
+            HostBackend::new(Fake::new(move |_| created()))
+                .start_observed(&spec)
+                .unwrap(),
+            None
+        );
     }
 
     fn listed() -> Listed {

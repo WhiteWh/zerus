@@ -673,7 +673,52 @@ mod tests {
         // the previous complete core hash and all delivery guards unchanged.
         // The final Enter fence adds only this fresh-record check after the
         // unlocked settle. The actual-CLI interleaving test pins its behavior.
+        // zerus-33caz hands the settle and its Enter fence the exact pasted
+        // text, against which a composer taller than its view is proved.
+        // zerus-7cq23 adds only Claude's empty-composer read right before the
+        // paste; a composer found holding text fails the send as uncertain.
+        // zerus-oz7cz keeps that read's own frame as its evidence and waits
+        // for a moving frame without the lock, rechecking its marker after.
+        // zerus-szz00 adds only Claude's send gate before pending settings.
         for (retained, previous) in [
+            (r#"    // zerus-szz00: Claude's send gate, its short-pane refusal included, comes
+    // before any pending settings key too; the gate after them stays.
+    if effort::pending_applies(&record) && settle::applies(string(&record, "agent")) {
+        checked_send_gate(&record).map_err(|gate| gated(typed, gate))?;
+    }
+"#, ""),
+            (r#"        // zerus-7cq23: a person can type into the terminal after the gate read
+        // the composer empty, and Claude keeps such text out of view above a
+        // paste taller than its view. Read it empty again right before the
+        // paste. The receipt is published, so this send is then uncertain,
+        // with nothing pasted and the person's text left as it is.
+        // zerus-oz7cz: a frame that moves while it is read is waited for
+        // without the state lock, then read once more under it with this
+        // send's marker checked again. A refusal's evidence is its own frame.
+        if native {
+            let mut before = settle::before_paste(terminal, &claim);
+            if matches!(before, settle::Before::Moving) {
+                guard = None;
+                settle::hold_still(terminal, &claim);
+                guard = writer_until(deadline)?;
+                if guard.is_none() {
+                    return Err("the state lock stayed busy until the window ended; nothing was pasted".into());
+                }
+                let current = read(name)?;
+                if !typing_ours(&current, &request_id, string(&record, "run_id")) {
+                    return Err("the session changed right before the paste; nothing was pasted".into());
+                }
+                terminating::check_mutation(&current)?;
+                before = settle::before_paste(terminal, &claim);
+            }
+            if let Some((error, composer)) = before.refused() {
+                residue = composer.or_else(|| settle::residue(terminal, &claim));
+                return Err(error.into());
+            }
+        }
+"#, ""),
+            ("settle::settle(terminal, &claim, &pasted, deadline)", "settle::settle(terminal, &claim, deadline)"),
+            ("settle::still(terminal, &claim, &pasted, &shown)", "settle::still(terminal, &claim, &shown)"),
             ("                let current = read(name)?;\n                if !typing_ours(&current, &request_id, string(&record, \"run_id\")) {", "                if !typing_ours(&read(name)?, &request_id, string(&record, \"run_id\")) {"),
             ("                // Root was released during settle: only this fresh record can\n                // fence the remaining Enter. Keep the writer through the key.\n                terminating::check_mutation(&current)?;\n", ""),
             ("match refusal::admit(&receipt_path, &digest, name, &request_id, &request, retain_refusal)", "match existing(&receipt_path, &digest, name)"),

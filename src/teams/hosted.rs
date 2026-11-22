@@ -34,6 +34,7 @@ pub(crate) fn older(agent_home: &str) -> Problem {
         code::INVALID_STATE,
         format!("The DeepSeek host that serves {agent_home} lacks the caller, task-input or lifecycle capabilities required by Agent Teams. They become available after its next own start, which Zerus never forces."),
     )
+    .with_detail(super::OLDER_DEEPSEEK_HOST)
     .with_refs([agent_home])
 }
 

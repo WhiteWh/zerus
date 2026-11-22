@@ -328,6 +328,94 @@ class ListJobs(unittest.TestCase):
                          f'The bridge\'s list answer changed; review it, then set {REGENERATE_LIST_CAPTURE}=1')
 
 
+# Run the real bridge over a private socket, holding only the admitted native
+# resume. A second session lets us distinguish a fence from a busy refusal.
+RESUME_STATUS_HARNESS = r"""
+import assert from 'node:assert/strict';
+import net from 'node:net';
+const [bridgeUrl, socket] = process.argv.slice(2);
+const { apply } = await import(bridgeUrl);
+const admitted = 'session-11111111-1111-4111-8111-111111111111';
+const unseen = 'session-22222222-2222-4222-8222-222222222222';
+let enter, release;
+const entered = new Promise(resolve => { enter = resolve; });
+const held = new Promise(resolve => { release = resolve; });
+const resumes = [], effects = [];
+apply({
+  sessionController: { agents: {
+    composeAgent: async () => ({ setup() {} }), presetForObservation() {}, serializeImageAdmission() {},
+  } },
+  sessionQuery: { observeSession: async () => ({
+    header: { origin: 'main', cwd: process.cwd() }, [Symbol.dispose]() {},
+  }) },
+  agentDefaultModel: { currentSelection: () => ({ provider: 'fixture', model: 'fixture' }) },
+  workspaceRegistry: { create: async path => ({ path, sessionIds: [], async attachSession() {} }) },
+  agents: { get: () => undefined, resume: async ({ resumeSessionId, setup }) => {
+    resumes.push(resumeSessionId);
+    if (resumeSessionId === admitted) {
+      enter();
+      await held;
+    }
+    const agent = { session: { id: resumeSessionId }, model: { current() {}, select() {} } };
+    setup({}, agent);
+    return { agent, dispose: async () => {} };
+  } },
+  get: () => undefined,
+  on: () => () => {},
+  effect: run => effects.push(run()),
+}, { socket });
+const cleanup = await Promise.all(effects);
+
+async function call(method, params) {
+  const raw = await new Promise((resolve, reject) => {
+    const client = net.connect(socket);
+    let response = '';
+    client.on('data', chunk => { response += chunk; });
+    client.on('end', () => resolve(response));
+    client.on('error', reject);
+    client.write(JSON.stringify({ method, params }) + '\n');
+  });
+  const reply = JSON.parse(raw);
+  assert.equal(reply.ok, true, raw);
+  return reply.value;
+}
+
+let pending;
+try {
+  const { generation } = await call('ping', {});
+  const original = { sessionId: admitted, generation, requestId: '33333333-3333-4333-8333-333333333333' };
+  const late = { sessionId: unseen, generation, requestId: '44444444-4444-4444-8444-444444444444' };
+  pending = call('session-action', { ...original, action: 'resume' });
+  await Promise.race([entered, pending.then(reply => assert.fail(`Resume settled before admission: ${JSON.stringify(reply)}`))]);
+  assert.deepEqual(await call('session-resume-status', original), { ...original, status: 'pending' },
+    'An in-flight resume must keep its pending receipt');
+
+  assert.equal((await call('session-resume-status', late)).status, 'failed');
+  assert.equal((await call('session-action', { ...late, action: 'resume' })).status, 'failed',
+    'A status fence must refuse the delayed request for the unseen session');
+  assert.deepEqual(resumes, [admitted]);
+
+  release();
+  assert.equal((await pending).status, 'completed');
+  assert.deepEqual(await call('session-resume-status', original), { ...original, status: 'completed' });
+  assert.deepEqual(resumes, [admitted]);
+} finally {
+  release();
+  await pending?.catch(() => {});
+  for (const dispose of cleanup.reverse()) await dispose();
+}
+"""
+
+
+@unittest.skipUnless(shutil.which('node'), 'Node.js required')
+class ResumeStatus(unittest.TestCase):
+    def test_status_read_during_an_admitted_resume_preserves_its_receipt(self):
+        with tempfile.TemporaryDirectory(prefix='ha-', dir=os.environ.get('ZERUS_TEST_SHORT_TMPDIR', '/tmp')) as root:
+            result = subprocess.run(['node', '--input-type=module', '-', BRIDGE.as_uri(), str(Path(root) / 'host.sock')],
+                                    input=RESUME_STATUS_HARNESS, text=True, capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 @unittest.skipUnless(shutil.which('node'), 'Node.js required')
 class ShellIdentity(unittest.TestCase):
     """zerus-ppd26: each tool call's processes carry HGS_AGENT=dsh and exactly
@@ -432,6 +520,48 @@ const again = wrapSpawns(fresh, () => env);
 again.restore();
 assert.equal(fresh.spawn, original);
 assert.equal(wrapSpawns({}, () => env).installed, false);
+""")
+
+    def test_repeated_install_keeps_both_callables_and_restores_the_prototype(self):
+        self.run_js("""
+const native = { spawn() { return this; }, spawnTerminal() { return this; } };
+const service = Object.create(native);
+const environment = () => null;
+const installed = wrapSpawns(service, environment);
+const spawn = service.spawn, terminal = service.spawnTerminal;
+for (let i = 0; i < 1000; i++) {
+  const repeated = wrapSpawns(service, environment);
+  assert.equal(repeated, installed);
+  assert.equal(service.spawn, spawn);
+  assert.equal(service.spawnTerminal, terminal);
+}
+assert.equal(service.spawn({}), service);
+assert.equal(service.spawnTerminal({}), service);
+installed.restore();
+assert.equal(Object.hasOwn(service, 'spawn'), false);
+assert.equal(Object.hasOwn(service, 'spawnTerminal'), false);
+assert.equal(service.spawn, native.spawn);
+assert.equal(service.spawnTerminal, native.spawnTerminal);
+""")
+
+    def test_fresh_module_unwraps_another_installations_marked_methods(self):
+        self.run_js("""
+// Each module has a separate WeakMap. Only the marks connect them.
+const other = await import(process.argv[2] + '?independent-installation');
+const native = { spawn(spec) { return spec; }, spawnTerminal(spec) { return spec; } };
+const service = Object.create(native);
+const first = wrapSpawns(service, () => ({ HGS_SESSION: 'old', OLD_ONLY: 'stale' }));
+const second = other.wrapSpawns(service, () => ({ HGS_SESSION: 'current' }));
+first.restore();
+for (const method of ['spawn', 'spawnTerminal']) {
+  assert.deepEqual(service[method]({ env: { INPUT: 'kept' } }).env,
+    { INPUT: 'kept', HGS_SESSION: 'current' }, method);
+}
+second.restore();
+for (const method of ['spawn', 'spawnTerminal']) {
+  assert.equal(Object.hasOwn(service, method), false, method);
+  assert.equal(service[method], native[method], method);
+}
 """)
 
     def test_a_call_token_names_its_conversation_while_the_call_or_its_jobs_live(self):
@@ -677,7 +807,7 @@ const ctx = {{
     const list = handlers.get(event) ?? handlers.set(event, []).get(event);
     list.push(fn);
   }},
-  effect(fn) {{ fn().catch(() => {{}}); }},
+  effect(fn) {{ Promise.resolve(fn()).catch(() => {{}}); }},
   agents: new Map(),
 }};
 apply(ctx, {{ socket: sock }});
@@ -724,7 +854,7 @@ const ctx = {{
     const list = handlers.get(event) ?? handlers.set(event, []).get(event);
     list.push(fn);
   }},
-  effect(fn) {{ fn().catch(() => {{}}); }},
+  effect(fn) {{ Promise.resolve(fn()).catch(() => {{}}); }},
   agents: new Map(),
 }};
 apply(ctx, {{ socket: sock }});

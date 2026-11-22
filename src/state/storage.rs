@@ -275,7 +275,7 @@ pub(super) fn existing_lock_until(path: &Path, deadline: std::time::Instant) -> 
     lock_open_until(parent.existing_private_lock(name)?, deadline)
 }
 
-fn lock_open_until(file: fs::File, deadline: std::time::Instant) -> Result<Option<Guard>> {
+pub(super) fn lock_open_until(file: fs::File, deadline: std::time::Instant) -> Result<Option<Guard>> {
     loop {
         match file.try_lock_exclusive() {
             Ok(()) => return Ok(Some(Guard::held(file))),
@@ -1178,16 +1178,35 @@ pub(super) fn runner_executable() -> Result<String> {
 
 #[cfg(unix)]
 pub(super) fn runner_executable() -> Result<String> {
-    if let Some(executable) = nonempty_env("HGS_EXECUTABLE") {
+    runner_executable_from(nonempty_env("HGS_EXECUTABLE"), std::env::current_exe())
+}
+
+/// [`runner_executable`] from an explicit `HGS_EXECUTABLE` and this process's
+/// own image. Only an existing executable file is ever named (zerus-5sl7r):
+/// an image without one, such as the desktop service's pinned memfd copy
+/// (`/memfd:… (deleted)`) or an installed file replaced since this process
+/// started (`… (deleted)`), would put a name no terminal can run into its
+/// command, so the launch is refused before anything starts.
+#[cfg(unix)]
+fn runner_executable_from(
+    explicit: Option<String>,
+    current: std::io::Result<PathBuf>,
+) -> Result<String> {
+    if let Some(executable) = explicit {
         let path = Path::new(&executable);
         if path.is_absolute() && crate::platform::executable(path) {
             return Ok(executable);
         }
     }
-    Ok(std::env::current_exe()
-        .map_err(|error| error.to_string())?
-        .to_string_lossy()
-        .into_owned())
+    let current = current.map_err(|error| error.to_string())?;
+    if !current.is_absolute() || !crate::platform::executable(&current) {
+        return Err(format!(
+            "This hgs runs from an image with no installed file ({}); nothing was started. \
+             Set HGS_EXECUTABLE to the installed hgs",
+            current.display()
+        ));
+    }
+    Ok(current.to_string_lossy().into_owned())
 }
 
 /// The pane command of a tracked session started from its saved `record`
@@ -1310,6 +1329,62 @@ mod agent_hint_tests {
             #[cfg(windows)]
             assert_eq!(&command[..3], &["/stable/hgs", "--run", "0"]);
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod runner_executable_tests {
+    use super::*;
+
+    /// zerus-5sl7r: a session-resume child of the desktop service runs the
+    /// service's pinned memfd copy, whose `/proc/self/exe` names no file.
+    /// Its terminal command must never carry that name: without an explicit
+    /// installed path the launch is refused before it starts; with one, that
+    /// path is named.
+    #[test]
+    fn an_image_without_an_installed_file_is_never_named_to_a_terminal() {
+        let dir = tempfile::tempdir().unwrap();
+        let installed = dir.path().join("hgs");
+        std::fs::write(&installed, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(
+            &installed,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let replaced = format!("{} (deleted)", installed.display());
+        for pathless in [
+            "/memfd:zerus-helper-image (deleted)",
+            &replaced,
+            "relative/hgs",
+        ] {
+            let refused = runner_executable_from(None, Ok(PathBuf::from(pathless))).unwrap_err();
+            assert!(refused.contains("nothing was started"), "{refused}");
+            assert!(refused.contains(pathless), "{refused}");
+            // An unusable explicit name does not rescue it either.
+            for explicit in ["", "relative/hgs", "/nonexistent/hgs"] {
+                assert!(
+                    runner_executable_from(Some(explicit.into()), Ok(PathBuf::from(pathless)))
+                        .is_err()
+                );
+            }
+            // The service names the pin's installed source: that is used.
+            assert_eq!(
+                runner_executable_from(
+                    Some(installed.display().to_string()),
+                    Ok(PathBuf::from(pathless))
+                ),
+                Ok(installed.display().to_string())
+            );
+        }
+        // An ordinary installed image keeps today's answer.
+        assert_eq!(
+            runner_executable_from(None, Ok(installed.clone())),
+            Ok(installed.display().to_string())
+        );
+        let plain = dir.path().join("plain");
+        std::fs::write(&plain, "data").unwrap();
+        assert!(runner_executable_from(None, Ok(plain)).is_err());
+        assert!(runner_executable_from(None, Err(std::io::ErrorKind::NotFound.into())).is_err());
     }
 }
 

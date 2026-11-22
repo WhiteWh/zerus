@@ -57,7 +57,7 @@ pub(crate) fn valid(link: &Value) -> bool {
 }
 
 /// The link naming `record` (a live tracked session on this computer).
-fn link_of(record: &Value, machine: &str, host: &str, source: &str) -> Option<Value> {
+pub(super) fn link_of(record: &Value, machine: &str, host: &str, source: &str) -> Option<Value> {
     let link = json!({"schema": 1, "machine": machine, "host": host,
         "session_id": string(record, "session_id"), "name": string(record, "name"),
         "conversation_id": string(record, "conversation_id"), "run_id": string(record, "run_id"),

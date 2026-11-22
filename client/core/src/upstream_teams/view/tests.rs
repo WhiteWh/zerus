@@ -386,11 +386,13 @@ fn waiting_carries_the_service_notes_apart_from_the_card_text() {
         vec![
             ServiceNote {
                 code: "text_shortened".into(),
-                text: None
+                text: None,
+                parameters: Vec::new(),
             },
             ServiceNote {
                 code: "worktree_dirty".into(),
-                text: None
+                text: None,
+                parameters: Vec::new(),
             }
         ]
     );
@@ -424,15 +426,18 @@ fn waiting_carries_the_service_notes_apart_from_the_card_text() {
         vec![
             ServiceNote {
                 code: "text_shortened".into(),
-                text: None
+                text: None,
+                parameters: Vec::new(),
             },
             ServiceNote {
                 code: "worktree_dirty".into(),
-                text: None
+                text: None,
+                parameters: Vec::new(),
             },
             ServiceNote {
                 code: "other_note".into(),
-                text: Some("A service sentence.".into())
+                text: Some("A service sentence.".into()),
+                parameters: Vec::new(),
             }
         ]
     );
@@ -1164,4 +1169,71 @@ fn regenerate_pending_board_view() {
         format!("{}\n", serde_json::to_string_pretty(&view).unwrap()),
     )
     .unwrap();
+}
+
+/// zerus-3u5yu (5): a stage card standing alone (its target is outside the
+/// page) names its target's earlier implementers from the row, whom the
+/// stage's Reassign refuses; an empty or overlong name is dropped. The rows
+/// are the command line's own current product fixture; the earlier
+/// implementers and the missing target are hand-written.
+#[test]
+fn handwritten_a_stage_card_names_its_targets_earlier_implementers() {
+    let status: Value = serde_json::from_str(include_str!(
+        "../../../../../crates/team-plan/fixtures/cli-status.json"
+    ))
+    .unwrap();
+    let mut queue: Value = serde_json::from_str(include_str!(
+        "../../../../../crates/team-plan/fixtures/cli-queue.json"
+    ))
+    .unwrap();
+    let rows = queue["rows"].as_array_mut().unwrap();
+    rows.retain(|row| row["kind"] == "stage");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["earlier_implementers"], json!([]));
+    rows[0]["earlier_implementers"] = json!(["m1", "", "x".repeat(NAME_CHARS + 1), "m2"]);
+    let view = super::board::team(&status, &queue);
+    let card = view
+        .groups
+        .iter()
+        .flat_map(|group| &group.cards)
+        .find(|card| card.kind == Some(RowKind::Stage))
+        .expect("the stage stands alone");
+    assert_eq!(card.earlier_implementers, ["m1", "m2"]);
+    // A task card names none, and its view omits the field.
+    let tasks = super::board::team(&status, &fixture("queue"));
+    let task = tasks
+        .groups
+        .iter()
+        .flat_map(|group| &group.cards)
+        .next()
+        .unwrap();
+    assert!(task.earlier_implementers.is_empty());
+    assert!(serde_json::to_value(task)
+        .unwrap()
+        .get("earlier_implementers")
+        .is_none());
+}
+
+/// zerus-3u5yu (6, mutant rs4 of the #2527 review): Route offers a pipeline
+/// only under a role of the team's bundle. The roles and pipelines are the
+/// built-in catalog's; the pipeline of an unknown role is hand-written.
+#[test]
+fn handwritten_routing_offers_only_pipelines_whose_implementer_is_a_bundle_role() {
+    let catalog = zerus_team_plan::builtin();
+    let mut pipelines = serde_json::to_value(&catalog.pipelines).unwrap();
+    let mut ghost = pipelines[0].clone();
+    ghost["id"] = json!("ghostly");
+    ghost["implementer"] = json!("ghost");
+    pipelines.as_array_mut().unwrap().push(ghost);
+    let mut status = fixture("status");
+    status["team"]["bundle"] = json!({"roles": catalog.roles, "pipelines": pipelines});
+    let view = super::board::team(&status, &fixture("queue"));
+    assert!(view
+        .routing_pipelines
+        .iter()
+        .any(|choice| choice.id == catalog.pipelines[0].id));
+    assert!(view
+        .routing_pipelines
+        .iter()
+        .all(|choice| choice.id != "ghostly" && choice.role != "ghost"));
 }

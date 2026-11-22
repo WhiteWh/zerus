@@ -29,6 +29,7 @@ pub(super) struct Native<'a> {
     pub ledger: Ledger,
     pub store: &'a mut Store,
     capture: Option<(Snapshot, Value)>,
+    pub observation: Option<Result<()>>,
     pins: Vec<ownership::Pin>,
 }
 impl<'a> Native<'a> {
@@ -45,11 +46,13 @@ impl<'a> Native<'a> {
             ledger: Ledger::open(&config.state)?,
             store,
             capture: None,
+            observation: None,
             pins: Vec::new(),
         })
     }
     pub fn reset(&mut self) {
         self.capture = None;
+        self.observation = None;
         self.pins.clear();
     }
     fn read(&self, args: Vec<String>, input: Option<&[u8]>) -> Result<Value> {
@@ -101,6 +104,11 @@ impl Ports for Native<'_> {
     fn observe(&mut self, b: &Binding) -> Result<Snapshot> {
         self.snapshot(b)
     }
+    fn observe_member(&mut self, b: &Binding) -> Result<Snapshot> {
+        let result = self.snapshot(b);
+        self.observation = Some(result.as_ref().map(|_| ()).map_err(String::clone));
+        result
+    }
     fn ownership(&mut self, b: &Binding) -> Result<Ownership> {
         self.owned(b)
     }
@@ -119,7 +127,7 @@ impl Ports for Native<'_> {
         if !self.ledger.lead_brief_needed(b)? {
             return Ok(None);
         }
-        let snapshot = self.snapshot(b)?;
+        let snapshot = self.observe_member(b)?;
         let planning = self.store.planning(&team.id).map_err(|e| e.to_string())?;
         self.ledger
             .pending_lead_brief(b, &snapshot, &team, planning.as_ref())

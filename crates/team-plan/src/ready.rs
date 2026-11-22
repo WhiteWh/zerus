@@ -66,12 +66,14 @@ pub struct Handout {
     pub member: MemberId,
 }
 
-/// A ready node that no member of the team can ever take, and why.
+/// A ready node without staffing, or whose eligible members are all unreadable.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Unstaffed {
     pub node: NodeId,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unreadable: bool,
 }
 
 /// The nodes that may start now, in hand-out order: stages first, oldest
@@ -119,19 +121,42 @@ pub fn handouts(view: &PlanView) -> Vec<Handout> {
     out
 }
 
-/// Ready nodes that no member who is not removed could take, free or not:
-/// each needs the lead. A busy, paused or not yet created member still
-/// counts as one who could.
-pub fn unstaffed(view: &PlanView) -> Vec<Unstaffed> {
+/// Ready nodes that no member could take, or for which every eligible member
+/// is marked unreadable. A busy, paused or not yet created member still
+/// counts as one who could take the task.
+pub fn unstaffed(view: &PlanView, marked: &BTreeSet<MemberId>) -> Vec<Unstaffed> {
     let index = Index::new(view);
     index
         .ready()
         .into_iter()
         .filter_map(|node| {
-            let reason = index.staffing.gap(&index.work(node))?;
+            let work = index.work(node);
+            if let Some(reason) = index.staffing.gap(&work) {
+                return Some(Unstaffed {
+                    node: node.id,
+                    reason,
+                    unreadable: false,
+                });
+            }
+            if marked.is_empty() {
+                return None;
+            }
+            let eligible: Option<BTreeSet<_>> = view
+                .members
+                .iter()
+                .filter(|member| {
+                    member.state != MemberState::Removed && index.staffing.may_take(member, &work)
+                })
+                .map(|member| {
+                    (member.state == MemberState::Active && marked.contains(&member.id))
+                        .then_some(member.id.as_str())
+                })
+                .collect();
+            let members = eligible?.into_iter().collect::<Vec<_>>().join(", ");
             Some(Unstaffed {
                 node: node.id,
-                reason,
+                reason: format!("The service cannot read any eligible member ({members})."),
+                unreadable: true,
             })
         })
         .collect()
@@ -982,7 +1007,7 @@ mod tests {
         ]);
         assert_eq!(ready(&plan.view()), vec![2]);
         assert!(given(&plan).is_empty());
-        let stuck = unstaffed(&plan.view());
+        let stuck = unstaffed(&plan.view(), &BTreeSet::new());
         assert_eq!(stuck.len(), 1);
         assert_eq!(stuck[0].node, 2);
         assert_eq!(
@@ -994,15 +1019,15 @@ mod tests {
         // Either record naming the implementer is enough.
         plan.node(1).implementer = None;
         assert!(given(&plan).is_empty());
-        assert_eq!(unstaffed(&plan.view()).len(), 1);
+        assert_eq!(unstaffed(&plan.view(), &BTreeSet::new()).len(), 1);
         plan.node(1).implementer = Some("m3".into());
         plan.node(2).implementer = None;
         assert!(given(&plan).is_empty());
-        assert_eq!(unstaffed(&plan.view()).len(), 1);
+        assert_eq!(unstaffed(&plan.view(), &BTreeSet::new()).len(), 1);
         // A second reviewer takes it.
         plan.members.push(member("m4", "reviewer"));
         assert_eq!(given(&plan), pairs(&[(2, "m4")]));
-        assert!(unstaffed(&plan.view()).is_empty());
+        assert!(unstaffed(&plan.view(), &BTreeSet::new()).is_empty());
     }
 
     #[test]
@@ -1016,7 +1041,7 @@ mod tests {
         // m1 and m2 are busy elsewhere: busy is not unstaffed.
         plan.member("m1").free = false;
         plan.member("m2").free = false;
-        let stuck = unstaffed(&plan.view());
+        let stuck = unstaffed(&plan.view(), &BTreeSet::new());
         let ids: Vec<NodeId> = stuck.iter().map(|item| item.node).collect();
         assert_eq!(ids, vec![1, 2], "3 is not ready, 4 waits for a member");
         assert!(stuck[0].reason.contains("tester"), "{}", stuck[0].reason);
@@ -1024,9 +1049,9 @@ mod tests {
         // A removed member counts for nothing; a paused one may come back.
         plan.member("m1").state = MemberState::Removed;
         plan.member("m2").state = MemberState::Paused;
-        assert_eq!(unstaffed(&plan.view()).len(), 2);
+        assert_eq!(unstaffed(&plan.view(), &BTreeSet::new()).len(), 2);
         plan.member("m2").state = MemberState::Removed;
-        assert_eq!(unstaffed(&plan.view()).len(), 3);
+        assert_eq!(unstaffed(&plan.view(), &BTreeSet::new()).len(), 3);
     }
 
     #[test]
@@ -1065,7 +1090,7 @@ mod tests {
                 },
             ]
         );
-        assert!(unstaffed(&view).is_empty());
+        assert!(unstaffed(&view, &BTreeSet::new()).is_empty());
     }
 
     #[test]

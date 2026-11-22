@@ -196,6 +196,7 @@ export function toSession(computer: ComputerId, key: string, v: ViewRow, marks: 
     terminateReason: optional(v.action_reasons?.terminate),
     forgetReason: optional(v.action_reasons?.forget),
     restoreReason: optional(v.action_reasons?.restore),
+    restorePending: v.restore_pending === true || undefined,
     cwdPath: text(v.cwd),
     cwdCanonical: text(v.cwd_canonical),
     gitRoot: text(v.git_root),

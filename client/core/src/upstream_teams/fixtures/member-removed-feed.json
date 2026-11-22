@@ -1,0 +1,17 @@
+{
+  "at_ms": 4000000,
+  "by": "local",
+  "by_kind": "service",
+  "card": null,
+  "generation": null,
+  "kind": "close_card",
+  "node": null,
+  "notes": [],
+  "reply": null,
+  "seq": 13,
+  "state": "",
+  "subject_member": null,
+  "subject_node": null,
+  "text": "Member removed",
+  "text_truncated": false
+}

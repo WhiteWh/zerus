@@ -319,6 +319,28 @@ fn the_web_client_defaults_equal_the_table() {
 }
 
 #[test]
+fn explicit_child_expansion_persists_without_replacing_collapsed_parents() {
+    let scratch = Scratch::new("child-expansion");
+    let path = scratch.0.join("settings.json");
+    let collapsed =
+        "[\"11111111-1111-4111-8111-111111111111\\n22222222-2222-4222-8222-222222222222\"]";
+    let expanded =
+        "[\"11111111-1111-4111-8111-111111111111\\n33333333-3333-4333-8333-333333333333\"]";
+    let settings = Settings::open(path.clone());
+    settings
+        .set("sessions/collapsedTeams", json!(collapsed))
+        .unwrap();
+    settings
+        .set("sessions/expandedTeams", json!(expanded))
+        .unwrap();
+    assert!(settings.flush_within(FLUSH));
+    drop(settings);
+    let reopened = Settings::open(path);
+    assert_eq!(reopened.get("sessions/collapsedTeams"), json!(collapsed));
+    assert_eq!(reopened.get("sessions/expandedTeams"), json!(expanded));
+}
+
+#[test]
 fn oversized_preferences_cannot_make_the_existing_store_unreadable() {
     let scratch = Scratch::new("g3-store-limit");
     let path = scratch.0.join("settings.json");

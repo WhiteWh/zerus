@@ -21,10 +21,16 @@ fn kernel_set(h: &Harness) -> Vec<u32> {
     let team = h.store.team(TEAM).unwrap().unwrap();
     let r = crate::teams::ops::readiness(&h.store, TEAM).unwrap();
     let members = h.store.members(TEAM, 200, None).unwrap().rows;
-    crate::teams::ops::unstaffed::unstaffed_of(&team, &r, &members, &BTreeSet::new())
-        .into_iter()
-        .map(|u| u.node)
-        .collect()
+    crate::teams::ops::unstaffed::unstaffed_of(
+        &team,
+        &r,
+        &members,
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+    )
+    .into_iter()
+    .map(|u| u.node)
+    .collect()
 }
 /// The explicit hold, its owner, and the hand-back's hold.
 fn hold_columns(h: &Harness, node: u32) -> (bool, Option<String>, bool) {

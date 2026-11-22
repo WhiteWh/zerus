@@ -1,0 +1,17 @@
+{
+  "at_ms": 1800001002000,
+  "by": "local",
+  "by_kind": "service",
+  "card": null,
+  "generation": null,
+  "kind": "release_provider_stop",
+  "node": null,
+  "notes": [],
+  "reply": null,
+  "seq": 45,
+  "state": "",
+  "subject_member": "m3",
+  "subject_node": 21,
+  "text": "release_provider_stop at revision 45. The service confirmed that the member stopped after a provider error.",
+  "text_truncated": false
+}

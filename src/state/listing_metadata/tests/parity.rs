@@ -102,7 +102,19 @@ fn isolated_parity() {
             value["subagents"] = json!({"child":{"name":"Worker","state":"working","prompt":"Child work","reply_id":"reply-child","started":12}});
         }
         "parent" => {
-            value["parent"] = json!({"schema":1,"machine":"00000000-0000-4000-8000-000000000001","name":"codex/example/parent","session_id":"00000000-0000-4000-8000-000000000002","run_id":"parent-run","conversation_id":"parent-conversation","source":"fixture","at":1});
+            let parent = json!({
+                "name": "codex/example/parent",
+                "session_id": "00000000-0000-4000-8000-000000000002",
+                "run_id": "parent-run",
+                "conversation_id": "parent-conversation",
+            });
+            value["parent"] = parent_link::link_of(
+                &parent,
+                "00000000-0000-4000-8000-000000000001",
+                "example",
+                "launch",
+            )
+            .unwrap();
         }
         "account" => {
             value["account_binding"] =
@@ -132,6 +144,9 @@ fn isolated_parity() {
     let decoded = Seed::decode(&key, &seed).unwrap();
     let expected = journal::summary(&value, false);
     let actual = journal::summary(&decoded["record"], false);
+    if case == "parent" {
+        assert_eq!(actual["parent"], value["parent"]);
+    }
     let fields = actual
         .as_object()
         .unwrap()

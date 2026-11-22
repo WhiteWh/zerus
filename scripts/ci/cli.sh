@@ -19,6 +19,17 @@ if not match or tuple(map(int, match.groups())) < (3, 7):
 print('Terminal fixture toolchain: ' + version)
 PY
 if [ "$phase" != remaining ]; then
+if [ "$(uname -s)" = Linux ]; then
+    # zerus-5sl7r: the session resume runtime runs its real resume and send
+    # children from its pinned image against a private tmux and the native
+    # stand-in agent. It runs before the full suite, so an unrelated failure
+    # there never hides it.
+    cargo build --locked
+    cargo build --locked --example fake_agent
+    HGS_TEST_BIN="$PWD/target/debug/hgs" cargo test --locked --bin hgs \
+        desktop::session_resume::tests::actor::real_cli::real_cli_resume_from_the_pinned_image_starts_its_supervisor_and_sends \
+        -- --ignored --exact --test-threads=1 2>&1 | tee artifacts/test-results/session-resume-real.log
+fi
 cargo test --locked 2>&1 | tee artifacts/test-results/rust.log
 cargo build --locked
 # These exact, one-shot tests use the separately built CLI for metadata

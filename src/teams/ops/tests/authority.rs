@@ -1,6 +1,13 @@
 use super::*;
 fn lead_ops() -> Vec<Operation> {
     vec![
+        Operation::LeadAddMember {
+            role: "reviewer".into(),
+            agent: "codex".into(),
+            model: String::new(),
+            effort: String::new(),
+            account: Default::default(),
+        },
         Operation::Pause,
         Operation::Resume,
         Operation::PauseMember {

@@ -8,6 +8,15 @@ pub(super) fn path(id: &str) -> Result<PathBuf> {
 }
 
 pub(super) fn read_archive(name: &str, id: &str) -> Result<Value> {
+    if name.starts_with("dsh/") {
+        return dsh::native_archives::by_id(id)
+            .and_then(|row| {
+                let row = row.filter(|row| row["name"] == name).ok_or("no such DeepSeek archive")?;
+                session_id::verify(&row)?;
+                Ok(row)
+            })
+            .map_err(|error| format!("{name}: cannot read archive {id}: {error}"));
+    }
     let record = archive_references::read_metadata(&path(id)?)
         .map_err(|error| format!("{name}: cannot read archive {id}: {error}"))?;
     validated_record(name, id, record)
@@ -172,6 +181,23 @@ pub(super) fn save(record: &Value) -> Result<String> {
             "Restored Clear archive cleanup is unfinished; retain the binding for review".into(),
         );
     }
+    let id = publish(record)?;
+    // The archived session's own record goes, never its label's holder: a
+    // session in the ID layout removes `sessions/<id>.json` (P3a).
+    if let Some(current) = storage::current_of(record)? {
+        if current["run_id"] == record["run_id"]
+            && current["conversation_id"] == record["conversation_id"]
+        {
+            storage::remove_record(&current)?;
+        }
+    }
+    // Its own Git worktree lock goes with it, or stays and is reported; the
+    // archive stands either way (P3c).
+    worktree_lock::left(record);
+    Ok(id)
+}
+
+fn publish(record: &Value) -> Result<String> {
     let db = archive_catalog::writer_catalog()?;
     let existing = verified_existing(&db, record)?;
     let id = if let Some(existing) = existing {
@@ -196,18 +222,6 @@ pub(super) fn save(record: &Value) -> Result<String> {
         archive_catalog::published(db, &path);
         id
     };
-    // The archived session's own record goes, never its label's holder: a
-    // session in the ID layout removes `sessions/<id>.json` (P3a).
-    if let Some(current) = storage::current_of(record)? {
-        if current["run_id"] == record["run_id"]
-            && current["conversation_id"] == record["conversation_id"]
-        {
-            storage::remove_record(&current)?;
-        }
-    }
-    // Its own Git worktree lock goes with it, or stays and is reported; the
-    // archive stands either way (P3c).
-    worktree_lock::left(record);
     Ok(id)
 }
 pub(super) fn equivalent(record: &Value, archived: &[Value]) -> bool {
@@ -506,6 +520,9 @@ pub(super) fn forget_scoped(name: &str, id: &str, dry: bool, scope: Option<&sess
     if clear_context::cleanup_pending(&record) {
         return Err("Restored Clear archive cleanup is unfinished; retain the archive for review".into());
     }
+    if record["backend"] == "dsh" && dsh::retirement::restore_source_held(&record)? {
+        return Err(dsh::retirement::RESTORE_PENDING.into());
+    }
     // Do not remove the only recoverable source of a not-yet-confirmed restore.
     if record_path(name).exists() && {
         let active = read(name)?;
@@ -520,7 +537,11 @@ pub(super) fn forget_scoped(name: &str, id: &str, dry: bool, scope: Option<&sess
         return Ok(());
     }
     if let Some(scope)=scope {scope.changing();}
-    remove_synced(&path(id)?)?;
+    if record["backend"] == "dsh" {
+        dsh::native_archives::remove(&record)?;
+    } else {
+        remove_synced(&path(id)?)?;
+    }
     // A lock its archive kept, once nothing else uses the checkout (P3c).
     worktree_lock::left(&record);
     Ok(())

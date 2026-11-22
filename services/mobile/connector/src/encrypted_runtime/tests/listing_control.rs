@@ -353,3 +353,113 @@ async fn exact_plaintext_ceiling_accepts_one_mib_and_refuses_next_byte_before_li
     assert!(!receiver.task.as_ref().unwrap().is_finished());
     receiver.finish().await;
 }
+
+#[tokio::test]
+async fn optional_archive_preview_fits_the_packet_while_current_rows_stay_exact() {
+    let mut f = Fixture::new();
+    let receiver = Receiver::new();
+    let profile = receiver.bind(&mut f);
+    let engine = f.engine();
+    let current = json!({"name":"codex/fixture/main","session_id":MACHINE,
+        "run_id":REQUEST,"conversation_id":"fixture-conversation","state":"running",
+        "activity":"working","phase":"working","reply_id":"original-reply",
+        "unread_reply":false,"mobile_unread_reply":false,
+        "allowed_actions":["inspect"],"pending_question_count":0,
+        "subagents":[{"id":"child","state":"working","detail":"Original child detail"}]});
+    let mut snapshot = json!({"host":"test","sessions":[current],"fixture_padding":"",
+        "mobile_archive":{"schema":1,"available":true,"loaded":0,"total":80,"partial":true},
+        "mobile_projects":{"available":true,"projects":[{"id":"fixture-project"}]},
+        "mobile_accounts":{"available":true,"accounts":[{"id":"fixture-account"}]}});
+    engine
+        .snapshot(
+            &profile,
+            MACHINE,
+            &profile.identity.device.device_id,
+            "Private computer",
+            snapshot.clone(),
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let open = |body: &Value| {
+        let envelope: EncryptedEnvelope = serde_json::from_value(body["envelope"].clone()).unwrap();
+        let plain = crypto::open(
+            &f.phone,
+            &profile.identity.device,
+            &envelope.header,
+            &envelope,
+        )
+        .unwrap();
+        assert!(plain.len() <= 1024 * 1024);
+        (
+            plain.len(),
+            serde_json::from_slice::<Value>(&plain).unwrap(),
+        )
+    };
+    let baseline = receiver.requests();
+    assert_eq!(baseline.len(), 2);
+    let (base_bytes, expected) = open(&baseline[0].1);
+    snapshot["fixture_padding"] = json!("x".repeat(1024 * 1024 - base_bytes - 3500));
+    let archived: Vec<Value> = (1..=3).map(|index| json!({
+        "name":"codex/fixture/main", "state":"archived",
+        "archive_id":format!("00000000-0000-4000-8000-{index:012}"),
+        "run_id":format!("archived-run-{index}"),"conversation_id":format!("archived-conversation-{index}"),
+        "last_message":"y".repeat(2000),"archived_at":100-index,
+        "allowed_actions":["inspect","restore"]})).collect();
+    snapshot["sessions"]
+        .as_array_mut()
+        .unwrap()
+        .extend(archived.clone());
+    snapshot["mobile_archive"]["loaded"] = json!(3);
+    let before = snapshot.clone();
+    let result = engine
+        .snapshot(
+            &profile,
+            MACHINE,
+            &profile.identity.device.device_id,
+            "Private computer",
+            snapshot,
+            Value::Null,
+        )
+        .await;
+    assert!(
+        result.is_ok(),
+        "optional preview blocked the entire current catalog: {result:?}"
+    );
+    let posted = receiver.requests();
+    assert_eq!(posted.len(), 4);
+    let (_, decoded) = open(&posted[2].1);
+    let actual = &decoded["snapshot"];
+    assert_eq!(actual["sessions"][0], expected["snapshot"]["sessions"][0]);
+    assert_eq!(actual["sessions"].as_array().unwrap().len(), 2);
+    assert_eq!(actual["sessions"][1], archived[0]);
+    assert_eq!(
+        actual["mobile_archive"],
+        json!({"schema":1,"available":true,"loaded":1,"total":80,"partial":true})
+    );
+    for key in ["fixture_padding", "mobile_projects", "mobile_accounts"] {
+        assert_eq!(actual[key], before[key]);
+    }
+    let mut mandatory_overflow = before;
+    mandatory_overflow["fixture_padding"] = json!("z".repeat(1024 * 1024));
+    assert!(matches!(
+        engine
+            .snapshot(
+                &profile,
+                MACHINE,
+                &profile.identity.device.device_id,
+                "Private computer",
+                mandatory_overflow,
+                Value::Null
+            )
+            .await,
+        Err(Failure::Retry)
+    ));
+    assert_eq!(
+        receiver.requests().len(),
+        4,
+        "mandatory overflow reached the healthy receiver"
+    );
+    assert!(!receiver.task.as_ref().unwrap().is_finished());
+    receiver.finish().await;
+}

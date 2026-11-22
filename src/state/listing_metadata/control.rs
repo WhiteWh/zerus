@@ -112,7 +112,7 @@ pub(super) fn status_at(root: &Path) -> Value {
             .extend(status.as_object().unwrap().clone()),
         Err(error) => {
             value["state"] = json!("unavailable");
-            value["reason"] = json!(error.to_string());
+            value["reason"] = json!(public_index_error(&error));
         }
     }
     value

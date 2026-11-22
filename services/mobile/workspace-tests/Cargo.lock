@@ -3183,6 +3183,7 @@ dependencies = [
  "uuid",
  "zerus-file-lock",
  "zerus-mobile-crypto",
+ "zerus-mobile-endpoint",
  "zerus-relay",
  "zerus-watch-protocol",
  "zerus-windows-private",
@@ -3200,6 +3201,21 @@ dependencies = [
  "serde",
  "sha2 0.10.9",
  "zeroize",
+]
+
+[[package]]
+name = "zerus-mobile-endpoint"
+version = "0.1.0"
+dependencies = [
+ "ring",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "uuid",
+ "zerus-file-lock",
+ "zerus-mobile-crypto",
+ "zerus-windows-private",
 ]
 
 [[package]]

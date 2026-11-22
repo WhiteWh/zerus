@@ -2,7 +2,14 @@
 //! and no catalog walk: the existing (generation,key) index selects one row.
 use super::ports::{Availability, Fact};
 use super::*;
-use crate::{config::Config, desktop::store::Location};
+use crate::{
+    config::Config,
+    desktop::store::Location,
+    state::{
+        team_provider_stop::{self, ProviderStop},
+        TeamRecord,
+    },
+};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
 use std::time::{Duration, Instant};
@@ -45,7 +52,14 @@ pub(super) fn with_first(
     backfill: bool,
     first_ready: impl FnOnce(&Value) -> bool,
 ) -> Result<Availability> {
-    Ok(match read(config, epoch, team, member, backfill)? {
+    Ok(answer(
+        validate_host(read(config, epoch, team, member, backfill, true)?, member),
+        first_ready,
+    ))
+}
+
+fn answer(read: Read, first_ready: impl FnOnce(&Value) -> bool) -> Availability {
+    match read {
         Read::Row(row) => {
             let facts = super::fleet::Facts::of(&row);
             if facts.free_with_first(facts.first_candidate() && first_ready(&row)) {
@@ -56,9 +70,9 @@ pub(super) fn with_first(
                     .map_or(Availability::Busy, Availability::Unreadable)
             }
         }
-        Read::Missing => Availability::Busy,
+        Read::Stopped(..) | Read::Missing => Availability::Busy,
         Read::Unresolved(why) => Availability::Unreadable(why.fact()),
-    })
+    }
 }
 pub(super) fn record(
     config: &Config,
@@ -67,29 +81,46 @@ pub(super) fn record(
     member: &Member,
     backfill: bool,
 ) -> Result<Option<Value>> {
-    Ok(match read(config, epoch, team, member, backfill)? {
-        Read::Row(row) => Some(row),
-        Read::Missing | Read::Unresolved(_) => None,
-    })
+    Ok(
+        match validate_host(read(config, epoch, team, member, backfill, false)?, member) {
+            Read::Row(row) => Some(row),
+            Read::Stopped(..) | Read::Missing | Read::Unresolved(_) => None,
+        },
+    )
 }
 /// What one read of a member found.
 enum Read {
     /// The current fleet row of its current run.
     Row(Value),
+    Stopped(Box<TeamRecord>, ProviderStop),
     /// Unbound, or no current row that names its run (and launch).
     Missing,
     /// Its binding resolves to no run, for the reason named.
     Unresolved(Unresolved),
 }
-fn read(config: &Config, epoch: &str, team: &str, member: &Member, backfill: bool) -> Result<Read> {
+fn read(
+    config: &Config,
+    epoch: &str,
+    team: &str,
+    member: &Member,
+    backfill: bool,
+    provider: bool,
+) -> Result<Read> {
     let Some(session) = member.session.as_ref() else {
         return Ok(Read::Missing);
     };
-    let run = match current(config, team, member, backfill)? {
-        Current::Run(run) => run,
-        Current::Unbound => return Ok(Read::Missing),
-        Current::Unresolved(why) => return Ok(Read::Unresolved(why)),
+    let binding = current_record(config, team, member, backfill, provider)?;
+    let (run, record) = match binding {
+        CurrentRecord::Run(ref run) => (run.as_str(), None),
+        CurrentRecord::Bound(ref record) => (record.run_id.as_str(), Some(record.as_ref())),
+        CurrentRecord::Unbound => return Ok(Read::Missing),
+        CurrentRecord::Unresolved(why) => return Ok(Read::Unresolved(why)),
     };
+    if let Some((record, stop)) =
+        record.and_then(|record| Some((record, record.provider.as_ref()?.stop?)))
+    {
+        return Ok(Read::Stopped(Box::new(record.clone()), stop));
+    }
     let db = connection(config)?;
     let row: Option<String> = db
         .query_row(
@@ -109,11 +140,42 @@ fn read(config: &Config, epoch: &str, team: &str, member: &Member, backfill: boo
             Some(id) => named.launch == id,
             None => true,
         };
-    if identity && member.agent == "dsh" {
-        match crate::state::dsh::team_live(named.name, named.run, named.conversation, Instant::now() + Duration::from_secs(2)) {
-            Ok(true) => (),
-            Ok(false) => return Ok(Read::Missing),
-            Err(_) => return Ok(Read::Unresolved(Unresolved::Unavailable)),
+    let bound_run_record = if provider && identity && record.is_none() {
+        match crate::state::observe_team_run_for_provider(
+            &config.state,
+            run,
+            value["session_id"].as_str().unwrap_or_default(),
+            &member.agent,
+            named.name,
+            Instant::now() + Duration::from_millis(300),
+        ) {
+            crate::state::TeamSession::Record(record)
+                if record.cwd == member.worktree && record.account == member.account =>
+            {
+                Some(record)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    if let Some(record) = record.or(bound_run_record.as_ref()).filter(|record| {
+        provider
+            && identity
+            && named.conversation == record.conversation_id
+            && value["agent"] == record.agent
+    }) {
+        let progress = record
+            .provider
+            .as_ref()
+            .and_then(|provider| provider.progress_ms);
+        let stop = record
+            .provider
+            .as_ref()
+            .and_then(|provider| provider.stop)
+            .or_else(|| team_provider_stop::projected_stop(&value, progress));
+        if let Some(stop) = stop {
+            return Ok(Read::Stopped(Box::new(record.clone()), stop));
         }
     }
     Ok(if identity {
@@ -122,6 +184,44 @@ fn read(config: &Config, epoch: &str, team: &str, member: &Member, backfill: boo
         Read::Missing
     })
 }
+
+fn validate_host(read: Read, member: &Member) -> Read {
+    if let Read::Row(row) = &read {
+        if member.agent == "dsh" {
+            let named = super::fleet::Identity::of(row);
+            return match crate::state::dsh::team_live(
+                named.name,
+                named.run,
+                named.conversation,
+                Instant::now() + Duration::from_secs(2),
+            ) {
+                Ok(true) => read,
+                Ok(false) => Read::Missing,
+                Err(_) => Read::Unresolved(Unresolved::Unavailable),
+            };
+        }
+    }
+    read
+}
+
+pub(super) fn held(
+    config: &Config,
+    epoch: &str,
+    team: &str,
+    member: &Member,
+    stop: impl FnOnce(&TeamRecord, ProviderStop) -> Result<()>,
+    first_ready: impl FnOnce(&Value) -> bool,
+) -> Result<Availability> {
+    // The normal writer cannot publish main-turn recovery between the
+    // observation and the team commit. A contended lock leaves work where it is.
+    let writer = team_provider_stop::ProviderWriter::take(&config.state);
+    let member_read = read(config, epoch, team, member, true, true)?;
+    if let (Some(_writer), Read::Stopped(record, failure)) = (writer, &member_read) {
+        stop(record, *failure)?;
+    }
+    Ok(answer(validate_host(member_read, member), first_ready))
+}
+
 /// Why a member bound to a launch has no current run (zerus-63rru.53): a
 /// named state of the reader, never a silent none. Each leaves the member
 /// not free; zerus-63rru.55's card tells the person.
@@ -131,6 +231,8 @@ pub(super) enum Unresolved {
     NoHandle,
     /// No live or saved session carries the handle: archived or removed.
     Gone,
+    /// The archive exists on disk and its metadata has not been indexed.
+    Archive,
     /// The handle's session names another launch, agent or folder.
     Changed,
     /// The person started the session fresh: a new conversation is another
@@ -145,6 +247,7 @@ impl Unresolved {
         match self {
             Unresolved::NoHandle => Fact::NoHandle,
             Unresolved::Gone => Fact::Gone,
+            Unresolved::Archive => Fact::Archive,
             Unresolved::Changed => Fact::Changed,
             Unresolved::StartedFresh => Fact::StartedFresh,
             Unresolved::Unavailable => Fact::Unavailable,
@@ -173,19 +276,43 @@ pub(super) fn current(
     member: &Member,
     backfill: bool,
 ) -> Result<Current> {
+    Ok(
+        match current_record(config, team, member, backfill, false)? {
+            CurrentRecord::Run(run) => Current::Run(run),
+            CurrentRecord::Bound(record) => Current::Run(record.run_id),
+            CurrentRecord::Unbound => Current::Unbound,
+            CurrentRecord::Unresolved(why) => Current::Unresolved(why),
+        },
+    )
+}
+
+enum CurrentRecord {
+    Run(String),
+    Bound(Box<TeamRecord>),
+    Unbound,
+    Unresolved(Unresolved),
+}
+
+fn current_record(
+    config: &Config,
+    team: &str,
+    member: &Member,
+    backfill: bool,
+    provider: bool,
+) -> Result<CurrentRecord> {
     let Some(session) = member.session.as_ref() else {
-        return Ok(Current::Unbound);
+        return Ok(CurrentRecord::Unbound);
     };
     if let Some(run) = session.session_id.strip_prefix("run_id:") {
         return Ok(checked(run.to_owned()));
     }
     let Some(launch) = session.session_id.strip_prefix("launch_id:") else {
-        return Ok(Current::Unbound);
+        return Ok(CurrentRecord::Unbound);
     };
     let store = crate::teams::store::Store::open(&config.state)?;
     if let Some(handle) = store.member_handle(team, &member.id)? {
         if handle.launch != launch || handle.machine != session.machine {
-            return Ok(Current::Unresolved(Unresolved::Changed));
+            return Ok(CurrentRecord::Unresolved(Unresolved::Changed));
         }
         return Ok(resolve(
             config,
@@ -193,14 +320,16 @@ pub(super) fn current(
             launch,
             &handle.session_id,
             &handle.label_hint,
+            backfill,
+            provider,
         ));
     }
     drop(store);
     let Some((id, hint)) = source(config, team, member, launch)? else {
-        return Ok(Current::Unresolved(Unresolved::NoHandle));
+        return Ok(CurrentRecord::Unresolved(Unresolved::NoHandle));
     };
-    let current = resolve(config, member, launch, &id, &hint);
-    if backfill && matches!(current, Current::Run(_)) {
+    let current = resolve(config, member, launch, &id, &hint, backfill, provider);
+    if backfill && matches!(current, CurrentRecord::Bound(_)) {
         // A failed write costs only the next read another try.
         let _ = record_handle(config, team, member, &id, &hint);
     }
@@ -213,17 +342,30 @@ pub(super) fn current_run(config: &Config, team: &str, member: &Member) -> Resul
         _ => None,
     })
 }
-fn checked(run: String) -> Current {
+fn checked(run: String) -> CurrentRecord {
     if run.is_empty() || run.len() > 256 {
-        Current::Unresolved(Unresolved::Unavailable)
+        CurrentRecord::Unresolved(Unresolved::Unavailable)
     } else {
-        Current::Run(run)
+        CurrentRecord::Run(run)
     }
 }
 /// The session whose durable ID is `id`, as `member`'s current run.
-fn resolve(config: &Config, member: &Member, launch: &str, id: &str, hint: &str) -> Current {
+fn resolve(
+    config: &Config,
+    member: &Member,
+    launch: &str,
+    id: &str,
+    hint: &str,
+    repair: bool,
+    provider: bool,
+) -> CurrentRecord {
     use crate::state::TeamSession;
-    match crate::state::observe_team_session(
+    let observe = if provider {
+        crate::state::observe_team_session_for_availability
+    } else {
+        crate::state::observe_team_session
+    };
+    match observe(
         &config.state,
         id,
         launch,
@@ -232,14 +374,27 @@ fn resolve(config: &Config, member: &Member, launch: &str, id: &str, hint: &str)
         Instant::now() + Duration::from_millis(300),
     ) {
         TeamSession::Record(r) if r.cwd == member.worktree && r.agent == member.agent => {
-            checked(r.run_id)
+            if r.run_id.is_empty() {
+                CurrentRecord::Unresolved(Unresolved::Unavailable)
+            } else {
+                CurrentRecord::Bound(Box::new(r))
+            }
         }
         TeamSession::Record(_) | TeamSession::LaunchChanged => {
-            Current::Unresolved(Unresolved::Changed)
+            CurrentRecord::Unresolved(Unresolved::Changed)
         }
-        TeamSession::StartedFresh => Current::Unresolved(Unresolved::StartedFresh),
-        TeamSession::Gone => Current::Unresolved(Unresolved::Gone),
-        TeamSession::Unavailable => Current::Unresolved(Unresolved::Unavailable),
+        TeamSession::StartedFresh => CurrentRecord::Unresolved(Unresolved::StartedFresh),
+        TeamSession::Gone if repair => {
+            let archive =
+                crate::state::archive_catalog::member_archive_pending(&config.state, id, launch);
+            CurrentRecord::Unresolved(match archive {
+                Ok(true) => Unresolved::Archive,
+                Ok(false) => Unresolved::Gone,
+                Err(_) => Unresolved::Unavailable,
+            })
+        }
+        TeamSession::Gone => CurrentRecord::Unresolved(Unresolved::Gone),
+        TeamSession::Unavailable => CurrentRecord::Unresolved(Unresolved::Unavailable),
     }
 }
 /// The session ID and name at binding of a member bound before handles,

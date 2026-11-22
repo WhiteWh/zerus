@@ -1,0 +1,36 @@
+
+ ▐▛███▛█   Claude Code v2.1.327
+▝▜██████▀  Opus 5.5 · Claude API
+ ▝▝   ▝▝   ~/work
+
+▎ Auto mode is now Claude Code's default permission mode.
+▎ Auto mode lets Claude handle permission prompts automatically. Claude checks each tool call for risky actions and
+▎ prompt injection before executing, runs the ones it assesses as lower-risk, and blocks the rest.
+▎ https://code.claude.com/docs/en/permission-modes
+
+
+
+
+
+
+
+
+
+
+
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ ◐ medium · /effort ▔
+  Select model
+  Your pick is the default for new sessions. For other models, use --model.
+
+    1. Default (recommended)  Opus 5.5 · Best for everyday, complex tasks
+    2. Opus 5.5 ✔             Best for everyday, complex tasks
+    3. Fable 5.1              Most capable for your hardest and longest-running tasks
+    4. Sonnet 5.5             Efficient for routine tasks
+    5. Haiku 5.5              Fastest for quick answers
+    ▾  More models
+  ❯ 6. Fable 5.2              Most capable for your hardest and longest-running tasks
+    7. Fable 5                Most capable for your hardest and longest-running tasks
+
+  ◉ xHigh effort
+
+  ←/→ to adjust · s to use this session only · Enter to save · Esc to cancel

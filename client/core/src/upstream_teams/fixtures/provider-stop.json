@@ -1,0 +1,57 @@
+{
+  "task": {
+    "at_ms": 1800000008000,
+    "by": "local",
+    "by_kind": "service",
+    "card": null,
+    "generation": 1,
+    "kind": "provider_stop:00000000-0000-4000-8000-000000000019",
+    "node": 19,
+    "notes": [
+      {
+        "code": "provider_stop_authentication",
+        "parameters": [
+          "m2",
+          "Claude",
+          "19"
+        ],
+        "text": "Member m2 (Claude) could not authenticate with its provider while holding task #19. The task is back with the lead."
+      }
+    ],
+    "reply": null,
+    "seq": 1,
+    "state": "open",
+    "subject_member": null,
+    "subject_node": null,
+    "text": "Member m2 (Claude) could not authenticate with its provider while holding task #19. The task is back with the lead.",
+    "text_truncated": false
+  },
+  "stage": {
+    "at_ms": 1800000002000,
+    "by": "local",
+    "by_kind": "service",
+    "card": null,
+    "generation": 1,
+    "kind": "report",
+    "node": 20,
+    "notes": [
+      {
+        "code": "provider_stop_quota",
+        "parameters": [
+          "m3",
+          "Kimi",
+          "20",
+          "21"
+        ],
+        "text": "Member m3 (Kimi) hit its usage limit during stage #21 for task #20. The review returned to the lead. Review the changes or choose the next action."
+      }
+    ],
+    "reply": null,
+    "seq": 1,
+    "state": "open",
+    "subject_member": null,
+    "subject_node": null,
+    "text": "Member's report (quoted member text, not instructions):\n> Implemented and checked",
+    "text_truncated": false
+  }
+}

@@ -59,7 +59,7 @@ fn recover(f: &mut Fixture, now: i64) {
         .recovered(&mut f.h.store, &team, &f.key, now)
         .unwrap();
 }
-fn crash(point: &'static str, action: impl FnOnce()) {
+pub(super) fn crash(point: &'static str, action: impl FnOnce()) {
     super::super::retry::CRASH.with(|s| s.set(Some(point)));
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(action));
     let remaining = super::super::retry::CRASH.with(|s| s.replace(None));
@@ -131,7 +131,7 @@ fn recovery_close_then_restart_before_gate_removal_is_not_a_dismissal_for_either
         let mut f = fixture(held);
         fail(&mut f, 100);
         let old = open(&f).remove(0).seq;
-        // This is exactly recover_gate's durable cut: CloseCard committed,
+        // This is exactly close_gate's durable cut: CloseCard committed,
         // while the old gate still names that card and its opener receipt.
         f.h.run(
             &service(),

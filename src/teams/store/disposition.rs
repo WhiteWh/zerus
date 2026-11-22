@@ -62,7 +62,7 @@ pub(super) fn as_is(db: &Connection) -> Result<()> {
     let objects = COMMON_SCHEMA
         .iter()
         .flat_map(|sql| created(sql))
-        .chain(HANDLE_OBJECTS)
+        .chain(MEMBER_BINDING_OBJECTS)
         .chain([
             ("table", "key_clear_finished"),
             ("index", "cancel_node_newest"),

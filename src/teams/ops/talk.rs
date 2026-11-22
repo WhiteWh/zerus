@@ -49,6 +49,14 @@ pub(super) fn reply(ctx: &mut Context<'_>) -> Result<()> {
     }
     timers::mark_answer(ctx, *item)
 }
+
+pub(super) fn close_stale_reopen_notices(ctx: &mut Context<'_>) -> Result<()> {
+    if store::non_delivery::close_stale_reopen_notices(ctx.db, &ctx.team.id)? == 0 {
+        return Err(invalid("No stale reopen notices to close."));
+    }
+    Ok(())
+}
+
 pub(super) fn open_card(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::OpenCard {
         kind,
@@ -292,13 +300,22 @@ pub(super) fn close_card(ctx: &mut Context<'_>) -> Result<()> {
     };
     planning::ordinary_card(ctx, None)?;
     reason(why)?;
-    let changed = ctx.db.execute("UPDATE cards SET state='closed',decision='stale',decided_actor=?3 WHERE team=?1 AND seq=?2 AND state='open' AND kind NOT IN ('integration','pipeline_acceptance') AND actor=?3",params![ctx.team.id,card,encode(ctx.actor)?]).map_err(storage)?;
-    if changed != 1 {
+    if !close_owned_card(ctx, *card, None)? {
         return Err(invalid(
             "Only an open ordinary card opened by this service can be closed.",
         ));
     }
     Ok(())
+}
+
+pub(super) fn close_owned_card(ctx: &Context<'_>, card: u64, kind: Option<&str>) -> Result<bool> {
+    let changed = ctx.db.execute(
+        "UPDATE cards SET state='closed',decision='stale',decided_actor=?3
+         WHERE team=?1 AND seq=?2 AND state='open' AND kind NOT IN ('integration','pipeline_acceptance')
+         AND actor=?3 AND (?4 IS NULL OR kind=?4)",
+        params![ctx.team.id, card, encode(ctx.actor)?, kind],
+    ).map_err(storage)?;
+    Ok(changed == 1)
 }
 
 fn unavailable_card(ctx: &Context<'_>, card: u64) -> Result<Problem> {

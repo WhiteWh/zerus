@@ -62,7 +62,6 @@
       "last_event_at": 1793000001.0,
       "launch_id": "00000000-0000-4000-8000-000000000050",
       "model": "",
-      "model_options": [],
       "name": "claude/example/member",
       "notification_preferences": {
         "conversation_id": "conversation-claude",
@@ -87,7 +86,7 @@
       "process_work": {
         "command": "",
         "count": 0,
-        "sampled_at": 1794709212.7850845,
+        "sampled_at": 1795054039.9477904,
         "started_at": null
       },
       "project": "example",
@@ -191,7 +190,6 @@
       "last_event_at": 1793000001.0,
       "launch_id": "00000000-0000-4000-8000-000000000050",
       "model": "",
-      "model_options": [],
       "name": "codex/example/member",
       "notification_preferences": {
         "conversation_id": "conversation-codex",
@@ -216,7 +214,7 @@
       "process_work": {
         "command": "",
         "count": 0,
-        "sampled_at": 1794709212.8368928,
+        "sampled_at": 1795054039.993463,
         "started_at": null
       },
       "project": "example",
@@ -307,7 +305,7 @@
       "process_work": {
         "command": "",
         "count": 0,
-        "sampled_at": 1794709212.9056892,
+        "sampled_at": 1795054040.0487452,
         "started_at": null
       },
       "project": "example",
@@ -401,7 +399,6 @@
       "last_event_at": 1793000001.0,
       "launch_id": "00000000-0000-4000-8000-000000000050",
       "model": "",
-      "model_options": [],
       "name": "kimi/example/member",
       "notification_preferences": {
         "conversation_id": "conversation-kimi",
@@ -426,7 +423,7 @@
       "process_work": {
         "command": "",
         "count": 0,
-        "sampled_at": 1794709212.8955164,
+        "sampled_at": 1795054040.0394022,
         "started_at": null
       },
       "project": "example",

@@ -15,7 +15,9 @@ Start a session (hgs guide launch)
   once through guarded send after interactive startup. inspect shows
   launch_prompt status; stopped or uncertain delivery needs manual review.
 - Early exits appear in hgs [@h] ls --json under ended_launches with launch_id,
-  exit code and last screen lines. Folder trust needs the owner's confirmation.
+  exit code and last screen lines. Answer a folder or hook trust prompt only
+  at the person's request (a standing one counts) or for a member of a team
+  whose confirm_trust setting is on.
 - A proven live terminal caller becomes the parent of a new session it launches
   here, including native-API children. Terminal forks record their caller too.
   Adopt an existing child on this computer:

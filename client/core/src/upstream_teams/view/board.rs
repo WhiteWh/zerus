@@ -103,6 +103,7 @@ fn card(node: &Value) -> QueueCard {
         pipeline: name(node, "pipeline"),
         assignee: name(node, "assignee"),
         implementer: name(node, "implementer"),
+        earlier_implementers: earlier_implementers(node),
         rank: name(node, "rank"),
         round: count(node, "round"),
         kind: row_kind(node),
@@ -122,6 +123,24 @@ fn card(node: &Value) -> QueueCard {
             }
         }),
     }
+}
+
+/// A stage row's earlier implementers of its target: valid member names
+/// only, at most 200 (zerus-3u5yu).
+fn earlier_implementers(node: &Value) -> Vec<String> {
+    node.get("earlier_implementers")
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .filter(|id| {
+                    !id.is_empty() && id.chars().take(NAME_CHARS + 1).count() <= NAME_CHARS
+                })
+                .take(200)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Folds the stage rows into the card they check, keeping every group in
@@ -226,6 +245,7 @@ pub fn team(status: &Value, queue: &Value) -> TeamView {
         settings: crate::upstream_teams::settings::complete(&team["settings"]),
         members: member_cards(status),
         member_roles: super::editing::roles(status),
+        routing_pipelines: routing_pipelines(team),
         edit_goal: super::editing::goal(status),
         groups,
         truncated,
@@ -233,4 +253,31 @@ pub fn team(status: &Value, queue: &Value) -> TeamView {
         revision,
         after: None,
     }
+}
+
+fn routing_pipelines(team: &Value) -> Vec<RoutingPipeline> {
+    let bundle = &team["bundle"];
+    let roles = array(bundle, "roles")
+        .iter()
+        .take(MEMBERS_KEPT)
+        .filter_map(|role| role.get("id")?.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    array(bundle, "pipelines")
+        .iter()
+        .take(MEMBERS_KEPT)
+        .filter_map(|pipeline| {
+            let id = name(pipeline, "id");
+            let role = name(pipeline, "implementer");
+            if zerus_team_plan::id_problem(&id, "pipeline").is_some()
+                || !roles.contains(role.as_str())
+            {
+                return None;
+            }
+            Some(RoutingPipeline {
+                id,
+                role,
+                name: text(pipeline, "name", LINE_CHARS),
+            })
+        })
+        .collect()
 }

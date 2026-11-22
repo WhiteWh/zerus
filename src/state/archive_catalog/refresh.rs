@@ -120,6 +120,15 @@ fn empty(directory: &str) -> Result<Connection> {
     Ok(db)
 }
 pub(super) fn catalog() -> Result<Connection> {
+    read_catalog(true)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn catalog_without_request() -> Result<Connection> {
+    read_catalog(false)
+}
+
+fn read_catalog(schedule: bool) -> Result<Connection> {
     let source = directory()?;
     if source == "absent" {
         return empty(&source);
@@ -137,7 +146,9 @@ pub(super) fn catalog() -> Result<Connection> {
             return empty(&source);
         }
     }
-    request();
+    if schedule {
+        request();
+    }
     result
 }
 
@@ -160,7 +171,16 @@ fn guard(name: &str) -> Result<Option<storage::Guard>> {
 pub(super) fn request() {}
 #[cfg(not(test))]
 pub(super) fn request() {
-    use std::process::{Command, Stdio};
+    request_worker(false);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn request_for_team() {
+    request_worker(true);
+}
+
+#[cfg(any(not(test), target_os = "linux", target_os = "macos"))]
+fn request_worker(team: bool) {
     let launch = (|| -> Result<()> {
         let Some(_launch) = guard("launch.lock")? else {
             return Ok(());
@@ -168,40 +188,98 @@ pub(super) fn request() {
         let Some(probe) = guard("worker.lock")? else {
             return Ok(());
         };
-        let path = root().join(AUX).join("attempt.json");
-        let at = labels::read_file(&path, 4096)
-            .map_err(fail)?
-            .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
-            .and_then(|row| row["at"].as_f64())
-            .unwrap_or(0.0);
-        if (0.0..5.0).contains(&(now() - at)) {
+        let (leaf, interval) = if team {
+            ("teams-attempt.json", 300.0)
+        } else {
+            ("attempt.json", 5.0)
+        };
+        let path = root().join(AUX).join(leaf);
+        let current = now();
+        let raw = match labels::read_file(&path, 4096) {
+            Ok(raw) => raw,
+            // Recover an oversized regular reservation without reading it.
+            Err(_) if team && fs::symlink_metadata(&path)
+                .is_ok_and(|meta| meta.is_file() && meta.len() > 4096) => None,
+            Err(error) => return Err(fail(error)),
+        };
+        let at = raw.as_deref()
+            .and_then(|raw| serde_json::from_slice::<Value>(raw).ok())
+            .and_then(|row| row["at"].as_f64());
+        // A malformed or future-dated reservation admits one replacement
+        // under both locks. Reserve it before spawning, including on failure.
+        if at.is_some_and(|at| (0.0..interval).contains(&(current - at))) {
             return Ok(());
         }
-        atomic(&path, &json!({"at":now()}).to_string())?;
-        let mut command = Command::new(std::env::current_exe().map_err(fail)?);
-        for (key, _) in
-            std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("HGS_"))
-        {
-            command.env_remove(key);
-        }
-        command
-            .args(["__state", "archive-catalog-worker"])
-            .env(
-                "HGS_STATE_DIR",
-                crate::platform::canonical(root()).map_err(fail)?,
-            )
-            .current_dir(root())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        atomic(&path, &json!({"at":current}).to_string())?;
+        // The child acquires the same worker exclusion as the ordinary
+        // catalog refresh. Release the probe before it can try to acquire it.
         drop(probe);
-        let mut child = crate::platform::spawn_detached(&mut command).map_err(fail)?;
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
+        launch_worker(team)?;
         Ok(())
     })();
-    let _ = launch;
+    if team {
+        if let Err(error) = launch {
+            eprintln!("hgs: could not request Teams archive catalog repair: {error}");
+        }
+    }
+}
+
+#[cfg(any(not(test), target_os = "linux", target_os = "macos"))]
+fn worker_args(team: bool) -> Vec<&'static str> {
+    let mut args = vec!["__state", "archive-catalog-worker"];
+    if team {
+        args.push("--teams-repair");
+    }
+    args
+}
+
+#[cfg(not(test))]
+fn launch_worker(team: bool) -> Result<()> {
+    spawn_worker(&worker_args(team))
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+thread_local! {
+    pub(super) static TEST_WORKER: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+fn launch_worker(team: bool) -> Result<()> {
+    if let Some(test) = TEST_WORKER.with(std::cell::Cell::get) {
+        spawn_worker(&worker_args(team), test)?;
+    }
+    Ok(())
+}
+
+#[cfg(any(not(test), target_os = "linux", target_os = "macos"))]
+fn spawn_worker(args: &[&str], #[cfg(test)] test: &str) -> Result<()> {
+    use std::process::{Command, Stdio};
+    let mut command = Command::new(std::env::current_exe().map_err(fail)?);
+    for (key, _) in
+        std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("HGS_"))
+    {
+        command.env_remove(key);
+    }
+    #[cfg(test)]
+    command
+        .args(["--exact", test, "--ignored", "--test-threads=1"])
+        .env("TEST_ARCHIVE_WORKER_ARGV", json!(args).to_string());
+    #[cfg(not(test))]
+    command.args(args);
+    command
+        .env(
+            "HGS_STATE_DIR",
+            crate::platform::canonical(root()).map_err(fail)?,
+        )
+        .current_dir(root())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = crate::platform::spawn_detached(&mut command).map_err(fail)?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 #[derive(Clone, Serialize)]
@@ -223,27 +301,7 @@ impl Row {
             .filter(|at| at.is_finite() && *at >= 0.0 && *at < MAX_DATE as f64)
             .unwrap_or(0.0);
         let at = if at == 0.0 { 0.0 } else { at };
-        let search = [
-            "name",
-            "archive_id",
-            "agent",
-            "conversation_id",
-            "run_id",
-            "cwd",
-            "launch_dir",
-            "title",
-        ]
-        .iter()
-        .map(|key| {
-            if *key == "title" {
-                string(&record, key).chars().take(1024).collect::<String>()
-            } else {
-                string(&record, key).to_owned()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase();
+        let search = super::search_text(&record);
         Ok(Self {
             id: id.into(),
             name,
@@ -373,6 +431,12 @@ fn native_identity(db: &Connection, id: &str) -> Result<(String, bool, bool)> {
             && hash.is_empty()
     };
     Ok((stamp, sound, valid))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn has_identity(db: &Connection, id: &str, stamp: &str) -> bool {
+    native_identity(db, id)
+        .is_ok_and(|(indexed, sound, valid)| indexed == stamp && sound && valid)
 }
 
 #[derive(Clone)]
@@ -892,20 +956,48 @@ impl Builder {
 }
 
 pub(super) fn worker() -> Result<i32> {
+    worker_inner(false, Duration::from_secs(60))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::state) fn team_worker() -> Result<i32> {
+    worker_inner(true, Duration::from_secs(60))
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn team_worker_with_budget(budget: Duration) -> Result<i32> {
+    worker_inner(true, budget)
+}
+
+fn worker_inner(team: bool, budget: Duration) -> Result<i32> {
     let state = crate::state::repositories::directory::Directory::open(
         &crate::platform::canonical(root()).map_err(fail)?,
     )?;
     let Some(_guard) = guard("worker.lock")? else {
         return Ok(0);
     };
-    let until = Instant::now() + Duration::from_secs(60);
-    let mut builder = Builder::new(until)?;
+    let until = Instant::now() + budget;
+    // Teams repair shares the native writer's exclusion, taking it for one
+    // builder step at a time. No session I/O or inline rebuild on the reader.
+    let writer = || -> Result<Option<storage::Guard>> {
+        if team {
+            let file = state.open_private_lock(".lock")?;
+            let lock = storage::lock_open_until(file, until)?.ok_or(INCOMPLETE)?;
+            return Ok(Some(lock));
+        }
+        Ok(None)
+    };
+    let mut builder = {
+        let _writer = writer()?;
+        Builder::new(until)?
+    };
     let mut consumed = 0;
     let mut restarts = 0;
     for _ in 0..8192 {
         if Instant::now() >= until || consumed + builder.bytes() >= 16 << 30 {
             return Ok(1);
         }
+        let _writer = writer()?;
         state.verify()?;
         match builder.step()? {
             Step::Complete => return Ok(0),

@@ -153,6 +153,8 @@ impl TeamRead {
                 args.extend(["--team".to_owned(), team.clone()]);
                 if let Self::Draft { phase, .. } = self {
                     args.extend(["--phase".to_owned(), phase.to_string()]);
+                } else {
+                    args.push("--bundle".to_owned());
                 }
             }
             Self::Queue { team, after } | Self::Phases { team, after } => {
@@ -490,7 +492,7 @@ mod tests {
     fn each_read_names_its_flags_and_one_page() {
         assert_eq!(
             TeamRead::Status { team: TEAM.into() }.args().unwrap(),
-            ["team", "status", "--team", TEAM, "--json"]
+            ["team", "status", "--team", TEAM, "--bundle", "--json"]
         );
         assert_eq!(
             TeamRead::Queue {

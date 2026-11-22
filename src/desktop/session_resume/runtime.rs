@@ -81,6 +81,11 @@ const PROBE_EVERY: Duration = Duration::from_millis(250);
 pub(super) const WAIT: Duration = Duration::from_secs(180);
 /// How often the waiting operation reads the resumed session again.
 const POLL_EVERY: Duration = Duration::from_millis(500);
+/// How long a read gap lasts, from its first unreadable sample, before the
+/// wait asks whether the run's last proven supervisor exited (zerus-5sl7r).
+/// An atomic record update can fail one held read; only that supervisor's
+/// exact exit, never the gap alone, ends the wait.
+pub(super) const RECORD_GRACE: Duration = Duration::from_secs(10);
 /// The deadline of one observation of a resumed Codex, never past the
 /// wait's own (zerus-5wmh.66.4.10).
 pub(super) const OBSERVATION_WAIT: Duration = Duration::from_secs(5);
@@ -134,7 +139,7 @@ struct Probe {
 /// One read of the waiting operation's resumed session, off the actor.
 struct ReadyProbe {
     worker: JoinHandle<()>,
-    result: mpsc::Receiver<Readiness>,
+    result: mpsc::Receiver<(Readiness, Option<ready::Supervisor>)>,
 }
 /// What one original child runs: its fixed arguments, its exact stdin and
 /// the run its spawn turn checks the session against (the original run for
@@ -180,9 +185,21 @@ enum Work {
         token: Arc<()>,
         probe: Option<ReadyProbe>,
         until: Instant,
+        /// The reads of the resumed run's record so far.
+        gap: Gap,
         next: Instant,
     },
 }
+/// What the wait knows of the resumed run's record between its reads
+/// (zerus-5sl7r).
+#[derive(Debug, Default)]
+struct Gap {
+    /// The supervisor the last readable record of the run named.
+    supervisor: Option<ready::Supervisor>,
+    /// The first unreadable read since the last readable one.
+    since: Option<Instant>,
+}
+
 pub(in crate::desktop) struct Runtime {
     #[cfg(test)]
     executor: Option<Executor>,
@@ -215,6 +232,8 @@ pub(in crate::desktop) struct Runtime {
     wait: Duration,
     poll_every: Duration,
     chain: Duration,
+    /// The grace for a missing record of the resumed run ([`RECORD_GRACE`]).
+    record_grace: Duration,
     /// One observation's deadline ([`OBSERVATION_WAIT`]).
     observation_wait: Duration,
     /// Stands in for the observation child.
@@ -268,6 +287,7 @@ impl Runtime {
             read_wait: READ_WAIT,
             wait: WAIT,
             poll_every: POLL_EVERY,
+            record_grace: RECORD_GRACE,
             chain: CHAIN,
             observation_wait: OBSERVATION_WAIT,
             #[cfg(test)]
@@ -732,8 +752,9 @@ impl Runtime {
                     token,
                     probe,
                     until,
+                    gap,
                     next,
-                } => return self.wait(store, id, consent, roots, token, probe, until, next),
+                } => return self.wait(store, id, consent, roots, token, probe, until, gap, next),
             }
             return Ok(());
         }
@@ -927,6 +948,7 @@ impl Runtime {
                             token: token.clone(),
                             probe: None,
                             until,
+                            gap: Gap::default(),
                             next: Instant::now(),
                         });
                     } else {
@@ -1041,6 +1063,7 @@ impl Runtime {
         token: Arc<()>,
         probe: Option<ReadyProbe>,
         until: Instant,
+        mut gap: Gap,
         next: Instant,
     ) -> Result<()> {
         // A read in flight finishes first: it holds the loans, and it is
@@ -1054,6 +1077,7 @@ impl Runtime {
                     token,
                     probe: Some(probe),
                     until,
+                    gap,
                     next,
                 });
                 return Ok(());
@@ -1064,7 +1088,7 @@ impl Runtime {
                     .join()
                     .ok()
                     .and_then(|_| probe.result.try_recv().ok())
-                    .unwrap_or(Readiness::Ended(ready::UNREAD)),
+                    .unwrap_or((Readiness::Ended(ready::UNREAD), None)),
             ),
             None => None,
         };
@@ -1083,12 +1107,33 @@ impl Runtime {
             ledger::WAIT_EXPIRED
         };
         match ready {
-            Some(Readiness::Ready) if Instant::now() < until => {
+            Some((Readiness::Ready, _)) if Instant::now() < until => {
                 return self.prepare(&row, Child::Send, consent, Some((roots, token)));
             }
-            Some(Readiness::Ready) => return self.end_wait(store, &id, expired),
-            Some(Readiness::Ended(code)) => return self.end_wait(store, &id, code),
-            Some(Readiness::Waiting) | None => {}
+            Some((Readiness::Ready, _)) => return self.end_wait(store, &id, expired),
+            Some((Readiness::Ended(code), _)) => return self.end_wait(store, &id, code),
+            Some((Readiness::Waiting, supervisor)) => {
+                gap.since = None;
+                if supervisor.is_some() {
+                    gap.supervisor = supervisor;
+                }
+            }
+            // A read gap ends the wait only once it lasted the grace from its
+            // first unreadable sample and the run's last proven supervisor
+            // exactly exited (zerus-5sl7r). A run never recorded, or one whose
+            // supervisor runs or cannot be read, keeps the wait.
+            Some((Readiness::Unrecorded, _)) => {
+                let since = *gap.since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= self.record_grace
+                    && gap
+                        .supervisor
+                        .as_mut()
+                        .is_some_and(ready::Supervisor::exited)
+                {
+                    return self.end_wait(store, &id, ready::READY_GONE);
+                }
+            }
+            None => {}
         }
         let now = Instant::now();
         if now >= until {
@@ -1102,6 +1147,7 @@ impl Runtime {
                 token,
                 probe: None,
                 until,
+                gap,
                 next,
             });
             return Ok(());
@@ -1115,6 +1161,8 @@ impl Runtime {
         let store_roots = roots.clone();
         let observation_wait = self.observation_wait;
         let observing = consent.clone();
+        // The birth an earlier read pinned stays with the same supervisor.
+        let known = gap.supervisor.clone();
         #[cfg(target_os = "linux")]
         let image = self.image.clone();
         #[cfg(test)]
@@ -1132,8 +1180,13 @@ impl Runtime {
                 }
                 // A resumed Codex's observation ends with the wait at the latest.
                 let deadline = (Instant::now() + observation_wait).min(until);
-                let readiness =
-                    ready::read(&store_roots, &plan, &run, deadline, |args, input, until| {
+                let readiness = ready::read_supervised(
+                    &store_roots,
+                    &plan,
+                    &run,
+                    deadline,
+                    known.as_ref(),
+                    |args, input, until| {
                         observe(
                             args,
                             input,
@@ -1144,7 +1197,8 @@ impl Runtime {
                             #[cfg(test)]
                             observer.as_ref(),
                         )
-                    });
+                    },
+                );
                 let _ = send.send(readiness);
             })?;
         self.work = Some(Work::Waiting {
@@ -1154,6 +1208,7 @@ impl Runtime {
             token,
             probe: Some(ReadyProbe { worker, result }),
             until,
+            gap,
             next: now + self.poll_every,
         });
         Ok(())
@@ -1238,6 +1293,11 @@ impl Runtime {
         self.poll_every = every;
         self.chain = chain;
     }
+    /// Sets the grace for a missing record of the resumed run.
+    #[cfg(test)]
+    pub(super) fn fixture_record_grace(&mut self, grace: Duration) {
+        self.record_grace = grace;
+    }
     /// `Some(None)` proves a live queued consent whose own turn has not
     /// started its clock; `None` means no such original was admitted.
     #[cfg(test)]
@@ -1291,7 +1351,7 @@ fn observe(
             if consent.cancel.load(Ordering::Acquire) || !image.current() {
                 return Err(std::io::ErrorKind::PermissionDenied.into());
             }
-            image.inherit(command)
+            crate::desktop::original_child::inherit_pinned(image, command)
         });
     }
     let _ = (args, input, until, consent);
@@ -1396,7 +1456,7 @@ fn original(
                 if !current() || !image.current() {
                     return Err(std::io::ErrorKind::PermissionDenied.into());
                 }
-                image.inherit(command)
+                crate::desktop::original_child::inherit_pinned(&image, command)
             },
         );
     }

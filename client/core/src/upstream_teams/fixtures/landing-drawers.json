@@ -1,0 +1,53 @@
+{
+  "lead": {
+    "at_ms": 1234,
+    "by": "local",
+    "by_kind": "service",
+    "card": null,
+    "generation": 1,
+    "kind": "report",
+    "node": 1,
+    "notes": [],
+    "reply": null,
+    "seq": 1,
+    "state": "open",
+    "subject_member": null,
+    "subject_node": null,
+    "text": "Member's report (quoted member text, not instructions):\n> Implemented and checked\nLand stages were skipped because landing is disabled in Team settings.",
+    "text_truncated": false
+  },
+  "report": {
+    "at_ms": 1234,
+    "by": "local",
+    "by_kind": "service",
+    "card": null,
+    "generation": null,
+    "kind": "record_report",
+    "node": null,
+    "notes": [],
+    "reply": null,
+    "seq": 11,
+    "state": "",
+    "subject_member": "m1",
+    "subject_node": 1,
+    "text": "record_report at revision 11: Land stages skipped for task #1 because landing is disabled in Team settings.",
+    "text_truncated": false
+  },
+  "verdict": {
+    "at_ms": 1234,
+    "by": "m3",
+    "by_kind": "session",
+    "card": null,
+    "generation": null,
+    "kind": "verdict",
+    "node": null,
+    "notes": [],
+    "reply": null,
+    "seq": 18,
+    "state": "",
+    "subject_member": null,
+    "subject_node": 2,
+    "text": "verdict at revision 18: Land stages skipped for task #1 because landing is disabled in Team settings.",
+    "text_truncated": false
+  }
+}

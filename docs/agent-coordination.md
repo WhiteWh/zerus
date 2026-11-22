@@ -113,6 +113,18 @@ acknowledgements cannot reopen completed waits; cancelled waits reject late
 results. Operation UUIDs bind exact payloads and produce transactional idempotent
 receipts. Settlement never sends, resumes or retries a native conversation.
 
+## Retire finished sub-sessions
+
+Reuse an idle sub-session for its own follow-up. Retire a sub-session you
+started once its result is accepted (report read or PR merged or closed) and
+it has no planned task, or after 24 hours idle with no task planned. Finish
+or cancel its open wait before you run `hgs terminate` to keep the conversation
+in Archive. Use `hgs kill` only where terminate is unsupported. For a worktree
+you created for it, use `hgs worktrees review` to check it is clean and the
+branch is merged or pushed. Move any report an open task still cites to a
+durable place before `git worktree remove`, and keep the branch. Never retire
+a session you did not start, one still working, or one the owner uses.
+
 ## Child questions from the desktop service
 
 A message starting `[Zerus child question]` comes from the desktop service of

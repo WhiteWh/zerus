@@ -184,6 +184,8 @@ mod real_rows;
 mod removed_handout;
 mod retry_cards;
 mod project_limits;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod provider_stop;
 mod unstaffed;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

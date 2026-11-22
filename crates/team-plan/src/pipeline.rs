@@ -122,6 +122,23 @@ fn stage_step(pipeline: &Pipeline, index: u32) -> Option<Step> {
     })
 }
 
+/// Advance past disabled Land steps without recording a verdict for them.
+pub fn after_skipping_land(pipeline: &Pipeline, mut index: u32, passed: bool) -> Step {
+    while pipeline
+        .stages
+        .get(index as usize)
+        .is_some_and(|stage| stage.kind == StageKind::Land)
+    {
+        index += 1;
+    }
+    stage_step(pipeline, index).unwrap_or_else(|| match acceptance(pipeline, passed) {
+        Step::ToLead { .. } => {
+            to_lead("Land stages were skipped because landing is disabled in Team settings.")
+        }
+        step => step,
+    })
+}
+
 /// Who accepts once nothing is left to check. A pipeline accepts on its own
 /// only when a stage passed: one without stages leaves it to the lead.
 fn acceptance(pipeline: &Pipeline, passed: bool) -> Step {

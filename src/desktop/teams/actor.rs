@@ -28,6 +28,8 @@ pub(crate) use presence::presence;
 mod reply;
 mod reports;
 mod retry;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) use retry::provider_binding_stamp;
 mod schedule;
 mod tasks;
 mod publication;
@@ -63,6 +65,7 @@ pub(super) struct Runtime {
     maintenance: Option<crate::teams::store::Cursor>,
     maintenance_team: Option<(String, String)>,
     row_failure: bool,
+    provider_stops: BTreeMap<(String, String), String>,
     hints: BTreeMap<String, observe::Hint>,
     cancel_after: String,
     /// The orphan pass's cursor over the service items.
@@ -83,6 +86,7 @@ impl Runtime {
             maintenance: None,
             maintenance_team: None,
             row_failure: false,
+            provider_stops: BTreeMap::new(),
             hints: BTreeMap::new(),
             cancel_after: String::new(),
             items_after: Default::default(),
@@ -185,6 +189,7 @@ impl Runtime {
         now: i64,
         safety: bool,
     ) -> Result<()> {
+        self.provider_stops.clear();
         self.prepare(teams)?;
         let mut fault = None;
         for team in teams {

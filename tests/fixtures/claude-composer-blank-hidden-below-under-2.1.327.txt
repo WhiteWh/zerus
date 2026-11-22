@@ -1,0 +1,24 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;246mv2.1.327[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mSonnet 4.6 · API Usage Billing[39m
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m~/work[39m
+
+
+[38;5;246m[48;5;237m❯ [38;5;231mHello fixture.[39m
+
+[38;5;231m[49m●[39m Fixture complete.
+
+[38;5;246m✻[39m [38;5;246mCrunched for 0s · done 3:04 PM[39m
+
+
+                                                     [38;5;246mctrl+g to edit in VS Code[39m
+[38;5;244m────────────────────────────────────────────────────────────────────────────────
+[39m❯ Paragraph one of the fixture draft wraps onto a second row of the composer
+  at eighty columns here.
+
+  Paragraph three of the fixture draft is long enough to fill several c[7mo[0mmposer
+  rows: it names the example-work session, the review of the scrolled
+  composer, the rows Claude hides below the cursor and the bar that says how
+  many there are, then it keeps going with plain words so that the wrapped
+[38;5;244m───[39m [2m↓ 1 more[0m [38;5;244m───────────────────────────────────────────────────────────────────
+[39m  [38;5;211m⏵⏵ bypass permissions on[38;5;246m (shift+tab to cycle)[39m

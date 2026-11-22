@@ -64,16 +64,19 @@ function MenuPopup(props: { menu: () => NonNullable<ReturnType<typeof visibleMen
   );
 }
 
+/** Ids that tie a closed item to its visible note. */
+let menuNotes = 0;
 /** Position-based slots retain buttons and focus across async scope counts. */
 function MenuItem(props: { item: () => MenuEntry }) {
   const action = () => { const item = props.item(); return "label" in item ? item : undefined; };
   const heading = () => { const item = props.item(); return "heading" in item ? item.heading : undefined; };
+  const noteId = `menu-note-${++menuNotes}`;
   return <Switch>
     <Match when={"separator" in props.item()}><div class="menu-sep" role="separator" /></Match>
     <Match when={heading()}><div class="menu-label">{heading()}</div></Match>
-    <Match when={action()}>{(item) => (
+    <Match when={action()}>{(item) => (<>
       <button class="menu-item" classList={{ danger: item().danger }} role={item().checked !== undefined ? "menuitemcheckbox" : "menuitem"}
-        aria-checked={item().checked} aria-disabled={item().disabled} title={item().hint}
+        aria-checked={item().checked} aria-disabled={item().disabled} title={item().hint} aria-describedby={item().note ? noteId : undefined}
         onClick={() => { const entry = item(); if (!menuItemActivates(entry)) return; setMenu(undefined); entry.action?.(); }}>
         <Show when={item().checked !== undefined} fallback={<Show when={item().icon} fallback={<span style={{ width: "14px" }} />}><Icon name={item().icon!} size={14} /></Show>}>
           <Icon name={item().checked && item().checked !== "mixed" ? "check" : "minus"} size={14} style={{ opacity: item().checked ? 1 : 0 }} />
@@ -82,7 +85,8 @@ function MenuItem(props: { item: () => MenuEntry }) {
         <span>{item().label}</span>
         <Show when={item().kbd}><span class="kbd">{item().kbd}</span></Show>
       </button>
-    )}</Match>
+      <Show when={item().note}>{(note) => <div class="menu-note" id={noteId}>{note()}</div>}</Show>
+    </>)}</Match>
   </Switch>;
 }
 

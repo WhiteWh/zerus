@@ -5,8 +5,9 @@
 //! may start the server runs in a scope of its own when hgs runs in a user unit
 //! (`scope`); it still spawns that same `tmux` command.
 use super::{
-    ClientExit, ClientRow, DryRun, InputClaim, InputState, Key, LaunchSpec, Listing, PaneField,
-    PaneInfo, PanePath, PaneRow, Paste, SessionRow, StageErrors, Target, TerminalBackend,
+    ClientExit, ClientRow, DryRun, InputClaim, InputState, Key, LaunchSpec, Launched, Listing,
+    PaneField, PaneInfo, PanePath, PaneRow, Paste, SessionRow, StageErrors, Target,
+    TerminalBackend, TerminalState,
 };
 use crate::cli::{Error, Result as CliResult};
 use crate::platform;
@@ -176,6 +177,102 @@ fn format(fields: &[PaneField]) -> String {
         .join("\t")
 }
 
+/// What `new-session -P` prints of the terminal it created: the server's pid
+/// and start time, the pane, and the pane's process (zerus-5sl7r). The
+/// fields are separated by a colon, which none of them holds: a client whose
+/// locale is not UTF-8 gets a tab as `_`.
+const LAUNCHED: &str = "#{pid}:#{start_time}:#{pane_id}:#{pane_pid}";
+/// What one observation reads of a pane `-t %N` names: the answering server's
+/// pid and start time, the pane it resolved (empty when it has none: tmux
+/// then still answers, with no pane), whether its command ended, and its
+/// process (empty once it ended).
+const OBSERVED: &str = "#{pid}:#{start_time}:#{pane_id}:#{pane_dead}:#{pane_pid}";
+
+/// The terminal `new-session -P -F LAUNCHED` reports, when it reports one;
+/// the launched process's birth is read separately ([`child_birth`]).
+fn launched(stdout: &[u8]) -> Option<Launched> {
+    let text = String::from_utf8_lossy(stdout);
+    let mut fields = text.trim_end_matches(['\n', '\r']).split(':');
+    match (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    ) {
+        (Some(pid), Some(start), Some(pane), Some(process), None)
+            if !pid.is_empty() && !start.is_empty() && pane.starts_with('%') =>
+        {
+            Some(Launched {
+                server: format!("{pid}:{start}"),
+                pane: pane.into(),
+                process: process.parse().ok().filter(|&process| process > 0)?,
+                birth: None,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The kernel birth of `process` when it is a child of the tmux server
+/// `server` (a pane's process is the server's child), else None.
+fn child_birth(process: u32, server: &str) -> Option<String> {
+    let server: u32 = server.split(':').next()?.parse().ok()?;
+    platform::process_identity(process)
+        .filter(|identity| identity.parent == server)
+        .map(|identity| identity.birth)
+}
+
+/// What tmux's answer to `display-message -p -t %N OBSERVED` proves of the
+/// terminal `launched` names (zerus-5sl7r); `birth` reads a process's kernel
+/// birth now. Only the server that created the pane (same pid and start time)
+/// says anything: a server at that socket path with another identity (one
+/// started there while the original runs on), a refused or missing socket, a
+/// failed program or a signal proves nothing. That server answers a pane it
+/// has no longer with an empty pane, and never gives its id to another pane
+/// while it runs. A live pane is the launch only while it runs the launched
+/// process (same pid and kernel birth); another process there (`respawn-pane`)
+/// is [`TerminalState::Replaced`], and one whose birth cannot be read proves
+/// nothing.
+fn observed_state(
+    launched: &Launched,
+    status: Option<i32>,
+    stdout: &[u8],
+    birth: impl Fn(u32) -> Option<String>,
+) -> TerminalState {
+    if status != Some(0) {
+        return TerminalState::Unknown;
+    }
+    let text = String::from_utf8_lossy(stdout);
+    let mut fields = text.trim_end_matches(['\n', '\r']).split(':');
+    let (Some(pid), Some(start), Some(pane), Some(dead), Some(process), None) = (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    ) else {
+        return TerminalState::Unknown;
+    };
+    if pid.is_empty() || format!("{pid}:{start}") != launched.server {
+        return TerminalState::Unknown;
+    }
+    if pane != launched.pane {
+        return TerminalState::Absent;
+    }
+    match dead {
+        "1" => TerminalState::DeadPane,
+        "0" if process != launched.process.to_string() => TerminalState::Replaced,
+        "0" => match (birth(launched.process), &launched.birth) {
+            (Some(now), Some(then)) if &now == then => TerminalState::Alive,
+            (Some(_), Some(_)) => TerminalState::Replaced,
+            _ => TerminalState::Unknown,
+        },
+        _ => TerminalState::Unknown,
+    }
+}
+
 pub(in crate::state) fn pane_info_args(target: Target, fields: &[PaneField]) -> Vec<String> {
     vec![
         "display-message".into(),
@@ -237,6 +334,13 @@ fn start_args(spec: &LaunchSpec) -> Vec<String> {
         arguments.extend(["-e".into(), value.clone()]);
     }
     direct_command(arguments, &spec.command)
+}
+
+/// [`start_args`] that also print the terminal created ([`LAUNCHED`]).
+fn start_observed_args(spec: &LaunchSpec) -> Vec<String> {
+    let mut arguments = start_args(spec);
+    arguments.splice(2..2, owned(&["-P", "-F", LAUNCHED]));
+    arguments
 }
 
 /// A CLI launch: `-u new-session [-d] (-e KEY=VALUE)* -s NAME -c DIR COMMAND`.
@@ -493,6 +597,25 @@ impl TerminalBackend for Tmux {
     fn session_exists(&self, name: &str) -> bool {
         platform::silent("tmux", &["has-session", "-t", &format!("={name}")])
     }
+    /// One `display-message` of the launched pane, bounded by `wait` and read
+    /// in the C locale; a late observation is killed and unknown
+    /// ([`observed_state`]).
+    fn terminal_state(&self, launched: &Launched, wait: std::time::Duration) -> TerminalState {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if crate::state::effort::picker_entered() {
+            return TerminalState::Unknown;
+        }
+        let arguments = owned(&["display-message", "-p", "-t", &launched.pane, OBSERVED]);
+        match platform::output_until(
+            Command::new("tmux").args(&arguments).env("LC_ALL", "C"),
+            wait,
+        ) {
+            Ok(answer) => observed_state(launched, answer.status.code(), &answer.stdout, |pid| {
+                platform::process_identity(pid).map(|identity| identity.birth)
+            }),
+            Err(_) => TerminalState::Unknown,
+        }
+    }
     fn session_name(&self, id: &str) -> Result<Option<String>> {
         let output = picker(
             crate::state::effort::PickerRead::SessionName,
@@ -536,6 +659,21 @@ impl TerminalBackend for Tmux {
         crate::self_exec::ensure().map_err(|e| e.to_string())?;
         let output = starting(&start_args(spec), Command::output, |_| true);
         checked(output, true).map(drop)
+    }
+    fn start_observed(&self, spec: &LaunchSpec) -> Result<Option<Launched>> {
+        if spec.command.is_empty() {
+            return Err("Session launch needs a program".into());
+        }
+        crate::self_exec::ensure().map_err(|e| e.to_string())?;
+        let output = starting(&start_observed_args(spec), Command::output, |_| true);
+        // The launched process's birth, read now: a process that already
+        // ended, or is no child of that server, leaves it unknown.
+        checked(output, true).map(|output| {
+            launched(&output.stdout).map(|mut launched| {
+                launched.birth = child_birth(launched.process, &launched.server);
+                launched
+            })
+        })
     }
     fn set_run_marker(&self, name: &str, run_id: &str) -> Result<()> {
         tmux(
@@ -839,6 +977,117 @@ impl TerminalBackend for Tmux {
 mod tests {
     use super::super::PaneField::*;
     use super::*;
+
+    /// zerus-5sl7r: only the server that created the pane, by its pid and
+    /// start time, says anything of it, and a live pane is the launch only
+    /// while it runs the launched process (pid and kernel birth). Another
+    /// server at the same socket path, a missing or refused socket and every
+    /// other failure are unknown; a pane respawned with another process is
+    /// replaced. The answers are tmux 3.8's own, read from private servers
+    /// (the review's respawn included).
+    #[test]
+    fn only_the_creating_server_says_its_pane_is_gone() {
+        use TerminalState::{Absent, Alive, DeadPane, Replaced, Unknown};
+        let mut pane = launched(b"517721:1795037025:%1:517731\n").unwrap();
+        assert_eq!(
+            pane,
+            Launched {
+                server: "517721:1795037025".into(),
+                pane: "%1".into(),
+                process: 517731,
+                birth: None
+            }
+        );
+        pane.birth = Some("7000".into());
+        let births = |pid: u32| match pid {
+            517731 => Some("7000".to_owned()),
+            517918 => Some("7100".to_owned()),
+            _ => None,
+        };
+        for (status, stdout, state) in [
+            (Some(0), "517721:1795037025:%1:0:517731\n", Alive),
+            // Its command ended and the pane is kept: tmux clears its pid.
+            (Some(0), "517721:1795037025:%1:1:\n", DeadPane),
+            // `respawn-pane` after it ended: another process in the same pane.
+            (Some(0), "517721:1795037025:%1:0:517918\n", Replaced),
+            // The creating server, with or without other sessions, has no
+            // such pane any more.
+            (Some(0), "517721:1795037025:::\n", Absent),
+            // A sessionless server started at the same path.
+            (Some(0), "517929:1795037025:::\n", Unknown),
+            (Some(0), "517929:1795037025:%1:0:517731\n", Unknown),
+            // The same pid with another start: another server.
+            (Some(0), "517721:1795037999:::\n", Unknown),
+            (Some(0), "::::\n", Unknown),
+            (Some(0), "", Unknown),
+            (Some(0), "517721:1795037025:%1:0\n", Unknown),
+            (Some(0), "517721:1795037025:%1:0:517731:extra\n", Unknown),
+            (Some(0), "517721:1795037025:%1::517731\n", Unknown),
+            // As a client without a UTF-8 locale reads tabs.
+            (Some(0), "517721_1795037025_%1_0_517731\n", Unknown),
+            // A missing or refused socket, a replacement's `no current
+            // target`, a failed program or a signal.
+            (Some(1), "", Unknown),
+            (Some(127), "517721:1795037025:::\n", Unknown),
+            (None, "517721:1795037025:::\n", Unknown),
+        ] {
+            assert_eq!(
+                observed_state(&pane, status, stdout.as_bytes(), births),
+                state,
+                "{status:?} {stdout:?}"
+            );
+        }
+        // The launched pid with another birth (reused), or one that cannot
+        // be read now or at the launch, is not the launched process alive.
+        let live = b"517721:1795037025:%1:0:517731\n";
+        assert_eq!(
+            observed_state(&pane, Some(0), live, |_| Some("7999".into())),
+            Replaced
+        );
+        assert_eq!(observed_state(&pane, Some(0), live, |_| None), Unknown);
+        let unborn = Launched {
+            birth: None,
+            ..pane.clone()
+        };
+        assert_eq!(observed_state(&unborn, Some(0), live, births), Unknown);
+        for unnamed in [
+            "",
+            "\n",
+            "517721:1795037025\n",
+            "517721:1795037025:%1\n",
+            "517721:1795037025:%1:\n",
+            "517721:1795037025:%1:0\n",
+            ":1795037025:%1:517731\n",
+            "517721::%1:517731\n",
+            "517721:1795037025:1:517731\n",
+            "517721:1795037025:%1:517731:x\n",
+            "517721:1795037025:%1:x\n",
+            // As a client without a UTF-8 locale, or an older format, reads.
+            "517721_1795037025_%1_517731\n",
+            "517721\t1795037025\t%1\t517731\n",
+        ] {
+            assert_eq!(launched(unnamed.as_bytes()), None, "{unnamed:?}");
+        }
+        // A pane's process is the server's child; nothing else is its birth.
+        let own = std::process::id();
+        assert_eq!(child_birth(own, "4294967294:1795037025"), None);
+        assert_eq!(child_birth(own, "x"), None);
+        let parent = platform::process_identity(own).unwrap().parent;
+        assert_eq!(
+            child_birth(own, &format!("{parent}:1795037025")),
+            Some(platform::process_identity(own).unwrap().birth)
+        );
+        let spec = LaunchSpec {
+            name: "claude/p/t".into(),
+            cwd: "/tmp".into(),
+            env: vec!["A=1".into()],
+            command: vec!["/x/hgs".into()],
+            detached: true,
+        };
+        let observed = start_observed_args(&spec);
+        assert_eq!(&observed[..5], ["new-session", "-d", "-P", "-F", LAUNCHED]);
+        assert_eq!(observed[5..], start_args(&spec)[2..]);
+    }
 
     /// zerus-sa9qn.38: `--dry-run` prints commands a person may paste; each
     /// line passes a hostile session name, folder and variable to tmux as the

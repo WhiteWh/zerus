@@ -37,6 +37,7 @@
   "sessions/childRowsSeen": "",
   "sessions/collapsedTeams": "",
   "sessions/compactNewChildren": true,
+  "sessions/expandedTeams": "",
   "sessions/favorites": "",
   "sessions/showAccountMarks": true,
   "socraticode/nativeQdrant": false,

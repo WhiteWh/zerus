@@ -118,6 +118,25 @@ describe("the archived row's menu entries", () => {
     expect(selectedKey()).toBe("\nrun:r3");
     expect(selected()?.state).toBe("running");
   });
+
+  it("lets the person check a pending native restore from its archive", async () => {
+    const source = { ...archived(15), name: "dsh/example/pending", agent: "deepseek",
+      allowed_actions: ["restore"], restore_pending: true };
+    const held = { ...source, archive_id: null, state: "running", run_id: "pending-run" };
+    await loadArchive(source);
+    applyBatch({ ...emptyBatch(), upserts: [{ computer: "", key: "run:pending", row: held }] });
+    const uncertain: Outcome = { outcome: "uncertain", detail: "Restore is awaiting native confirmation" };
+    mocked.runAction.mockResolvedValueOnce(uncertain);
+    const menu = actionEntries(archive.row(key(15))!, undefined, { context: true });
+    expect(menu.change.disabled).toBe(false);
+    expect(menu.end.disabled).toBe(true);
+    menu.change.action!();
+    await flush();
+    expect(mocked.runAction).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ name: source.name, run_id: source.run_id, conversation_id: source.conversation_id }),
+      { kind: "restore", archive_id: uuid(15) },
+    );
+  });
 });
 
 describe("a reloaded page that lists the archive id under another name", () => {

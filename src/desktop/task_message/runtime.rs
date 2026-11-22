@@ -837,7 +837,7 @@ fn pinned_stdin(
             if !image.current() {
                 return Err(std::io::ErrorKind::PermissionDenied.into());
             }
-            image.inherit(command)
+            crate::desktop::original_child::inherit_pinned(image, command)
         },
     )
 }

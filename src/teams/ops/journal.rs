@@ -91,12 +91,29 @@ pub(super) fn append(ctx: &Context<'_>, request: &Request) -> Result<u64> {
         ),
         _ => format!("{kind} at revision {}", ctx.reply.revision),
     };
+    if let Some(node) = ctx.land_skipped_for {
+        body.push_str(&format!(
+            ": Land stages skipped for task #{node} because landing is disabled in Team settings."
+        ));
+    }
     let mut refs = references(request)?;
+    if let Some(card) = ctx.closed_confirmation_card {
+        body.push_str(". ");
+        body.push_str(CONFIRMATION_CLOSED);
+        refs.push(format!("card:{card}"));
+    }
     if let Some(member) = &ctx.reply.member {
         let reference = format!("member:{member}");
         if !refs.contains(&reference) {
             refs.push(reference);
         }
+    }
+    let replacement_node = match ctx.op {
+        Operation::Reassign { node, .. } => ctx.reply.node.filter(|id| id != node),
+        _ => None,
+    };
+    if let Some(replacement) = replacement_node {
+        refs.push(format!("node:{replacement}"));
     }
     if let Some(earlier) = ctx.superseded {
         let (old, new) = replacement(ctx, earlier)?;

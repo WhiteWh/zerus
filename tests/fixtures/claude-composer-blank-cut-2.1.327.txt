@@ -1,0 +1,11 @@
+
+[38;5;246m[48;5;237m❯ [38;5;231mHello fixture.[39m
+
+[38;5;231m[49m●[39m Fixture complete.
+
+[38;5;246m✻[39m [38;5;246mBrewed for 0s · done 3:14 PM[39m
+                                                              [38;5;246m● high · /effort[39m
+[38;5;244m────────────────────────────────────────────────────────────────────────────────
+[39m❯ Paragraph one of the fixture draft wraps onto a second row of the composer
+  at eighty columns here.[7m [0m
+

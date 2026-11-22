@@ -6,6 +6,9 @@ pub(super) type Result<T> = std::result::Result<T, String>;
 pub(super) trait Ports: Sized {
     fn facts(&mut self, binding: &Binding) -> Result<Facts>;
     fn observe(&mut self, binding: &Binding) -> Result<Snapshot>;
+    fn observe_member(&mut self, binding: &Binding) -> Result<Snapshot> {
+        self.observe(binding)
+    }
     fn ownership(&mut self, binding: &Binding) -> Result<Ownership>;
     fn unsettled(&mut self, binding: &Binding) -> Result<Option<Record>>;
     fn pending_brief(&mut self, binding: &Binding) -> Result<Option<Plan>>;

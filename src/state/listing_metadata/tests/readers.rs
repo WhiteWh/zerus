@@ -1,6 +1,40 @@
 use super::*;
 
 #[test]
+fn a_listing_reader_recovers_from_a_brief_exclusive_database_lock() {
+    let root = fixture();
+    drop(Store::open(root.path()).unwrap());
+    let writer = Connection::open(root.path().join("listing-metadata/index.sqlite3")).unwrap();
+    writer
+        .execute_batch("PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE")
+        .unwrap();
+    let immediate = match Store::read(root.path()) {
+        Err(error) => error,
+        Ok(_) => panic!("SQLite admitted a reader through the exclusive lock"),
+    };
+    assert!(matches!(
+        immediate.downcast_ref::<rusqlite::Error>(),
+        Some(rusqlite::Error::SqliteFailure(error, _))
+            if error.code == rusqlite::ErrorCode::DatabaseBusy
+    ));
+    let (start, waiting) = std::sync::mpsc::channel();
+    let release = std::thread::spawn(move || {
+        waiting.recv_timeout(Duration::from_secs(1)).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        writer.execute_batch("ROLLBACK").unwrap();
+    });
+    start.send(()).unwrap();
+    let reader = Store::read_listing(root.path());
+    release.join().unwrap();
+    let timeout: i64 = reader
+        .expect("listing reader must survive a brief exclusive lock")
+        .db
+        .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(timeout, 100);
+}
+
+#[test]
 fn a_pinned_read_view_does_not_hold_the_publisher_gate() {
     let root = fixture();
     let selected = path(root.path());

@@ -68,6 +68,47 @@ fn product_written_drawer_pages_reach_the_client() {
     );
 }
 
+fn staffing_inbox() -> Value {
+    serde_json::from_str(include_str!("../fixtures/lead-staffing-inbox.json")).unwrap()
+}
+
+#[test]
+fn product_staffing_inbox_keeps_the_localization_parameters() {
+    let page = decode(&asked(DrawerKind::Inbox), exit(staffing_inbox())).unwrap();
+    assert_eq!(page.rows.len(), 1);
+    let row = &page.rows[0];
+    assert_eq!(row.kind, "lead_member_added:m4");
+    assert_eq!(row.by, "lead");
+    assert_eq!(row.state, "closed");
+    assert_eq!(row.notes.len(), 1);
+    let note = &row.notes[0];
+    assert_eq!(note.code, "lead_member_added");
+    assert_eq!(note.parameters, ["m4", "Codex", "reviewer"]);
+    assert_eq!(note.text.as_deref(), Some(row.text.as_str()));
+}
+
+#[test]
+fn handwritten_staffing_parameters_must_be_three_short_ascii_tokens() {
+    for parameters in [
+        json!(["m4", "Codex"]),
+        json!(["m4", "Codex", "reviewer", "extra"]),
+        json!(["m4", "Codex", 13]),
+        json!(["m4", "Codex", ""]),
+        json!(["m4", "Codex", "r".repeat(65)]),
+        json!(["m4", "Codex", "reviewer\u{202e}"]),
+    ] {
+        let mut raw = staffing_inbox();
+        raw["rows"][0]["notes"][0]["parameters"] = parameters;
+        let page = decode(&asked(DrawerKind::Inbox), exit(raw)).unwrap();
+        assert_eq!(page.rows.len(), 1);
+        let row = &page.rows[0];
+        let note = &row.notes[0];
+        assert_eq!(note.code, "lead_member_added");
+        assert_eq!(note.text.as_deref(), Some(row.text.as_str()));
+        assert!(note.parameters.is_empty());
+    }
+}
+
 #[test]
 fn each_drawer_uses_the_existing_page_and_child_bounds() {
     for kind in [DrawerKind::Feed, DrawerKind::Inbox, DrawerKind::Cards] {
@@ -129,4 +170,69 @@ fn handwritten_long_text_is_marked_and_the_cursor_is_preserved_exactly() {
     assert_eq!(page.after.as_deref(), Some("t1.original"));
     assert_eq!(page.rows[0].text.chars().count(), TEXT_CHARS);
     assert!(page.rows[0].text_truncated);
+}
+
+/// zerus-rzvct G6/G7: a feed row says who acted (its actor's kind, so the
+/// window can tell the person, the team service and a member apart) and which
+/// task and member it is about, from the product-written journal's refs.
+#[test]
+fn feed_rows_name_their_actor_kind_task_and_member() {
+    let page = decode(&asked(DrawerKind::Feed), exit(fixture(DrawerKind::Feed))).unwrap();
+    let rows = serde_json::to_value(&page).unwrap()["rows"].clone();
+    let row = |seq: u64| -> Value {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["seq"] == seq)
+            .unwrap()
+            .clone()
+    };
+    let facts = |seq: u64| {
+        let row = row(seq);
+        (
+            row["by_kind"].clone(),
+            row["subject_node"].clone(),
+            row["subject_member"].clone(),
+        )
+    };
+    // create (person), set_member_session member:lead (service),
+    // handout_intent node:2 member:m1 (service), ask node:2 (session m1).
+    assert_eq!(facts(1), (json!("person"), json!(null), json!(null)));
+    assert_eq!(facts(2), (json!("service"), json!(null), json!("lead")));
+    assert_eq!(facts(8), (json!("service"), json!(2), json!("m1")));
+    assert_eq!(facts(15), (json!("session"), json!(2), json!(null)));
+    assert_eq!(row(15)["by"], json!("m1"));
+    // add_task names its task by UUID only: no invented node.
+    assert_eq!(facts(4), (json!("person"), json!(null), json!(null)));
+}
+
+#[test]
+fn handwritten_refs_never_invent_a_subject() {
+    let mut raw = fixture(DrawerKind::Feed);
+    raw["rows"][7]["refs"] = json!(["node:0", "node:x", "member:", 5]);
+    raw["rows"][1].as_object_mut().unwrap().remove("refs");
+    let page = decode(&asked(DrawerKind::Feed), exit(raw)).unwrap();
+    let rows = serde_json::to_value(&page).unwrap()["rows"].clone();
+    assert_eq!(rows[7]["subject_node"], json!(null));
+    assert_eq!(rows[7]["subject_member"], json!(null));
+    assert_eq!(rows[1]["subject_member"], json!(null));
+    assert_eq!(rows[1]["by_kind"], json!("service"));
+}
+
+#[test]
+fn inbox_and_card_rows_carry_their_actor_kind() {
+    for (kind, kinds) in [
+        (DrawerKind::Inbox, ["service", "session"]),
+        (DrawerKind::Cards, ["person", "person"]),
+    ] {
+        let page = decode(&asked(kind), exit(fixture(kind))).unwrap();
+        let rows = serde_json::to_value(&page).unwrap()["rows"].clone();
+        for (index, expected) in kinds.iter().enumerate().take(page.rows.len()) {
+            assert_eq!(
+                rows[index]["by_kind"],
+                json!(expected),
+                "{kind:?} row {index}"
+            );
+        }
+    }
 }

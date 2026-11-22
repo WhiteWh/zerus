@@ -56,7 +56,7 @@ import { filterAccounts, selectedFilterAccounts, chooseFilterAccounts, toggleFil
 import { loadMarkCatalogs } from "../../store/accounts";
 import { clearFolderScope } from "../../store/folderFilter";
 import { compactNewChildren } from "../../store/childRowsWatch";
-import { setTeamCollapsed, teamCollapsed } from "../../store/teamCollapse";
+import { setTeamCollapsed } from "../../store/teamCollapse";
 import { favorite, favoriteIdentity, setFavorite } from "../../store/favorites";
 import { FavoriteMark } from "./FavoriteMark";
 import { leaf, native } from "./paths";
@@ -1066,7 +1066,7 @@ function ListRow(props: { id: string; list: RowSource }) {
             onClick={() => { const key = v().container.key; if (key && catalog.rows[key]) setSelectedKey(key); }}
             onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setMenu({ x: e.clientX, y: e.clientY, items: containerMenu(v().container), sessionKey: v().id }); }}>
             <ContainerCard container={v().container} selected={!!v().container.key && selectedKey() === v().container.key}
-              team={v().team} onToggleTeam={() => setTeamCollapsed(v().id.slice("container:".length), !teamCollapsed(v().id.slice("container:".length)))} />
+              team={v().team} onToggleTeam={() => setTeamCollapsed(v().id.slice("container:".length), !v().team!.collapsed)} />
           </div>
           </>
         )}
@@ -1085,12 +1085,12 @@ function ListRow(props: { id: string; list: RowSource }) {
             onContextMenu={(e) => sessionContextMenu(e, v().session)}
             onDblClick={(e) => { if (!e.ctrlKey && !e.metaKey && !e.shiftKey) setRowCompact(v().session.key, !compactRows[v().session.key]); }}>
             <Show when={!v().compactRow} fallback={<CompactCard session={v().session} selected={selectedKey() === v().session.key || !!multi[v().session.key]} onExpand={() => setRowCompact(v().session.key, false)}
-              fromParent={v().fromParent} team={v().team} onToggleTeam={() => setTeamCollapsed(v().session.key, !teamCollapsed(v().session.key))} />}>
+              fromParent={v().fromParent} team={v().team} onToggleTeam={() => setTeamCollapsed(v().session.key, !v().team!.collapsed)} />}>
               <SessionCard session={v().session} selected={(selectedKey() === v().session.key && !subagentOpen()) || !!multi[v().session.key]} expandable={v().expandable}
                 expanded={v().teamSummary ? !teamsCollapsed(v().teamSummary!.id) : !!expandedChildren[v().session.key]}
                 onToggleChildren={() => setExpandedChildren(v().session.key, !expandedChildren[v().session.key])}
                 onCold={(action) => coldAction(v().session, action)} onChip={(kind) => openChip(v().session, kind)}
-                team={v().team} onToggleTeam={() => setTeamCollapsed(v().session.key, !teamCollapsed(v().session.key))}
+                team={v().team} onToggleTeam={() => setTeamCollapsed(v().session.key, !v().team!.collapsed)}
                 teamSummary={v().teamSummary} teamMembersShown={v().teamMembersShown} onToggleMembers={() => v().teamSummary && setTeamsCollapsed(v().teamSummary!.id, !teamsCollapsed(v().teamSummary!.id))}
                 member={v().teamFirst !== undefined} depth={v().depth} teamFirst={v().teamFirst} teamLast={v().teamLast}
                 fromParent={v().fromParent} onOpenParent={(key) => { setSelectedKey(key); setRevealing(key); }} />

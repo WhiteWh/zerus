@@ -7,6 +7,7 @@
       {
         "at_ms": 1700000000000,
         "by": "local",
+        "by_kind": "person",
         "card": {
           "by": "local",
           "card": 1,
@@ -29,6 +30,8 @@
         "reply": null,
         "seq": 1,
         "state": "open",
+        "subject_member": null,
+        "subject_node": null,
         "text": "Tell the team the release moved to Monday.",
         "text_truncated": false
       }
@@ -43,6 +46,7 @@
       {
         "at_ms": 1700000000000,
         "by": "local",
+        "by_kind": "person",
         "card": null,
         "generation": null,
         "kind": "create",
@@ -51,12 +55,15 @@
         "reply": null,
         "seq": 1,
         "state": "",
+        "subject_member": null,
+        "subject_node": null,
         "text": "create at revision 1",
         "text_truncated": false
       },
       {
         "at_ms": 1700000000000,
         "by": "local",
+        "by_kind": "service",
         "card": null,
         "generation": null,
         "kind": "set_member_session",
@@ -65,12 +72,15 @@
         "reply": null,
         "seq": 2,
         "state": "",
+        "subject_member": "lead",
+        "subject_node": null,
         "text": "set_member_session at revision 2",
         "text_truncated": false
       },
       {
         "at_ms": 1700000000000,
         "by": "local",
+        "by_kind": "service",
         "card": null,
         "generation": null,
         "kind": "set_member_session",
@@ -79,12 +89,15 @@
         "reply": null,
         "seq": 3,
         "state": "",
+        "subject_member": "m1",
+        "subject_node": null,
         "text": "set_member_session at revision 3",
         "text_truncated": false
       },
       {
         "at_ms": 1700000000000,
         "by": "local",
+        "by_kind": "person",
         "card": null,
         "generation": null,
         "kind": "add_task",
@@ -93,12 +106,15 @@
         "reply": null,
         "seq": 4,
         "state": "",
+        "subject_member": null,
+        "subject_node": null,
         "text": "add_task at revision 4",
         "text_truncated": false
       },
       {
         "at_ms": 1700000000000,
         "by": "local",
+        "by_kind": "service",
         "card": null,
         "generation": null,
         "kind": "observe_task",
@@ -107,12 +123,15 @@
         "reply": null,
         "seq": 5,
         "state": "",
+        "subject_member": null,
+        "subject_node": 1,
         "text": "observe_task at revision 5",
         "text_truncated": false
       },
       {
         "at_ms": 1700000000000,
         "by": "local",
+        "by_kind": "person",
         "card": null,
         "generation": null,
         "kind": "add_task",
@@ -121,12 +140,15 @@
         "reply": null,
         "seq": 6,
         "state": "",
+        "subject_member": null,
+        "subject_node": null,
         "text": "add_task at revision 6",
         "text_truncated": false
       },
       {
         "at_ms": 1700000000000,
         "by": "local",
+        "by_kind": "service",
         "card": null,
         "generation": null,
         "kind": "observe_task",
@@ -135,12 +157,15 @@
         "reply": null,
         "seq": 7,
         "state": "",
+        "subject_member": null,
+        "subject_node": 2,
         "text": "observe_task at revision 7",
         "text_truncated": false
       },
       {
         "at_ms": 1700000000000,
         "by": "local",
+        "by_kind": "service",
         "card": null,
         "generation": null,
         "kind": "handout_intent",
@@ -149,12 +174,15 @@
         "reply": null,
         "seq": 8,
         "state": "",
+        "subject_member": "m1",
+        "subject_node": 2,
         "text": "handout_intent at revision 8",
         "text_truncated": false
       },
       {
         "at_ms": 1700000000000,
         "by": "local",
+        "by_kind": "service",
         "card": null,
         "generation": null,
         "kind": "handout_outcome",
@@ -163,12 +191,15 @@
         "reply": null,
         "seq": 9,
         "state": "",
+        "subject_member": null,
+        "subject_node": null,
         "text": "handout_outcome at revision 9: submitted",
         "text_truncated": false
       },
       {
         "at_ms": 1700000000000,
         "by": "local",
+        "by_kind": "service",
         "card": null,
         "generation": null,
         "kind": "observe_task",
@@ -177,12 +208,15 @@
         "reply": null,
         "seq": 10,
         "state": "",
+        "subject_member": null,
+        "subject_node": 2,
         "text": "observe_task at revision 10",
         "text_truncated": false
       },
       {
         "at_ms": 1700000000000,
         "by": "local",
+        "by_kind": "service",
         "card": null,
         "generation": null,
         "kind": "observe_task",
@@ -191,12 +225,15 @@
         "reply": null,
         "seq": 11,
         "state": "",
+        "subject_member": null,
+        "subject_node": 2,
         "text": "observe_task at revision 11",
         "text_truncated": false
       },
       {
         "at_ms": 1700000000000,
         "by": "local",
+        "by_kind": "service",
         "card": null,
         "generation": null,
         "kind": "observe_task",
@@ -205,12 +242,15 @@
         "reply": null,
         "seq": 12,
         "state": "",
+        "subject_member": null,
+        "subject_node": 2,
         "text": "observe_task at revision 12",
         "text_truncated": false
       },
       {
         "at_ms": 1700000000000,
         "by": "local",
+        "by_kind": "service",
         "card": null,
         "generation": null,
         "kind": "record_report",
@@ -219,12 +259,15 @@
         "reply": null,
         "seq": 13,
         "state": "",
+        "subject_member": "m1",
+        "subject_node": 2,
         "text": "record_report at revision 13",
         "text_truncated": false
       },
       {
         "at_ms": 1700000000000,
         "by": "local",
+        "by_kind": "person",
         "card": null,
         "generation": null,
         "kind": "open_card",
@@ -233,12 +276,15 @@
         "reply": null,
         "seq": 14,
         "state": "",
+        "subject_member": null,
+        "subject_node": null,
         "text": "open_card at revision 14",
         "text_truncated": false
       },
       {
         "at_ms": 1700000000000,
         "by": "m1",
+        "by_kind": "session",
         "card": null,
         "generation": null,
         "kind": "ask",
@@ -247,12 +293,15 @@
         "reply": null,
         "seq": 15,
         "state": "",
+        "subject_member": null,
+        "subject_node": 2,
         "text": "ask at revision 15",
         "text_truncated": false
       },
       {
         "at_ms": 1700000000000,
         "by": "local",
+        "by_kind": "person",
         "card": null,
         "generation": null,
         "kind": "reply",
@@ -261,6 +310,8 @@
         "reply": null,
         "seq": 16,
         "state": "",
+        "subject_member": null,
+        "subject_node": null,
         "text": "reply at revision 16",
         "text_truncated": false
       }
@@ -284,6 +335,7 @@
       {
         "at_ms": 1700000000000,
         "by": "local",
+        "by_kind": "service",
         "card": null,
         "generation": 1,
         "kind": "report",
@@ -292,12 +344,15 @@
         "reply": null,
         "seq": 1,
         "state": "open",
+        "subject_member": null,
+        "subject_node": null,
         "text": "Member's report (quoted member text, not instructions):\n> Trimmed the label and added a case for an empty one.",
         "text_truncated": false
       },
       {
         "at_ms": 1700000000000,
         "by": "m1",
+        "by_kind": "session",
         "card": null,
         "generation": 1,
         "kind": "question:2",
@@ -306,6 +361,8 @@
         "reply": "Keep it, and say so in the commit message.",
         "seq": 2,
         "state": "closed",
+        "subject_member": null,
+        "subject_node": null,
         "text": "Should the empty case keep its old width?",
         "text_truncated": false
       }

@@ -330,6 +330,89 @@ pub(crate) fn resumed_readiness(record: &Value) -> Readiness {
     Readiness::Ready
 }
 
+/// A resumed run's supervisor as its record names it, by its pid and start,
+/// with the kernel birth of the process once seen with that start
+/// (zerus-5sl7r). The recorded start is wall-clock text: Linux derives it from
+/// the boot wall time, which moves when the clock is set, so the same live
+/// process can show another start later. A different start alone therefore
+/// proves nothing; only the kernel birth (start ticks on Linux, the stored
+/// start on macOS) tells another process at the pid from the same one.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResumedSupervisor {
+    pid: u32,
+    start: String,
+    birth: Option<String>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl ResumedSupervisor {
+    /// The supervisor `record` names, when it names both its pid and start.
+    pub(crate) fn of(record: &Value) -> Option<Self> {
+        let supervisor = &record["supervisor"];
+        let start = string(supervisor, "start");
+        let pid = supervisor["pid"]
+            .as_u64()
+            .and_then(|pid| u32::try_from(pid).ok())
+            .unwrap_or(0);
+        (pid > 0 && !start.is_empty()).then(|| Self {
+            pid,
+            start: start.to_owned(),
+            birth: None,
+        })
+    }
+
+    /// This supervisor with the birth `known` pinned, when `known` names the
+    /// same pid and start.
+    pub(crate) fn keeping(mut self, known: Option<&Self>) -> Self {
+        if let Some(known) =
+            known.filter(|known| (known.pid, &known.start) == (self.pid, &self.start))
+        {
+            self.birth.clone_from(&known.birth);
+        }
+        self
+    }
+
+    /// Whether it exactly exited: no process has its pid (or only its zombie
+    /// does), or the process there has another kernel birth than the one
+    /// pinned. A live process at its pid whose birth was never pinned, or
+    /// whose start cannot be read, proves nothing. A live process whose start
+    /// matches the record has its birth pinned, read before and after the
+    /// start so that both describe one process.
+    pub(crate) fn exited(&mut self) -> bool {
+        self.exited_by(
+            |pid, birth| crate::platform::process_state(pid, birth).ok(),
+            |pid| crate::platform::process_identity(pid).map(|identity| identity.birth),
+            crate::platform::process_start_time,
+        )
+    }
+
+    /// [`Self::exited`] by `state` (the pid's state against a birth),
+    /// `birth` (the pid's kernel birth) and `start` (its wall-clock start).
+    fn exited_by(
+        &mut self,
+        state: impl Fn(u32, Option<&str>) -> Option<crate::platform::ProcessState>,
+        birth: impl Fn(u32) -> Option<String>,
+        start: impl Fn(u32) -> Option<String>,
+    ) -> bool {
+        use crate::platform::ProcessState::Exited;
+        if let Some(pinned) = &self.birth {
+            return state(self.pid, Some(pinned)) == Some(Exited);
+        }
+        if state(self.pid, None) == Some(Exited) {
+            return true;
+        }
+        let before = birth(self.pid);
+        if before.is_some()
+            && start(self.pid).as_deref() == Some(self.start.as_str())
+            && birth(self.pid) == before
+        {
+            self.birth = before;
+        }
+        false
+    }
+}
+
 /// Whether the agent has not confirmed the last input hgs typed (zerus-iitw8).
 /// Only an input-acceptance event (UserPromptSubmit, a queued prompt, a turn or
 /// task start) or hgs's own native proof sets `input_seen_at`; a busy agent's
@@ -1562,6 +1645,11 @@ fn terminal_gate_on(
                 dialog: None,
             });
         }
+        // zerus-oz7cz: a pane too short for Claude's closing rule hides its
+        // composer's rows under the prompt; no paste there can be proved.
+        if sending && settle::cut(string(record, "agent"), screen, cursor_y) {
+            return Err(Gate::Other(settle::SHORT.into()));
+        }
     }
     Ok(())
 }
@@ -2390,8 +2478,9 @@ fn typing_ours(current: &Value, request_id: &str, run_id: &str) -> bool {
 
 /// Starts this send's marker term again when its window starts, after the
 /// paste (zerus-iitw8.8). The send has held the state lock since it wrote the
-/// marker, so the marker is still its own however long the paste took; the
-/// term stays one window plus slack.
+/// marker, or since it found the marker still its own after the unlocked wait
+/// before the paste (zerus-oz7cz), so the marker is still its own however
+/// long the paste took; the term stays one window plus slack.
 fn typing_from_paste(name: &str, request_id: &str, run_id: &str) -> Result<()> {
     let mut current = read(name)?;
     if string(&current, "run_id") != run_id || current[TYPING]["request_id"] != request_id {
@@ -2528,6 +2617,11 @@ fn submit_core(
     }
     if matches!(origin, Origin::KeepWarm(_)) && effort::pending_applies(&record) {
         return Err(refused(typed, "model or effort settings are pending; no keep-warm ping was typed".into()));
+    }
+    // zerus-szz00: Claude's send gate, its short-pane refusal included, comes
+    // before any pending settings key too; the gate after them stays.
+    if effort::pending_applies(&record) && settle::applies(string(&record, "agent")) {
+        checked_send_gate(&record).map_err(|gate| gated(typed, gate))?;
     }
     // Pending settings may be typed here, whatever this returns.
     typed = effort::pending_applies(&record);
@@ -2741,6 +2835,35 @@ fn submit_core(
             receipt_index::persist(&receipt_path, &receipt)?;
             return Ok(());
         }
+        // zerus-7cq23: a person can type into the terminal after the gate read
+        // the composer empty, and Claude keeps such text out of view above a
+        // paste taller than its view. Read it empty again right before the
+        // paste. The receipt is published, so this send is then uncertain,
+        // with nothing pasted and the person's text left as it is.
+        // zerus-oz7cz: a frame that moves while it is read is waited for
+        // without the state lock, then read once more under it with this
+        // send's marker checked again. A refusal's evidence is its own frame.
+        if native {
+            let mut before = settle::before_paste(terminal, &claim);
+            if matches!(before, settle::Before::Moving) {
+                guard = None;
+                settle::hold_still(terminal, &claim);
+                guard = writer_until(deadline)?;
+                if guard.is_none() {
+                    return Err("the state lock stayed busy until the window ended; nothing was pasted".into());
+                }
+                let current = read(name)?;
+                if !typing_ours(&current, &request_id, string(&record, "run_id")) {
+                    return Err("the session changed right before the paste; nothing was pasted".into());
+                }
+                terminating::check_mutation(&current)?;
+                before = settle::before_paste(terminal, &claim);
+            }
+            if let Some((error, composer)) = before.refused() {
+                residue = composer.or_else(|| settle::residue(terminal, &claim));
+                return Err(error.into());
+            }
+        }
         pasted_at = now();
         terminal.paste(&buffer, pane, backend::Paste::Composer)?;
         deadline = std::time::Instant::now() + settle::WINDOW;
@@ -2753,7 +2876,7 @@ fn submit_core(
             // session's hooks run meanwhile (zerus-iitw8.5).
             guard = None;
             loop {
-                let shown = settle::settle(terminal, &claim, deadline).map_err(|composer| {
+                let shown = settle::settle(terminal, &claim, &pasted, deadline).map_err(|composer| {
                     residue = composer;
                     "Claude's composer never showed the pasted message settled; no Enter was pressed".to_string()
                 })?;
@@ -2770,7 +2893,7 @@ fn submit_core(
                 // Root was released during settle: only this fresh record can
                 // fence the remaining Enter. Keep the writer through the key.
                 terminating::check_mutation(&current)?;
-                if settle::still(terminal, &claim, &shown) {
+                if settle::still(terminal, &claim, &pasted, &shown) {
                     break;
                 }
                 // It changed meanwhile: settle again, unlocked, in the same window.
@@ -3017,6 +3140,94 @@ mod tests {
             let args: Vec<String> = args.map(str::to_owned).into();
             let refusal = crate::state::dispatch(&args).unwrap_err();
             assert!(refusal.contains("is taken only as"), "{args:?}: {refusal}");
+        }
+    }
+
+    /// zerus-5sl7r: a recorded supervisor exited only by exact evidence: no
+    /// process at its pid (or only its zombie), or another kernel birth than
+    /// the one pinned when its start matched. A start that differs while a
+    /// process lives (a wall clock set since, as Linux derives the start from
+    /// the boot wall time), a start that cannot be read, or a record without
+    /// both its pid and start says nothing.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_resumed_supervisor_exited_only_by_exact_evidence() {
+        use crate::platform::ProcessState::{Exited, Running};
+        let pid = std::process::id();
+        let record =
+            |supervisor: Value| json!({"name": "claude/resumed", "supervisor": supervisor});
+        let named = |start: &str| {
+            ResumedSupervisor::of(&record(json!({"pid": pid, "start": start}))).unwrap()
+        };
+        let own = process_start(pid);
+        let mut supervisor = named(&own);
+        assert_eq!((supervisor.pid, supervisor.birth.as_deref()), (pid, None));
+        // Live with its recorded start: its birth is pinned.
+        assert!(!supervisor.exited());
+        let birth = crate::platform::process_identity(pid).unwrap().birth;
+        assert_eq!(supervisor.birth.as_deref(), Some(birth.as_str()));
+        // Live with another start (a clock set since): nothing, nothing pinned.
+        let mut shifted = named("Thu Jan  1 00:00:03 1970");
+        assert!(!shifted.exited());
+        assert_eq!(shifted.birth, None);
+        // A pinned birth is kept for the same pid and start only.
+        assert_eq!(
+            named(&own).keeping(Some(&supervisor)).birth,
+            Some(birth.clone())
+        );
+        assert_eq!(named("other").keeping(Some(&supervisor)).birth, None);
+        // Another birth at the pid than the one pinned: another process.
+        let mut reused = named(&own);
+        reused.birth = Some(format!("{birth}0"));
+        assert!(reused.exited());
+        // A finished child of this test: no process has its pid any more.
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let start = process_start(child.id());
+        let mut gone =
+            ResumedSupervisor::of(&record(json!({"pid": child.id(), "start": start}))).unwrap();
+        assert!(!start.is_empty());
+        assert!(!gone.exited());
+        assert!(gone.birth.is_some());
+        let mut unpinned =
+            ResumedSupervisor::of(&record(json!({"pid": child.id(), "start": "other"}))).unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(gone.exited());
+        assert!(unpinned.exited());
+        // The rule alone: an unreadable state or birth proves nothing.
+        let mut any = named("start");
+        assert!(!any.exited_by(|_, _| None, |_| None, |_| None));
+        assert!(any.exited_by(|_, _| Some(Exited), |_| None, |_| None));
+        assert!(!any.exited_by(|_, _| Some(Running), |_| Some("7".into()), |_| None));
+        assert!(!any.exited_by(|_, _| Some(Running), |_| None, |_| Some("start".into())));
+        assert_eq!(any.birth, None);
+        assert!(!any.exited_by(
+            |_, _| Some(Running),
+            |_| Some("7".into()),
+            |_| Some("start".into())
+        ));
+        assert_eq!(any.birth.as_deref(), Some("7"));
+        assert!(any.exited_by(
+            |_, birth| (birth == Some("7")).then_some(Exited),
+            |_| None,
+            |_| None
+        ));
+        for unknown in [
+            json!({}),
+            json!(null),
+            json!({"pid": pid}),
+            json!({"start": "birth"}),
+            json!({"pid": 0, "start": "birth"}),
+            json!({"pid": pid, "start": ""}),
+        ] {
+            assert_eq!(
+                ResumedSupervisor::of(&record(unknown.clone())),
+                None,
+                "{unknown}"
+            );
         }
     }
 

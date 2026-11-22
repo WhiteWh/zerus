@@ -83,6 +83,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        Desktop deferred answer ABI: desktop-deferred-answer-v1
        Desktop Teams Person ABI: desktop-team-person-v1
        Desktop Teams Person actions ABI: desktop-team-person-actions-v2
+       Desktop Teams Person placement fields: desktop-team-person-placement-v1
        Desktop deferred answer update phase: desktop-deferred-answer-update-phase-v1
        Desktop deferred compact to send ABI: desktop-deferred-compact-to-send-v1
        Desktop deferred session resume ABI: desktop-deferred-session-resume-v1
@@ -662,6 +663,7 @@ fn unix_only_usage(line: &str) -> bool {
         zerus_client_core::desktop::deferred_answer::HELP_MARKER,
         zerus_client_core::desktop::team_person::HELP_MARKER,
         zerus_client_core::desktop::team_person_actions::HELP_MARKER,
+        zerus_client_core::desktop::team_person_actions::PLACEMENT_MARKER,
         zerus_client_core::desktop::deferred_answer::UPDATE_PHASE_MARKER,
         zerus_client_core::desktop::compact_to_send::HELP_MARKER,
         zerus_client_core::desktop::session_resume::HELP_MARKER,
@@ -5166,6 +5168,14 @@ mod tests {
         assert!(resume_stands(1, 0, 5, true));
     }
 
+    /// zerus-3u5yu (3): the service says it resolves a window Route's kept
+    /// fields, so an older one can be told apart before a plan is staged.
+    #[test]
+    fn usage_advertises_the_team_placement_marker() {
+        let marker = zerus_client_core::desktop::team_person_actions::PLACEMENT_MARKER;
+        assert!(USAGE.lines().any(|line| line.trim() == marker));
+    }
+
     #[test]
     fn usage_names_tmux_only_where_it_hosts_the_sessions() {
         // Unix keeps tmux's text byte for byte, capability markers included.
@@ -5186,6 +5196,10 @@ mod tests {
         assert!(USAGE.lines().any(|line| line.trim() == route_marker));
         let answer_marker = zerus_client_core::desktop::deferred_answer::HELP_MARKER;
         assert!(USAGE.lines().any(|line| line.trim() == answer_marker));
+        let teams_person = zerus_client_core::desktop::team_person::HELP_MARKER;
+        assert!(USAGE.lines().any(|line| line.trim() == teams_person));
+        let teams_person_actions = zerus_client_core::desktop::team_person_actions::HELP_MARKER;
+        assert!(USAGE.lines().any(|line| line.trim() == teams_person_actions));
         let phase_marker = zerus_client_core::desktop::deferred_answer::UPDATE_PHASE_MARKER;
         assert!(USAGE.lines().any(|line| line.trim() == phase_marker));
         let compact_marker = zerus_client_core::desktop::compact_to_send::HELP_MARKER;
@@ -5210,6 +5224,8 @@ mod tests {
         assert!(!neutral.lines().any(|line| line.trim() == task_marker));
         assert!(!neutral.lines().any(|line| line.trim() == send_marker));
         assert!(!neutral.lines().any(|line| line.trim() == answer_marker));
+        assert!(!neutral.lines().any(|line| line.trim() == teams_person));
+        assert!(!neutral.lines().any(|line| line.trim() == teams_person_actions));
         assert!(!neutral.lines().any(|line| line.trim() == phase_marker));
         assert!(!neutral.lines().any(|line| line.trim() == compact_marker));
         assert_eq!(
@@ -5265,6 +5281,18 @@ mod tests {
                 )
                 .replace(
                     "       Desktop deferred answer ABI: desktop-deferred-answer-v1\n",
+                    ""
+                )
+                .replace(
+                    "       Desktop Teams Person ABI: desktop-team-person-v1\n",
+                    ""
+                )
+                .replace(
+                    "       Desktop Teams Person actions ABI: desktop-team-person-actions-v2\n",
+                    ""
+                )
+                .replace(
+                    "       Desktop Teams Person placement fields: desktop-team-person-placement-v1\n",
                     ""
                 )
                 .replace(

@@ -268,7 +268,8 @@ fn review(config: &Config, scope: &Scope, plan: Arc<wire::Plan>) -> Result<Value
     let wire::Action::Team { change } = &plan.action else {
         return Err(required());
     };
-    let details = review_details(change, true)?;
+    let mut details = review_details(change, true)?;
+    details.extend(kept_details(&prepared.kept, true)?);
     let mut review = wire::Review {
         intent: wire::Intent {
             scope: scope.clone(),
@@ -288,6 +289,7 @@ fn review(config: &Config, scope: &Scope, plan: Arc<wire::Plan>) -> Result<Value
     // the complete payload and all the existing byte/part/identity bounds.
     if !review.valid() {
         review.details = review_details(change, false)?;
+        review.details.extend(kept_details(&prepared.kept, false)?);
     }
     if !review.valid() {
         return Err(required());
@@ -295,9 +297,46 @@ fn review(config: &Config, scope: &Scope, plan: Arc<wire::Plan>) -> Result<Value
     Ok(json!({"ok":true,"review":review}))
 }
 
+/// What a window Route keeps from the stored task (zerus-3u5yu): the bound
+/// dependencies and write paths, and the assignee it keeps or clears, in the
+/// same bounded parts as the request's own fields. Text is shown as text.
+fn kept_details(kept: &[(&str, Value)], pretty: bool) -> Result<Vec<(String, String)>> {
+    let mut details = Vec::new();
+    for (key, value) in kept {
+        let text = match value {
+            Value::String(text) => text.clone(),
+            other if pretty => serde_json::to_string_pretty(other).map_err(store::storage)?,
+            other => serde_json::to_string(other).map_err(store::storage)?,
+        };
+        push_parts(&mut details, key, &text);
+    }
+    Ok(details)
+}
+
+/// One field's text in parts of at most 8 KiB, each named `key (n)`.
+fn push_parts(details: &mut Vec<(String, String)>, key: &str, text: &str) {
+    let mut start = 0;
+    let mut part = 1;
+    while start < text.len() {
+        let mut end = (start + 8192).min(text.len());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        details.push((
+            format!("{} ({part})", key.replace('_', " ")),
+            text[start..end].to_owned(),
+        ));
+        start = end;
+        part += 1;
+    }
+}
+
 fn review_details(change: &TeamAction, pretty: bool) -> Result<Vec<(String, String)>> {
     let mut details = Vec::new();
     for (key, value) in change.input() {
+        if key == "keep_task_fields" {
+            continue;
+        }
         let text = if pretty {
             serde_json::to_string_pretty(&value)
         } else {
@@ -306,20 +345,7 @@ fn review_details(change: &TeamAction, pretty: bool) -> Result<Vec<(String, Stri
         .map_err(store::storage)?;
         // The complete bounded payload is displayed; no truncation can hide
         // a permission, dependency or phase node from native confirmation.
-        let mut start = 0;
-        let mut part = 1;
-        while start < text.len() {
-            let mut end = (start + 8192).min(text.len());
-            while !text.is_char_boundary(end) {
-                end -= 1;
-            }
-            details.push((
-                format!("{} ({part})", key.replace('_', " ")),
-                text[start..end].to_owned(),
-            ));
-            start = end;
-            part += 1;
-        }
+        push_parts(&mut details, &key, &text);
     }
     if let TeamAction::Create { template, .. } | TeamAction::StartPlanning { template, .. } = change
     {

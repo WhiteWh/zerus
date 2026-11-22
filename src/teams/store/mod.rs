@@ -13,6 +13,7 @@ pub(crate) mod dependency_edit;
 mod disposition;
 pub(crate) mod drafts;
 pub(crate) mod editing;
+pub(crate) mod evidence;
 mod holder;
 pub(crate) mod layout;
 pub(crate) mod phase_controls;
@@ -22,6 +23,7 @@ pub(crate) mod planning;
 pub(crate) mod publication;
 pub(crate) mod rework;
 pub(crate) use holder::{hand_back_return, holder_of, return_without_holder, NOT_RECEIVED};
+pub(crate) mod member_readability;
 mod member_sessions;
 mod native_floor;
 mod native_person;
@@ -418,7 +420,7 @@ fn schema_extensions(db: &Connection) -> Result<()> {
     timers::after_fence()?;
     notes_schema(db)?;
     common_schema(db)?;
-    handles_schema(db)?;
+    member_binding_schema(db)?;
     key_clear_schema(db)?;
     card_parameters(db)?;
     drafts::extend(db)?;
@@ -586,15 +588,19 @@ const COMMON_SCHEMA: [&str; 6] = [
 /// once per store, when the table is absent, so the ordinary open performs
 /// no schema write.
 const KEY_CLEAR_SCHEMA: &str = include_str!("key-clear-schema.sql");
-/// The member handles' table and the triggers that end a handle with its
-/// membership (zerus-63rru.53). Like the common batches it moves no version
-/// or mark, but its trigger bodies hold statements of their own, so its
-/// objects are named here for the presence check.
-const HANDLES_SCHEMA: &str = include_str!("handles-schema.sql");
-const HANDLE_OBJECTS: [(&str, &str); 3] = [
+/// Member-binding facts and the versioned triggers that invalidate them.
+/// These additive batches move no version or mark. A trigger body can hold
+/// statements of its own, so the presence check uses explicit object names.
+const MEMBER_BINDING_SCHEMA: [&str; 2] = [
+    include_str!("handles-schema.sql"),
+    include_str!("member-readability.sql"),
+];
+const MEMBER_BINDING_OBJECTS: [(&str, &str); 5] = [
     ("table", "member_handles"),
     ("trigger", "member_handles_terminal_v1"),
     ("trigger", "member_handles_removed_v1"),
+    ("table", "team_member_readability"),
+    ("trigger", "team_member_readability_binding_v1"),
 ];
 
 /// The objects a batch of `CREATE ... IF NOT EXISTS` statements creates.
@@ -668,9 +674,6 @@ fn common_schema(db: &Connection) -> Result<()> {
     result
 }
 
-/// Creates the member handles' objects on a store that lacks one, as the
-/// common batches are created: under the write lock, after the mark is read
-/// again under it. An ordinary open finds all three and takes no lock.
 fn key_clear_schema(db: &Connection) -> Result<()> {
     let present: bool = db
         .query_row(
@@ -701,9 +704,12 @@ fn key_clear_schema(db: &Connection) -> Result<()> {
     db.execute_batch(end).map_err(begin_error)?;
     result
 }
-fn handles_schema(db: &Connection) -> Result<()> {
+
+/// Installs missing member-binding objects together under the writer fence.
+/// A store with all named objects skips the migration.
+fn member_binding_schema(db: &Connection) -> Result<()> {
     let mut complete = true;
-    for (kind, name) in HANDLE_OBJECTS {
+    for (kind, name) in MEMBER_BINDING_OBJECTS {
         complete &= db
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type=?1 AND name=?2)",
@@ -719,15 +725,19 @@ fn handles_schema(db: &Connection) -> Result<()> {
     db.execute_batch(if own {
         "BEGIN IMMEDIATE;"
     } else {
-        "SAVEPOINT handles_schema;"
+        "SAVEPOINT member_binding_schema;"
     })
     .map_err(begin_error)?;
-    let result = timers::fence(db).and_then(|()| db.execute_batch(HANDLES_SCHEMA).map_err(storage));
+    let result = timers::fence(db).and_then(|()| {
+        MEMBER_BINDING_SCHEMA
+            .iter()
+            .try_for_each(|sql| db.execute_batch(sql).map_err(storage))
+    });
     let end = match (&result, own) {
         (Ok(()), true) => "COMMIT;",
-        (Ok(()), false) => "RELEASE handles_schema;",
+        (Ok(()), false) => "RELEASE member_binding_schema;",
         (Err(_), true) => "ROLLBACK;",
-        (Err(_), false) => "ROLLBACK TO handles_schema; RELEASE handles_schema;",
+        (Err(_), false) => "ROLLBACK TO member_binding_schema; RELEASE member_binding_schema;",
     };
     db.execute_batch(end).map_err(storage)?;
     result

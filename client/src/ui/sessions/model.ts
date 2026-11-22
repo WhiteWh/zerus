@@ -8,7 +8,7 @@ import { archiveMachineChoices, archiveProjectChoices } from "./archive-filters"
 import { defaultProject, grouping, groups } from "../../store/organization";
 import { teams } from "../../store/teams";
 import { stateFilter, listedByFilter, type StateFilter, search,machineFilter, projectFilter, accountFilter, folderFilter, expandedChildren, compactRows, selected, selectedKey, subagentOpen, teamsCollapsed } from "../../store/ui";
-import { teamCollapsed } from "../../store/teamCollapse";
+import { teamCollapsed, teamExpanded } from "../../store/teamCollapse";
 import { favorite } from "../../store/favorites";
 import { compileScopes, scopeCounts } from "./scope-filters";
 import { withCreations } from "../../store/creations";
@@ -164,7 +164,7 @@ function listScope() {
     childDraft: (s: Session, child: { id: string }) => hasDraftKey(`${s.computer}\n${s.name}\n${s.conversationId ?? ""}\n${child.id}`),
     teamOf: (s: Session) => teams.teamOf(s),
     teamFolded: (id: string) => teamsCollapsed(id),
-    parentKey: parentKeyOf(), nestKey: nestKeyOf(), teamCollapsed, favorite,
+    parentKey: parentKeyOf(), nestKey: nestKeyOf(), teamCollapsed, teamExpanded, favorite,
     containers: true, machineOf: (s: Session) => machineCards[s.computer]?.machine_id,
   };
 }

@@ -22,6 +22,7 @@ const CATALOG: &str = include_str!("../../../../crates/team-plan/fixtures/cli-ca
 const CHANGED: &str =
     include_str!("../../../../crates/team-plan/fixtures/cli-template-changed.json");
 const CURRENT: &str = include_str!("../../../../crates/team-plan/fixtures/cli-current.json");
+const EVIDENCE: &str = include_str!("../../../../crates/team-plan/fixtures/cli-evidence.json");
 
 fn lead() -> Caller {
     Caller::Session(key(LEAD_SESSION))
@@ -84,6 +85,8 @@ fn replies() -> Vec<(&'static str, Value)> {
             "cli-current.json",
             read(&Caller::Session(key(M1_SESSION)), "current"),
         ),
+        // zerus-5gcbh: the evidence beside a decision once the review passed.
+        ("cli-evidence.json", super::evidence::passed_review_reply()),
     ];
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     replies.insert(
@@ -113,6 +116,7 @@ fn the_read_fixtures_are_the_replies_the_cli_prints() {
         ("cli-catalog.json", CATALOG),
         ("cli-template-changed.json", CHANGED),
         ("cli-current.json", CURRENT),
+        ("cli-evidence.json", EVIDENCE),
     ];
     let replies = replies();
     let produced: Vec<&str> = replies.iter().map(|(name, _)| *name).collect();

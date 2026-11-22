@@ -105,6 +105,12 @@ pub(crate) struct Harness {
 impl Harness {
     pub fn empty() -> Self {
         let temp = tempfile::tempdir().unwrap();
+        // This is the session state root, which the CLI creates owner-only
+        // (`private_dir`) and the desktop's receipt store refuses otherwise.
+        // A temporary directory follows the umask instead: 0755 under the
+        // hosted runners' 022 (zerus-63rru.188).
+        #[cfg(unix)]
+        std::fs::set_permissions(temp.path(), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
         crate::platform::private_dir(&temp.path().join("teams")).unwrap();
         std::fs::write(temp.path().join("teams/preview"), "on").unwrap();
         let store = Store::open(temp.path()).unwrap();

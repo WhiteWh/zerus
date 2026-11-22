@@ -266,6 +266,11 @@ jobs:
           cargo +1.99.1 fmt --check --manifest-path crates/team-plan/Cargo.toml
           cargo +1.99.1 clippy --locked --manifest-path crates/team-plan/Cargo.toml --target-dir target --all-targets -- -D warnings
           cargo +1.99.1 test --locked --manifest-path crates/team-plan/Cargo.toml --target-dir target
+      - name: Mobile task edit crate (format, lints, tests)
+        run: |
+          cargo +1.99.1 fmt --check --manifest-path crates/mobile-task-edit/Cargo.toml
+          cargo +1.99.1 clippy --locked --manifest-path crates/mobile-task-edit/Cargo.toml --target-dir target --all-targets -- -D warnings
+          cargo +1.99.1 test --locked --manifest-path crates/mobile-task-edit/Cargo.toml --target-dir target
       # hgs and client/core take these by path, which builds them but never runs their tests.
       # Every Quick Cargo check shares target: compatible dependencies are built once.
       - name: Desktop crates (format, lints, tests)
@@ -462,6 +467,13 @@ jobs:
       - name: Disk usage after crypto contracts
         if: ${{ !cancelled() }}
         run: python3 scripts/ci/ubuntu-disk.py report after-crypto-contracts
+      - name: Private tmux for the native archive paging fixture
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libevent-dev libncurses-dev bison pkg-config
+          bash scripts/ci/install-tmux.sh "$RUNNER_TEMP/tmux"
+          echo "$RUNNER_TEMP/tmux/bin" >> "$GITHUB_PATH"
       - name: Released HTTP and outbound connector compatibility
         env:
           ZERUS_RELAY_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
@@ -469,6 +481,8 @@ jobs:
         run: |
           cargo +1.99.1 build --locked --bin hgs
           cargo +1.99.1 build --locked --manifest-path services/mobile/connector/Cargo.toml --target-dir services/mobile/relay/target
+          cargo +1.99.1 build --locked --manifest-path crates/replica-ffi/Cargo.toml --example task_exchange_phone --target-dir target
+          export ZERUS_TASK_TEST_PHONE="$GITHUB_WORKSPACE/target/debug/examples/task_exchange_phone"
           export ZERUS_CONNECTOR_E2E_COMMAND="$GITHUB_WORKSPACE/services/mobile/relay/target/debug/zerus-mobile-connector"
           python3 -m venv "$RUNNER_TEMP/relay-venv"
           "$RUNNER_TEMP/relay-venv/bin/pip" install ./services/mobile -r services/mobile/tests/requirements.txt

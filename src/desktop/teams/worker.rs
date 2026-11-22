@@ -252,13 +252,15 @@ impl Passes {
             cycle_fault,
             stop,
             |store, teams| {
-                work.page(
-                    store,
-                    effects,
-                    teams,
-                    chrono::Utc::now().timestamp_millis(),
-                    safety,
-                )
+                crate::state::archive_catalog::with_member_archive_probe(|| {
+                    work.page(
+                        store,
+                        effects,
+                        teams,
+                        chrono::Utc::now().timestamp_millis(),
+                        safety,
+                    )
+                })
             },
         );
         if let Err(error) = super::confirm::step(
@@ -268,6 +270,7 @@ impl Passes {
             &mut self.store,
             &self.native.stop,
             &mut self.confirmations,
+            &mut self.actor,
         ) {
             eprintln!("hgs: Teams standing confirmation fault: {error}");
         }

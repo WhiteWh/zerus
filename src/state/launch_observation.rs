@@ -33,7 +33,6 @@ pub(crate) fn observe(state: &Path, launch: &str, deadline: Instant) -> Observat
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TeamRecord {
     pub launch_id: String,
@@ -44,6 +43,8 @@ pub(crate) struct TeamRecord {
     pub run_id: String,
     pub conversation_id: String,
     pub cwd: String,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub provider: Option<Box<super::team_provider_stop::ProviderObservation>>,
 }
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,7 +101,33 @@ pub(crate) fn observe_team_session(
     hint: &str,
     deadline: Instant,
 ) -> TeamSession {
-    team::session(state, session, launch, agent, hint, deadline)
+    team::session(state, session, launch, agent, hint, deadline, false)
+}
+/// The availability scan reads the main-turn provider evidence with the
+/// same pinned identity. Other Teams readers need only that identity.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn observe_team_session_for_availability(
+    state: &Path,
+    session: &str,
+    launch: &str,
+    agent: &str,
+    hint: &str,
+    deadline: Instant,
+) -> TeamSession {
+    team::session(state, session, launch, agent, hint, deadline, true)
+}
+/// Resolve an exact run using its bounded catalog route and the same pinned
+/// record reader as launch-bound provider stops.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn observe_team_run_for_provider(
+    state: &Path,
+    run: &str,
+    session: &str,
+    agent: &str,
+    hint: &str,
+    deadline: Instant,
+) -> TeamSession {
+    team::run(state, run, session, agent, hint, deadline)
 }
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod team;

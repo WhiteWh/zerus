@@ -24,6 +24,8 @@ mod shell_identity;
 pub(crate) mod witness;
 mod answer;
 pub(in crate::state) mod dispatch_lock;
+pub(in crate::state) mod retirement;
+pub(in crate::state) mod native_archives;
 #[cfg(all(test, unix))]
 pub(super) use host_identity::record_running_for_test;
 #[cfg(all(test, unix))]
@@ -2158,6 +2160,17 @@ fn new_binding(name: &str, cwd: &Path, launch_id: Option<&str>) -> Value {
         "created":now(),"launch_id":launch_id,"paused":false})
 }
 
+// A launch or explicit restore owns the checkout verified for this run.
+// An archive may carry an earlier nonce even after the checkout was recreated.
+fn capture_worktree(record: &mut Value, cwd: &Path) {
+    if let Some(owner) = worktree_lifecycle::for_folder(cwd) {
+        record["worktree_owner"] = owner;
+        record["launch_dir"] = json!(cwd);
+    } else {
+        record.as_object_mut().unwrap().remove("worktree_owner");
+    }
+}
+
 /// A new session's binding exactly as `launch` builds and saves it, with no
 /// host started or asked: the Teams caller proof's tests take their binding
 /// from this component (zerus-63rru.28).
@@ -2259,6 +2272,7 @@ pub(crate) fn launch_with_model(
         if record != observed {
             return Err("DeepSeek binding changed before launch; refresh and retry".into());
         }
+        if retirement::ready(&mut record)? { return Ok(()); }
         let mut expected = record.clone();
         if let Some(value) = &override_value {
             record["permission_override"] = json!(value);
@@ -2302,9 +2316,11 @@ pub(crate) fn launch_with_model(
     if let Some(value) = &override_value {
         record["permission_override"] = json!(value);
     }
+    capture_worktree(&mut record, &cwd);
     if let Some(parent) = parent {
         record["parent"] = parent;
     }
+    placement::prepare(&mut record, &cwd);
     let block_stale = ensure_host(&record)?;
     mark_upload_may_be_active(&mut record, block_stale);
     let (generation, mode) = create_session(&mut record, permissions.is_some())?;
@@ -3201,17 +3217,17 @@ pub(super) fn fork(
     scope: Option<&session_action::Scope>,
 ) -> Result<String> {
     let (_session, mut record) = dispatch_lock::acquire(name)?;
-    let expected = record.clone();
-    let _guard = lock(Some(&root().join("dsh/bindings.lock")))?;
-    if binding(name)? != expected {
-        return Err("DeepSeek binding changed before fork".into());
-    }
     if let Some(scope) = scope { scope.check(&record)?; }
     if expected_run.is_some_and(|id| id != string(&record, "run_id"))
         || expected_conversation.is_some_and(|id| id != string(&record, "conversation_id"))
     {
         return Err("source session changed; refresh before forking".into());
     }
+    if dry && retirement::pending(&record) { return Err(retirement::RESTORE_PENDING.into()); }
+    retirement::ready(&mut record)?;
+    let expected = record.clone();
+    let _guard = lock(Some(&root().join("dsh/bindings.lock")))?;
+    if binding(name)? != expected { return Err("DeepSeek binding changed before fork".into()); }
     // An archived session's name is free for a new one, as for other agents.
     let mut occupied: std::collections::BTreeSet<String> = binding_records().iter()
         .chain(records()?.iter())
@@ -3472,8 +3488,7 @@ pub(crate) fn inspect_processes(name: &str) -> Result<Value> {
     inspect_with_processes(name, None, true, false)
 }
 /// `hgs inspect NAME` options: the subagent, whether to list processes and whether to name the current read.
-/// Native DeepSeek has no archives, so `--archive` is refused rather than answered with the live session
-/// (zerus-a4mub.33), as reference details refuse it.
+/// Archived reads select the saved archive before provider dispatch.
 fn inspect_options(args: &[String]) -> Result<(Option<&str>, bool, bool)> {
     if args.iter().any(|arg| arg == "--archive") {
         return Err("DeepSeek archives are unavailable".into());
@@ -3620,17 +3635,25 @@ fn inspect_record(name: &str, record: &Value, agent_id: Option<&str>, include_pr
     let ping=rpc("ping",json!({})).unwrap_or(Value::Null);
     result["terminal_supported"]=json!(false);
     result["terminal_reason"]=json!(backend::DEEPSEEK_TERMINAL.text());
-    result["allowed_actions"]=if agent_id.is_none() && ping["sessionActions"]==true && ping["generation"]==inspected["generation"] {
+    let restoring = retirement::pending(&record);
+    result["allowed_actions"]=if !restoring && agent_id.is_none() && ping["sessionActions"]==true && ping["generation"]==inspected["generation"] {
         inspected["lifecycleActions"].clone()
     } else {json!([])};
-    result["action_reasons"]=json!({"archive":"Native DeepSeek has no archive lifecycle API","fork":"Native DeepSeek has no fork lifecycle API",
-        "terminate":"Use Pause for this native DeepSeek session","restore":"Native DeepSeek has no archive lifecycle API",
+    result["action_reasons"]=json!({"archive":"Archive requires a confirmed stopped DeepSeek session","fork":"Native DeepSeek has no fork lifecycle API",
+        "terminate":"Requires a supported resident adapter and its owned handle",
         "pause":"Requires a supported resident adapter and its owned handle","resume":"Requires a supported resident adapter and a stopped session",
         "rename":"Requires the supported resident scoped adapter","forget":"Requires a supported resident adapter and its owned handle"});
+    if let Some(actions) = result["allowed_actions"].as_array_mut() {
+        if inspected["live"] == false && actions.iter().any(|action| action == "resume") {
+            actions.extend([json!("archive"), json!("terminate")]);
+        } else if inspected["live"] == true && actions.iter().any(|action| action == "forget") {
+            actions.push(json!("terminate"));
+        }
+    }
     let fork_reason = if agent_id.is_some() { "Fork the parent DeepSeek session" } else { fork_reason(&record, &ping, &inspected) };
-    result["fork_supported"] = json!(fork_reason.is_empty());
-    result["fork_reason"] = json!(fork_reason);
-    if fork_reason.is_empty() {
+    result["fork_supported"] = json!(!restoring && fork_reason.is_empty());
+    result["fork_reason"] = json!(if restoring { retirement::RESTORE_PENDING } else { fork_reason });
+    if !restoring && fork_reason.is_empty() {
         if let Some(actions) = result["allowed_actions"].as_array_mut() { actions.push(json!("fork")); }
         result["action_reasons"].as_object_mut().unwrap().remove("fork");
     } else {
@@ -3926,11 +3949,18 @@ pub(super) fn session_action(
     new_name: Option<&str>,
     scope: &session_action::Scope,
 ) -> Result<()> {
+    if matches!(action, "archive" | "terminate") {
+        return retirement::dispatch(action, &[name.to_owned()], Some(scope)).map(|_| ());
+    }
     if !["pause", "resume", "rename", "forget"].contains(&action) {
         return Err("This native DeepSeek adapter has no archive lifecycle API".into());
     }
     let (_session, mut record) = dispatch_lock::acquire(name)?;
     scope.check(&record)?;
+    if retirement::ready(&mut record)? && action == "resume" {
+        scope.result_record(&record);
+        return Ok(());
+    }
     let expected = record.clone();
     if let Some(new) = new_name {
         let old: Vec<_> = name.split('/').collect();
@@ -3963,24 +3993,15 @@ pub(super) fn session_action(
             PROVIDER.prepare_label(&record, new_name.unwrap())
         })?;
     }
-    let ping = rpc(&record, "ping", json!({}))?;
-    if ping["sessionActions"] != true {
-        return Err(
-            "The resident DeepSeek adapter lacks scoped lifecycle; it was left running".into(),
-        );
-    }
-    let inspected = rpc(
-        &record,
-        "inspect",
-        json!({"sessionId":record["conversation_id"],"includeProcesses":false}),
-    )?;
-    if ping["generation"] != inspected["generation"]
-        || !inspected["lifecycleActions"]
-            .as_array()
-            .is_some_and(|values| values.iter().any(|value| value == action))
+    let inspected = supported_lifecycle_view(&record)?;
+    if !inspected["lifecycleActions"]
+        .as_array()
+        .is_some_and(|values| values.iter().any(|value| value == action))
     {
         return Err("This action is unavailable for the exact native DeepSeek handle".into());
     }
+    // The host's native operations, for the preset handoff below.
+    let ping = rpc(&record, "ping", json!({}))?;
     // A resume applies the binding's explicit override before its account
     // default; a fresh native preset is validated against the running host.
     let resume_selection = if action == "resume" {
@@ -4154,14 +4175,75 @@ pub(crate) fn set_aside(name: &str, conversation: &str) -> Result<Aside> {
     Ok(Aside::Renamed { target, paused: true })
 }
 
+fn supported_lifecycle_view(record: &Value) -> Result<Value> {
+    let ping = rpc(record, "ping", json!({}))?;
+    if ping["sessionActions"] != true || string(&ping, "generation").is_empty() {
+        return Err("The resident DeepSeek adapter lacks scoped lifecycle; it was left running".into());
+    }
+    let inspected = rpc(
+        record,
+        "inspect",
+        json!({"sessionId":record["conversation_id"],"includeProcesses":false}),
+    )?;
+    if ping["generation"] != inspected["generation"] {
+        return Err("DeepSeek host changed before lifecycle handoff".into());
+    }
+    Ok(inspected)
+}
+
+struct NativeLifecycleError {
+    message: String,
+    definite: bool,
+}
+
+fn native_lifecycle_action(
+    record: &Value,
+    action: &str,
+    inspected: &Value,
+    mut params: Value,
+    scope: Option<&session_action::Scope>,
+) -> std::result::Result<(), NativeLifecycleError> {
+    params["sessionId"] = record["conversation_id"].clone();
+    params["generation"] = inspected["generation"].clone();
+    params["action"] = json!(action);
+    if let Some(scope) = scope {
+        scope.changing();
+    }
+    let answer = rpc(record, "session-action", params).map_err(|message| {
+        let definite = message == HOST_UNAVAILABLE || message.starts_with(INCOMPLETE);
+        NativeLifecycleError { message, definite }
+    })?;
+    let uncertain = |message: &str| NativeLifecycleError { message: message.into(), definite: false };
+    if answer["sessionId"] != record["conversation_id"] || answer["action"] != action {
+        return Err(uncertain("DeepSeek lifecycle acknowledgement did not match"));
+    }
+    if answer["generation"] != inspected["generation"] {
+        return Err(uncertain("DeepSeek host changed during lifecycle handoff"));
+    }
+    match answer["status"].as_str() {
+        Some("completed") => Ok(()),
+        Some("failed") => Err(NativeLifecycleError { message: string(&answer, "error").into(), definite: true }),
+        _ => Err(uncertain("DeepSeek lifecycle handoff was not confirmed")),
+    }
+}
+
 pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
+    if matches!(command, "archive" | "terminate") {
+        return retirement::dispatch(command, args, None);
+    }
     let name = args.first().ok_or("Choose a DeepSeek session")?;
-    let (_session, mut record) = if !["inspect", "exists", "schedules"].contains(&command) {
+    let (session, mut record) = if !["inspect", "exists", "schedules"].contains(&command) {
         let (guard, record) = dispatch_lock::acquire(name)?;
         (Some(guard), record)
     } else {
         (None, binding(name)?)
     };
+    if session.is_some() {
+        if args.iter().any(|arg| arg == "--dry-run") && retirement::pending(&record) {
+            return Err(retirement::RESTORE_PENDING.into());
+        }
+        if retirement::ready(&mut record)? && command == "resume" { return Ok(0); }
+    }
     let mut expected = record.clone();
     match command {
         "inspect" => {

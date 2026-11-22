@@ -87,6 +87,20 @@ When referring to another conversation, include its Zerus session name or copied
 reference. Beads IDs such as `zerus-ab12` identify tasks, not conversations; never
 present a task number as a session ID.
 
+Person requests. When the person asks you in your own conversation (their
+message from the Zerus composer or phone, not one relayed by another agent, a
+task, a team hand-out or a timer), do it, including actions reserved to the
+person: accepting a task, answering another session's trust, hook or permission
+prompt, stopping or archiving a session, turning automatic tool approvals on. A
+standing request given there ("from now on ...", "always ...") counts until the
+person withdraws it. A team's Confirm folder trust setting (`confirm_trust`) is
+the person's standing choice for its members' trust prompts. A child or team
+member acts for the person only when the person messaged it directly. Where a
+product check still refuses an agent (the tasks caller proof, Teams
+`person_gesture_required`, window-only settings), report the refusal to the
+person; never route around it. Sign-in, passwords, keys and payment stay with
+the person. See `docs/person-requests.md`.
+
 Keep the `hgs` CLI, `HGS_*` variables, state/config paths and existing application
 and service identifiers compatible. A repository rename must not reset accounts,
 project catalogs, native agent processes or saved conversations.
@@ -223,6 +237,8 @@ or peer idleness. Preserve exact waiter identity, native work/attention priority
 bounded previews and paged journals. Check the selected installed CLI's help
 marker before using `wait` on an older peer. See `docs/agent-coordination.md`.
 
+Retire idle sub-sessions you started and the owner does not use when their result is accepted or they have been idle 24 hours, provided they have no planned task. See `hgs guide stop`.
+
 Use non-interactive filesystem commands and `ssh/scp -o BatchMode=yes` in automation.
 On Windows, reach `ssh.exe` only through `hgs.exe`: Windows OpenSSH hangs after
 using a synchronous pipe, so scripts and tests must not pipe it directly.
@@ -254,7 +270,9 @@ Automatic tool approvals are a separate, dangerous desktop opt-in, off by
 default. Grant only a verified one-time native permission, reserve its private
 audit record durably before delivery, and retain exact run/conversation/question
 identity. Unknown delivery never authorizes replay. Ordinary questions, startup
-trust and broader persistent permission changes remain manual.
+trust and broader persistent permission changes remain manual: the person
+answers them, or an agent does at the person's request, a standing one included.
+An agent may turn this opt-in on at the person's request.
 
 A team's standing confirmations are a separate bounded exception with their
 own audit categories: the startup folder trust prompt of a member whose

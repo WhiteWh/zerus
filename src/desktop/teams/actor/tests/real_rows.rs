@@ -47,7 +47,10 @@ pub(super) fn isolated(fixture: &str) -> String {
     text
 }
 
-fn native(state: &std::path::Path, config: &std::path::Path) -> super::super::native::Native {
+pub(super) fn native(
+    state: &std::path::Path,
+    config: &std::path::Path,
+) -> super::super::native::Native {
     super::super::native::Native {
         config: crate::config::Config {
             home: String::new(),
@@ -67,10 +70,11 @@ fn native(state: &std::path::Path, config: &std::path::Path) -> super::super::na
     }
 }
 
-/// Stores `row` under `key` the way the desktop catalog stores a watch row:
-/// its JSON unchanged, in the visible generation of this computer's current,
-/// complete source.
+/// Publish a producer's listing row through the catalog's normal watch
+/// writer. Later updates keep the source and advance its frame sequence.
 pub(super) fn store(state: &std::path::Path, key: &str, row: &Value) {
+    use zerus_desktop_catalog as catalog;
+    use zerus_watch_protocol as watch;
     let desktop = state.join("desktop");
     crate::platform::private_dir(&desktop).unwrap();
     let path = desktop.join("state.sqlite3");
@@ -78,28 +82,78 @@ pub(super) fn store(state: &std::path::Path, key: &str, row: &Value) {
     if new {
         crate::sqlite_file::create(&path).unwrap();
     }
-    let db = rusqlite::Connection::open(&path).unwrap();
+    let mut db = rusqlite::Connection::open(&path).unwrap();
+    let source = catalog::Source {
+        computer: String::new(),
+        service_epoch: EPOCH.into(),
+        incarnation: 1,
+        generation: 1,
+    };
     if new {
-        zerus_desktop_catalog::migrate(&db).unwrap();
+        catalog::migrate(&db).unwrap();
+        catalog::begin_service(&mut db, EPOCH).unwrap();
+        catalog::connect(
+            &mut db,
+            &source,
+            &watch::Frame {
+                v: watch::VERSION,
+                seq: 1,
+                body: watch::Body::Hello(watch::Hello {
+                    machine_id: Some(MACHINE.into()),
+                    host: "example-host".into(),
+                    hgs_version: env!("CARGO_PKG_VERSION").into(),
+                    stream: "fixture-stream".into(),
+                    heartbeat_ms: watch::HEARTBEAT_MS,
+                    max_frame_bytes: watch::MAX_FRAME_BYTES,
+                    topics: vec![watch::topic::CATALOG.into()],
+                    limits: watch::Limits::default(),
+                }),
+            },
+        )
+        .unwrap();
     }
-    db.execute(
-        "UPDATE desktop_catalog_owner SET epoch=?1 WHERE id=1",
-        [EPOCH],
-    )
-    .unwrap();
-    db.execute(
-        "INSERT OR REPLACE INTO desktop_catalog_generations(id,computer) VALUES(1,'')",
-        [],
-    )
-    .unwrap();
-    db.execute("INSERT OR REPLACE INTO desktop_catalog_sources(computer,epoch,incarnation,generation,stream,seq,visible,complete,active,hello) VALUES('',?1,1,1,'stream',1,1,1,1,?2)",
-        rusqlite::params![EPOCH, json!({"machine_id": MACHINE}).to_string()]).unwrap();
-    let json = row.to_string();
-    db.execute(
-        "INSERT OR REPLACE INTO desktop_catalog_rows(generation,key,json,bytes) VALUES(1,?1,?2,?3)",
-        rusqlite::params![key, json, json.len()],
-    )
-    .unwrap();
+    let previous: u64 = db
+        .query_row(
+            "SELECT seq FROM desktop_catalog_sources WHERE computer=''",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let item = watch::CatalogItem {
+        key: key.into(),
+        row: row.clone(),
+    };
+    let body = if new {
+        watch::Body::Snapshot(watch::Snapshot {
+            topic: watch::topic::CATALOG.into(),
+            key: None,
+            items: Some(vec![serde_json::to_value(item).unwrap()]),
+            value: None,
+            page: 0,
+            last: true,
+            cursor: 1,
+        })
+    } else {
+        watch::Body::Delta(watch::Delta {
+            topic: watch::topic::CATALOG.into(),
+            upsert: vec![item],
+            remove: vec![],
+            cursor: previous as i64,
+        })
+    };
+    assert_eq!(
+        catalog::apply(
+            &mut db,
+            &source,
+            &watch::Frame {
+                v: watch::VERSION,
+                seq: previous + 1,
+                body
+            },
+        )
+        .unwrap(),
+        catalog::Applied::Visible,
+    );
 }
 
 fn member(run: &str) -> Member {
@@ -251,6 +305,25 @@ impl super::super::ports::Ports for Production {
     ) -> super::super::ports::Result<super::super::ports::Availability> {
         super::super::ports::Ports::availability(&mut self.native, t, m)
     }
+    fn held_availability(
+        &mut self,
+        store: &mut crate::teams::store::Store,
+        team: &zerus_team_plan::model::Team,
+        member: &Member,
+        effect: &crate::teams::store::EffectIntent,
+        confirmation: Option<&crate::teams::ops::ProviderConfirmation>,
+        now: i64,
+    ) -> super::super::ports::Result<(super::super::ports::Availability, Option<String>)> {
+        super::super::ports::Ports::held_availability(
+            &mut self.native,
+            store,
+            team,
+            member,
+            effect,
+            confirmation,
+            now,
+        )
+    }
     fn deliver(
         &mut self,
         t: &zerus_team_plan::model::Team,
@@ -399,7 +472,10 @@ fn presence_reads_the_same_facts_and_unknown_counts_give_none() {
     // summaries still cannot establish presence.
     let idle = Facts::of(&seed_row("dsh", &[])).seen().unwrap();
     assert!(idle.live && !idle.working && !idle.background && !idle.pending);
-    assert_eq!(Facts::of(&seed_row("dsh", &[("process_work.count", Value::Null)])).seen(), None);
+    assert_eq!(
+        Facts::of(&seed_row("dsh", &[("process_work.count", Value::Null)])).seen(),
+        None
+    );
     let stopped = Facts::of(&seed_row("dsh", &[("state", json!("stopped"))]));
     assert!(!stopped.live);
     assert!(!stopped.seen().unwrap().live);

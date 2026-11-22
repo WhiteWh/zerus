@@ -24,6 +24,7 @@ mod cli;
 #[cfg(unix)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod hosted;
+pub(crate) const OLDER_DEEPSEEK_HOST: &str = "older_deepseek_host";
 pub(crate) mod integrate;
 pub(crate) mod ops;
 pub(crate) mod providers;

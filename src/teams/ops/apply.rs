@@ -49,7 +49,15 @@ fn apply_with_context(
     config: Option<&crate::config::Config>,
     repository: &dyn Fn(&Team) -> Result<crate::teams::integrate::Repo>,
 ) -> Result<Reply> {
-    apply_inputs(store, actor, request, now, config, repository, None)
+    apply_inputs(
+        store,
+        actor,
+        request,
+        now,
+        config,
+        repository,
+        Admission::None,
+    )
 }
 
 pub(crate) fn apply_with_gesture(
@@ -80,7 +88,7 @@ pub(crate) fn apply_with_native(
                 "A trusted local repository resolver is required to advance the base.",
             ))
         },
-        admission,
+        admission.map_or(Admission::None, Admission::Person),
     )
 }
 
@@ -102,7 +110,45 @@ pub(crate) fn apply_with_native_context(
         now,
         config,
         repository,
-        Some(admission),
+        Admission::Person(admission),
+    )
+}
+
+enum Admission<'a> {
+    None,
+    Person(crate::desktop::teams::person_actions::kernel::Permit<'a>),
+    ProviderStop(ProviderStopProof<'a>),
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn apply_provider_stop(
+    store: &mut Store,
+    team: &Team,
+    effect: &store::EffectIntent,
+    proof: ProviderStopProof<'_>,
+    now: i64,
+) -> Result<Reply> {
+    let current = store.team(&team.id)?.ok_or_else(missing)?;
+    apply_inputs(
+        store,
+        &Actor::Service {
+            person: current.owner,
+            team: team.id.clone(),
+        },
+        &Request {
+            team: team.id.clone(),
+            request_id: uuid::Uuid::new_v4().to_string(),
+            expected_revision: current.revision,
+            operation: Operation::ReleaseProviderStop {
+                node: effect.node,
+                member: proof.member.id.clone(),
+                effect_request_id: effect.request_id.clone(),
+            },
+        },
+        now,
+        None,
+        &|_| Err(invalid("No repository read in a provider hand-back.")),
+        Admission::ProviderStop(proof),
     )
 }
 
@@ -113,8 +159,13 @@ fn apply_inputs(
     now: i64,
     config: Option<&crate::config::Config>,
     repository: &dyn Fn(&Team) -> Result<crate::teams::integrate::Repo>,
-    mut admission: Option<crate::desktop::teams::person_actions::kernel::Permit<'_>>,
+    admission: Admission<'_>,
 ) -> Result<Reply> {
+    let (mut admission, provider_stop) = match admission {
+        Admission::None => (None, None),
+        Admission::Person(original) => (Some(original), None),
+        Admission::ProviderStop(proof) => (None, Some(proof)),
+    };
     validate_request(request, now)?;
     if matches!(actor, Actor::Person { .. }) && admission.is_none() {
         return Err(crate::desktop::teams::person_actions::required());
@@ -127,12 +178,22 @@ fn apply_inputs(
     prepare_first(store, actor, request)?;
     let state = store.state().to_owned();
     let task_custody = phase_controls::prepare(store, request);
-    let tx = store
-        .db
-        .as_mut()
-        .ok_or_else(missing)?
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .map_err(crate::teams::store::begin_error)?;
+    let db = store.db.as_mut().ok_or_else(missing)?;
+    let provider = provider_stop.is_some();
+    let tx = if provider {
+        let prior: u64 = db
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .map_err(storage)?;
+        db.busy_timeout(std::time::Duration::from_millis(50))
+            .map_err(storage)?;
+        let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate);
+        db.busy_timeout(std::time::Duration::from_millis(prior))
+            .map_err(storage)?;
+        tx
+    } else {
+        db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+    }
+    .map_err(crate::teams::store::begin_error)?;
     store::execution_fence(&tx)?;
     let mut gesture = admission
         .map(|admission| admission.consume(&tx, &state, actor, request))
@@ -176,6 +237,8 @@ fn apply_inputs(
         team: &team,
         op: &request.operation,
         request_id: &request.request_id,
+        provider_stop,
+        closed_confirmation_card: None,
         task_custody: task_custody.as_ref(),
         now,
         reply: Reply {
@@ -186,6 +249,7 @@ fn apply_inputs(
             item: None,
         },
         event: None,
+        land_skipped_for: None,
         superseded: None,
         timing: None,
     };
@@ -204,9 +268,12 @@ fn apply_inputs(
         config,
         repository,
     );
-    // A storage failure is not a saved decision. Dropping the transaction
-    // rolls back partial work; the same request ID can be processed again.
-    if matches!(&result, Err(problem) if problem.code == code::STORAGE_FAILED) {
+    // Storage failure rolls back partial work and leaves the request open.
+    // An out-of-date provider observation also leaves no receipt: the next
+    // pass supplies a new observation of the current holder.
+    if matches!(&result, Err(problem) if problem.code == code::STORAGE_FAILED
+        || problem.code == provider_stop::CHANGED)
+    {
         return result;
     }
     save(&tx, actor, request, &result)?;
@@ -384,7 +451,7 @@ fn dispatch(ctx: &mut Context<'_>, config: Option<&crate::config::Config>) -> Re
         Operation::ReconcilePhase { .. } => publication::reconcile(ctx),
         Operation::AcceptPhase { .. } => publication::accept(ctx),
         Operation::SubmitDraftPhase { .. } | Operation::EditDraftPhase { .. } => drafts::write(ctx),
-        Operation::AddMember { .. } => editing::add_member(ctx),
+        Operation::AddMember { .. } | Operation::LeadAddMember { .. } => editing::add_member(ctx),
         Operation::SwapMember { .. } => editing::swap_member(ctx),
         Operation::RenameTeam { .. } => editing::rename(ctx),
         Operation::SetGoal { .. } => editing::goal(ctx),
@@ -436,8 +503,11 @@ fn dispatch(ctx: &mut Context<'_>, config: Option<&crate::config::Config>) -> Re
         Operation::RecordLateReport { .. } => handout::late_report(ctx),
         Operation::RecordCancel { .. } => timers::record_cancel(ctx),
         Operation::ReconcileLeadQueue => lead_queue::reconcile(ctx),
+        Operation::ReleaseProviderStop { .. } => provider_stop::release(ctx),
         Operation::ReconcileUnstaffed => unstaffed::reconcile(ctx),
+        Operation::RecordMemberReadability { .. } => unstaffed::record_readability(ctx),
         Operation::EndStaleUnstaffed => unstaffed::end_stale(ctx),
+        Operation::CloseStaleReopenNotices => talk::close_stale_reopen_notices(ctx),
         Operation::SettleLeftHandout { .. } => members::settle_left(ctx),
         Operation::UnbindMember { .. } => members::unbind(ctx),
         Operation::TellPausedStarted { .. } => members::tell_paused_started(ctx),
@@ -484,6 +554,8 @@ pub(crate) fn observe_native_intake(
         team: &team,
         op: &request.operation,
         request_id: &request.request_id,
+        provider_stop: None,
+        closed_confirmation_card: None,
         task_custody: None,
         now,
         reply: Reply {
@@ -494,6 +566,7 @@ pub(crate) fn observe_native_intake(
             item: None,
         },
         event: None,
+        land_skipped_for: None,
         superseded: None,
         timing: None,
     };

@@ -25,6 +25,8 @@ export const name = 'hgs-native-dsh';
 // that removes an inherited value. Never a partial or inherited set.
 const SESSION_MARKERS = Object.freeze(['HGS_SESSION', 'HGS_RUN_ID', 'HGS_SESSION_ID', 'HGS_ACCOUNT_ID']);
 const IDENTITY_BYTES = 4096;
+const RESUME_REQUEST = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+const RESUME_RECEIPTS = 4096;
 const NATIVE_SESSION = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 // Only an ordinary forever-waiting request of this exact owned root may
@@ -161,25 +163,63 @@ export function callTokens(limit = CALL_TOKENS, share = CONVERSATION_TOKENS) {
   };
 }
 
-// Adds the current call's entries to each process the service starts while
-// that call runs; later caller entries never override them.
+// Cordis traces each service and method read with a new proxy. Install on
+// the underlying service while letting Cordis still bind the caller's `this`.
+const CORDIS_ORIGINAL = Symbol.for('cordis.original');
+const SPAWN_ORIGINAL = Symbol.for('hgs.dsh.spawn.original');
+const spawnInstallations = new WeakMap();
+
+function originalSpawn(method) {
+  const seen = new Set();
+  while (typeof method[SPAWN_ORIGINAL] === 'function') {
+    if (seen.has(method)) throw new Error('Cyclic HGS subprocess wrapper chain');
+    seen.add(method);
+    method = method[SPAWN_ORIGINAL];
+  }
+  return method;
+}
+
+// Adds only the current tool call's entries to the native invocation.
 export function wrapSpawns(service, current) {
-  const wrapped = [];
+  const target = service?.[CORDIS_ORIGINAL] ?? service;
+  const previous = spawnInstallations.get(target);
+  if (previous && previous.current === current && previous.installation.current()) return previous.installation;
+  previous?.installation.restore();
+  const methods = [];
   for (const method of ['spawn', 'spawnTerminal']) {
-    const original = service?.[method];
-    if (typeof original !== 'function') continue;
+    const observed = target?.[method];
+    if (typeof observed !== 'function') {
+      methods.push({ method, expected: observed });
+      continue;
+    }
+    const original = originalSpawn(observed);
+    let descriptor = Object.getOwnPropertyDescriptor(target, method);
+    // Restore the native method. Deleting the wrapper reveals an inherited
+    // native implementation again.
+    if (observed !== original) {
+      descriptor = Object.getPrototypeOf(target)?.[method] === original
+        ? undefined : { ...descriptor, value: original };
+    }
     const wrapper = function (spec, ...rest) {
       const env = current();
       return original.call(this, env && spec && typeof spec === 'object' ? { ...spec, env: { ...spec.env, ...env } } : spec, ...rest);
     };
-    service[method] = wrapper;
-    wrapped.push([method, original, wrapper]);
+    Object.defineProperty(wrapper, SPAWN_ORIGINAL, { value: original });
+    target[method] = wrapper;
+    methods.push({ method, expected: wrapper, restore() {
+      if (target[method] !== wrapper) return;
+      if (descriptor) Object.defineProperty(target, method, descriptor);
+      else delete target[method];
+    } });
   }
-  return {
-    installed: wrapped.some(([method]) => method === 'spawn'),
-    current: () => wrapped.every(([method, , wrapper]) => service[method] === wrapper),
-    restore() { for (const [method, original, wrapper] of wrapped) if (service[method] === wrapper) service[method] = original; },
+  const installation = {
+    target,
+    installed: methods.some(binding => binding.method === 'spawn' && binding.restore),
+    current: () => methods.every(({ method, expected }) => target?.[method] === expected),
+    restore() { for (const binding of methods) binding.restore?.(); },
   };
+  if (target) spawnInstallations.set(target, { current, installation });
+  return installation;
 }
 export const inject = ['sessionController', 'agents', 'goals', 'llm', 'agentDefaultModel', 'sessionQuery', 'userQuestions', 'workspaceRegistry', 'subagents', 'permissionPresets', 'approval', 'commands', 'sessions'];
 
@@ -374,6 +414,7 @@ export function apply(ctx, config) {
   const control = api.agents;
   const models = modelSelectionAdapter(control);
   const owned = new Map(), opening = new Map(), questions = new Map();
+  const scopedResumes = new Map();
   registerAgentHint(ctx, config?.agentHint, owned);
   const generation = randomUUID();
   // An end is the host's own lifecycle event, never a failed list/inspect
@@ -391,18 +432,18 @@ export function apply(ctx, config) {
   const shellTools = new Set(['bash', 'pwsh']);
   const callContext = new AsyncLocalStorage(), tokens = callTokens();
   const identities = typeof config.shellIdentities === 'string' && config.shellIdentities ? config.shellIdentities : null;
-  let spawns = null, spawnService = null;
-  // A reloaded subprocess service is wrapped again before the next call.
+  let spawns;
+  const currentEnvironment = () => callContext.getStore();
+  // A changed service or a stale wrapper can be repaired before the next
+  // tool call, without disposing any resident agent.
   function callEnvironmentInstalled() {
-    const service = ctx.get('subprocess');
-    if (spawns && service === spawnService && spawns.current()) return true;
-    spawns?.restore();
-    spawns = wrapSpawns(service, () => callContext.getStore());
-    spawnService = spawns.installed ? service : null;
-    return spawns.installed;
+    const next = wrapSpawns(ctx.get('subprocess'), currentEnvironment);
+    if (spawns?.target !== next.target) spawns?.restore();
+    spawns = next;
+    return next.installed;
   }
   callEnvironmentInstalled();
-  ctx.on('dispose', () => spawns?.restore());
+  ctx.effect(() => () => spawns?.restore());
   const jobRegistry = ctx.get('jobs');
   if (jobRegistry) ctx.on('dispose',jobRegistry.events.subscribe({owners:'scope'},event => {
     // A job a tool call registers keeps that call's token until it settles.
@@ -1007,11 +1048,14 @@ export function apply(ctx, config) {
     switch (request.method) {
       // Task 234: loadedSessions lets a listing reuse a stopped session's row
       // (building one replays its stored history) until this host loads it.
-      case 'ping': return { protocol: 1, version: '0.2.1-rc.2', generation, accountPermissions: true, sessionActions: true, sessionRows: true, fileAttachments: true,
-        inputWitness: true, listJobs: true, teamLifecycle: true,
-        shellIdentity: callEnvironmentInstalled(), callTokens: callEnvironmentInstalled(),
-        loadedSessions: typeof ctx.sessions?.keys === 'function' ? [...ctx.sessions.keys()].slice(0, 5000) : undefined,
-        nativeOperations: ['fork', 'history-search', 'schedules', 'permission-preset', 'permissions'], schedule: Boolean(scheduleService()) };
+      case 'ping': {
+        const environment = callEnvironmentInstalled();
+        return { protocol: 1, version: '0.2.1-rc.2', generation, accountPermissions: true, sessionActions: true, sessionRows: true, fileAttachments: true,
+          inputWitness: true, listJobs: true, teamLifecycle: true,
+          shellIdentity: environment, callTokens: environment,
+          loadedSessions: typeof ctx.sessions?.keys === 'function' ? [...ctx.sessions.keys()].slice(0, 5000) : undefined,
+          nativeOperations: ['fork', 'history-search', 'schedules', 'permission-preset', 'permissions'], schedule: Boolean(scheduleService()) };
+      }
       case 'list': {
         const list = await api.list({}, new AbortController().signal);
         const status = await accountStatus();
@@ -1198,9 +1242,46 @@ export function apply(ctx, config) {
         if (p.title) await api.rename({ sessionId, title: p.title });
         return { sessionId, generation, ...(p.permissionPreset === undefined ? {} : {presetApplied:true}) };
       }
+      case 'session-resume-status': {
+        let status = 'unknown';
+        if (p.generation === generation && plainMarker(p.sessionId)
+          && typeof p.requestId === 'string' && RESUME_REQUEST.test(p.requestId)) {
+          const prior = scopedResumes.get(p.requestId);
+          if (prior) {
+            if (prior.sessionId === p.sessionId) status = prior.status;
+          } else {
+            // The status read and the native admission run on this same
+            // event loop. Fence the original before reporting non-delivery.
+            status = 'failed';
+            if (scopedResumes.size < RESUME_RECEIPTS) {
+              scopedResumes.set(p.requestId, { sessionId: p.sessionId, action: 'resume', generation,
+                status, error: 'The original DeepSeek resume was fenced before it started' });
+            }
+          }
+        }
+        return { generation, requestId: p.requestId, sessionId: p.sessionId, status };
+      }
       case 'session-action': {
         let changed = false;
-        const answer = (status, error) => ({ sessionId:p.sessionId, action:p.action, generation, status, ...(error ? {error} : {}) });
+        const requestId = p.action === 'resume' && p.generation === generation
+          && typeof p.requestId === 'string' && RESUME_REQUEST.test(p.requestId)
+          ? p.requestId : null;
+        const result = (status, error) => ({ sessionId:p.sessionId, action:p.action, generation, status, ...(error ? {error} : {}) });
+        if (requestId) {
+          const prior = scopedResumes.get(requestId);
+          if (prior) return prior.sessionId === p.sessionId ? prior : result('failed', 'Native resume request identity changed');
+          // A fence must last for this generation, including after an
+          // arbitrarily delayed original. At capacity every unknown ID is
+          // refused; the person can restart the host when it is idle.
+          if (scopedResumes.size >= RESUME_RECEIPTS)
+            return result('failed', 'DeepSeek restore receipt capacity is full. Restart the host when it is idle');
+          scopedResumes.set(requestId, result('pending'));
+        }
+        const answer = (status, error) => {
+          const value = result(status, error);
+          if (requestId && scopedResumes.has(requestId)) scopedResumes.set(requestId, value);
+          return value;
+        };
         try {
           const listed = p.action === 'pause' ? await summaryOf(p.sessionId) : null;
           if (p.generation !== generation) throw new Error('DeepSeek host changed; refresh before this action');

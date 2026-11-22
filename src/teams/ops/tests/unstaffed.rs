@@ -66,6 +66,113 @@ fn row(h: &Harness, node: u32) -> Option<String> {
 fn revision(h: &Harness) -> u64 {
     h.store.team(TEAM).unwrap().unwrap().revision
 }
+
+#[test]
+fn member_readability_refuses_wrong_callers_bindings_and_oversized_batches() {
+    use crate::teams::store::member_readability::MAX_READINGS;
+
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    h.bind("m1");
+    h.bind("m2");
+    let reading = |h: &Harness, member: &str| MemberReading {
+        member: member.into(),
+        session: h
+            .store
+            .member(TEAM, member)
+            .unwrap()
+            .unwrap()
+            .session
+            .unwrap(),
+        unreadable: true,
+    };
+    let m1 = reading(&h, "m1");
+    let m2 = reading(&h, "m2");
+    let mut stale = m2.clone();
+    stale.session = m1.session.clone();
+    let lead_reading = reading(&h, "lead");
+    let start = revision(&h);
+    for (who, readings, expected) in [
+        (lead, vec![m1.clone()], code::NOT_ALLOWED),
+        (person(), vec![m1.clone()], code::NOT_ALLOWED),
+        (service(), vec![m1.clone(), stale], code::STALE_REVISION),
+        (service(), vec![m1.clone(), m1.clone()], code::INVALID_STATE),
+        (service(), vec![lead_reading], code::INVALID_STATE),
+        (
+            service(),
+            vec![m1.clone(); MAX_READINGS + 1],
+            code::OVER_CAP,
+        ),
+    ] {
+        let rejected = h
+            .run(&who, Operation::RecordMemberReadability { readings })
+            .unwrap_err();
+        assert_eq!(rejected.code, expected);
+        assert_eq!(revision(&h), start);
+        assert!(
+            h.store.member_readability(TEAM).unwrap().is_empty(),
+            "a refused batch rolls back"
+        );
+    }
+    let op = Operation::RecordMemberReadability {
+        readings: vec![m1, m2],
+    };
+    h.run(&service(), op.clone()).unwrap();
+    assert_eq!(revision(&h), start + 1);
+    assert_eq!(h.store.member_readability(TEAM).unwrap().len(), 2);
+    assert_eq!(h.run(&service(), op).unwrap_err().code, code::INVALID_STATE);
+    assert_eq!(revision(&h), start + 1);
+}
+
+#[test]
+fn a_member_state_change_ends_the_previous_readability_fact() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    let session = h
+        .store
+        .member(TEAM, "m1")
+        .unwrap()
+        .unwrap()
+        .session
+        .unwrap();
+    let record = |h: &mut Harness, now| {
+        let read = request(
+            revision(h),
+            Operation::RecordMemberReadability {
+                readings: vec![MemberReading {
+                    member: "m1".into(),
+                    session: session.clone(),
+                    unreadable: true,
+                }],
+            },
+        );
+        apply_fixture(&mut h.store, &service(), &read, now).unwrap();
+    };
+    record(&mut h, 100);
+    record(&mut h, 180_100);
+    assert_eq!(
+        h.store.unreadable_members(TEAM).unwrap(),
+        ["m1".into()].into()
+    );
+    h.run(
+        &person(),
+        Operation::PauseMember {
+            member: "m1".into(),
+        },
+    )
+    .unwrap();
+    assert!(h.store.member_readability(TEAM).unwrap().is_empty());
+    h.run(
+        &person(),
+        Operation::ResumeMember {
+            member: "m1".into(),
+        },
+    )
+    .unwrap();
+    record(&mut h, 181_100);
+    assert!(h.store.unreadable_members(TEAM).unwrap().is_empty());
+}
+
 fn removed(h: &mut Harness, member: &str) {
     h.run(
         &person(),
@@ -568,6 +675,7 @@ fn the_comparison_ends_an_older_item_and_a_moved_generation() {
     let now = [Unstaffed {
         node: 1,
         reason: "No member of the team has the role developer.".into(),
+        unreadable: false,
     }];
     let text = "Task 1 is ready, but no member can take it: No member of the team has the role developer. Route it to another role, reassign or cancel it.";
     let told = |seq, generation, current| Told {

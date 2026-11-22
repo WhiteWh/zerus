@@ -14,6 +14,8 @@ use zerus_team_plan::{
 const MACHINE: &str = "00000000-0000-4000-8000-0000000000aa";
 const EPOCH: &str = "00000000-0000-4000-8000-000000000001";
 mod planning;
+#[cfg(unix)]
+mod deepseek_cards;
 
 struct FakeEffects {
     events: Vec<String>,
@@ -36,6 +38,8 @@ struct FakeEffects {
     verify_uncertain: bool,
     launch_verification_unavailable: bool,
     hosted_refusal: Option<bool>,
+    #[cfg(unix)]
+    older_deepseek_host: bool,
     placement_override: Option<Placement>,
 }
 impl Default for FakeEffects {
@@ -60,6 +64,8 @@ impl Default for FakeEffects {
             verify_uncertain: false,
             launch_verification_unavailable: false,
             hosted_refusal: None,
+            #[cfg(unix)]
+            older_deepseek_host: false,
             placement_override: None,
         }
     }
@@ -76,7 +82,12 @@ fn account(id: &str) -> AccountUsage {
     }
 }
 impl Effects for FakeEffects {
-    fn hosted_ready(&mut self, _: &Plan, bound: bool) -> Result<()> {
+    fn hosted_ready(&mut self, plan: &Plan, bound: bool) -> Result<()> {
+        #[cfg(unix)]
+        if self.older_deepseek_host && plan.agent == "dsh" {
+            return Err(crate::teams::hosted::older("/work/example/.dsh"));
+        }
+        let _ = plan;
         if self.hosted_refusal == Some(bound) {
             return Err(invalid("The resident host cannot serve a team member"));
         }
@@ -162,7 +173,7 @@ impl Effects for FakeEffects {
             account: plan.account.clone(),
             worktree: tree.clone(),
             parent: None,
-            name: format!("claude/example/{}", plan.member),
+            name: format!("{}/example/{}", plan.agent, plan.member),
             session_id: uuid::Uuid::new_v4().to_string(),
             run_id: uuid::Uuid::new_v4().to_string(),
             conversation_id: if self.empty_conversation {
@@ -235,6 +246,39 @@ fn row(h: &Harness, member: &str) -> super::ledger::Row {
         .get(ops::tests::TEAM, member)
         .unwrap()
         .unwrap()
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn launch_codex_reviewer(
+    h: &mut Harness,
+    member: &str,
+) -> (zerus_team_plan::model::Member, ObservedSession) {
+    let mut account = account("review-account");
+    account.agent = "codex".into();
+    let mut effects = FakeEffects {
+        accounts: vec![account],
+        ..Default::default()
+    };
+    let mut runtime = runtime(h);
+    until(&mut runtime, h, &mut effects, |h, _| {
+        h.store
+            .member(ops::tests::TEAM, member)
+            .unwrap()
+            .unwrap()
+            .state
+            == MemberState::Active
+    });
+    assert_eq!(effects.plans.len(), 1);
+    let plan = &effects.plans[0];
+    assert_eq!(plan.member, member);
+    assert_eq!(plan.role, "reviewer");
+    assert_eq!(plan.agent, "codex");
+    assert_eq!(plan.model, "seat-model");
+    assert_eq!(plan.effort, "high");
+    assert_eq!(plan.account, "review-account");
+    assert!(plan.parent.is_some());
+    let bound = h.store.member(ops::tests::TEAM, member).unwrap().unwrap();
+    (bound, row(h, member).observed.unwrap())
 }
 
 #[test]

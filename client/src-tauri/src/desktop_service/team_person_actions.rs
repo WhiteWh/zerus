@@ -177,16 +177,24 @@ pub(crate) fn run(
             )
         };
     };
-    if !read.supports(wire::HELP_MARKER).unwrap_or(false) {
-        return if check_only {
-            unknown(&call)
-        } else {
-            failed(
-                &call,
-                "person_gesture_required",
-                "Update the selected desktop service to use native team confirmation.",
-            )
-        };
+    for marker in wire::required_markers(&plan) {
+        if !read.supports(marker).unwrap_or(false) {
+            return if check_only {
+                unknown(&call)
+            } else {
+                failed(
+                    &call,
+                    "person_gesture_required",
+                    if marker == wire::PLACEMENT_MARKER {
+                        // An older service refuses a window Route's kept
+                        // fields; say what to update (zerus-3u5yu 3).
+                        "Update the selected desktop service to route or reassign tasks from this window."
+                    } else {
+                        "Update the selected desktop service to use native team confirmation."
+                    },
+                )
+            };
+        }
     }
     match actions.path(&plan, check_only) {
         Path::Read(intent) => {

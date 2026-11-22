@@ -168,14 +168,17 @@ pub(in crate::state::effort::picker_scope::driver) fn submit(
         pid: record["pid"].as_u64(),
     };
     let terminal = backend::current();
+    // The exact bytes pasted: a composer taller than its view is proved
+    // against them (zerus-33caz).
+    let pasted = String::from_utf8(super::pasted(owner)?).map_err(|_| "Original Send text is not UTF-8")?;
     owner.release_send_root()?;
     loop {
-        let shown = settle::settle_complete(terminal, &claim, deadline)
+        let shown = settle::settle_complete(terminal, &claim, &pasted, deadline)
             .map_err(|_| "Claude's composer never settled; no Enter was pressed")?;
         owner.retake_send_root(deadline)?;
         check_marker(owner, &owner.snapshot()?.0)?;
         observe(owner, context::Kind::SendAfterPaste)?;
-        if settle::still_complete(terminal, &claim, &shown) {
+        if settle::still_complete(terminal, &claim, &pasted, &shown) {
             check_time(deadline)?;
             send_helpers::enter(owner, progress.clone())?;
             break;

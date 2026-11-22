@@ -16,7 +16,8 @@ export { isActive, needsAttention };
 // menus and toasts. Data lives in store/catalog.ts and store/activity.ts.
 
 export type MenuEntry =
-  | { label: string; icon?: string; agent?: string; kbd?: string; danger?: boolean; disabled?: boolean; hint?: string; checked?: boolean | "mixed"; action?: () => void }
+  /** `note` is a visible line under the item (why it is closed); `hint` only its hover title. */
+  | { label: string; icon?: string; agent?: string; kbd?: string; danger?: boolean; disabled?: boolean; hint?: string; note?: string; checked?: boolean | "mixed"; action?: () => void }
   | { separator: true }
   | { heading: string };
 

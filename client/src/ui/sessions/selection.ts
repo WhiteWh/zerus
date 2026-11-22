@@ -99,7 +99,8 @@ export function selectionApplies(s: ActionRow, a: SelectionAction, c: ApplyConte
   if (!c.online || c.updating || !allowedOp(s, selectionOperation(s, a))) return false;
   switch (a) {
     case "pause": return s.state === "running" && s.resumable && s.activity === "idle" && s.processState !== "exited";
-    case "resume": return s.resumable && s.state !== "running" && (s.state !== "archived" || (!!s.archiveId && !c.occupied));
+    case "resume": return s.resumable && s.state !== "running"
+      && (s.state !== "archived" || (!!s.archiveId && (!c.occupied || !!s.restorePending)));
     case "archive": return s.state === "paused" || s.state === "stopped";
     case "forget": return forgetsBinding(s) ? !!s.runId && !!s.conversationId
       : s.state !== "running" && (s.state !== "archived" || !!s.archiveId);

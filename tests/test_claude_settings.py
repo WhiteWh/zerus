@@ -4,6 +4,7 @@
 The fake mirrors Claude Code 2.1.296: /model opens a picker whose Enter saves a
 new default and whose `s` key applies the selection to this session only. Each
 applied choice writes Claude's receipt to the conversation transcript.
+ClaudeSettings327 repeats every case with the picker text of Claude Code 2.1.327.
 """
 import json
 import os
@@ -35,14 +36,24 @@ current = 0; effort = 'medium'; text = ''; stage = ''; selected = 0; level = 1; 
 def show():
     rule = '─' * 100
     if stage == 'picker':
-        screen = '\x1b[2J\x1b[8;1H' + '▔' * 100 + '\r\n   Select model\r\n   Switch between Claude models. Your pick becomes the default for new sessions.\r\n\r\n'
+        # Claude Code 2.1.327 rewords the subtitle and Enter's action and moves
+        # the arrows' hint from the effort line into the legend.
+        layout_327 = (root / 'layout-2.1.327').exists()
+        session_only = not (root / 'no-session-only').exists()
+        subtitle = ('Your pick is the default for new sessions. For other models, use --model.' if layout_327
+                    else 'Switch between Claude models. Your pick becomes the default for new sessions.')
+        screen = '\x1b[2J\x1b[8;1H' + '▔' * 100 + '\r\n   Select model\r\n   ' + subtitle + '\r\n\r\n'
         for i, (label, description, _) in enumerate(ROWS):
             mark = label + (' ✔' if i == current else '')
             screen += ('   ❯ ' if i == selected else '     ') + str(i + 1) + '. ' + mark.ljust(25) + description + '\r\n'
         name = LEVELS[level]
-        screen += '\r\n   ' + GLYPHS[name] + ' ' + ('xHigh' if name == 'xhigh' else name.title()) + ' effort ←/→ to adjust\r\n\r\n'
-        screen += '   Enter to set as default'
-        if not (root / 'no-session-only').exists(): screen += ' · s to use this session only'
+        screen += '\r\n   ' + GLYPHS[name] + ' ' + ('xHigh' if name == 'xhigh' else name.title()) + ' effort'
+        screen += '\r\n\r\n' if layout_327 else ' ←/→ to adjust\r\n\r\n'
+        if layout_327:
+            screen += '   ←/→ to adjust · ' + ('s to use this session only · ' if session_only else '') + 'Enter to save'
+        else:
+            screen += '   Enter to set as default'
+            if session_only: screen += ' · s to use this session only'
         screen += ' · Esc to cancel'
     elif stage == 'dialog':
         hook = dialog == 'hook'
@@ -433,6 +444,38 @@ class ClaudeSettings(unittest.TestCase):
         self.assertIn('settings_unconfirmed_at', json.loads(self.record_path.read_text()))
         self.assertNotEqual(self.message().returncode, 0)
         self.assertEqual(self.received(), b'/model')
+
+    def test_pending_choice_types_nothing_into_a_pane_too_short_for_the_composer(self):
+        # zerus-szz00: a choice saved while Claude works applies before the
+        # next message. In a pane whose last row is Claude's prompt, with its
+        # closing rule cut off, the send gate refuses before any settings key.
+        self.record.update(activity='busy', phase='working'); self.write_record()
+        self.settings(self.payload('claude-haiku-5-5', 'xhigh'))
+        self.record = json.loads(self.record_path.read_text())
+        self.record.update(activity='idle', phase='idle'); self.write_record()
+        indicator = '◐ medium · /effort'
+        (self.root / 'screen').write_text('\x1b[2J\x1b[28;1H' + ' ' * (99 - len(indicator)) + indicator
+                                          + '\r\n' + '─' * 100 + '\r\n❯ ')
+        os.kill(self.record['pid'], signal.SIGUSR1)
+        self.wait_for(lambda: self.tmux('capture-pane', '-p', '-t', self.pane).rstrip('\n').split('\n')[-1].strip() == '❯')
+        message = dict(request_id=str(uuid.uuid4()), expected_run_id=self.run_id,
+                       expected_conversation_id=self.conversation_id, text='continue')
+        result = subprocess.run([str(test_input.HGS), 'send', self.name, '--json'], env=self.env,
+                                input=json.dumps(message), text=True, capture_output=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Claude's pane is too short to show its whole composer; nothing was sent", result.stderr)
+        self.assertEqual(self.received(), b'')
+        info = self.inspect()
+        self.assertEqual((info['pending_model'], info['pending_effort']), ('claude-haiku-5-5', 'xhigh'))
+        self.assertDefaultsUntouched()
+
+
+class ClaudeSettings327(ClaudeSettings):
+    """The same contract against the reworded picker of Claude Code 2.1.327."""
+
+    def setUp(self):
+        super().setUp()
+        (self.root / 'layout-2.1.327').write_text('')
 
 
 if __name__ == '__main__':

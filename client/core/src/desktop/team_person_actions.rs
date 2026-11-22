@@ -5,6 +5,22 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 pub const HELP_MARKER: &str = "Desktop Teams Person actions ABI: desktop-team-person-actions-v2";
+/// A service that resolves a window Route's kept task fields
+/// (`keep_task_fields`, zerus-3u5yu). An older one refuses that plan; the
+/// window asks for this marker first and says to update the service.
+pub const PLACEMENT_MARKER: &str =
+    "Desktop Teams Person placement fields: desktop-team-person-placement-v1";
+
+/// The help markers the selected service must advertise for this plan.
+pub fn required_markers(plan: &Plan) -> Vec<&'static str> {
+    let keeps = matches!(&plan.action, Action::Team { change }
+        if matches!(change.as_ref(), TeamAction::Route { keep_task_fields: true, .. }));
+    if keeps {
+        vec![HELP_MARKER, PLACEMENT_MARKER]
+    } else {
+        vec![HELP_MARKER]
+    }
+}
 pub const BYTES: usize = 768 << 10;
 pub const PLAN_BYTES: usize = 262_144;
 pub const PIECE_BYTES: usize = 32 << 10;
@@ -584,5 +600,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// zerus-3u5yu (3): a window Route that keeps the task's fields needs a
+    /// service that reads them; the window asks for its marker before staging.
+    #[test]
+    fn a_window_route_needs_the_placement_marker_and_nothing_else_does() {
+        let route = |keep_task_fields| Action::Team {
+            change: Box::new(TeamAction::Route {
+                node: 2,
+                role: "developer".into(),
+                pipeline: "reviewed".into(),
+                keep_task_fields,
+                deps: Vec::new(),
+                writes: Vec::new(),
+                assignee: None,
+            }),
+        };
+        let mut kept = plan();
+        kept.action = route(true);
+        assert_eq!(required_markers(&kept), [HELP_MARKER, PLACEMENT_MARKER]);
+        let mut whole = plan();
+        whole.action = route(false);
+        assert_eq!(required_markers(&whole), [HELP_MARKER]);
+        assert_eq!(required_markers(&plan()), [HELP_MARKER]);
+        assert!(PLACEMENT_MARKER.starts_with("Desktop Teams Person placement"));
     }
 }

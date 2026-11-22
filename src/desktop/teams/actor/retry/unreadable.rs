@@ -10,8 +10,102 @@ use crate::desktop::teams::actor::ports::Fact;
 use crate::desktop::teams::actor::schedule::Needs;
 
 const ROWS: &str = "gate:unreadable:";
+const ARCHIVE: &str = "an archive from its session is missing from the archive catalog";
+
+const CONFIRMATION: &str = "unreadable_confirmation:";
+
+pub(super) fn key_is_unreadable(key: &str) -> bool {
+    key.starts_with("unreadable:") || key.starts_with(CONFIRMATION)
+}
 
 impl Runtime {
+    /// Standing confirmation needs no ready task to explain an unreadable end.
+    /// Reuse the existing delay, opener receipt, Retry and recovery path.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(in crate::desktop::teams) fn confirmation_observation(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        member: &Member,
+        fault: Option<(&str, &str)>,
+        now: i64,
+        report: impl FnOnce(&str),
+    ) -> Result<()> {
+        let key = format!("{CONFIRMATION}{}", member.id);
+        let Some((binding, error)) = fault else {
+            return self.recovered(store, team, &key, now);
+        };
+        if self
+            .provider_stops
+            .get(&(team.id.clone(), member.id.clone()))
+            .is_some_and(|stop| stop == binding)
+        {
+            return Ok(());
+        }
+        let reason = format!(
+            "Member {} ({}) needs attention. {}. The service will check again.",
+            member.id, member.role, crate::desktop::teams::reason_text(error).trim_end_matches('.')
+        );
+        self.for_row(|a| {
+            a.hold_scoped(store, team, (&key, 0, 0, Some(binding)), (&reason, now), || report(error))
+        })
+    }
+}
+
+impl Runtime {
+    pub(in crate::desktop::teams::actor) fn provider_confirmation(
+        &self,
+        team: &Team,
+        member: &Member,
+    ) -> Result<Option<(Row, ops::ProviderConfirmation)>> {
+        let Some(row) = self
+            .ledger
+            .get(&team.id, &format!("gate:{CONFIRMATION}{}", member.id))?
+        else {
+            return Ok(None);
+        };
+        let Some((0, 0, Some(binding))) = super::held::held_by(&row) else {
+            return Ok(None);
+        };
+        let gate: Gate =
+            serde_json::from_value(row.data.clone()).map_err(crate::teams::store::storage)?;
+        let confirmation = ops::ProviderConfirmation {
+            binding,
+            card: gate.card,
+            notice: gate.notice,
+        };
+        Ok(Some((row, confirmation)))
+    }
+
+    pub(in crate::desktop::teams::actor) fn provider_stop_confirmed(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        member: &Member,
+        binding: String,
+        confirmation: Option<&(Row, ops::ProviderConfirmation)>,
+        now: i64,
+    ) -> Result<()> {
+        if let Some((row, confirmation)) = confirmation {
+            if confirmation.binding == binding {
+                // The release closed any committed card for this gate.
+                // Keep any newer ledger version written after the snapshot.
+                self.ledger.remove(row)?;
+            }
+        }
+        self.provider_stops
+            .insert((team.id.clone(), member.id.clone()), binding);
+        self.for_row(|a| {
+            a.close_gate(
+                store,
+                team,
+                &format!("unreadable:{}", member.id),
+                ops::CONFIRMATION_CLOSED,
+                now,
+            )
+        })
+    }
+
     /// A reservation can discover the first-send gate after selection. Keep
     /// that first observation on the same named row the next pass carries.
     pub(in crate::desktop::teams::actor) fn first_message_wait(
@@ -61,7 +155,10 @@ impl Runtime {
                 fact.clone(),
                 needs.holders.contains(member),
             );
-            self.for_row(|a| a.hold_write(store, team, (&key, 0, 0), &reason, now))?;
+            // Catalog recovery ends that hold immediately, even when the
+            // archived member still cannot take work until it is restored.
+            let generation = u32::from(*fact == Fact::Archive);
+            self.for_row(|a| a.hold_write(store, team, (&key, 0, generation), &reason, now))?;
         }
         Ok(())
     }
@@ -81,6 +178,7 @@ pub(in crate::desktop::teams::actor) fn sentence(
             Fact::FirstMessage => return format!("Member {member} ({role}) holds an open hand-out of task {node} but is waiting for its first-message readiness. Finish startup in the member's terminal. The service checks readiness again. This card closes when the member can take its hand-out or no longer holds it."),
             Fact::NoHandle => "no durable handle or launch evidence identifies its session",
             Fact::Unavailable => "its session record cannot be read",
+            Fact::Archive => ARCHIVE,
             _ => "its binding cannot be resolved",
         };
         return format!("Member {member} ({role}) holds an open hand-out of task {node} but its binding cannot be read: {what}. The service checks this binding again. This card closes when the member can be read or it no longer holds an open hand-out.");
@@ -126,6 +224,10 @@ pub(in crate::desktop::teams::actor) fn sentence(
         Fact::Gone => (
             "its session no longer exists here",
             "If it was archived, restore it and the member is read again; otherwise archive the member.",
+        ),
+        Fact::Archive => (
+            ARCHIVE,
+            "The service requests catalog repair at most once every five minutes on this computer.",
         ),
         Fact::Changed => (
             "its session now belongs to another launch, agent or folder",

@@ -2,6 +2,7 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use std::path::Component;
 pub(super) const SEED_BYTES: usize = 256 << 10;
+const FIELD_BYTES: usize = 16 << 10;
 // V1 could pair a writer's projection with a different writer's file stamp.
 // Never reuse those rows: bounded repair must observe the canonical bytes.
 const SEED_VERSION: u64 = 4;
@@ -277,6 +278,7 @@ impl Seed {
                 out.insert(key.into(), selected(&record[key], fields)?);
             }
         }
+        let mut child_detail_needs_canonical = false;
         for (key, fields) in [
             ("active_tools", &["name", "detail", "started"][..]),
             (
@@ -332,10 +334,34 @@ impl Seed {
                 let mut result = serde_json::Map::new();
                 for (id, value) in values {
                     anyhow::ensure!(id.len() <= 2048, "Display identity exceeds its bound");
-                    result.insert(id.clone(), selected(value, fields)?);
+                    let child = if key == "subagents"
+                        && value["detail"]
+                            .as_str()
+                            .is_some_and(|text| text.len() > FIELD_BYTES)
+                    {
+                        // Native replies are bounded in characters and may be
+                        // larger than this compact field's byte bound. Retain
+                        // the canonical text; every listing path must read it
+                        // before this incomplete hint can become a public row.
+                        child_detail_needs_canonical = true;
+                        let fields = fields
+                            .iter()
+                            .copied()
+                            .filter(|field| *field != "detail")
+                            .collect::<Vec<_>>();
+                        selected(value, &fields)?
+                    } else {
+                        selected(value, fields)?
+                    };
+                    result.insert(id.clone(), child);
                 }
                 out.insert(key.into(), Value::Object(result));
             }
+        }
+        if child_detail_needs_canonical {
+            let classification = out.get_mut("_listing").expect("projector classification");
+            classification["requires_canonical"] = json!(true);
+            classification["live_public"] = json!(false);
         }
         let mut public = Value::Object(out);
         // These two legacy repairs are pure and bounded by the compact roster.
@@ -411,5 +437,6 @@ fn bounded(value: &Value) -> anyhow::Result<()> {
         *bytes -= length;
         Ok(())
     }
-    visit(value, &mut (16 << 10), &mut 256, 0)
+    let mut bytes = FIELD_BYTES;
+    visit(value, &mut bytes, &mut 256, 0)
 }

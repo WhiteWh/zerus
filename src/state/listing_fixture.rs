@@ -85,7 +85,7 @@ pub(crate) fn launched_record(
         hgs: "/fixture/bin/hgs".into(),
         shell: "/bin/sh".into(),
         startup_kind: "new",
-        launch: Some(launch.to_owned()),
+        launch: (!launch.is_empty()).then(|| launch.to_owned()),
         account: Some(account.to_owned()),
         home: None,
         session: Some(session),
@@ -181,6 +181,27 @@ pub(crate) fn saved_record(name: &str) -> Result<Value> {
     storage::read(name)
 }
 
+/// The accepted hook's main activity update and normal record writer, with
+/// a clock supplied by the fixture that admitted the hand-out.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn record_activity_hook(name: &str, event: &Value, at: f64) -> Result<Value> {
+    let _guard = lock(None)?;
+    let mut record = storage::read(name)?;
+    journal::update_activity_at(&mut record, event, at);
+    storage::write(&mut record)?;
+    Ok(record)
+}
+
+/// Temporarily withhold the saved source without changing its bytes or the
+/// index. Tests use a private root and restore the same source to recover.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn withhold_saved_record(name: &str, withheld: bool) -> Result<()> {
+    let path = storage::label_record_path(name);
+    let held = path.with_extension("withheld");
+    let (from, to) = if withheld { (path, held) } else { (held, path) };
+    std::fs::rename(from, to).map_err(|error| error.to_string())
+}
+
 /// `hgs rename from to`.
 pub(crate) fn rename(from: &str, to: &str) -> Result<()> {
     rename::dispatch(&[from.to_owned(), to.to_owned()], false).map(|_| ())
@@ -190,6 +211,23 @@ pub(crate) fn rename(from: &str, to: &str) -> Result<()> {
 pub(crate) fn archive(record: &Value) -> Result<String> {
     let _guard = lock(None)?;
     archive::save(record)
+}
+
+/// Let native save publish the archive while its incremental catalog
+/// transaction rolls back, leaving the existing SQLite cache in place.
+pub(crate) fn archive_with_catalog_gap(record: &Value) -> Result<String> {
+    if archive_catalog::worker()? != 0 {
+        return Err("The fixture could not initialize the archive catalog".into());
+    }
+    let db = rusqlite::Connection::open(root().join("archive-catalog-v1.sqlite3"))
+        .map_err(|e| e.to_string())?;
+    db.execute_batch(
+        "CREATE TRIGGER fixture_catalog_rollback BEFORE INSERT ON archive_rows
+         BEGIN SELECT RAISE(ABORT, 'fixture catalog publication rollback'); END;",
+    ).map_err(|e| e.to_string())?;
+    let result = archive(record);
+    db.execute_batch("DROP TRIGGER fixture_catalog_rollback;").map_err(|e| e.to_string())?;
+    result
 }
 
 /// The launch's evidence as a detached tracked launch writes it, which first

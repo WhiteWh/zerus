@@ -100,10 +100,112 @@ fn kernel_set(h: &Harness) -> Vec<u32> {
     let team = h.store.team(TEAM).unwrap().unwrap();
     let r = crate::teams::ops::readiness(&h.store, TEAM).unwrap();
     let members = h.store.members(TEAM, 200, None).unwrap().rows;
-    crate::teams::ops::unstaffed::unstaffed_of(&team, &r, &members, &BTreeSet::new())
-        .into_iter()
-        .map(|u| u.node)
-        .collect()
+    crate::teams::ops::unstaffed::unstaffed_of(
+        &team,
+        &r,
+        &members,
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+    )
+    .into_iter()
+    .map(|u| u.node)
+    .collect()
+}
+
+fn unreadable_stage() -> (Harness, u32, u32) {
+    let (mut h, parent, _) = wanted();
+    let stage = created_stage(&mut h, parent);
+    let session = h
+        .store
+        .member(TEAM, "m3")
+        .unwrap()
+        .unwrap()
+        .session
+        .unwrap();
+    for now in [100, 180_100] {
+        let revision = h.store.team(TEAM).unwrap().unwrap().revision;
+        let command = request(
+            revision,
+            Operation::RecordMemberReadability {
+                readings: vec![MemberReading {
+                    member: "m3".into(),
+                    session: session.clone(),
+                    unreadable: true,
+                }],
+            },
+        );
+        apply_fixture(&mut h.store, &service(), &command, now).unwrap();
+    }
+    reconcile(&mut h).unwrap();
+    (h, parent, stage)
+}
+
+#[test]
+fn an_unreadable_reviewer_is_told_to_the_lead_without_retiring_the_stage() {
+    let (mut h, parent, stage) = unreadable_stage();
+    let page = h.store.inbox(TEAM, 200, None).unwrap().rows;
+    let item = page
+        .iter()
+        .find(|item| item.node == stage && item.kind.starts_with("unstaffed:"))
+        .unwrap();
+    assert_eq!(item.state, "open");
+    assert_eq!(
+        item.text,
+        format!("Pipeline stage {stage} is ready. The service cannot read any eligible member (m3). It will check again.")
+    );
+    assert_eq!(stages(&h, parent)[0].id, stage);
+    assert_eq!(run_state(&h, parent), "active");
+    assert_eq!(pending_cancels(&h, stage), 0);
+    let effect = h.intent(stage, "m3");
+    assert_eq!(
+        h.store.open_effects(TEAM, 200, None).unwrap().rows[0].request_id,
+        effect
+    );
+}
+
+#[test]
+#[ignore = "exports the stored stage notice through the client drawer decoder"]
+fn export_unreadable_stage_notice() {
+    use serde_json::Value;
+    use zerus_client_core::actions::Exit;
+    use zerus_client_core::upstream_teams::drawers::{decode, DrawerKind, DrawerRead};
+
+    let (h, _, stage) = unreadable_stage();
+    let page = h.store.inbox(TEAM, 200, None).unwrap();
+    let mut reply: Value = serde_json::from_str(include_str!(
+        "../../../../../crates/team-plan/fixtures/cli-inbox.json"
+    ))
+    .unwrap();
+    reply["rows"] = serde_json::json!(page.rows);
+    let drawer = decode(
+        &DrawerRead {
+            team: TEAM.into(),
+            kind: DrawerKind::Inbox,
+            after: None,
+            recorded_timings: false,
+            timing_seqs: None,
+            timing_next: None,
+        },
+        Exit::Code {
+            code: 0,
+            stdout: serde_json::to_vec(&reply).unwrap(),
+            stderr: String::new(),
+        },
+    )
+    .unwrap();
+    let item = drawer
+        .rows
+        .iter()
+        .find(|item| item.node == Some(u64::from(stage)) && item.kind.starts_with("unstaffed:"))
+        .unwrap();
+    let destination = std::env::var_os("TEAMS81_COMPAT_DIR").unwrap();
+    let mut fixture = serde_json::to_string_pretty(item).unwrap();
+    fixture.push('\n');
+    std::fs::write(
+        std::path::Path::new(&destination).join("unreadable-stage-notice.json"),
+        fixture,
+    )
+    .unwrap();
 }
 
 /// The stage's reviewer is removed after its creation: the reconcile

@@ -1,10 +1,10 @@
 """End to end: a phone exchanges a project's tasks with a computer through the
-Rust relay, the Rust connector and the real hgs
+Rust relay, the Rust connector, the real hgs and the apps' replica bindings
 (docs/superpowers/specs/2026-10-18-task-replication-loro-design.md, "Phone").
 
 hgs runs with a private home, configuration and state; its tmux is a stub that
-fails, and the connector's session listing is answered without it. A second
-hgs state stands in for the phone's replica.
+fails, and the connector's session listing is answered without it. The phone
+opens a private projection store through the same bindings as the apps.
 """
 import asyncio
 import json
@@ -21,8 +21,8 @@ from e2e_connector import COMMAND, REQUIRED, running
 from relay_fixture import start_relay
 
 NATIVE = "ZERUS_TASK_TEST_HGS"
+PHONE = "ZERUS_TASK_TEST_PHONE"
 CATALOG = {"projects": [{"id": "project-1", "name": "orchard", "color": "#123456", "folders": [], "sessions": []}]}
-EMPTY = {"project": {}, "tasks": {}}
 
 
 class TaskExchangeEndToEnd(unittest.IsolatedAsyncioTestCase):
@@ -37,7 +37,6 @@ class TaskExchangeEndToEnd(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         self.computer = self.replica("computer")
-        self.phone_replica = self.replica("phone")
         relay = await start_relay(rust_only=True)
         self.addAsyncCleanup(relay.cleanup)
         self.relay = relay
@@ -96,6 +95,31 @@ class TaskExchangeEndToEnd(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(receipt["state"], "completed", receipt)
         return receipt["result"]
 
+    async def phone_exchange(self, program, *, add=None):
+        args = (add,) if add is not None else ()
+        process = await asyncio.create_subprocess_exec(
+            program, str(self.root / "phone"), "project-1", "orchard", *args,
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE, cwd=self.root, limit=1 << 20,
+        )
+        answers = []
+        try:
+            while line := await asyncio.wait_for(process.stdout.readline(), timeout=30):
+                message = json.loads(line)
+                if "request" not in message:
+                    self.assertEqual(await asyncio.wait_for(process.wait(), timeout=5), 0)
+                    return message, answers
+                answer = await self.exchange(message["request"])
+                answers.append(answer)
+                process.stdin.write(json.dumps(answer).encode() + b"\n")
+                await process.stdin.drain()
+            error = await asyncio.wait_for(process.stderr.read(), timeout=5)
+            self.fail(f"the phone replica stopped before reporting its digest: {error.decode()}")
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+
     def connector(self):
         """The Rust connector of this computer; its session listing comes from a
         wrapper, everything else from the real hgs."""
@@ -111,6 +135,12 @@ class TaskExchangeEndToEnd(unittest.IsolatedAsyncioTestCase):
         return running("rust", config, self.root, self.computer)
 
     async def test_a_phone_exchanges_tasks_through_the_relay_and_the_rust_connector(self):
+        phone_program = os.environ.get(PHONE)
+        if not phone_program:
+            if os.environ.get(REQUIRED) == "1":
+                self.fail(f"{REQUIRED}=1: this suite needs {PHONE} naming the phone replica fixture")
+            self.skipTest(f"{PHONE} names no built phone replica fixture")
+        phone_program = str(Path(phone_program).resolve())
         self.assertIn("task_exchange", (await self.call("GET", "/v1/capabilities"))["operations"])
         self.hgs(self.computer, "task", "add", "--project", "orchard", text="Add rate limiting")
         async with self.connector() as connector:
@@ -124,25 +154,26 @@ class TaskExchangeEndToEnd(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(snapshot["mobile_projects"]["projects"][0]["tasks_digest"], here)
             # An empty phone gets the live task (the project document was never saved).
             [task] = self.hgs(self.computer, "task", "list", "--project", "orchard")["tasks"]
-            answer = await self.exchange({"schema": 1, "project": "project-1", "inventory": EMPTY})
+            received, answers = await self.phone_exchange(phone_program)
+            answer = answers[0]
             self.assertEqual((answer["more"], answer["digest"], answer["refused"]), (False, here, []))
             self.assertEqual([update["task"] for update in answer["updates"]], [task["uuid"]])
-            self.hgs(self.phone_replica, "task", "exchange", "--json",
-                     data={"schema": 1, "project": "project-1", "inventory": EMPTY, "updates": answer["updates"]})
-            self.assertEqual(self.hgs(self.phone_replica, "task", "digests", "--json")["projects"]["project-1"]["digest"],
-                             here)
-            # What the phone files reaches the computer.
-            self.hgs(self.phone_replica, "task", "add", "--project", "orchard", text="Filed on the phone")
-            held = self.hgs(self.phone_replica, "task", "exchange", "--json",
-                            data={"schema": 1, "project": "project-1", "inventory": EMPTY})
-            answer = await self.exchange({"schema": 1, "project": "project-1", "inventory": EMPTY,
-                                          "updates": held["updates"]})
-            self.assertGreaterEqual(answer["imported"], 1)
+            self.assertEqual(received["changed"], 1)
+            self.assertEqual(received["tasks"], [{
+                "uuid": task["uuid"], "text": "Add rate limiting", "writable": False, "schema": task["schema"],
+            }])
+            self.assertEqual(received["digest"], here)
+            # File through the app's local writer, then send what the computer lacks.
+            after, answers = await self.phone_exchange(phone_program, add="Filed on the phone")
+            self.assertEqual(sum(answer["imported"] for answer in answers), 1)
+            filed = next(task for task in after["tasks"] if task["text"] == "Filed on the phone")
             tasks = self.hgs(self.computer, "task", "list", "--project", "orchard")["tasks"]
-            self.assertEqual(sorted(task["text"] for task in tasks), ["Add rate limiting", "Filed on the phone"])
+            self.assertEqual({row["uuid"]: row["text"] for row in tasks},
+                             {task["uuid"]: "Add rate limiting", filed["uuid"]: "Filed on the phone"})
             # The computer's next heartbeat names the new digest.
             changed = self.hgs(self.computer, "task", "digests", "--json")["projects"]["project-1"]["digest"]
             self.assertNotEqual(changed, here)
+            self.assertEqual(after["digest"], changed)
             await self.computer_snapshot(
                 lambda snapshot: snapshot["mobile_projects"]["projects"][0].get("tasks_digest") == changed,
                 "the changed tasks digest")

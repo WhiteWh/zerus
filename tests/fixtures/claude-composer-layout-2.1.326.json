@@ -1,0 +1,1026 @@
+{
+"producer": "Claude Code 2.1.326, private HOME, localhost API, tmux paste-buffer -p -r, capture-pane -p",
+"cases": [
+{
+"name": "tall",
+"columns": 80,
+"text": "<zerus-message from=\"claude/example-work-ab12cd34/peer-k\" host=\"arch\" reference=\"zerus://session?machine=00000000-1111-4222-8333-444444444444&amp;host=arch&amp;name=claude%2Fexample-work-ab12cd34%2Fpeer-k&amp;conversation=11111111-2222-4333-8444-555555555555&amp;run=22222222-3333-4444-8555-666666666666\">\nK → mastery-claim: верно, спасибо — мой фильтр по original_key был пустым. Твой запрос (RO, 19:44 MSK): mastery:1 completed 42 = event_catalog_claim 42; mastery:3 completed 11 = 11; других state нет — зависших холдов нет. Вопрос закрыт.\n</zerus-message>",
+"rows": [
+"<zerus-message from=\"claude/example-work-ab12cd34/peer-k\" host=\"arch\"",
+"reference=\"zerus://session?machine=00000000-1111-4222-8333-444444444444&amp;",
+"host=arch&amp;name=claude%2Fexample-work-ab12cd34%2Fpeer-k&amp;conversation=",
+"11111111-2222-4333-8444-555555555555&amp;run=22222222-3333-4444-8555-6666666",
+"66666\">",
+"K → mastery-claim: верно, спасибо — мой фильтр по original_key был пустым.",
+"Твой запрос (RO, 19:44 MSK): mastery:1 completed 42 = event_catalog_claim",
+"42; mastery:3 completed 11 = 11; других state нет — зависших холдов нет.",
+"Вопрос закрыт.",
+"</zerus-message>"
+],
+"cursor": [
+18,
+9
+]
+},
+{
+"name": "exact-fit-then-space",
+"columns": 80,
+"text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx abcde tail of the second row continues with words",
+"rows": [
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx abcde",
+"tail of the second row continues with words"
+],
+"cursor": [
+45,
+1
+]
+},
+{
+"name": "exact-full-row-word",
+"columns": 80,
+"text": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy after a full-width word",
+"rows": [
+"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+"after a full-width word"
+],
+"cursor": [
+25,
+1
+]
+},
+{
+"name": "word-77",
+"columns": 80,
+"text": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz after",
+"rows": [
+"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+"z after"
+],
+"cursor": [
+9,
+1
+]
+},
+{
+"name": "word-152",
+"columns": 80,
+"text": "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq after",
+"rows": [
+"qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+"qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+"after"
+],
+"cursor": [
+7,
+2
+]
+},
+{
+"name": "word-153-mid",
+"columns": 80,
+"text": "start wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww end",
+"rows": [
+"start wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+"wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+"wwwwwww end"
+],
+"cursor": [
+13,
+2
+]
+},
+{
+"name": "double-spaces",
+"columns": 80,
+"text": "alpha  beta   gamma    delta alpha  beta   gamma    delta alpha  beta   gamma    delta alpha  beta   gamma    delta alpha  beta   gamma    delta alpha  beta   gamma    delta",
+"rows": [
+"alpha  beta   gamma    delta alpha  beta   gamma    delta alpha  beta",
+"gamma    delta alpha  beta   gamma    delta alpha  beta   gamma    delta",
+"alpha  beta   gamma    delta"
+],
+"cursor": [
+30,
+2
+]
+},
+{
+"name": "spaces-at-boundary",
+"columns": 80,
+"text": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv    next words after four spaces",
+"rows": [
+"vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+"next words after four spaces"
+],
+"cursor": [
+30,
+1
+]
+},
+{
+"name": "leading-trailing",
+"columns": 80,
+"text": "   indented start of the first line with words to wrap the row beyond its width maybe   \nsecond line   ",
+"rows": [
+"   indented start of the first line with words to wrap the row beyond its",
+"width maybe",
+"second line"
+],
+"cursor": [
+16,
+2
+]
+},
+{
+"name": "blank-middle",
+"columns": 80,
+"text": "first line words first line words first line words first line words first line words first line words\n\nthird line words third line words third line words third line words third line words third line words",
+"rows": [
+"first line words first line words first line words first line words first",
+"line words first line words",
+"",
+"third line words third line words third line words third line words third",
+"line words third line words"
+],
+"cursor": [
+29,
+4
+]
+},
+{
+"name": "wide-cjk-emoji",
+"columns": 80,
+"text": "✅ Готово: 漢字テスト漢字テスト漢字テスト 漢字 ✅ Готово: 漢字テスト漢字テスト漢字テスト 漢字 ✅ Готово: 漢字テスト漢字テスト漢字テスト 漢字 конец",
+"rows": [
+"✅ Готово: 漢字テスト漢字テスト漢字テスト 漢字 ✅ Готово:",
+"漢字テスト漢字テスト漢字テスト 漢字 ✅ Готово:",
+"漢字テスト漢字テスト漢字テスト 漢字 конец"
+],
+"cursor": [
+43,
+2
+]
+},
+{
+"name": "wide-boundary",
+"columns": 80,
+"text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 漢字テスト 漢 漢 漢 漢 漢 漢 漢 漢 漢 漢",
+"rows": [
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+"漢字テスト 漢 漢 漢 漢 漢 漢 漢 漢 漢 漢"
+],
+"cursor": [
+42,
+1
+]
+},
+{
+"name": "long-wide-word",
+"columns": 80,
+"text": "漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢",
+"rows": [
+"漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢漢",
+"漢漢漢漢漢漢漢漢漢漢漢漢"
+],
+"cursor": [
+26,
+1
+]
+},
+{
+"name": "full-last-row",
+"columns": 80,
+"text": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word ",
+"rows": [
+"word word word word word word word word word word word word word word word",
+"word word word word word word word word word word word word word word word"
+],
+"cursor": [
+77,
+1
+]
+},
+{
+"name": "trailing-newline",
+"columns": 80,
+"text": "Continue the fixture with a long enough line to wrap past one row of the composer here\\\n",
+"rows": [
+"Continue the fixture with a long enough line to wrap past one row of the",
+"composer here\\",
+""
+],
+"cursor": [
+2,
+2
+]
+},
+{
+"name": "hyphens",
+"columns": 80,
+"text": "well-known self-explanatory multi-part-hyphenated-identifier well-known self-explanatory multi-part-hyphenated-identifier well-known self-explanatory multi-part-hyphenated-identifier well-known self-explanatory multi-part-hyphenated-identifier",
+"rows": [
+"well-known self-explanatory multi-part-hyphenated-identifier well-known",
+"self-explanatory multi-part-hyphenated-identifier well-known",
+"self-explanatory multi-part-hyphenated-identifier well-known",
+"self-explanatory multi-part-hyphenated-identifier"
+],
+"cursor": [
+51,
+3
+]
+},
+{
+"name": "url-after-words",
+"columns": 80,
+"text": "see the report at https://example.com/path/segment-path/segment-path/segment-path/segment-path/segment-path/segment-path/segment-path/segment-path/segment-path/segment-path/segment-path/segment-end and more words after it",
+"rows": [
+"see the report at https://example.com/path/segment-path/segment-path/segment",
+"-path/segment-path/segment-path/segment-path/segment-path/segment-path/segme",
+"nt-path/segment-path/segment-path/segment-end and more words after it"
+],
+"cursor": [
+71,
+2
+]
+},
+{
+"name": "disc-full-then-76",
+"columns": 80,
+"text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbb tail",
+"rows": [
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+"bbbbb tail"
+],
+"cursor": [
+12,
+2
+]
+},
+{
+"name": "disc-full-then-long",
+"columns": 80,
+"text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq end",
+"rows": [
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+"qqqqqqqqqqqqqqqqqqqqqqqqq end"
+],
+"cursor": [
+31,
+2
+]
+},
+{
+"name": "disc-spaces-then-76",
+"columns": 80,
+"text": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbb tail",
+"rows": [
+"vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+"bbbbb tail"
+],
+"cursor": [
+12,
+2
+]
+},
+{
+"name": "disc-wrap-then-76",
+"columns": 80,
+"text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx abcde aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbb tail",
+"rows": [
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx abcde",
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+"bbbbb tail"
+],
+"cursor": [
+12,
+2
+]
+},
+{
+"name": "disc-long-after-wrapword",
+"columns": 80,
+"text": "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbb tail",
+"rows": [
+"qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+"qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+"bbbbb tail"
+],
+"cursor": [
+12,
+3
+]
+},
+{
+"name": "space-only-row",
+"columns": 80,
+"text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                                                                                 end",
+"rows": [
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"",
+"end"
+],
+"cursor": [
+5,
+2
+]
+},
+{
+"name": "random-0",
+"columns": 80,
+"text": "запрос завершён сессия фильтр агент проверка сессия завершён окно MSK): отправка вставка вставка завершён сессия запрос верно завершён спасибо спасибо запрос проверка https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx сессия фильтр верно окно сессия спасибо спасибо верно\nhttps://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx запрос сообщение отправка агент завершён верно сообщение проверка запрос https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx вставка вставка отправка отправка https://example.com/xxxxxxxxxxxxxxxxxxxxx",
+"rows": [
+"запрос завершён сессия фильтр агент проверка сессия завершён окно MSK):",
+"отправка вставка вставка завершён сессия запрос верно завершён спасибо",
+"спасибо запрос проверка https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx сессия фильтр верно окно",
+"сессия спасибо спасибо верно",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx запрос",
+"сообщение отправка агент завершён верно сообщение проверка запрос",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxx вставка вставка отправка отправка",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxx"
+],
+"cursor": [
+43,
+9
+]
+},
+{
+"name": "random-1",
+"columns": 80,
+"text": "composer window window exactly proof terminal message terminal composer message settle window terminal settle receipt of the report receipt → review report — once the fixture report fixture the review agent terminal exactly the the exactly terminal fixture change exactly session report fixture message fixture exactly paste agent https://example.com/xxxxxxxxxxxxx 19:44 session the proof session of proof settle 42; proof proof https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx fixture proof report exactly review window composer proof window proof paste change paste review change proof message fixture change once fixture receipt proof receipt proof https://example.com/xxxxxxxxxxxxxxxxxxxxxx paste once message send paste agent the exactly",
+"rows": [
+"composer window window exactly proof terminal message terminal composer",
+"message settle window terminal settle receipt of the report receipt → review",
+"report — once the fixture report fixture the review agent terminal exactly",
+"the the exactly terminal fixture change exactly session report fixture",
+"message fixture exactly paste agent https://example.com/xxxxxxxxxxxxx 19:44",
+"session the proof session of proof settle 42; proof proof",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx fixture proof",
+"report exactly review window composer proof window proof paste change paste",
+"review change proof message fixture change once fixture receipt proof",
+"receipt proof https://example.com/xxxxxxxxxxxxxxxxxxxxxx paste once message",
+"send paste agent the exactly"
+],
+"cursor": [
+30,
+10
+]
+},
+{
+"name": "random-2",
+"columns": 80,
+"text": "верно завершён запрос верно запрос сообщение проверка спасибо сообщение сессия окно окно агент окно верно спасибо сессия верно завершён MSK): проверка сообщение окно завершён верно сессия вставка спасибо завершён MSK): вставка фильтр фильтр отправка проверка завершён окно завершён спасибо вставка проверка фильтр окно запрос окно агент сессия окно спасибо https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"rows": [
+"верно завершён запрос верно запрос сообщение проверка спасибо сообщение",
+"сессия окно окно агент окно верно спасибо сессия верно завершён MSK):",
+"проверка сообщение окно завершён верно сессия вставка спасибо завершён MSK):",
+"вставка фильтр фильтр отправка проверка завершён окно завершён спасибо",
+"вставка проверка фильтр окно запрос окно агент сессия окно спасибо",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+],
+"cursor": [
+36,
+6
+]
+},
+{
+"name": "random-3",
+"columns": 80,
+"text": "terminal session terminal settle session report report message send send exactly the receipt window send paste review fixture composer terminal settle once fixture fixture terminal agent fixture https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx proof exactly 19:44 terminal the 19:44 session agent change\nwindow send send change https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx session proof agent once message composer the message window paste exactly review once proof settle message terminal terminal change settle review composer proof agent once 42;",
+"rows": [
+"terminal session terminal settle session report report message send send",
+"exactly the receipt window send paste review fixture composer terminal",
+"settle once fixture fixture terminal agent fixture",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx proof exactly 19:44",
+"terminal the 19:44 session agent change",
+"window send send change https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx session proof agent once",
+"message composer the message window paste exactly review once proof settle",
+"message terminal terminal change settle review composer proof agent once 42;"
+],
+"cursor": [
+78,
+8
+]
+},
+{
+"name": "random-4",
+"columns": 80,
+"text": "окно сессия окно завершён агент фильтр верно окно агент сообщение агент проверка https://example.com/xxxxxxxxxx агент проверка 42; фильтр проверка https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx проверка фильтр сессия вставка сообщение вставка отправка завершён фильтр проверка отправка 42; агент фильтр ✅ спасибо фильтр верно отправка окно верно окно вставка сообщение агент спасибо сессия отправка сообщение проверка сообщение",
+"rows": [
+"окно сессия окно завершён агент фильтр верно окно агент сообщение агент",
+"проверка https://example.com/xxxxxxxxxx агент проверка 42; фильтр проверка",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx https://example.com/xxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx проверка фильтр сессия",
+"вставка сообщение вставка отправка завершён фильтр проверка отправка 42;",
+"агент фильтр ✅ спасибо фильтр верно отправка окно верно окно вставка",
+"сообщение агент спасибо сессия отправка сообщение проверка сообщение"
+],
+"cursor": [
+70,
+7
+]
+},
+{
+"name": "random-5",
+"columns": 80,
+"text": "paste review settle once proof message terminal https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx the https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx session window exactly settle of change review terminal window 19:44 proof message https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx of fixture window proof fixture exactly of fixture settle session window message window https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx settle review receipt agent composer session proof 42; https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"rows": [
+"paste review settle once proof message terminal https://example.com/xxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx the",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx session window exactly settle of",
+"change review terminal window 19:44 proof message https://example.com/xxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx of fixture window proof",
+"fixture exactly of fixture settle session window message window",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"settle review receipt agent composer session proof 42;",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+],
+"cursor": [
+62,
+9
+]
+},
+{
+"name": "random-6",
+"columns": 80,
+"text": "спасибо завершён агент сессия окно вставка проверка 42; завершён спасибо сессия спасибо фильтр https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nагент отправка окно окно отправка верно запрос верно сообщение отправка запрос верно сессия окно окно спасибо верно верно вставка фильтр запрос запрос https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"rows": [
+"спасибо завершён агент сессия окно вставка проверка 42; завершён спасибо",
+"сессия спасибо фильтр",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"агент отправка окно окно отправка верно запрос верно сообщение отправка",
+"запрос верно сессия окно окно спасибо верно верно вставка фильтр запрос",
+"запрос https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+],
+"cursor": [
+58,
+6
+]
+},
+{
+"name": "random-7",
+"columns": 80,
+"text": "exactly composer of proof proof review composer receipt session composer fixture review change terminal proof the receipt review settle send review https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx session message window exactly change proof settle terminal receipt proof change send message session report send composer exactly receipt change paste https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"rows": [
+"exactly composer of proof proof review composer receipt session composer",
+"fixture review change terminal proof the receipt review settle send review",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxx session message window exactly change proof settle",
+"terminal receipt proof change send message session report send composer",
+"exactly receipt change paste",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+],
+"cursor": [
+62,
+7
+]
+},
+{
+"name": "random-8",
+"columns": 80,
+"text": "сообщение отправка фильтр сессия сообщение вставка вставка MSK): фильтр вставка запрос https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx агент фильтр завершён верно сессия проверка агент сессия вставка запрос сессия сессия запрос завершён запрос запрос отправка агент запрос проверка → запрос фильтр агент проверка окно отправка завершён окно агент агент вставка спасибо окно",
+"rows": [
+"сообщение отправка фильтр сессия сообщение вставка вставка MSK): фильтр",
+"вставка запрос https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx агент фильтр завершён верно сессия",
+"проверка агент сессия вставка запрос сессия сессия запрос завершён запрос",
+"запрос отправка агент запрос проверка → запрос фильтр агент проверка окно",
+"отправка завершён окно агент агент вставка спасибо окно"
+],
+"cursor": [
+57,
+5
+]
+},
+{
+"name": "random-9",
+"columns": 80,
+"text": "https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx send of proof the settle of change session https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\npaste agent receipt settle settle fixture composer composer report once terminal change agent receipt terminal review terminal settle window change agent of once of message the report send report the",
+"rows": [
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxx send of proof the settle of change session",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"paste agent receipt settle settle fixture composer composer report once",
+"terminal change agent receipt terminal review terminal settle window change",
+"agent of once of message the report send report the"
+],
+"cursor": [
+53,
+6
+]
+},
+{
+"name": "random-10",
+"columns": 80,
+"text": "проверка агент отправка спасибо фильтр https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx фильтр спасибо проверка спасибо сообщение агент завершён завершён окно вставка отправка спасибо верно запрос запрос проверка сообщение окно сессия https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx окно завершён сессия https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx верно агент окно верно отправка отправка ✅ верно вставка вставка отправка https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"rows": [
+"проверка агент отправка спасибо фильтр https://example.com/xxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx фильтр",
+"спасибо проверка спасибо сообщение агент завершён завершён окно вставка",
+"отправка спасибо верно запрос запрос проверка сообщение окно сессия",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx окно",
+"завершён сессия https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx верно",
+"агент окно верно отправка отправка ✅ верно вставка вставка отправка",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+],
+"cursor": [
+51,
+9
+]
+},
+{
+"name": "random-11",
+"columns": 80,
+"text": "of send settle exactly terminal terminal report fixture paste https://example.com/xxxxxxxxxx report proof https://example.com/xxxxxxxxxxxxxxxxxx 19:44 exactly once review session send agent change receipt change review window once session window window receipt proof composer terminal proof review the window",
+"rows": [
+"of send settle exactly terminal terminal report fixture paste",
+"https://example.com/xxxxxxxxxx report proof",
+"https://example.com/xxxxxxxxxxxxxxxxxx 19:44 exactly once review session",
+"send agent change receipt change review window once session window window",
+"receipt proof composer terminal proof review the window"
+],
+"cursor": [
+57,
+4
+]
+},
+{
+"name": "random-12",
+"columns": 80,
+"text": "отправка верно отправка окно фильтр отправка верно запрос окно завершён верно верно https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx сессия отправка фильтр агент завершён сообщение верно проверка проверка сообщение проверка фильтр вставка верно сообщение агент сообщение окно запрос ✅ проверка отправка вставка проверка запрос запрос\nзапрос агент агент завершён завершён завершён сообщение окно проверка вставка отправка окно вставка верно запрос верно проверка запрос (RO, окно вставка отправка отправка фильтр спасибо отправка проверка сообщение сообщение отправка отправка отправка завершён сообщение запрос проверка → отправка фильтр проверка отправка верно вставка верно сообщение спасибо спасибо",
+"rows": [
+"отправка верно отправка окно фильтр отправка верно запрос окно завершён",
+"верно верно https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxx сессия отправка фильтр агент завершён сообщение верно",
+"проверка проверка сообщение проверка фильтр вставка верно сообщение агент",
+"сообщение окно запрос ✅ проверка отправка вставка проверка запрос запрос",
+"запрос агент агент завершён завершён завершён сообщение окно проверка",
+"вставка отправка окно вставка верно запрос верно проверка запрос (RO, окно",
+"вставка отправка отправка фильтр спасибо отправка проверка сообщение",
+"сообщение отправка отправка отправка завершён сообщение запрос проверка →",
+"отправка фильтр проверка отправка верно вставка верно сообщение спасибо",
+"спасибо"
+],
+"cursor": [
+9,
+10
+]
+},
+{
+"name": "random-13",
+"columns": 80,
+"text": "composer once MSK): once https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx once terminal change change report of agent change paste proof window the proof change https://example.com/xxxxxxxxxxxxxxxxxxxx terminal change exactly settle of exactly once session window message proof review terminal agent of change message agent terminal session 19:44 session settle https://example.com/xxxxxxxxxxxxxxxxxxxxxxx paste https://example.com/xxxxxxxxxxxxxxxxxxxxx",
+"rows": [
+"composer once MSK): once https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx once terminal change change report of agent",
+"change paste proof window the proof change",
+"https://example.com/xxxxxxxxxxxxxxxxxxxx terminal change exactly settle of",
+"exactly once session window message proof review terminal agent of change",
+"message agent terminal session 19:44 session settle",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxx paste",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxx"
+],
+"cursor": [
+43,
+7
+]
+},
+{
+"name": "last-row-exact-word",
+"columns": 80,
+"text": "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp",
+"rows": [
+"pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
+],
+"cursor": [
+78,
+0
+]
+},
+{
+"name": "last-row-exact-words",
+"columns": 80,
+"text": "word word word word word word word word word word word word word word word abcd xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"rows": [
+"word word word word word word word word word word word word word word word",
+"abcd",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+],
+"cursor": [
+78,
+2
+]
+},
+{
+"name": "last-row-exact-after-wrap",
+"columns": 80,
+"text": "alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma zzzzzzzzzzzzzzzzzzzz zzzzzzzzzzzzzzzzzzzz zzzzzzzzzzzzzzzzzzzz yyyyyyyyyyyyy",
+"rows": [
+"alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma alpha",
+"beta gamma zzzzzzzzzzzzzzzzzzzz zzzzzzzzzzzzzzzzzzzz zzzzzzzzzzzzzzzzzzzz",
+"yyyyyyyyyyyyy"
+],
+"cursor": [
+15,
+2
+]
+},
+{
+"name": "last-row-exact-wide",
+"columns": 80,
+"text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 漢字漢字漢字漢",
+"rows": [
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+"漢字漢字漢字漢"
+],
+"cursor": [
+16,
+1
+]
+},
+{
+"name": "wide-at-75",
+"columns": 80,
+"text": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb漢x",
+"rows": [
+"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+"漢x"
+],
+"cursor": [
+5,
+1
+]
+},
+{
+"name": "line-exact-then-newline",
+"columns": 80,
+"text": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\nsecond line\nthird",
+"rows": [
+"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+"second line",
+"third"
+],
+"cursor": [
+7,
+2
+]
+},
+{
+"name": "line-exact-words-then-newline",
+"columns": 80,
+"text": "word word word word word word word word word word word word word word word abcd\nsecond",
+"rows": [
+"word word word word word word word word word word word word word word word",
+"abcd",
+"second"
+],
+"cursor": [
+8,
+2
+]
+},
+{
+"name": "disc-full-then-76",
+"columns": 100,
+"text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbb tail",
+"rows": [
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbb tail"
+],
+"cursor": [
+83,
+1
+]
+},
+{
+"name": "disc-full-then-long",
+"columns": 100,
+"text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq end",
+"rows": [
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx qqqqqqqqqqqqqqqqqqq",
+"qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq end"
+],
+"cursor": [
+87,
+1
+]
+},
+{
+"name": "disc-spaces-then-76",
+"columns": 100,
+"text": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbb tail",
+"rows": [
+"vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbb tail"
+],
+"cursor": [
+83,
+1
+]
+},
+{
+"name": "disc-wrap-then-76",
+"columns": 100,
+"text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx abcde aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbb tail",
+"rows": [
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx abcde",
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbb tail"
+],
+"cursor": [
+83,
+1
+]
+},
+{
+"name": "disc-long-after-wrapword",
+"columns": 100,
+"text": "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbb tail",
+"rows": [
+"qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+"qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbb tail"
+],
+"cursor": [
+83,
+2
+]
+},
+{
+"name": "space-only-row",
+"columns": 100,
+"text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                                                                                 end",
+"rows": [
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"end"
+],
+"cursor": [
+5,
+1
+]
+},
+{
+"name": "random-0",
+"columns": 100,
+"text": "запрос завершён сессия фильтр агент проверка сессия завершён окно MSK): отправка вставка вставка завершён сессия запрос верно завершён спасибо спасибо запрос проверка https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx сессия фильтр верно окно сессия спасибо спасибо верно\nhttps://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx запрос сообщение отправка агент завершён верно сообщение проверка запрос https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx вставка вставка отправка отправка https://example.com/xxxxxxxxxxxxxxxxxxxxx",
+"rows": [
+"запрос завершён сессия фильтр агент проверка сессия завершён окно MSK): отправка вставка вставка",
+"завершён сессия запрос верно завершён спасибо спасибо запрос проверка https://example.com/xxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx сессия фильтр верно",
+"окно сессия спасибо спасибо верно",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx запрос сообщение отправка",
+"агент завершён верно сообщение проверка запрос https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx вставка вставка отправка отправка",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxx"
+],
+"cursor": [
+43,
+7
+]
+},
+{
+"name": "random-1",
+"columns": 100,
+"text": "composer window window exactly proof terminal message terminal composer message settle window terminal settle receipt of the report receipt → review report — once the fixture report fixture the review agent terminal exactly the the exactly terminal fixture change exactly session report fixture message fixture exactly paste agent https://example.com/xxxxxxxxxxxxx 19:44 session the proof session of proof settle 42; proof proof https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx fixture proof report exactly review window composer proof window proof paste change paste review change proof message fixture change once fixture receipt proof receipt proof https://example.com/xxxxxxxxxxxxxxxxxxxxxx paste once message send paste agent the exactly",
+"rows": [
+"composer window window exactly proof terminal message terminal composer message settle window",
+"terminal settle receipt of the report receipt → review report — once the fixture report fixture",
+"the review agent terminal exactly the the exactly terminal fixture change exactly session report",
+"fixture message fixture exactly paste agent https://example.com/xxxxxxxxxxxxx 19:44 session the",
+"proof session of proof settle 42; proof proof",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx fixture proof report exactly review",
+"window composer proof window proof paste change paste review change proof message fixture",
+"change once fixture receipt proof receipt proof https://example.com/xxxxxxxxxxxxxxxxxxxxxx paste",
+"once message send paste agent the exactly"
+],
+"cursor": [
+43,
+8
+]
+},
+{
+"name": "random-2",
+"columns": 100,
+"text": "верно завершён запрос верно запрос сообщение проверка спасибо сообщение сессия окно окно агент окно верно спасибо сессия верно завершён MSK): проверка сообщение окно завершён верно сессия вставка спасибо завершён MSK): вставка фильтр фильтр отправка проверка завершён окно завершён спасибо вставка проверка фильтр окно запрос окно агент сессия окно спасибо https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"rows": [
+"верно завершён запрос верно запрос сообщение проверка спасибо сообщение сессия окно окно агент",
+"окно верно спасибо сессия верно завершён MSK): проверка сообщение окно завершён верно сессия",
+"вставка спасибо завершён MSK): вставка фильтр фильтр отправка проверка завершён окно завершён",
+"спасибо вставка проверка фильтр окно запрос окно агент сессия окно спасибо https://example.com/x",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+],
+"cursor": [
+91,
+4
+]
+},
+{
+"name": "random-3",
+"columns": 100,
+"text": "terminal session terminal settle session report report message send send exactly the receipt window send paste review fixture composer terminal settle once fixture fixture terminal agent fixture https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx proof exactly 19:44 terminal the 19:44 session agent change\nwindow send send change https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx session proof agent once message composer the message window paste exactly review once proof settle message terminal terminal change settle review composer proof agent once 42;",
+"rows": [
+"terminal session terminal settle session report report message send send exactly the receipt",
+"window send paste review fixture composer terminal settle once fixture fixture terminal agent",
+"fixture https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx proof exactly 19:44 terminal",
+"the 19:44 session agent change",
+"window send send change https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxx session proof agent once message composer the message window paste",
+"exactly review once proof settle message terminal terminal change settle review composer proof",
+"agent once 42;"
+],
+"cursor": [
+16,
+7
+]
+},
+{
+"name": "random-4",
+"columns": 100,
+"text": "окно сессия окно завершён агент фильтр верно окно агент сообщение агент проверка https://example.com/xxxxxxxxxx агент проверка 42; фильтр проверка https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx проверка фильтр сессия вставка сообщение вставка отправка завершён фильтр проверка отправка 42; агент фильтр ✅ спасибо фильтр верно отправка окно верно окно вставка сообщение агент спасибо сессия отправка сообщение проверка сообщение",
+"rows": [
+"окно сессия окно завершён агент фильтр верно окно агент сообщение агент проверка",
+"https://example.com/xxxxxxxxxx агент проверка 42; фильтр проверка https://example.com/xxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"проверка фильтр сессия вставка сообщение вставка отправка завершён фильтр проверка отправка 42;",
+"агент фильтр ✅ спасибо фильтр верно отправка окно верно окно вставка сообщение агент спасибо",
+"сессия отправка сообщение проверка сообщение"
+],
+"cursor": [
+46,
+6
+]
+},
+{
+"name": "random-5",
+"columns": 100,
+"text": "paste review settle once proof message terminal https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx the https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx session window exactly settle of change review terminal window 19:44 proof message https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx of fixture window proof fixture exactly of fixture settle session window message window https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx settle review receipt agent composer session proof 42; https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"rows": [
+"paste review settle once proof message terminal",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx the",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxx session window exactly settle of change review terminal window 19:44 proof",
+"message https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx of fixture",
+"window proof fixture exactly of fixture settle session window message window",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx settle review",
+"receipt agent composer session proof 42;",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+],
+"cursor": [
+62,
+8
+]
+},
+{
+"name": "random-6",
+"columns": 100,
+"text": "спасибо завершён агент сессия окно вставка проверка 42; завершён спасибо сессия спасибо фильтр https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nагент отправка окно окно отправка верно запрос верно сообщение отправка запрос верно сессия окно окно спасибо верно верно вставка фильтр запрос запрос https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"rows": [
+"спасибо завершён агент сессия окно вставка проверка 42; завершён спасибо сессия спасибо фильтр",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"агент отправка окно окно отправка верно запрос верно сообщение отправка запрос верно сессия окно",
+"окно спасибо верно верно вставка фильтр запрос запрос",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+],
+"cursor": [
+51,
+5
+]
+},
+{
+"name": "random-7",
+"columns": 100,
+"text": "exactly composer of proof proof review composer receipt session composer fixture review change terminal proof the receipt review settle send review https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx session message window exactly change proof settle terminal receipt proof change send message session report send composer exactly receipt change paste https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"rows": [
+"exactly composer of proof proof review composer receipt session composer fixture review change",
+"terminal proof the receipt review settle send review https://example.com/xxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx session message window exactly change",
+"proof settle terminal receipt proof change send message session report send composer exactly",
+"receipt change paste https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+],
+"cursor": [
+63,
+5
+]
+},
+{
+"name": "random-8",
+"columns": 100,
+"text": "сообщение отправка фильтр сессия сообщение вставка вставка MSK): фильтр вставка запрос https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx агент фильтр завершён верно сессия проверка агент сессия вставка запрос сессия сессия запрос завершён запрос запрос отправка агент запрос проверка → запрос фильтр агент проверка окно отправка завершён окно агент агент вставка спасибо окно",
+"rows": [
+"сообщение отправка фильтр сессия сообщение вставка вставка MSK): фильтр вставка запрос https://e",
+"xample.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx агент",
+"фильтр завершён верно сессия проверка агент сессия вставка запрос сессия сессия запрос завершён",
+"запрос запрос отправка агент запрос проверка → запрос фильтр агент проверка окно отправка",
+"завершён окно агент агент вставка спасибо окно"
+],
+"cursor": [
+48,
+4
+]
+},
+{
+"name": "random-9",
+"columns": 100,
+"text": "https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx send of proof the settle of change session https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\npaste agent receipt settle settle fixture composer composer report once terminal change agent receipt terminal review terminal settle window change agent of once of message the report send report the",
+"rows": [
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxx send of proof the settle of change session https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"paste agent receipt settle settle fixture composer composer report once terminal change agent",
+"receipt terminal review terminal settle window change agent of once of message the report send",
+"report the"
+],
+"cursor": [
+12,
+5
+]
+},
+{
+"name": "random-10",
+"columns": 100,
+"text": "проверка агент отправка спасибо фильтр https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx фильтр спасибо проверка спасибо сообщение агент завершён завершён окно вставка отправка спасибо верно запрос запрос проверка сообщение окно сессия https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx окно завершён сессия https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx верно агент окно верно отправка отправка ✅ верно вставка вставка отправка https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"rows": [
+"проверка агент отправка спасибо фильтр https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx фильтр спасибо проверка спасибо сообщение агент",
+"завершён завершён окно вставка отправка спасибо верно запрос запрос проверка сообщение окно",
+"сессия https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx окно завершён сессия",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx верно агент окно верно отправка отправка ✅ верно вставка",
+"вставка отправка https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+],
+"cursor": [
+48,
+7
+]
+},
+{
+"name": "random-11",
+"columns": 100,
+"text": "of send settle exactly terminal terminal report fixture paste https://example.com/xxxxxxxxxx report proof https://example.com/xxxxxxxxxxxxxxxxxx 19:44 exactly once review session send agent change receipt change review window once session window window receipt proof composer terminal proof review the window",
+"rows": [
+"of send settle exactly terminal terminal report fixture paste https://example.com/xxxxxxxxxx",
+"report proof https://example.com/xxxxxxxxxxxxxxxxxx 19:44 exactly once review session send agent",
+"change receipt change review window once session window window receipt proof composer terminal",
+"proof review the window"
+],
+"cursor": [
+25,
+3
+]
+},
+{
+"name": "random-12",
+"columns": 100,
+"text": "отправка верно отправка окно фильтр отправка верно запрос окно завершён верно верно https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx сессия отправка фильтр агент завершён сообщение верно проверка проверка сообщение проверка фильтр вставка верно сообщение агент сообщение окно запрос ✅ проверка отправка вставка проверка запрос запрос\nзапрос агент агент завершён завершён завершён сообщение окно проверка вставка отправка окно вставка верно запрос верно проверка запрос (RO, окно вставка отправка отправка фильтр спасибо отправка проверка сообщение сообщение отправка отправка отправка завершён сообщение запрос проверка → отправка фильтр проверка отправка верно вставка верно сообщение спасибо спасибо",
+"rows": [
+"отправка верно отправка окно фильтр отправка верно запрос окно завершён верно верно",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx сессия",
+"отправка фильтр агент завершён сообщение верно проверка проверка сообщение проверка фильтр",
+"вставка верно сообщение агент сообщение окно запрос ✅ проверка отправка вставка проверка запрос",
+"запрос",
+"запрос агент агент завершён завершён завершён сообщение окно проверка вставка отправка окно",
+"вставка верно запрос верно проверка запрос (RO, окно вставка отправка отправка фильтр спасибо",
+"отправка проверка сообщение сообщение отправка отправка отправка завершён сообщение запрос",
+"проверка → отправка фильтр проверка отправка верно вставка верно сообщение спасибо спасибо"
+],
+"cursor": [
+92,
+8
+]
+},
+{
+"name": "random-13",
+"columns": 100,
+"text": "composer once MSK): once https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx once terminal change change report of agent change paste proof window the proof change https://example.com/xxxxxxxxxxxxxxxxxxxx terminal change exactly settle of exactly once session window message proof review terminal agent of change message agent terminal session 19:44 session settle https://example.com/xxxxxxxxxxxxxxxxxxxxxxx paste https://example.com/xxxxxxxxxxxxxxxxxxxxx",
+"rows": [
+"composer once MSK): once",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx once terminal",
+"change change report of agent change paste proof window the proof change",
+"https://example.com/xxxxxxxxxxxxxxxxxxxx terminal change exactly settle of exactly once session",
+"window message proof review terminal agent of change message agent terminal session 19:44",
+"session settle https://example.com/xxxxxxxxxxxxxxxxxxxxxxx paste",
+"https://example.com/xxxxxxxxxxxxxxxxxxxxx"
+],
+"cursor": [
+43,
+6
+]
+}
+]
+}

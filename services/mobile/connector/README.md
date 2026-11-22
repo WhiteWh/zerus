@@ -150,6 +150,18 @@ archives and report `mobile_archive.available=false`. The runtime vectors
 compare both heartbeats with Python: `heartbeat-legacy.json` and the paged
 `heartbeat-snapshot` of `projections.jsonl`.
 
+Encrypted computer packets keep the existing 1 MiB plaintext limit. After all
+scope and task advertisements are encoded, a validated paged-archive preview
+may retain a shorter prefix of recent archives to fit that packet. Its
+`mobile_archive.loaded` and `partial` describe the prefix actually sent;
+`available` and `total` stay unchanged. Archive browsing still uses the same
+checked `archive_list` pages, even when no preview row fits. Current session
+rows, their order and facts, and project/account/capability catalogs stay exact.
+An already fitting packet is byte-for-byte unchanged. Unknown preview metadata,
+ambiguous archive identities, legacy unpaged archives, or a packet whose current
+rows and required metadata alone exceed the limit still refuse as before.
+This preview budget is not a paged transport for an oversized current inventory.
+
 ## Build and test
 
 ```sh

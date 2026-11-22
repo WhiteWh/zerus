@@ -796,10 +796,14 @@ pub(super) fn summary(record: &Value, live_pane: bool) -> Value {
     // Every summary captures the latest reply.
     #[cfg(test)]
     read_order::note("reply");
-    kimi_tui_choice::observing(|| observed_summary(record, live_pane))
+    kimi_tui_choice::observing(|| observed_summary(record, live_pane, None))
 }
 
-fn observed_summary(record: &Value, live_pane: bool) -> Value {
+pub(super) fn archive_summary(record: &Value, name_taken: bool) -> Value {
+    kimi_tui_choice::observing(|| observed_summary(record, false, Some(name_taken)))
+}
+
+fn observed_summary(record: &Value, live_pane: bool, archive_name_taken: Option<bool>) -> Value {
     let mut output = normalized_activity(record, live_pane);
     output["conversation_id"] = record["conversation_id"].clone();
     output
@@ -861,7 +865,12 @@ fn observed_summary(record: &Value, live_pane: bool) -> Value {
             .clone(),
     );
     let resumed = resume_input::summary_check(record, live_pane);
-    output.as_object_mut().unwrap().extend(session_action::summary(record,live_pane,&resumed).as_object().unwrap().clone());
+    output.as_object_mut().unwrap().extend(
+        session_action::summary(record, live_pane, &resumed, archive_name_taken)
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
     output["terminal_supported"] = json!(live_pane && string(record,"archive_id").is_empty() && process_alive(record));
     output["terminal_reason"] = json!(if output["terminal_supported"] == true { "" } else { backend::TERMINAL_NEEDS_PANE.text() });
     output["subagent_count"] = output["subagent_active_count"].clone();
@@ -1354,6 +1363,10 @@ pub(super) fn inspection_with(
         read(name)?
     };
     phases.mark("record");
+    if archive_id.is_some() && record["backend"] == "dsh" {
+        drop(_guard);
+        return dsh::retirement::inspect(&record, after);
+    }
     if archive_id.is_none() {
         input::acceptance::reconcile_locked(&mut record)?;
     }
@@ -1775,12 +1788,15 @@ pub(super) fn journal_name(record: &Value) -> &str {
 pub(super) const REVIVED_KIMI_SETTLE_SECONDS: f64 = 60.0;
 
 pub(super) fn update_activity(record: &mut Value, event: &Value) {
+    update_activity_at(record, event, now());
+}
+
+pub(super) fn update_activity_at(record: &mut Value, event: &Value, timestamp: f64) {
     if stale_kimi_turn(record, event) { return; }
     repair_kimi_main(record);
     repair_claude_internal(record);
     let was_busy = record["activity"] == "busy";
     let kind = string(event, "hook_event_name");
-    let timestamp = now();
     record["last_event_at"] = json!(timestamp);
     let mut children = record["subagents"].as_object().cloned().unwrap_or_default();
     let root_agent = string(record, "agent") == "kimi" && string(event, "agent_id") == "main";
@@ -2736,7 +2752,7 @@ mod attention_regressions {
         });
         let shown = |phase: &str| {
             let mut output = fork::summary(&record, true);
-            for part in [session_action::summary(&record, true, &None),
+            for part in [session_action::summary(&record, true, &None, None),
                 json!({"phase":phase,"settings_apply_when":"now","effort_change_supported":true,"effort_change_reason":""})] {
                 output.as_object_mut().unwrap().extend(part.as_object().unwrap().clone());
             }

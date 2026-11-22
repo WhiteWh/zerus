@@ -2,7 +2,7 @@
 //! Development reports predating pipeline runs need the person's acceptance.
 use super::*;
 use zerus_team_plan::{
-    catalog::Pipeline,
+    catalog::{Pipeline, StageKind},
     pipeline as kernel,
     ready::{MemberView, PlanView},
 };
@@ -14,7 +14,7 @@ pub(super) use overrides::{
     released_stage, task_ended,
 };
 use stages::want_stage;
-pub(super) use stages::{current_stage, end_stage, retire_stage};
+pub(super) use stages::{current_stage, end_stage, reassign_stopped_stage, retire_stage};
 
 fn spec<'a>(ctx: &'a Context<'_>, n: &Node) -> Result<&'a Pipeline> {
     ctx.team
@@ -33,10 +33,11 @@ pub(super) fn reported(ctx: &mut Context<'_>, n: &Node, body: &str) -> Result<()
             ctx,
             n,
             "A stage gives a verdict; it does not report a result.",
+            None,
         );
     }
     ctx.db.execute("INSERT INTO pipeline_runs(team,node,generation,state) VALUES(?1,?2,?3,'active') ON CONFLICT(team,node) DO UPDATE SET generation=excluded.generation,state='active',stage=NULL",params![ctx.team.id,n.id,ctx.generation(n.id)?]).map_err(storage)?;
-    step(ctx, n, kernel::after_report(n, spec(ctx, n)?), body)
+    step(ctx, n, kernel::after_report(n, spec(ctx, n)?), body, false)
 }
 fn staffed(ctx: &Context<'_>, n: &Node, step: kernel::Step) -> Result<kernel::Step> {
     let mut s = ctx
@@ -86,7 +87,24 @@ fn state(ctx: &Context<'_>, node: u32, value: &str, stage: Option<u32>) -> Resul
         .map_err(storage)?;
     Ok(())
 }
-fn step(ctx: &mut Context<'_>, n: &Node, next: kernel::Step, findings: &str) -> Result<()> {
+fn step(
+    ctx: &mut Context<'_>,
+    n: &Node,
+    next: kernel::Step,
+    findings: &str,
+    passed: bool,
+) -> Result<()> {
+    let next = match next {
+        kernel::Step::Stage {
+            index,
+            kind: StageKind::Land,
+            ..
+        } if !ctx.team.settings.land_allowed => {
+            ctx.land_skipped_for = Some(n.id);
+            kernel::after_skipping_land(spec(ctx, n)?, index, passed)
+        }
+        step => step,
+    };
     match staffed(ctx, n, next)? {
         kernel::Step::Stage { index, kind, role } => want_stage(ctx, n, index, kind, &role),
         kernel::Step::ToLead { reason } => {
@@ -182,7 +200,7 @@ pub(super) fn verdict(ctx: &mut Context<'_>) -> Result<()> {
     ctx.db.execute(&format!("UPDATE effects SET state='reported' WHERE team=?1 AND node=?2 AND generation=?3 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,node,generation]).map_err(storage)?;
     decisions::accept_result(ctx, &n, Decider::Pipeline, false)?;
     ctx.close_inbox(n.id)?;
-    step(ctx, &target, next, body)
+    step(ctx, &target, next, body, *pass)
 }
 fn require_holder(ctx: &Context<'_>, n: &Node) -> Result<()> {
     let holder = handout::holder(ctx, n.id)?;
@@ -200,16 +218,27 @@ fn require_holder(ctx: &Context<'_>, n: &Node) -> Result<()> {
     Ok(())
 }
 pub(super) fn to_lead(ctx: &mut Context<'_>, n: &Node, why: &str) -> Result<()> {
+    to_lead_with_note(ctx, n, why, None)
+}
+pub(super) fn to_lead_with_note(
+    ctx: &mut Context<'_>,
+    n: &Node,
+    why: &str,
+    note: Option<ReportNote>,
+) -> Result<()> {
     state(ctx, n.id, "lead", None)?;
     queue::hand_back(ctx, n.id, false)?;
-    report_item(ctx, n, why)
+    report_item(ctx, n, why, note)
 }
-fn report_item(ctx: &mut Context<'_>, n: &Node, why: &str) -> Result<()> {
+fn report_item(ctx: &mut Context<'_>, n: &Node, why: &str, note: Option<ReportNote>) -> Result<()> {
     // The member's block is quoted and delimited; its notes are stored beside
     // it in their own column and never appended into its text.
-    let (text, notes) = report_row(ctx, n)?;
+    let (text, mut notes) = report_row(ctx, n)?;
+    if let Some(note) = note {
+        notes.insert(0, note);
+    }
     let mut body = quoted_report(&text);
-    if !spec(ctx, n)?.stages.is_empty() {
+    if !why.is_empty() && !spec(ctx, n)?.stages.is_empty() {
         body.push('\n');
         body.push_str(why);
         let mut end = body.len().min(16_384);
@@ -218,7 +247,17 @@ fn report_item(ctx: &mut Context<'_>, n: &Node, why: &str) -> Result<()> {
         }
         body.truncate(end);
     }
-    ctx.reply.item = Some(ctx.inbox_notes(n.id, "report", &body, &notes)?);
+    // A generation has one source report per team and node. The inbox key
+    // also includes kind='report', so this only updates that report's item.
+    // Reassigning a retired stage keeps the generation. If the replacement
+    // ends early, reopen the parent's item with that same source report.
+    ctx.reply.item = Some(ctx.db.query_row(
+        "INSERT INTO inbox(team,kind,node,generation,actor,text,notes,created_ms) VALUES(?1,'report',?2,?3,?4,?5,?6,?7)
+         ON CONFLICT(team,kind,node,generation) DO UPDATE SET actor=excluded.actor,text=excluded.text,notes=excluded.notes,state='open',reply=NULL,reply_actor=NULL,created_ms=excluded.created_ms
+         RETURNING seq",
+        params![ctx.team.id, n.id, ctx.generation(n.id)?, encode(ctx.actor)?, body, encode(&notes)?, ctx.now],
+        |row| row.get(0),
+    ).map_err(storage)?);
     Ok(())
 }
 /// A report as a delimited quote: the member's text is unchanged inside its

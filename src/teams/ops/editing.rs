@@ -1,4 +1,4 @@
-//! Person-authored edits preserve role defaults and existing seat identities.
+//! Team edits preserve role defaults and existing seat identities.
 use super::*;
 use zerus_team_plan::{catalog::AccountChoice, member::MemberLaunch};
 
@@ -70,13 +70,20 @@ fn choices(agent: &str, model: &str, effort: &str, account: &AccountChoice) -> R
     Ok(())
 }
 pub(super) fn add_member(ctx: &mut Context<'_>) -> Result<()> {
-    let Operation::AddMember {
+    let (Operation::AddMember {
         role,
         agent,
         model,
         effort,
         account,
-    } = ctx.op
+    }
+    | Operation::LeadAddMember {
+        role,
+        agent,
+        model,
+        effort,
+        account,
+    }) = ctx.op
     else {
         unreachable!()
     };
@@ -147,8 +154,35 @@ pub(super) fn add_member(ctx: &mut Context<'_>) -> Result<()> {
             ],
         )
         .map_err(storage)?;
+    if matches!(ctx.op, Operation::LeadAddMember { .. }) {
+        ctx.reply.item = Some(staffing_notice(ctx, &member)?);
+    }
     ctx.reply.member = Some(member.id);
     Ok(())
+}
+
+fn staffing_notice(ctx: &Context<'_>, member: &Member) -> Result<u64> {
+    let id = &member.id;
+    let role = &member.role;
+    let agent = match member.agent.as_str() {
+        "claude" => "Claude",
+        "codex" => "Codex",
+        "kimi" => "Kimi",
+        "dsh" => "DeepSeek",
+        agent => agent,
+    };
+    let kind = format!("lead_member_added:{id}");
+    let text = format!("The lead added member {id} ({agent}) to staff the {role} role.");
+    let notes = vec![ReportNote {
+        code: "lead_member_added".into(),
+        text: Some(text.clone()),
+        parameters: vec![id.clone(), agent.into(), role.clone()],
+    }];
+    ctx.db.execute(
+        "INSERT INTO inbox(team,kind,node,generation,actor,text,notes,state,created_ms) VALUES(?1,?2,0,0,?3,?4,?5,'closed',?6)",
+        params![ctx.team.id, kind, encode(ctx.actor)?, text, encode(&notes)?, ctx.now],
+    ).map_err(storage)?;
+    Ok(ctx.db.last_insert_rowid() as u64)
 }
 
 /// Swap changes only the seat's next launch. No native stop, archive or send

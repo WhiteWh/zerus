@@ -134,7 +134,7 @@ impl Runtime {
                     continue;
                 }
                 if member.state == MemberState::Removed {
-                    self.note_removed(&team, &member, now)?;
+                    self.note_removed(store, &team, &member, now)?;
                     continue;
                 }
                 if self.member(store, effects, &team, &member, lead.session.clone(), now)? {

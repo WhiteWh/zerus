@@ -1,0 +1,24 @@
+  Reply paragraph 24 of the long fixture answer.
+
+  Reply paragraph 25 of the long fixture answer.
+
+  Reply paragraph 26 of the long fixture answer.
+
+  Reply paragraph 27 of the long fixture answer.
+
+  Reply paragraph 28 of the long fixture answer.
+
+  Reply paragraph 29 of the long fixture answer.
+
+[38;5;246m✻[39m [38;5;246mCooked for 0s · done 9:27 PM[39m
+
+[38;5;244m───[39m [2m↑ 3 more[0m [38;5;244m───────────────────────────────────────────────────────────────────
+[39m  11111111-2222-4333-8444-555555555555&amp;run=22222222-3333-4444-8555-6666666
+  66666">
+  K → mastery-claim: верно, спасибо — мой фильтр по original_key был пустым.
+  Твой запрос (RO, 19:44 MSK): mastery:1 completed 42 = event_catalog_claim
+  42; mastery:3 completed 11 = 11; других state нет — зависших холдов нет.
+  Вопрос закрыт.[7m [0m
+  </zerus-message>
+[38;5;244m────────────────────────────────────────────────────────────────────────────────
+[39m  [38;5;211m⏵⏵ bypass permissions on[38;5;246m (shift+tab to cycle)[39m

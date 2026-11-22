@@ -511,6 +511,7 @@ pub(crate) fn launch(
     // Persist the chosen native ID and exact body before the first creation
     // attempt so one launch never has two identities.
     record["creation_body"] = body;
+    placement::prepare(&mut record, &cwd);
     save(&mut record)?;
     // A child its proven parent launched starts in the parent's project,
     // written after the state and bindings locks are released (zerus-d5twt).

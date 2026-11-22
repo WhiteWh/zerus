@@ -349,6 +349,28 @@ fn older_card_index(h: &Harness) {
 }
 
 #[test]
+fn member_readability_binding_is_checked_as_is_and_repaired_by_ordinary_open() {
+    let h = Harness::new();
+    let installed = schema(&h);
+    let timer_version = marker(&h);
+    db(&h)
+        .execute_batch("DROP TRIGGER team_member_readability_binding_v1;")
+        .unwrap();
+    let incomplete = schema(&h);
+    let refusal = Store::person_evidence(h.temp.path()).unwrap_err();
+    assert_eq!(refusal.code, code::INVALID_STATE);
+    assert!(refusal
+        .message
+        .contains("missing trigger team_member_readability_binding_v1"));
+    assert_eq!(schema(&h), incomplete);
+
+    let reopened = Store::open(h.temp.path()).unwrap();
+    assert_eq!(schema_of(reopened.db.as_ref().unwrap()), installed);
+    assert_eq!(marker(&h), timer_version);
+    Store::person_evidence(h.temp.path()).unwrap();
+}
+
+#[test]
 fn a_store_marked_by_a_newer_program_is_refused_before_any_schema_write() {
     let h = stopped();
     db(&h)

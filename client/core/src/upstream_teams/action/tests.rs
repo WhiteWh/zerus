@@ -220,6 +220,7 @@ fn every_action_names_its_operation() {
                 node: 2,
                 role: "developer".into(),
                 pipeline: "reviewed".into(),
+                keep_task_fields: false,
                 deps: Vec::new(),
                 writes: Vec::new(),
                 assignee: None,
@@ -524,6 +525,7 @@ fn a_request_that_cannot_be_made_never_runs() {
             node: 1,
             role: "developer".into(),
             pipeline: "reviewed".into(),
+            keep_task_fields: false,
             deps: Vec::new(),
             writes: vec!["/absolute/path".into()],
             assignee: None,
@@ -1363,6 +1365,7 @@ fn every_action_the_view_sends_is_still_read() {
             node: 2,
             role: "developer".into(),
             pipeline: "reviewed".into(),
+            keep_task_fields: false,
             deps: Vec::new(),
             writes: Vec::new(),
             assignee: None,
@@ -1601,6 +1604,7 @@ fn action_kinds() -> Vec<String> {
             node: 1,
             role: "r".into(),
             pipeline: "p".into(),
+            keep_task_fields: false,
             deps: Vec::new(),
             writes: Vec::new(),
             assignee: None,
@@ -1693,4 +1697,46 @@ fn advance_base_requires_confirmation_and_keeps_revision_and_identity() {
         };
         assert!(prepare(&call).is_err());
     }
+}
+
+/// zerus-3u5yu (6, mutant rs5 of the #2527 review): a window Route that keeps
+/// the task's fields names none of them itself; the service binds them.
+#[test]
+fn a_route_that_keeps_the_task_fields_names_none_of_them() {
+    let route = |deps: Vec<zerus_team_plan::model::Dep>,
+                 writes: Vec<String>,
+                 assignee: Option<String>| TeamAction::Route {
+        node: 2,
+        role: "developer".into(),
+        pipeline: "reviewed".into(),
+        keep_task_fields: true,
+        deps,
+        writes,
+        assignee,
+    };
+    assert_eq!(route(Vec::new(), Vec::new(), None).check(), Ok(()));
+    let refusal = Err(
+        "A placement edit cannot also change the task's dependencies, write paths or assignee."
+            .to_owned(),
+    );
+    assert_eq!(
+        route(
+            vec![zerus_team_plan::model::Dep {
+                node: 1,
+                kind: zerus_team_plan::model::DepKind::Soft
+            }],
+            Vec::new(),
+            None
+        )
+        .check(),
+        refusal
+    );
+    assert_eq!(
+        route(Vec::new(), vec!["src/example.rs".into()], None).check(),
+        refusal
+    );
+    assert_eq!(
+        route(Vec::new(), Vec::new(), Some("m1".into())).check(),
+        refusal
+    );
 }

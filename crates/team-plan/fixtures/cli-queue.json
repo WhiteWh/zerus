@@ -38,6 +38,7 @@
       "admitted": true,
       "assigned_base": "0123456789abcdef0123456789abcdef01234567",
       "deps_editable": false,
+      "earlier_implementers": [],
       "holder": "m3",
       "id": 2,
       "implementer": "m1",

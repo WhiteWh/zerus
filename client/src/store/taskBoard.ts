@@ -33,7 +33,10 @@ export interface SendOutcome { sent: boolean; reason?: string }
  * change. A `quiet` caller owns the presentation: nothing is notified. */
 export async function sendToTeam(project: string, task: Pick<Task, "uuid">, team: string, teamName: string, options: { read?: Task; quiet?: boolean } = {}): Promise<SendOutcome> {
   const tell = (tone: "info" | "error", text: string) => { if (!options.quiet) notify(tone, text); };
-  if (writingTask()) return { sent: false, reason: tr("Another task change is being written. Nothing was sent.") };
+  if (writingTask()) {
+    const reason = tr("Another task change is being written. Nothing was sent.");
+    tell("error", reason); return { sent: false, reason };
+  }
   const board = tasks.project() === project ? tasks.find(task.uuid) : undefined;
   const fresh = board ?? (options.read?.uuid === task.uuid ? options.read : undefined);
   if (!fresh) {

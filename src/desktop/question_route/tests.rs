@@ -120,6 +120,8 @@ mod inventory {
         ("native_terminal", NotACard),
         ("native_usage", NotACard),
         ("native_user_input", NotACard),
+        // Codex binding repair provenance for the original input receipt.
+        ("original_native_prompt", NotACard),
         ("process_tree", NotACard),
         ("provider_hook", NotACard),
         ("read-marks.json", NotACard),

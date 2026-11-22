@@ -258,6 +258,13 @@ impl Pin {
     pub fn executable(&self) -> &Path {
         &self.program
     }
+    /// The canonical path this image was copied from, which `current` checks
+    /// still holds the same file. A child executing [`Self::executable`] runs
+    /// a sealed memfd: its own `/proc/self/exe` names no file, so anything it
+    /// hands to another program to run (a terminal's command) needs this path.
+    pub fn source(&self) -> &Path {
+        &self.resolved
+    }
     /// Observe the actual kernel exe object while the original child still
     /// owns its unreleased input. Scripts cannot establish this native-image
     /// identity: their executing object would be an interpreter. On refusal

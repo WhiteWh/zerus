@@ -6,7 +6,7 @@ use super::super::{fleet::Facts, Runtime};
 use super::real_rows::Production;
 use super::rows::{seed_row, KINDS};
 use crate::teams::ops::{tests::*, Operation};
-use crate::teams::store::Card;
+use crate::teams::store::{Card, InboxItem};
 use serde_json::{json, Value};
 use zerus_team_plan::model::{Member, Node, TaskRef, Team};
 
@@ -122,6 +122,139 @@ fn decide(h: &mut Harness, card: u64, decision: &str) {
 }
 fn needed(task: u32, fact: &str) -> String {
     format!("Member m1 (developer) is needed by ready task {task} but cannot be read: {fact}.")
+}
+
+fn unstaffed_items(world: &World) -> Vec<InboxItem> {
+    world
+        .h
+        .store
+        .inbox(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .filter(|item| item.kind.starts_with("unstaffed:"))
+        .collect()
+}
+
+#[test]
+fn every_eligible_member_unreadable_opens_a_lead_item_until_reads_recover() {
+    let mut w = world(&["m1", "m2"], 1);
+    unknown(&w, "m1", "subagent_active_count");
+    unknown(&w, "m2", "optional_questions");
+    for minute in 0..3 {
+        pass(&mut w, minute);
+        assert!(unstaffed_items(&w).is_empty(), "the wait has not elapsed");
+    }
+    pass(&mut w, 3);
+    let inbox = unstaffed_items(&w);
+    assert_eq!(inbox.len(), 1, "the lead must hear about both members");
+    assert_eq!(
+        inbox[0].text,
+        "Task 1 is ready. The service cannot read any eligible member (m1, m2). It will check again."
+    );
+    let seq = inbox[0].seq;
+    assert_eq!(open(&w.h, "m1").len(), 1, "the person's card still applies");
+    restart(&mut w);
+    row(&w, "m1", &[("activity", json!("busy"))]);
+    pass(&mut w, 4);
+    unknown(&w, "m1", "subagent_active_count");
+    pass(&mut w, 5);
+    assert_eq!(unstaffed_items(&w)[0].seq, seq);
+    assert_eq!(
+        unstaffed_items(&w)[0].state,
+        "open",
+        "one read cannot flap the notice"
+    );
+
+    row(&w, "m1", &[("activity", json!("busy"))]);
+    for minute in 6..=9 {
+        pass(&mut w, minute);
+    }
+    let inbox = unstaffed_items(&w);
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(inbox[0].seq, seq);
+    assert_eq!(inbox[0].state, "closed");
+    assert!(
+        w.p.deliveries.is_empty(),
+        "a readable busy member is not free"
+    );
+}
+
+#[test]
+fn a_readable_busy_candidate_prevents_the_all_unreadable_notice() {
+    let mut w = world(&["m1", "m2"], 1);
+    unknown(&w, "m1", "subagent_active_count");
+    row(&w, "m2", &[("activity", json!("busy"))]);
+    for minute in 0..=3 {
+        pass(&mut w, minute);
+        assert!(
+            unstaffed_items(&w).is_empty(),
+            "m2 can still take the task later"
+        );
+    }
+    assert_eq!(
+        w.h.store.unreadable_members(TEAM).unwrap(),
+        ["m1".into()].into()
+    );
+    unknown(&w, "m2", "optional_questions");
+    for minute in 4..7 {
+        pass(&mut w, minute);
+        assert!(
+            unstaffed_items(&w).is_empty(),
+            "m2's own wait has not elapsed"
+        );
+    }
+    pass(&mut w, 7);
+    assert_eq!(unstaffed_items(&w).len(), 1);
+}
+
+#[test]
+#[ignore = "exports a private store and a client fixture for the two-engine check"]
+fn export_teams81_readability_store() {
+    use zerus_client_core::actions::Exit;
+    use zerus_client_core::upstream_teams::drawers::{decode, DrawerKind, DrawerRead};
+
+    let destination = std::path::PathBuf::from(std::env::var_os("TEAMS81_COMPAT_DIR").unwrap());
+    let mut w = world(&["m1", "m2"], 1);
+    unknown(&w, "m1", "subagent_active_count");
+    unknown(&w, "m2", "optional_questions");
+    for minute in 0..=3 {
+        pass(&mut w, minute);
+    }
+    let page = w.h.store.inbox(TEAM, 200, None).unwrap();
+    assert_eq!(page.rows.len(), 1);
+    assert!(page.next.is_none());
+    let mut reply: Value = serde_json::from_str(include_str!(
+        "../../../../../crates/team-plan/fixtures/cli-inbox.json"
+    )).unwrap();
+    reply["rows"] = json!(page.rows);
+    let projected = decode(
+        &DrawerRead {
+            team: TEAM.into(),
+            kind: DrawerKind::Inbox,
+            after: None,
+            recorded_timings: false,
+            timing_seqs: None,
+            timing_next: None,
+        },
+        Exit::Code {
+            code: 0,
+            stdout: serde_json::to_vec(&reply).unwrap(),
+            stderr: String::new(),
+        },
+    )
+    .unwrap();
+    let teams = destination.join("teams");
+    crate::platform::private_dir(&teams).unwrap();
+    let mut fixture = serde_json::to_string_pretty(&projected.rows[0]).unwrap();
+    fixture.push('\n');
+    std::fs::write(destination.join("unreadable-notice.json"), fixture).unwrap();
+    drop(w.a);
+    drop(w.h.store);
+    for file in ["preview", "teams-v1.sqlite3"] {
+        std::fs::copy(w.h.temp.path().join("teams").join(file), teams.join(file)).unwrap();
+    }
+    println!("The actor produced two durable marks, one inbox item and its client projection.");
 }
 
 /// The reader names a count only when it alone keeps the member from free;

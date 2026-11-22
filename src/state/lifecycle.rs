@@ -450,6 +450,9 @@ pub(super) fn run(args: &[String]) -> Result<i32> {
         if let Some(owner)=super::worktree_lifecycle::for_folder(std::path::Path::new(string(&record,"launch_dir"))) {
             record["worktree_owner"]=owner;
         }
+        if infer_project {
+            placement::prepare(&mut record, &cwd);
+        }
         write(&mut record)?;
         // A launch that replaces a session in the ID layout without keeping
         // its ID (a retry, or a new session over a stopped one) is written at
@@ -1309,6 +1312,9 @@ fn resume_archive(name: &str, id: &str, dry: bool, scope: Option<&session_action
     // A restore never creates the ID layout in P3a: it is written at its
     // label's path and needs a free label, whatever its archive says.
     let mut archived = archive::read_archive(name, id)?;
+    if archived["backend"] == "dsh" {
+        return dsh::retirement::restore(&archived, dry, scope);
+    }
     let source = archive_source::Source::capture(&archived);
     if let Some(fields) = archived.as_object_mut() {
         fields.remove("layout");
@@ -1646,7 +1652,8 @@ pub(super) fn resume_scoped(names: &[String], dry: bool, scope: Option<&session_
         // Value per prepared recipe. Conversion cannot refresh the source.
         recipes.push((name, spec, secrets, binding, new_run, source.into_fence()));
     }
-    let _guard = lock(None)?;
+    let guard = lock(None)?;
+    let mut started = None;
     for (name, spec, secrets, original_binding, new_run, source) in recipes {
         let changed = || format!("{name}: saved source changed or is unavailable; select the session again before resuming");
         let current_snapshot = live()?;
@@ -1670,8 +1677,23 @@ pub(super) fn resume_scoped(names: &[String], dry: bool, scope: Option<&session_
         if dry {
             print_resume(&spec);
         } else {
-            if let Some(scope)=scope {scope.changing();}
-            start_with_secrets(&spec, &secrets)?;
+            if let Some(scope) = scope {
+                scope.changing();
+            }
+            if scope.is_some() {
+                // The terminal it creates, as its server answered the launch:
+                // what the scoped resume observes (zerus-5sl7r).
+                let launched = launch_with_secrets(&spec, &secrets, |spec| backend::current().start_observed(spec))?;
+                started = Some((
+                    name.clone(),
+                    spec.name.clone(),
+                    launched,
+                    new_run.clone(),
+                    string(&current, "conversation_id").to_owned(),
+                ));
+            } else {
+                start_with_secrets(&spec, &secrets)?;
+            }
             // U3: the resumed session reads the recovered dialogue first.
             if let Some((path, transcript_at)) = recovered.get(&name) {
                 let message = recovery_message(*transcript_at, path);
@@ -1694,8 +1716,24 @@ pub(super) fn resume_scoped(names: &[String], dry: bool, scope: Option<&session_
                     eprintln!("{}", recovery_send_failure(&name, path, "the hgs executable is not known"));
                 }
             }
-            if let Some(scope)=scope {scope.result(&name,&new_run,string(&current,"conversation_id"),None);} else {println!("hgs: resuming {name}");}
+            if scope.is_none() {
+                println!("hgs: resuming {name}");
+            }
         }
+    }
+    // The supervisor writes its record under this same lock.
+    drop(guard);
+    if let (Some(scope), Some((name, terminal, launched, run, conversation))) = (scope, started) {
+        supervisor_started(
+            &name,
+            &terminal,
+            launched.as_ref(),
+            &run,
+            scope,
+            SUPERVISOR_START_WAIT,
+            OBSERVATION_GAP_WAIT,
+        )?;
+        scope.result(&name, &run, &conversation, None);
     }
     Ok(0)
 }
@@ -1715,6 +1753,123 @@ fn model_server_record() -> Option<Value> {
         }
         binding
     })
+}
+
+/// How long a scoped resume follows its new run before it reports, well
+/// within the 30 s the desktop gives its child (the phone and Teams give
+/// 45 s): a run still starting in a terminal positively alive by then is
+/// reported, and the caller's own wait follows it (zerus-5sl7r).
+const SUPERVISOR_START_WAIT: Duration = Duration::from_secs(10);
+/// How much longer it follows a start it saw alive while its terminal
+/// cannot be observed at the end of [`SUPERVISOR_START_WAIT`]: a short
+/// observation gap, still well within the desktop's 30 s.
+const OBSERVATION_GAP_WAIT: Duration = Duration::from_secs(8);
+/// The bound of one terminal observation within that wait.
+const TERMINAL_PROBE_WAIT: Duration = Duration::from_secs(2);
+
+/// A scoped resume (`hgs session-action`, whose receipt the desktop and the
+/// phone act on) follows the exact run it started until that run's
+/// supervisor wrote the session's record of it (zerus-5sl7r), and reports
+/// only what it observed exactly. It observes the exact terminal it created
+/// ([`backend::Launched`]: that server, that pane), never a terminal by name:
+/// - the record names the run: completed;
+/// - the server that created the pane says, twice in a row, that it has no
+///   such pane, while the record still names the stopped run it resumed (the
+///   scope's): it started nothing and left nothing, a definite failure;
+///   gone with a record that moved on otherwise: uncertain;
+/// - its command ended and its dead pane stays, or another process runs in
+///   that pane (tmux `respawn-pane`): uncertain. Alive is only the launched
+///   process itself, by its pid and kernel birth;
+/// - at the end of `wait` a terminal positively alive is a slow start (a
+///   login shell, its hooks or the state lock before the first record):
+///   completed, as an unscoped resume reports at once, and the caller's
+///   readiness wait follows the run. A start seen alive that cannot be
+///   observed then is followed for at most `gap` more, until an exact
+///   observation decides as above; one never observed exactly is uncertain.
+///
+/// A failed, refused or late observation, or an answer of another server
+/// ([`backend::TerminalState::Unknown`]), is never absence: it only keeps the
+/// wait. Each observation is bounded by [`TERMINAL_PROBE_WAIT`] and what is
+/// left of the wait. A launch whose server named no terminal is never
+/// observed: only its record can complete it.
+fn supervisor_started(
+    name: &str,
+    terminal: &str,
+    launched: Option<&backend::Launched>,
+    run: &str,
+    scope: &session_action::Scope,
+    wait: Duration,
+    gap: Duration,
+) -> Result<()> {
+    use backend::TerminalState;
+    let recorded = || read(name).is_ok_and(|record| string(&record, "run_id") == run);
+    let until = Instant::now() + wait;
+    let mut absent_before = false;
+    let mut seen_alive = false;
+    loop {
+        if recorded() {
+            return Ok(());
+        }
+        // Past `wait` only a start seen alive is still followed.
+        let end = if seen_alive { until + gap } else { until };
+        let left = end.saturating_duration_since(Instant::now());
+        let state = launched.map_or(TerminalState::Unknown, |launched| {
+            backend::current().terminal_state(
+                launched,
+                TERMINAL_PROBE_WAIT
+                    .min(left)
+                    .max(Duration::from_millis(200)),
+            )
+        });
+        // Its record may have landed during the observation.
+        if state != TerminalState::Alive && recorded() {
+            return Ok(());
+        }
+        match state {
+            TerminalState::Absent if absent_before => {
+                if read(name).is_ok_and(|record| scope.check_base(&record).is_ok()) {
+                    scope.unchanged();
+                    return Err(format!(
+                        "{name}: the resumed terminal ended before its supervisor started; nothing was resumed"
+                    ));
+                }
+                return Err(format!(
+                    "{name}: the resumed terminal ended and the session's record no longer names the run it resumed; inspect the session"
+                ));
+            }
+            TerminalState::DeadPane => {
+                return Err(format!(
+                    "{name}: the resumed terminal's command ended before its supervisor started; its dead pane {terminal} remains"
+                ));
+            }
+            TerminalState::Replaced => {
+                return Err(format!(
+                    "{name}: the resumed terminal's command ended before its supervisor started and another process runs in its pane {terminal}; inspect the session"
+                ));
+            }
+            _ => {}
+        }
+        absent_before = state == TerminalState::Absent;
+        seen_alive |= state == TerminalState::Alive;
+        // A first absence is confirmed by one more observation, even at the
+        // end: the next one returns either way.
+        let now = Instant::now();
+        if now >= until && !absent_before {
+            match state {
+                TerminalState::Alive => return Ok(()),
+                // An observation gap after a live start: follow the same
+                // launch a little longer.
+                _ if seen_alive && now < until + gap => {}
+                _ => {
+                    return Err(format!(
+                        "{name}: the resumed supervisor did not record its start within {} s and its terminal could not be observed; inspect the session",
+                        wait.as_secs()
+                    ))
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// `hgs resume <session> --fresh`: the stopped session's own launch recipe,
@@ -2140,7 +2295,7 @@ mod fresh_pause_tests {
         assert!(pausable(&record, || false));
         pause_recipe(&record).unwrap();
         assert!(record["conversation_id"].is_null());
-        let allowed = session_action::summary(&record, true, &None);
+        let allowed = session_action::summary(&record, true, &None, None);
         assert!(allowed["allowed_actions"]
             .as_array()
             .unwrap()

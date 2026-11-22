@@ -4,6 +4,7 @@ use super::*;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom};
 
+mod bootstrap;
 mod kimi_order;
 mod uncertainty;
 pub(in crate::state) use kimi_order::{
@@ -306,8 +307,8 @@ fn pending_receipt(record: &Value) -> Option<Value> {
 
 fn receipt(record: &Value) -> Option<Value> {
     // A historical Codex context is only a candidate here. It must pass the
-    // original-main/closed-child proof below, in the SAME held native source
-    // that proves its exact input. No general caller accepts this mismatch.
+    // launch-start or original-main/closed-child proof below, plus the SAME
+    // held native source that proves its exact input. Other callers stay bound.
     let receipt = if record["agent"] == "codex" {
         stored_receipt(record)?
     } else {
@@ -336,6 +337,7 @@ pub(in crate::state) fn allows_hook(record: &Value, event: &Value) -> bool {
             || (record["agent"] == "codex"
                 && stored_receipt(record).is_some_and(|receipt| {
                     receipt["conversation_id"] != record["conversation_id"]
+                        && !bootstrap::hook(record, &receipt, event)
                 })))
     {
         return false;
@@ -443,6 +445,7 @@ pub(in crate::state) fn reconcile_locked(record: &mut Value) -> Result<()> {
         && receipt["conversation_id"] != record["conversation_id"]
         && !(codex_tasks::recovered_pending(record)
             && receipt["conversation_id"] == record["codex_binding_recovery"]["from"])
+        && !bootstrap::receipt(record, &receipt)
         && !source.header.as_ref().is_some_and(|header| {
             codex_tasks::original_main_receipt(
                 record,

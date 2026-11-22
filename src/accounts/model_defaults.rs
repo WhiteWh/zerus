@@ -233,7 +233,7 @@ pub(super) fn set(config: &Config, args: &[String], dry: bool) -> Result<Value> 
     let bytes = read(config)?;
     check_revision(&bytes, args)?;
     let mut catalog = decode(&bytes)?;
-    let (profile, home, _) = lookup(config, id)?;
+    let (profile, home, native_account) = lookup(config, id)?;
     if !supported(&profile.provider) || catalog.hidden_profiles.contains(id) {
         return Err(Error::new(
             1,
@@ -246,8 +246,15 @@ pub(super) fn set(config: &Config, args: &[String], dry: bool) -> Result<Value> 
         }
         catalog.model_defaults.editable()?.remove(id);
     } else {
-        let models = models(&profile.provider, &home);
-        let selected=models["models"].as_array().into_iter().flatten().find(|entry|entry["id"]==model)
+        let defaults = Defaults { model: model.into(), effort: effort.into() };
+        validate(&profile.provider, &defaults)?;
+        // Reject an uneditable catalog before starting an on-demand native refresh.
+        let entries = catalog.model_defaults.editable()?;
+        let mut models = models(&profile.provider, &home);
+        if profile.provider == "codex" && !has_model(&models, model) {
+            models = codex_catalog::refresh_missing(config, id, &profile, &home, native_account, model, dry)?;
+        }
+        let selected=selected_model(&models, model)
             .ok_or_else(||Error::new(1,if profile.provider=="dsh" {
                 "The model is unavailable in the running DeepSeek host's catalog. Start or resume a DeepSeek session and refresh."
             } else {
@@ -264,10 +271,8 @@ pub(super) fn set(config: &Config, args: &[String], dry: bool) -> Result<Value> 
                 "Effort is unavailable for the selected model.",
             ));
         }
-        let defaults = Defaults { model: model.into(), effort: effort.into() };
-        validate(&profile.provider, &defaults)?;
         let raw = serde_json::value::to_raw_value(&defaults).map_err(|e| Error::new(1, e.to_string()))?;
-        catalog.model_defaults.editable()?.insert(id.into(), raw);
+        entries.insert(id.into(), raw);
     }
     if !dry {
         save(config, &catalog)?;
@@ -279,12 +284,18 @@ fn effort_supported(provider: &str) -> bool {
 }
 /// The account's model catalog. DeepSeek's comes from the resident host's
 /// read-only catalog method; reading Accounts never starts a host.
-fn models(provider: &str, home: &Path) -> Value {
+pub(super) fn models(provider: &str, home: &Path) -> Value {
     if provider == "dsh" {
         crate::state::dsh_account_models(home)
     } else {
         crate::state::account_models(provider, home)
     }
+}
+pub(super) fn has_model(catalog: &Value, model: &str) -> bool {
+    selected_model(catalog, model).is_some()
+}
+fn selected_model<'a>(catalog: &'a Value, model: &str) -> Option<&'a Value> {
+    catalog["models"].as_array()?.iter().find(|entry| entry["id"] == model)
 }
 /// The saved DeepSeek launch selection as (provider/model, effort). The launch
 /// applies it to a new session through the host's scoped settings method.

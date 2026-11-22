@@ -416,6 +416,11 @@ fn report_notes(notes: &[ReportNote]) -> Result<()> {
         return Err(over("A report carries too many service notes."));
     }
     for note in notes {
+        if !note.parameters.is_empty() {
+            return Err(invalid(
+                "Only the provider stop writer supplies report note parameters.",
+            ));
+        }
         let token = !note.code.is_empty()
             && note.code.len() <= MAX_NOTE_CODE
             && note.code.starts_with(|c: char| c.is_ascii_lowercase())

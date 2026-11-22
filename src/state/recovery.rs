@@ -361,7 +361,7 @@ fn contains(text: &str, words: &[&str]) -> bool {
 fn status_code(text: &str, codes: &[&str]) -> bool {
     text.split(|c: char| !c.is_ascii_alphanumeric()).any(|word| codes.contains(&word))
 }
-fn class(error: &Value) -> &'static str {
+pub(super) fn class(error: &Value) -> &'static str {
     if let Some(kind) = provider_errors::native_kind(error) {
         return if kind == "session_limit" { "session_limit" } else { "manual" };
     }
@@ -517,6 +517,14 @@ pub(in crate::state) fn input_cancellation(record: &Value) -> Result<Option<(gua
 fn active(job: &Value) -> bool {
     ["waiting", "dispatching", "retrying"].contains(&string(job, "state"))
 }
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn same_active_failure(record: &Value, job: &Value) -> bool {
+    active(job)
+        && job["identity"][0] == record["run_id"]
+        && job["identity"][1] == record["conversation_id"]
+        && same_failure(job, record)
+}
+
 /// Whether an automatic recovery episode owns this session's next input.
 pub(super) fn job_active(record: &Value) -> bool {
     active(&load_job(&owner(record)))

@@ -1,0 +1,45 @@
+{
+  "actor": {
+    "kind": "session",
+    "member": "lead",
+    "person": "local",
+    "team": "00000000-0000-4000-8000-00000000beef"
+  },
+  "next": null,
+  "ok": true,
+  "rows": [
+    {
+      "actor": {
+        "kind": "session",
+        "member": "lead",
+        "person": "local",
+        "session": {
+          "machine": "00000000-0000-4000-8000-0000000000aa",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000064"
+        },
+        "team": "00000000-0000-4000-8000-00000000beef"
+      },
+      "created_ms": 1700000000000,
+      "generation": 0,
+      "kind": "lead_member_added:m4",
+      "node": 0,
+      "notes": [
+        {
+          "code": "lead_member_added",
+          "parameters": [
+            "m4",
+            "Codex",
+            "reviewer"
+          ],
+          "text": "The lead added member m4 (Codex) to staff the reviewer role."
+        }
+      ],
+      "reply": null,
+      "reply_actor": null,
+      "seq": 1,
+      "state": "closed",
+      "text": "The lead added member m4 (Codex) to staff the reviewer role."
+    }
+  ],
+  "team": "00000000-0000-4000-8000-00000000beef"
+}

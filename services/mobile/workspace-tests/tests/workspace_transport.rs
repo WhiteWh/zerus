@@ -421,10 +421,12 @@ async fn transport_flow(stop_during_native: bool) {
     local_tasks.run_until(async {
         let external_stop=Event::default();
         let submitted_identity=RefCell::new(None);
-        let run=encrypted_runtime::run(&connector,&relay,&private_dir,async {
+        // This private test configuration has no canonical native-edit selection.
+        // Keep the runtime future off the stack of the joined test flow.
+        let run=Box::pin(encrypted_runtime::run(&connector,&relay,&private_dir,false,async {
             external_stop.wait().await;
             connector.stopping.set();
-        });
+        }));
         let flow=async {
             let status=loop {
                 let status=api(&mobile,"GET",&format!("/v2/enrollments/{}",phone.public().device_id),None).await;

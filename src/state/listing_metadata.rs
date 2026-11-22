@@ -56,6 +56,19 @@ fn checked<T>(value: Result<T>) -> anyhow::Result<T> {
     value.map_err(anyhow::Error::msg)
 }
 
+fn public_index_error(error: &anyhow::Error) -> String {
+    use rusqlite::{Error, ErrorCode};
+    match error.downcast_ref::<Error>() {
+        Some(Error::SqliteFailure(failure, _))
+            if matches!(failure.code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked) =>
+        {
+            "The session listing is busy. Try again shortly.".into()
+        }
+        Some(_) => "The session listing index cannot be read. Rebuild it and try again.".into(),
+        None => error.to_string(),
+    }
+}
+
 fn gap(root: &Path) {
     let attempt = || -> anyhow::Result<()> {
         let root = checked(Directory::open(&crate::platform::canonical(root)?))?;

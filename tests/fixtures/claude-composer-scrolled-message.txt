@@ -1,0 +1,3 @@
+<zerus-message from="claude/example-work-ab12cd34/peer-k" host="arch" reference="zerus://session?machine=00000000-1111-4222-8333-444444444444&amp;host=arch&amp;name=claude%2Fexample-work-ab12cd34%2Fpeer-k&amp;conversation=11111111-2222-4333-8444-555555555555&amp;run=22222222-3333-4444-8555-666666666666">
+K → mastery-claim: верно, спасибо — мой фильтр по original_key был пустым. Твой запрос (RO, 19:44 MSK): mastery:1 completed 42 = event_catalog_claim 42; mastery:3 completed 11 = 11; других state нет — зависших холдов нет. Вопрос закрыт.
+</zerus-message>

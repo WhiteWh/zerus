@@ -8,6 +8,7 @@ mod dependencies;
 mod dispatch;
 mod drawer_pages;
 mod editing;
+mod evidence;
 mod estimate_preview;
 mod fixtures;
 // WhiteWh fork: `hgs guide team` and `team-lead` are the fork's own pages.
@@ -26,6 +27,7 @@ mod member_sessions;
 mod phase_controls;
 mod phase_metrics;
 mod phases;
+mod placement;
 mod planning;
 mod progress;
 mod progress157;

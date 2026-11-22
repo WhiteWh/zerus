@@ -46,6 +46,14 @@ pub struct DrawerRow {
     pub seq: u64,
     pub kind: String,
     pub by: String,
+    /// The actor's kind as the store wrote it (`person`, `service` or
+    /// `session`), so the window can tell you, the team service and a member
+    /// apart where `by` alone names the same person.
+    pub by_kind: String,
+    /// The task and member a journal event is about, from its `refs`
+    /// (`node:N`, `member:ID`); never invented from text.
+    pub subject_node: Option<u64>,
+    pub subject_member: Option<String>,
     pub text: String,
     pub text_truncated: bool,
     pub at_ms: i64,
@@ -173,6 +181,20 @@ pub fn decode(asked: &DrawerRead, exit: Exit) -> Result<DrawerPage, TeamError> {
             .iter()
             .find_map(|key| actor.get(*key).and_then(Value::as_str))
             .unwrap_or("");
+        let by_kind = actor.get("kind").and_then(Value::as_str).unwrap_or("");
+        let reference = |prefix: &str| {
+            row.get("refs").and_then(Value::as_array).and_then(|refs| {
+                refs.iter()
+                    .filter_map(Value::as_str)
+                    .find_map(|item| item.strip_prefix(prefix))
+            })
+        };
+        let subject_node = reference("node:")
+            .and_then(|node| node.parse::<u64>().ok())
+            .filter(|node| *node > 0);
+        let subject_member = reference("member:")
+            .filter(|member| !member.is_empty())
+            .map(|member| view::cut(member, NAME_CHARS));
         let at = if asked.kind == DrawerKind::Feed {
             "at_ms"
         } else {
@@ -235,6 +257,9 @@ pub fn decode(asked: &DrawerRead, exit: Exit) -> Result<DrawerPage, TeamError> {
             seq,
             kind: view::cut(kind, NAME_CHARS),
             by: view::cut(by, NAME_CHARS),
+            by_kind: view::cut(by_kind, NAME_CHARS),
+            subject_node,
+            subject_member,
             text: view::cut(text, TEXT_CHARS),
             text_truncated: text.chars().count() > TEXT_CHARS
                 || reply_text.is_some_and(|text| text.chars().count() > TEXT_CHARS),

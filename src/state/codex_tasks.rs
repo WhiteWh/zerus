@@ -153,6 +153,17 @@ pub(super) fn multiple(record: &Value) -> bool {
                 .is_some_and(|rows| !rows.is_empty()))
 }
 
+/// A launch receipt predates its conversation. Only this run's own main start
+/// can supply that binding; a recovered or native-task binding cannot.
+pub(super) fn bootstrap_start(record: &Value) -> bool {
+    let conversation = string(record, "conversation_id");
+    !conversation.is_empty()
+        && !string(record, "run_id").is_empty()
+        && !known(record, conversation)
+        && record["codex_binding_recovery"]["run_id"] != record["run_id"]
+        && recovery::first_start(record, conversation)
+}
+
 /// Only the pending request frozen by the proved original-main repair may
 /// read its historical receipt in that receipt's original (mistaken) context.
 pub(super) fn recovered_pending(record: &Value) -> bool {

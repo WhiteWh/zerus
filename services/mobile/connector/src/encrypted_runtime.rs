@@ -20,6 +20,8 @@ use zerus_mobile_crypto::{
 };
 use zerus_relay::alerts;
 
+mod snapshot_budget;
+
 const MAX_POLL: usize = 41 * 1024 * 1024;
 const MAX_SMALL: usize = 2 * 1024 * 1024;
 const GUARD_ABI: &str = "Encrypted workspace ABI: guarded-local-v1";
@@ -422,7 +424,7 @@ impl<N: Native + 'static> Engine<'_, N> {
                 && self.native_edits_slot
                 && self.connector.flags.get().task_admitted_edit,
         );
-        let row = json!({"id":machine,"machine_id":machine,"name":name,"host":snapshot["host"],"online":true,"snapshot":snapshot,"via":via,"encrypted_transport":{"gateway_id":profile.identity.device.device_id,"route_id":route,"machine_id":machine}});
+        let mut row = json!({"id":machine,"machine_id":machine,"name":name,"host":snapshot["host"],"online":true,"snapshot":snapshot,"via":via,"encrypted_transport":{"gateway_id":profile.identity.device.device_id,"route_id":route,"machine_id":machine}});
         let plain = encoded(&row)?;
         // The opt-in accounting control stops here, before journal or delivery.
         // Production builds contain neither this seam nor its input reader.
@@ -430,9 +432,7 @@ impl<N: Native + 'static> Engine<'_, N> {
         if tests::capture_accounting_plaintext(&plain) {
             return Err(Failure::Retry);
         }
-        if plain.len() > 1024 * 1024 {
-            return Err(Failure::Retry);
-        }
+        let plain = snapshot_budget::fit(&mut row, plain)?;
         let now = crate::now() as u64;
         let bucket = now / 300;
         let recipients: Vec<String> = profile

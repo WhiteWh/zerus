@@ -8,10 +8,13 @@ pub(super) struct Context<'a> {
     pub team: &'a Team,
     pub op: &'a Operation,
     pub request_id: &'a str,
+    pub provider_stop: Option<ProviderStopProof<'a>>,
+    pub closed_confirmation_card: Option<u64>,
     pub task_custody: Option<&'a Result<store::phase_controls::task_custody::TaskCustody>>,
     pub now: i64,
     pub reply: Reply,
     pub event: Option<&'static str>,
+    pub land_skipped_for: Option<u32>,
     /// The earlier decision this operation's decision replaced, for the
     /// journal.
     pub superseded: Option<u64>,
@@ -193,18 +196,7 @@ impl Context<'_> {
         Ok(seq)
     }
     pub fn inbox(&self, node: u32, kind: &str, text: &str) -> Result<u64> {
-        self.inbox_notes(node, kind, text, &[])
-    }
-    /// An inbox item whose quoted report carries the service's notes beside
-    /// it. The text is stored exactly as given; notes are their own column.
-    pub fn inbox_notes(
-        &self,
-        node: u32,
-        kind: &str,
-        text: &str,
-        notes: &[ReportNote],
-    ) -> Result<u64> {
-        self.db.execute("INSERT INTO inbox(team,kind,node,generation,actor,text,notes,created_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![self.team.id,kind,node,self.generation(node)?,encode(self.actor)?,text,encode(&notes.to_vec())?,self.now]).map_err(storage)?;
+        self.db.execute("INSERT INTO inbox(team,kind,node,generation,actor,text,created_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![self.team.id,kind,node,self.generation(node)?,encode(self.actor)?,text,self.now]).map_err(storage)?;
         Ok(self.db.last_insert_rowid() as u64)
     }
 }

@@ -1,3 +1,4 @@
+use super::super::observe_team_session as session;
 use super::*;
 use serde_json::json;
 use std::{fs, os::unix::fs::PermissionsExt, time::Duration};

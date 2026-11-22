@@ -26,6 +26,11 @@ pub(super) fn queue(team: &Team, page: Page<QueueRow>) -> Result<Page<Value>, Pr
             // The lead's open item when no member can take the ready node:
             // its sentence, or null.
             value["unstaffed"] = json!(row.unstaffed);
+            // zerus-3u5yu (5): a stage's target's earlier implementers, whom
+            // the stage's Reassign refuses; the window leaves them out.
+            if node.kind == NodeKind::Stage {
+                value["earlier_implementers"] = json!(row.earlier_implementers);
+            }
             // zerus-63rru.52 round 2: only a stopped or archived team's row
             // carries the stop outcome, as a stable code plus the store's
             // refusal reason as data, never a sentence.

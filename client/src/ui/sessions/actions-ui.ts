@@ -13,6 +13,7 @@ import { tr, trNoop } from "../../i18n";
 export type ActionRow = Pick<Session,
   | "key" | "computer" | "name" | "machine" | "cmd" | "state" | "tracked" | "resumable" | "activity" | "processState"
   | "archiveId" | "attention" | "unread" | "sharedRead" | "allowed" | "archiveReason" | "terminateReason" | "forgetReason" | "restoreReason" | "phase"
+  | "restorePending"
   | "runId" | "conversationId" | "replyId" | "attentionSignature" | "created" | "fingerprint" | "sessionId"
   | "cwdPath" | "terminalSupported" | "terminalReported" | "terminalAttachSupported" | "terminalAttachReported"
   | "muted" | "sharedNotifications" | "notificationRevision" | "notificationConflict" | "gitWorktree">;
@@ -23,7 +24,7 @@ export function snapshotOf(s: ActionRow): ActionRow {
     key: s.key, computer: s.computer, name: s.name, machine: s.machine, cmd: s.cmd, state: s.state, tracked: s.tracked,
     resumable: s.resumable, activity: s.activity, processState: s.processState, archiveId: s.archiveId, attention: s.attention,
     unread: s.unread, sharedRead: s.sharedRead, allowed: s.allowed, archiveReason: s.archiveReason, terminateReason: s.terminateReason, forgetReason: s.forgetReason,
-    restoreReason: s.restoreReason,
+    restoreReason: s.restoreReason, restorePending: s.restorePending,
     phase: s.phase, runId: s.runId, conversationId: s.conversationId, replyId: s.replyId, attentionSignature: s.attentionSignature,
     created: s.created, fingerprint: s.fingerprint, sessionId: s.sessionId,
     cwdPath: s.cwdPath, terminalSupported: s.terminalSupported, terminalReported: s.terminalReported,
@@ -151,7 +152,7 @@ export function menuState(s: ActionRow, online: boolean, updating: boolean, deta
   // message saved no conversation (zerus-wyrqg).
   const restorable = allowedOp(s, "restore", details);
   const change = archived
-    ? available && s.resumable && !!s.archiveId && !options.occupied && restorable
+    ? available && s.resumable && !!s.archiveId && (!options.occupied || !!s.restorePending) && restorable
     : available && ((canPause && allowedOp(s, "pause", details)) || (!running && s.resumable && allowedOp(s, "resume", details)));
   const [agent, project] = s.name.split("/", 2);
 

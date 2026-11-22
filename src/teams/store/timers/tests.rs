@@ -55,6 +55,7 @@ fn a_reopened_store_keeps_its_timer_triggers_under_their_versioned_names() {
             "person_gestures_immutable",
             "phase_pause_identity",
             "phase_rework_identity",
+            "team_member_readability_binding_v1",
             "timer_cards_decided_v1",
             "timer_cards_item_v1"
         ],

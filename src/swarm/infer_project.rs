@@ -147,6 +147,80 @@ pub(crate) fn place_child_session(
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+/// One deferred attempt, called only by this computer's catalog owner while
+/// the queue holds this exact creation's state and provider binding locks.
+/// Busy/unreadable evidence stays pending; any primary or label membership,
+/// even a tombstone, wins over this creation hint.
+pub(super) fn complete_pending(
+    config: &Config,
+    record: &Value,
+    intent: &Value,
+    end: Instant,
+) -> anyhow::Result<bool> {
+    let Ok(mut store) = LockedStore::try_load_scoped(config) else {
+        return Ok(false);
+    };
+    if !store.data.imported {
+        return Ok(true);
+    }
+    let name = record["name"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Missing placement name"))?;
+    let id = record["session_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Missing placement ID"))?;
+    let actor = store.data.node_id.clone();
+    let primary =
+        store.data.id_memberships.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Initial placement membership evidence is unavailable")
+        })?;
+    if primary.resolve(&store.data.catalog, &actor, id)?.is_some()
+        || store.data.catalog.heads().contains_key(&Key::Session {
+            machine: store.data.catalog.machine(&actor),
+            session: name.into(),
+        })
+    {
+        return Ok(true);
+    }
+    let mut incomplete = false;
+    let project = match from_parent(&store.data, name, &intent["parent"]) {
+        Parent::Project(project) => Some(project),
+        Parent::Keep => return Ok(true),
+        Parent::Folder => infer(
+            &store.data,
+            name,
+            Path::new(
+                intent["directory"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Missing placement directory"))?,
+            ),
+            end,
+            |directory| {
+                let evidence = crate::state::worktree_catalog_until(directory, end);
+                incomplete = !matches!(evidence["state"].as_str(), Some("ok" | "not_repo"))
+                    || evidence["stale"] == true
+                    || evidence["partial"] == true;
+                evidence
+            },
+        ),
+    };
+    if Instant::now() >= end {
+        return Ok(false);
+    }
+    if let Some(project) = project {
+        store
+            .data
+            .id_memberships
+            .as_mut()
+            .expect("checked primary evidence")
+            .set(&store.data.catalog, &actor, &actor, id, json!(project))?;
+        write_membership(&mut store, name, &project)?;
+    } else if incomplete {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
 /// What a new child's parent decides for the child's initial project.
 #[derive(Debug, PartialEq)]
 enum Parent {

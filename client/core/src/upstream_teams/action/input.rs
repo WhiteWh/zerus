@@ -227,13 +227,20 @@ impl TeamAction {
                 node,
                 role,
                 pipeline,
+                keep_task_fields,
                 deps,
                 writes,
                 assignee,
             } => {
-                let mut input = json!({"node": node, "role": role, "pipeline": pipeline, "deps": deps, "writes": writes});
-                if let Some(assignee) = assignee {
-                    input["assignee"] = json!(assignee);
+                let mut input = json!({"node": node, "role": role, "pipeline": pipeline});
+                if *keep_task_fields {
+                    input["keep_task_fields"] = json!(true);
+                } else {
+                    input["deps"] = json!(deps);
+                    input["writes"] = json!(writes);
+                    if let Some(assignee) = assignee {
+                        input["assignee"] = json!(assignee);
+                    }
                 }
                 input
             }
@@ -342,10 +349,18 @@ impl TeamAction {
                 node: id,
                 role,
                 pipeline,
+                keep_task_fields,
+                deps,
                 writes,
                 assignee,
-                ..
-            } => check_route(*id, role, pipeline, writes, assignee.as_deref()),
+            } => {
+                if *keep_task_fields
+                    && (!deps.is_empty() || !writes.is_empty() || assignee.is_some())
+                {
+                    return Err("A placement edit cannot also change the task's dependencies, write paths or assignee.".into());
+                }
+                check_route(*id, role, pipeline, writes, assignee.as_deref())
+            }
             Self::Return {
                 node: id,
                 reason: why,

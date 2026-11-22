@@ -1146,12 +1146,15 @@ group that holds any personal hook is kept as it is, and a command for another
 program is never treated as hgs's.
 Codex can request **Hooks need review** before both a new session and a saved
 conversation's resume or archive restore. Activity shows that exact native
-decision; messages remain blocked while it is open. Only the person's explicit
-choice trusts or skips hooks, and Codex persists that choice. A pending message
-receipt is never retried by recognizing or answering the card. Normal supervised
-startup preserves existing tracking definitions; an unchanged registration does
-not require trust again merely because the Zerus binary was updated. New or
-changed definitions can require a new native review.
+decision; messages remain blocked while it is open. Only the person's choice
+trusts or skips hooks: in Zerus, or through an agent's `hgs answer` at the
+person's request in that agent's own conversation (a standing request counts
+until the person withdraws it) or for a member of a team whose `confirm_trust`
+setting is on. Codex persists that choice.
+A pending message receipt is never retried by recognizing or answering the card.
+Normal supervised startup preserves existing tracking definitions; an unchanged
+registration does not require trust again merely because the Zerus binary was
+updated. New or changed definitions can require a new native review.
 The CLI and session core are Rust; SQLite is bundled and requires a C compiler at
 build time. Existing session bindings and provider history remain compatible.
 
@@ -1308,6 +1311,9 @@ Favorites stay in their existing project and parent hierarchy through collapsed
 groups, retaining only necessary ancestor context; unrelated siblings stay
 collapsed. A favorite's own child toggle independently shows or hides its native
 subagents and child sessions, even below a collapsed ancestor or project. Favorites
+also keep the necessary ancestor rows visible. These context rows start collapsed,
+but their own toggle can explicitly open their branch without opening the higher
+ancestor or its other branches. Favorites
 never override state, search, machine, project, account or folder filters or
 change status and filter counts. The local `sessions/favorites` preference uses
 canonical machine UUID plus durable session ID, surviving rename and restart
@@ -1326,8 +1332,10 @@ tile, its parent's account mark, its name and status, the summary as its
 tooltip) and never expands; the expand button's place stays empty, so its
 status lines up with the rows around it (owner, 2026-11-08). This
 device remembers a collapsed parent across relaunches by its computer's machine
-UUID and session ID (`sessions/collapsedTeams`, at most 2048 parents, the oldest
-forgotten first), so a rename, resume or restart keeps the choice; a parent
+UUID and session ID (`sessions/collapsedTeams`). Explicit expansion is remembered
+in `sessions/expandedTeams`, including on retained ancestors of favorites. Each
+list keeps at most 2048 parents, the oldest forgotten first, so a rename, resume
+or restart keeps the choice; a parent
 without those IDs keeps it for this window only. A child row's compact or full
 form is remembered like any row's. Nesting stops after eight levels; a deeper child starts at top
 level again. A child whose parent is not shown above it stays at top level with
@@ -1718,11 +1726,20 @@ hgs resume codex/my-project/review --archive ID -d
 hgs kill codex/my-project/review --archive ID        # forget only this binding
 ```
 
-Archives live in `archives/`, each with an independent ID. A new launch with the
+Terminal archives live in `archives/`, each with an independent ID. A new launch with the
 same name preserves the archive. Restore refuses an occupied live or Saved name
 and removes an archive binding only after the native agent confirms the expected
 conversation. Failed restore keeps it. **Forget archive** preserves native history;
 `resume --all` excludes archives.
+
+For native DeepSeek sessions, `terminate` stops the selected session on its
+resident host and archives it. `archive` requires a stopped or paused session.
+DeepSeek archives use a separate local store so earlier CLIs can still use
+terminal archives after a rollback.
+Retirement requires the resident host to confirm the session is stopped. Restore
+resumes the archived conversation on that host. When the first restore result is
+unclear, Restore checks the original outcome without sending a second resume.
+Other sessions on the host stay available throughout.
 
 Desktop Restore keeps the opened conversation and its message draft when the
 resumed row confirms the archived conversation ID. Text, attachments and editor
@@ -5624,6 +5641,25 @@ For Claude and Kimi messages ending in a literal backslash, the paste includes a
 final newline so the single Enter submits the unchanged message instead of
 activating the agent's backslash-Enter line continuation. This is verified
 against native history; no second Enter is sent as an automatic retry.
+Claude's composer rules live in `src/state/input/settle.rs`: its module
+documentation, and tests that read real captured screens
+(`tests/fixtures/claude-composer-*`). `src/state/input.rs` applies them in the
+send gate and in the read made right before the paste.
+
+The single Enter follows only a composer that shows this paste settled, with
+Claude's closing rule or `↓ N more` bar on the screen. A view with rows out of
+view never proves.
+
+Right before the paste the composer must read empty once more. When it does
+not, that frame's bounded text becomes the receipt's composer evidence.
+
+A pane too short to show the closing rule is refused by the send gate before
+any receipt or input, with "Claude's pane is too short to show its whole
+composer; nothing was sent; make the pane taller and send again". With Claude
+Code 2.1.327 that is seven rows or fewer; eight rows still send. If the pane
+shrinks after the gate, the read right before the paste refuses the message
+as delivery uncertain, with nothing pasted. If it shrinks during the settle,
+the message stays in the composer, uncertain, and Enter is not pressed.
 On Unix, a public send to an existing-ID Claude, Codex or Kimi session can apply
 one exact scheduled Settings change before its message. The same custodian keeps
 the original SID exclusion, pinned Root object and one original 25-second deadline
@@ -6057,6 +6093,10 @@ only while Terminal shows exactly that chooser, using its number key and, for
 Revise, pasting the feedback before Enter; Kimi's recorded decision, including
 the exact feedback, confirms delivery. A clipped or different chooser, or one
 already in Revise feedback mode, stays read-only with **Open Terminal**.
+Kimi Code 2.6.3 hands the agent an approved plan's ExitPlanMode result marked as
+a tool error ("ERROR: Tool execution failed." before its "Exited plan mode." text
+and the approved plan), whoever approved it, in Terminal or in Activity; plan mode
+does end, and Kimi records the decision as approved.
 
 Kimi CreateGoal approval shows the full objective and completion criterion literally,
 with Kimi's own mode choices for Always Ask or Ask When Needed. **Switch to Never
@@ -6272,8 +6312,12 @@ from the catalog Claude Code caches in the account's profile. Zerus expands a
 section only when the native picker advertises that action, selects the model
 and effort, and applies them with its session-only choice (`s`). Enter on a model
 row saves new defaults; Zerus never uses that action or the typed `/model NAME`
-and `/effort LEVEL` shortcuts for a session change. An unconfirmed selection
-closes the recognized model picker with Escape while its original input authority
+and `/effort LEVEL` shortcuts for a session change. Zerus recognizes the picker
+by its **Select model** title below Claude's panel rule and by the keys it
+presses in the legend (`s to use this session only`, `Esc to cancel`, and
+`←/→ to adjust` for effort), not by its prose, which Claude Code rewords between
+releases; the `/effort` panel shares that legend under another title. An
+unconfirmed selection closes the recognized model picker with Escape while its original input authority
 is still valid. The change is confirmed by Claude's receipt in the exact conversation transcript and by
 its effort indicator when shown. In a conversation that already has replies, Claude
 warns that the next message re-reads the full history and uses more tokens: the
@@ -6824,11 +6868,20 @@ over folder inference, so a session tree stays together. A parent whose project
 no longer exists gives the child an explicit Inbox membership. A parent in Inbox,
 without a membership or with an unresolved project choice leaves the child to
 folder inference, as does a claimed, adopted or forwarded parent. The membership
-is written like a fork's: after the child's binding is saved, retrying a busy
+is first attempted after the child's binding is saved, retrying a busy
 catalog for up to 3 seconds without holding the session state or provider
-binding locks, and only while the child's binding is still the same run and
-conversation. A child name that already has a membership keeps it. Existing
-sessions, including children placed before this rule, are never moved.
+binding locks. Creation also durably records an initial-placement intent,
+including the session ID, run and original parent link. If that first attempt
+cannot finish, this computer's catalog worker retries the pending queue in
+bounded batches. Folder inference for a new session uses the same queue.
+Only the exact unchanged creation binding can complete its intent; an ended or
+replaced run is retired. Any ID or label membership written meanwhile, including
+an explicit unassignment, wins and cancels the intent. Existing sessions,
+including children placed before this rule, are never backfilled by listing,
+adoption or the worker.
+If the intent cannot be recorded, launch continues with one warning and the
+ordinary first placement attempt. A placement queue error never stops catalog
+sync, task cutover or label refresh in the worker.
 The general **New session** action inherits the selected session's project,
 computer and matching project folder. For a linked worktree, a verified catalog
 selects the main checkout instead. Choosing another folder, project or computer
@@ -9097,6 +9150,7 @@ hgs team waiting [--limit 1..200] [--after CURSOR]
 hgs team status [--team TEAM] [--bundle]
 hgs team inbox|queue|cards|journal [--team TEAM] [--limit 1..200] [--after CURSOR]
 hgs team journal [--team TEAM] [--limit 1..200] [--after CURSOR] --recorded-timings
+hgs team evidence [--team TEAM] --node N
 hgs team current
 hgs team settings|pause|resume|stop|archive|decide < request.json
 hgs team admit|route|accept|return|reassign|hold|release|cancel|reply < request.json
@@ -9104,6 +9158,19 @@ hgs team pause-member|resume-member|stop-member|archive-member < request.json
 hgs team add-member|swap-member|rename-team|set-goal < request.json
 hgs team ask|verdict < request.json
 ```
+
+`evidence --node N` reads the evidence beside one task's decision: the task's
+latest report (`generation`; as `member`, the member that generation was handed
+to, which a later Reassign does not change, or `null` when that hand-out is
+gone; `commit`, `text` and the service's `notes`) and its stages, newest first,
+each with its
+`kind` and `round` from the team's pinned bundle, its stored `state` and its
+latest `verdict` (`generation`, the stage holder as `member`, `pass`, the
+findings as `text`), or `null` when there is none. At most 24 stages are
+returned; `more_stages` says whether older ones exist. `revision` is the
+team's revision in the same read as the evidence. A stage node is refused
+with `invalid_state` (its verdict is read with its task) and an unknown task
+with `not_found`. The desktop's task inspector reads it for the task it shows.
 
 The optional `journal --recorded-timings` read joins only the effect and stage
 records referenced by that page, using indexed point lookups in the same
@@ -9192,6 +9259,7 @@ its operation: `op`, `actor` and any other foreign field are refused.
 | `waiting` | yes | | | none |
 | `status` | yes | yes | yes | none |
 | `inbox`, `queue`, `cards`, `journal` | yes | yes | | none |
+| `evidence --node N` | yes | yes | | none |
 | `phases`, `phase --phase N` | yes | yes | | none |
 | `submit-draft-phase` | yes | yes | | `phase`, `draft` |
 | `edit-draft-phase` | yes | yes | | `phase`, `generation`, `draft` |
@@ -9488,6 +9556,8 @@ carry `stop_outcome: {code, reason?}` for its current recorded stop. Codes are
 `cancelled`, `released`, `cancel_refused`, `key_cleared`, `key_clear_refused`,
 `pending` and `unchanged`; refusal reasons are data, not a code inferred from
 text. An older stop without a recorded stop identity carries no such field.
+A stage's row also carries `earlier_implementers`: the members who implemented
+any round of its target, whom the stage's Reassign and hand-out refuse.
 
 Report, inbox and waiting-card reads keep member `text` separate from the
 service's additive `notes: [{code, text?}]`. Known codes are `text_shortened`
@@ -12417,6 +12487,12 @@ ordinary/mobile listing, or 16 for explicit pages. Both retain the shared 16-MiB
 canonical byte budget, independent 16-MiB/256-entry indirect observation budget,
 and original response deadline. First-page deferred live ownership still needs
 its original fresh canonical proof and shares the unchanged 16-file page budget.
+A native child's reply is bounded in characters and can exceed the compact
+projection's 16-KiB per-field byte limit. In that case only the internal child
+detail hint is absent, and the row requires the original canonical overlay.
+The saved reply and reply/attention identities stay intact; public rows and
+selected inspection keep their existing roster preview and status semantics.
+This does not enlarge the seed, overlay or response budgets.
 A file ceiling is not a promise that arbitrarily large or slow records fit these
 unchanged byte/time limits. A limit or late freshness failure refuses the whole
 body; no row is silently degraded or omitted. Unknown native state

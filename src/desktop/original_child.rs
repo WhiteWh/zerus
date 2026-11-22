@@ -31,6 +31,28 @@ use zerus_client_core::run::{
     original_input::{self, Owner as InputOwner},
 };
 
+/// Prepares `command` to execute the service's pinned image (zerus-5sl7r):
+/// the pin's own inheritance, and the path that image was copied from as
+/// `HGS_EXECUTABLE`, unless the service itself names one. The child runs a
+/// sealed memfd, so its `/proc/self/exe` is `/memfd:… (deleted)`; without
+/// this a resume put that name into its terminal's command, whose shell
+/// could not run it, and the pane ended before its supervisor started. The
+/// caller has just checked `image.current()`: that path still holds the
+/// pinned bytes. A later replacement (an update) makes the terminal run the
+/// newly installed `hgs`, as `hgs resume` run by hand would, and its
+/// supervisor records which one it runs.
+#[cfg(target_os = "linux")]
+pub(in crate::desktop) fn inherit_pinned(
+    image: &zerus_client_core::image::linux::Pin,
+    command: &mut Command,
+) -> std::io::Result<()> {
+    image.inherit(command)?;
+    if std::env::var_os("HGS_EXECUTABLE").is_none_or(|value| value.is_empty()) {
+        command.env("HGS_EXECUTABLE", image.source());
+    }
+    Ok(())
+}
+
 /// Called first in `main` for each kind's variable `var`. A child started by
 /// a desktop actor holds the actor's close-only custody lock for exactly its
 /// own lifetime: the inherited descriptor is marked close-on-exec before

@@ -20,10 +20,7 @@ fn key(record: &Value) -> Result<String> {
 pub(in crate::state) fn acquire(name: &str) -> Result<(Guard, Value)> {
     let observed = binding(name)?;
     let identity = key(&observed)?;
-    let path = root()
-        .join("dsh/session-locks")
-        .join(format!("{identity}.lock"));
-    let guard = lock(Some(&path))?;
+    let guard = lock_record(&observed)?;
     let record = {
         let _bindings = lock(Some(&root().join("dsh/bindings.lock")))?;
         let current = binding(name)?;
@@ -33,6 +30,14 @@ pub(in crate::state) fn acquire(name: &str) -> Result<(Guard, Value)> {
         current
     };
     Ok((guard, record))
+}
+
+pub(super) fn lock_record(record: &Value) -> Result<Guard> {
+    let identity = key(record)?;
+    let path = root()
+        .join("dsh/session-locks")
+        .join(format!("{identity}.lock"));
+    lock(Some(&path))
 }
 
 /// Only local binding I/O belongs in `write`. Other, not-yet-migrated metadata

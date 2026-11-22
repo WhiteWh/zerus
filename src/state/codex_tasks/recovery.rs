@@ -18,7 +18,7 @@ fn header(file: &mut File) -> Option<Value> {
     serde_json::from_slice(&bytes).ok()
 }
 
-fn first_start(record: &Value, parent: &str) -> bool {
+pub(super) fn first_start(record: &Value, parent: &str) -> bool {
     let query = || -> Option<bool> {
         #[cfg(unix)]
         let identity = crate::sqlite_file::existing(&root().join("events.sqlite3")).ok()?;

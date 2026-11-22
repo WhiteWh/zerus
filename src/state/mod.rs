@@ -67,6 +67,9 @@ pub(crate) use input::{Lookup as ReceiptLookup, Submission};
 // platforms only.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use input::{first_message_ready, resumed_readiness, Readiness as ResumedReadiness};
+// Only the session resume leaf, Linux and macOS, reads it.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) use input::ResumedSupervisor;
 mod input_queue;
 mod journal;
 mod keep_warm;
@@ -200,9 +203,12 @@ mod workspace;
 mod git_status;
 pub(crate) mod repositories;
 mod launch_observation;
+pub(crate) mod team_provider_stop;
+pub(crate) use launch_observation::TeamRecord;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use launch_observation::{
-    observe_team_launch, observe_team_session, TeamObservation, TeamRecord, TeamSession,
+    observe_team_launch, observe_team_run_for_provider, observe_team_session,
+    observe_team_session_for_availability, TeamObservation, TeamSession,
 };
 pub(crate) use questions::native_identity;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
@@ -262,6 +268,7 @@ mod worktree_maintenance;
 pub(crate) fn account_models(provider: &str, home: &std::path::Path) -> serde_json::Value {
     effort::account_models(provider, home)
 }
+pub(crate) use effort::{codex_cache_info, CodexCacheInfo};
 /// The DeepSeek account's model catalog from its resident host, read only.
 pub(crate) fn dsh_account_models(home: &std::path::Path) -> serde_json::Value {
     dsh::account_models(home)
@@ -293,6 +300,7 @@ pub(crate) fn worktree_catalog_until(path: &std::path::Path, deadline: std::time
 }
 mod launch_project;
 pub(crate) use launch_project::with_launch_binding;
+pub(crate) mod placement;
 mod session_project;
 pub(crate) use session_project::{with_pinned_session_binding, with_session_project_binding, Pinned};
 pub(crate) mod launches;
@@ -725,7 +733,7 @@ pub fn merge_listing_archives(mut box_value: Value, ids: &BTreeMap<String, Strin
             .ok_or("invalid session")?
             .extend(telemetry::unavailable().as_object().unwrap().clone());
     }
-    let mut archive_page = if include_archives { Some(archive_catalog::preview(&marks)?) } else { None };
+    let mut archive_page = if include_archives { Some(archive_catalog::preview(&marks, None)?) } else { None };
     let archived: &[Value] = archive_page.as_ref().and_then(|page| page["sessions"].as_array()).map_or(&[], Vec::as_slice);
     // Archive preparation does not consume the live question-indexing budget.
     let shared = Shared { marks: &marks, preferences: notification_preferences.as_ref(), keep_warm: keep_warm_settings.as_ref(), question_routing: question_routing.as_ref(), route_outcomes: route_outcomes.as_ref(), budget: read_marks::question_budget() };
@@ -1094,8 +1102,7 @@ pub fn fork_session(
 pub(crate) fn reference_details(name: &str, archive: &str, agent: &str) -> Result<Value> {
     local_sessions()?;
     if opencode::exists(name) { if !archive.is_empty() {return Err("OpenCode archives are unavailable".into());} return opencode::inspect(name, if agent.is_empty() {None} else {Some(agent)}); }
-    if dsh::exists(name) {
-        if !archive.is_empty() { return Err("DeepSeek archives are unavailable".into()); }
+    if archive.is_empty() && dsh::exists(name) {
         return dsh::inspect(name, if agent.is_empty() { None } else { Some(agent) });
     }
     let archive = if archive.is_empty() { None } else { Some(archive) };
@@ -1120,7 +1127,9 @@ fn matches_reference(reference: &crate::session_reference::Reference, record: &V
 pub(crate) fn resolve_reference(reference: &crate::session_reference::Reference) -> Result<String> {
     local_sessions()?;
     let _guard = lock(None)?;
-    let mut candidates = if reference.archive.is_empty() { records()? } else { archive::records()? };
+    let mut candidates = if reference.archive.is_empty() { records()? }
+        else if reference.name.starts_with("dsh/") { dsh::native_archives::by_id(&reference.archive)?.into_iter().collect() }
+        else { archive::records()? };
     if reference.archive.is_empty() { candidates.extend(dsh::snapshots()?); candidates.extend(opencode::snapshots()?); }
     let mut matching = candidates.iter().filter(|record| matches_reference(reference, record));
     let first = matching.next().ok_or("The referenced conversation is no longer bound to a saved session; it may have been cleared or forgotten")?;
@@ -1390,6 +1399,11 @@ pub(crate) fn pause_for_test(record: &mut Value) -> Result<()> {
 pub(crate) fn archive_for_test(record: &Value) -> Result<String> {
     let _guard = lock(None)?;
     archive::save(record)
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn dispatch_test_archive_catalog_worker() -> Result<i32> {
+    archive_catalog::team_worker()
 }
 /// The real `hgs inspect NAME --archive ID` reply, as the Teams confirmation
 /// reads an exited member's archive (zerus-63rru.62): after every event,
@@ -1812,6 +1826,10 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
         return search_index::run_worker();
     }
     if args.first().map(String::as_str) == Some("archive-catalog-worker") {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if args.len() == 2 && args[1] == "--teams-repair" {
+            return archive_catalog::team_worker();
+        }
         if args.len() != 1 {
             return Err("Unexpected archive catalog worker arguments".into());
         }
@@ -1990,7 +2008,9 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
     if args.first().is_some_and(|name| opencode::exists(name)) {
         return opencode::dispatch(command, args);
     }
-    if args.first().is_some_and(|name| dsh::exists(name)) {
+    let explicit_archive = matches!(command.as_str(), "inspect" | "resume" | "rename" | "forget")
+        && args.iter().any(|arg| arg == "--archive");
+    if !explicit_archive && args.first().is_some_and(|name| dsh::exists(name)) {
         return dsh::dispatch(command, args);
     }
     if command == "settings" {

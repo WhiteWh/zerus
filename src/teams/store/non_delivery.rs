@@ -3,6 +3,31 @@
 use super::*;
 use crate::teams::ops::HandoutOutcome;
 
+// Only a notice for the latest effect of a node's current hand-back can
+// still ask the lead to act. There is at most one such notice per live node.
+// The partial index omits all other inbox kinds and the closed history.
+const STALE_REOPEN_NOTICES: &str = "
+    SELECT i.seq FROM inbox i INDEXED BY inbox_open_reopen_refused
+    WHERE i.team=?1 AND i.state='open' AND i.kind GLOB 'reopen_refused:*'
+      AND NOT EXISTS (
+        SELECT 1 FROM nodes n
+        WHERE n.team=i.team AND n.id=i.node AND n.generation=i.generation AND n.hand_back
+          AND i.kind='reopen_refused:' || (
+            SELECT e.request_id FROM effects e
+            WHERE e.team=n.team AND e.node=n.id AND e.generation=n.generation
+            ORDER BY e.seq DESC LIMIT 1
+          )
+      )
+    ORDER BY i.seq LIMIT ?2";
+
+pub(in crate::teams) fn close_stale_reopen_notices(db: &Connection, team: &str) -> Result<usize> {
+    db.execute(
+        &format!("UPDATE inbox SET state='closed' WHERE seq IN ({STALE_REOPEN_NOTICES})"),
+        params![team, 200],
+    )
+    .map_err(storage)
+}
+
 /// The original successful outcome receipt binds the inbox row exactly. Text,
 /// timestamps and a coincident number from another table grant no authority.
 pub(in crate::teams) fn non_delivery_item(
@@ -62,6 +87,16 @@ pub(in crate::teams) fn legacy_non_delivery_state(state: &str) -> bool {
 }
 
 impl Store {
+    pub fn has_stale_reopen_notices(&self, team: &str) -> Result<bool> {
+        self.active()?;
+        let Some(db) = &self.db else {
+            return Ok(false);
+        };
+        db.prepare(STALE_REOPEN_NOTICES)
+            .and_then(|mut query| query.exists(params![team, 1]))
+            .map_err(storage)
+    }
+
     pub fn non_delivery_pending(&self, team: &str, effect: &EffectIntent) -> Result<bool> {
         self.active()?;
         let db = self

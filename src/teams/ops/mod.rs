@@ -24,6 +24,12 @@ mod phase_review;
 mod pipeline;
 mod planning;
 mod provider_settings;
+mod provider_stop;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) use apply::apply_provider_stop;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) use provider_stop::CHANGED as PROVIDER_STOP_CHANGED;
+pub(crate) use provider_stop::{ProviderConfirmation, ProviderStopProof, CONFIRMATION_CLOSED};
 pub(crate) mod publication;
 mod queue;
 #[cfg(test)]

@@ -37,6 +37,10 @@ mod team_finish_tests;
 #[path = "task_team_handover_tests.rs"]
 mod team_handover_tests;
 
+#[cfg(test)]
+#[path = "task_ui_fixture_tests.rs"]
+mod ui_fixture_tests;
+
 #[cfg(not(feature = "test-without-team"))]
 #[path = "task_team.rs"]
 mod team;

@@ -223,6 +223,138 @@ fn an_archived_member_is_not_free_and_is_named_gone() {
 }
 
 #[test]
+fn only_the_member_with_a_native_archive_gets_a_catalog_card_that_closes_on_repair() {
+    isolated(&format!("{CHILD}archive_catalog_card_child"));
+}
+
+#[test]
+#[ignore = "run by its isolated wrapper"]
+fn archive_catalog_card_child() {
+    use super::super::ports::{Availability, Fact, Ports};
+    let mut w = world(&["m1", "m2"]);
+    for id in ["m1", "m2"] {
+        assert!(free(&mut w, id));
+    }
+    let forgotten = producer::archive(&w.records["m2"]).unwrap();
+    let id = producer::archive_with_catalog_gap(&w.records["m1"]).unwrap();
+    let state = w.h.temp.path().to_owned();
+    let db = state.join("archive-catalog-v1.sqlite3");
+    std::fs::remove_file(state.join(format!("archives/{forgotten}.json"))).unwrap();
+    let indexed = || {
+        rusqlite::Connection::open(&db).unwrap().query_row(
+            "SELECT EXISTS(SELECT 1 FROM archive_identities WHERE id=?)",
+            [&id],
+            |row| row.get::<_, bool>(0),
+        ).unwrap()
+    };
+    assert!(!indexed(), "the native writer rolled back its catalog update");
+    let admitted = state.join("archive-catalog-v2/teams-attempt.json");
+    let t = team(&w);
+    let (m1, m2) = (member(&w, "m1"), member(&w, "m2"));
+    assert!(!free(&mut w, "m1"));
+    assert!(admitted.is_file(), "the member reader requested bounded repair");
+    assert!(state.join(format!("archives/{id}.json")).is_file());
+    let first = std::fs::read(&admitted).unwrap();
+    let child = |test: &str| {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!("{CHILD}{test}"),
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .spawn()
+            .unwrap()
+    };
+    assert!(child("confirmation_repair_child").wait().unwrap().success());
+    assert_eq!(
+        std::fs::read(&admitted).unwrap(),
+        first,
+        "another reader process shares the reservation for a different member"
+    );
+    let gone = Availability::Unreadable(Fact::Gone);
+    assert_eq!(w.native.availability(&t, &m2).unwrap(), gone);
+    let other_files: Vec<_> = (0..65)
+        .map(|n| state.join(format!("archives/unrelated-{n}")))
+        .collect();
+    for path in &other_files {
+        std::fs::write(path, "").unwrap();
+    }
+    assert_eq!(
+        w.native.availability(&t, &m2).unwrap(),
+        Availability::Unreadable(Fact::Unavailable),
+        "exhausting the disk inspection budget cannot decide Gone"
+    );
+    for path in other_files {
+        std::fs::remove_file(path).unwrap();
+    }
+
+    w.h.add(&person(), 1);
+    let mut actor = super::super::Runtime::open(&state, &t.home).unwrap();
+    let mut p = Production {
+        native: w.native,
+        deliveries: vec![],
+    };
+    let t0 = 10_000_000;
+    for minute in 0..=3 {
+        actor
+            .tick(&mut w.h.store, &mut p, TEAM, t0 + minute * 60_000, false)
+            .unwrap();
+    }
+    let cards = |h: &Harness| h.store.cards(TEAM, 200, None).unwrap().rows;
+    let card = cards(&w.h)
+        .into_iter()
+        .find(|card| {
+            card.state == "open"
+                && card.text.starts_with("Member m1 ")
+                && card.text.contains("an archive from its session is missing from the archive catalog")
+        })
+        .expect("the durable archive has a catalog card after three minutes");
+    assert!(cards(&w.h).iter().all(|row| !row.text.starts_with("Member m2 ")
+        || !row.text.contains("missing from the archive catalog")));
+
+    let writer = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .open(state.join(".lock"))
+        .unwrap();
+    fs2::FileExt::lock_exclusive(&writer).unwrap();
+    let error = crate::state::archive_catalog::team_worker_with_budget(
+        std::time::Duration::from_millis(25),
+    )
+    .unwrap_err();
+    assert!(
+        error.starts_with(crate::state::archive_catalog::INCOMPLETE),
+        "{error}"
+    );
+    assert!(!indexed(), "the worker must wait for the state writer");
+    drop(writer);
+    let status = crate::state::dispatch_test_archive_catalog_worker().unwrap();
+    assert_eq!(status, 0);
+    assert_eq!(p.native.availability(&t, &m1).unwrap(), gone);
+    actor
+        .tick(&mut w.h.store, &mut p, TEAM, t0 + 4 * 60_000, false)
+        .unwrap();
+    assert_ne!(
+        w.h.store.card(TEAM, card.seq).unwrap().unwrap().state,
+        "open"
+    );
+    assert!(p.deliveries.is_empty());
+}
+
+#[test]
+#[ignore = "run by the archive-card fixture in its original state root"]
+fn confirmation_repair_child() {
+    let state = std::path::PathBuf::from(std::env::var_os("HGS_STATE_DIR").unwrap());
+    let missing =
+        crate::state::archive_catalog::find_run(&state, &name("m2"), &run("m2")).unwrap_err();
+    assert!(
+        missing.starts_with(crate::state::archive_catalog::INCOMPLETE),
+        "{missing}"
+    );
+}
+
+#[test]
 #[ignore = "run by its isolated wrapper"]
 fn started_fresh_child() {
     let mut w = world(&["m1"]);

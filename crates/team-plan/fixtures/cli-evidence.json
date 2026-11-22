@@ -1,0 +1,34 @@
+{
+  "actor": {
+    "kind": "session",
+    "member": "lead",
+    "person": "local",
+    "team": "00000000-0000-4000-8000-00000000beef"
+  },
+  "more_stages": false,
+  "node": 1,
+  "ok": true,
+  "report": {
+    "commit": "0123456789abcdef0123456789abcdef01234567",
+    "generation": 1,
+    "member": "m1",
+    "notes": [],
+    "text": "Trimmed the label and added a case for an empty one."
+  },
+  "revision": 19,
+  "stages": [
+    {
+      "kind": "review",
+      "node": 2,
+      "round": 1,
+      "state": "in_progress",
+      "verdict": {
+        "generation": 1,
+        "member": "m3",
+        "pass": true,
+        "text": "Reviewed every acceptance criterion. One nit: rename the helper."
+      }
+    }
+  ],
+  "team": "00000000-0000-4000-8000-00000000beef"
+}

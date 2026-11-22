@@ -22,24 +22,31 @@ PLACEHOLDERS = re.compile(r"%L?\d+|%n")
 def supplement(catalog: dict, entries: dict) -> dict:
     """Adds Next-only translations under the shared catalog's own rules: a source the
     Qt catalog already translates stays there, placeholders stay exact, plurals
-    need %n and three Russian forms, and no value carries a separator dot."""
+    need %n and three Russian forms, and no value carries a separator dot.
+
+    A key may name one disambiguation, "disambiguation\\u0004source", read by
+    Next's trc() where the shared source reads differently in one Next use (a
+    noun where Qt's translation is a verb). Both parts must be nonempty, and a
+    key the Qt catalog already translates stays Qt's."""
     merged = dict(catalog)
-    for source, value in entries.items():
-        if not isinstance(source, str) or not source or "\u0004" in source:
-            raise ValueError(f"Invalid supplement source: {source!r}")
-        if source in catalog:
-            raise ValueError(f"Translate {source!r} in zerus_ru.json, not in the supplement")
+    for key, value in entries.items():
+        parts = key.split("\u0004") if isinstance(key, str) else []
+        if not parts or len(parts) > 2 or not all(parts):
+            raise ValueError(f"Invalid supplement source: {key!r}")
+        source = parts[-1]
+        if key in catalog:
+            raise ValueError(f"Translate {key!r} in zerus_ru.json, not in the supplement")
         values = value if isinstance(value, list) else [value]
         if isinstance(value, list) and (len(value) != 3 or "%n" not in source):
-            raise ValueError(f"Russian plurals need %n and three forms: {source!r}")
+            raise ValueError(f"Russian plurals need %n and three forms: {key!r}")
         for text in values:
             if not isinstance(text, str) or not text.strip():
-                raise ValueError(f"Empty supplement translation: {source!r}")
+                raise ValueError(f"Empty supplement translation: {key!r}")
             if sorted(PLACEHOLDERS.findall(source)) != sorted(PLACEHOLDERS.findall(text)):
-                raise ValueError(f"Changed placeholders: {source!r}")
+                raise ValueError(f"Changed placeholders: {key!r}")
             if "·" in text:
-                raise ValueError(f"Separator dot in supplement translation: {source!r}")
-        merged[source] = value
+                raise ValueError(f"Separator dot in supplement translation: {key!r}")
+        merged[key] = value
     return merged
 
 

@@ -32,7 +32,21 @@ class GeneratedCatalog(unittest.TestCase):
         self.assertEqual(merged["Pause"], "Приостановить")
         for entries in ({"Pause": "Пауза"}, {"Retry %1": "Повтор"}, {"Retry %1": "Повтор в %1 %2"},
                         {"%n tasks": ["%n задача", "%n задач"]}, {"Tasks": ["Задача", "Задачи", "Задач"]},
-                        {"Retry": " "}, {"Two values": "Один · два"}, {"media\u0004Play": "Играть"}):
+                        {"Retry": " "}, {"Two values": "Один · два"}):
+            with self.assertRaises(ValueError):
+                generator.supplement(catalog, entries)
+
+    def test_supplement_adds_next_only_disambiguated_sources(self):
+        # Next's trc(disambiguation, source) for a source whose shared Qt
+        # translation reads differently in one Next use; a key Qt already
+        # translates stays Qt's, and every source rule applies to its source.
+        catalog = {"Review": "Просмотреть", "media playback\u0004Play": "Воспроизвести"}
+        merged = generator.supplement(catalog, {"team stage\u0004Review": "Ревью", "team stage\u0004Retry %1": "Повтор %1"})
+        self.assertEqual(merged["team stage\u0004Review"], "Ревью")
+        self.assertEqual(merged["Review"], "Просмотреть")
+        for entries in ({"media playback\u0004Play": "Играть"}, {"\u0004Review": "Ревью"}, {"team stage\u0004": "Ревью"},
+                        {"team\u0004stage\u0004Review": "Ревью"}, {"team stage\u0004Retry %1": "Повтор"},
+                        {"team stage\u0004Two": "Один · два"}, {"team stage\u0004%n tasks": ["%n задача", "%n задач"]}):
             with self.assertRaises(ValueError):
                 generator.supplement(catalog, entries)
 

@@ -40,6 +40,7 @@ pub mod catalog_edit;
 pub mod drawers;
 pub mod estimate_comparison;
 pub mod estimate_projection;
+pub mod evidence;
 pub mod model;
 pub mod observed_timing;
 // WhiteWh fork: the client polls the fork's teams; upstream's poller is left out.

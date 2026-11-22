@@ -377,6 +377,13 @@ pub(crate) fn local_node_id(config: &Config) -> Result<String> {
     Ok(store.data.node_id.clone())
 }
 
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn save_test_node_id(config: &Config, id: &str) -> Result<()> {
+    let mut store = LockedStore::load(config)?;
+    store.data.node_id = id.into();
+    store.save()
+}
+
 /// Validate an already admitted existing catalog without loading, initializing
 /// or saving a store. The receipt reader owns its bounded private file read.
 pub(crate) fn existing_node_id(bytes: &[u8]) -> Result<String> {

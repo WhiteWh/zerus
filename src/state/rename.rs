@@ -136,6 +136,9 @@ pub(super) fn dispatch_scoped(args: &[String], dry: bool, scope: Option<&session
         let mut record = archive::read_archive(old, id)?;
         terminating::check_mutation(&record)?;
         if let Some(scope)=scope {scope.check(&record)?;}
+        if record["backend"] == "dsh" && dsh::retirement::restore_source_held(&record)? {
+            return Err(dsh::retirement::RESTORE_PENDING.into());
+        }
         if old != new && !dry {
             anchor(&mut record);
             record["name"] = json!(new);
@@ -144,7 +147,11 @@ pub(super) fn dispatch_scoped(args: &[String], dry: bool, scope: Option<&session
                 record.as_object_mut().unwrap().remove(key);
             }
             if let Some(scope)=scope {scope.changing();}
-            atomic_record(&archive::path(id)?, &mut record)?;
+            if record["backend"] == "dsh" {
+                dsh::native_archives::update_name(&record)?;
+            } else {
+                atomic_record(&archive::path(id)?, &mut record)?;
+            }
         }
         if let Some(scope)=scope {scope.result(new,string(&record,"run_id"),string(&record,"conversation_id"),Some(id));}
     } else {

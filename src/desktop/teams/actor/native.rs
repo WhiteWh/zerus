@@ -311,6 +311,60 @@ impl Ports for Native {
             answer => Ok(answer),
         }
     }
+    fn held_availability(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        member: &Member,
+        effect: &crate::teams::store::EffectIntent,
+        confirmation: Option<&ops::ProviderConfirmation>,
+        now: i64,
+    ) -> Result<(ports::Availability, Option<String>)> {
+        if !member
+            .session
+            .as_ref()
+            .is_some_and(|session| session.machine == self.machine)
+        {
+            return Ok((ports::Availability::Busy, None));
+        }
+        let mut stopped = None;
+        let answer = super::availability::held(
+            &self.config,
+            &self.epoch,
+            &team.id,
+            member,
+            |record, failure| {
+                match crate::teams::ops::apply_provider_stop(
+                    store,
+                    team,
+                    effect,
+                    ops::ProviderStopProof {
+                        member,
+                        record,
+                        stop: failure,
+                        confirmation,
+                    },
+                    now,
+                ) {
+                    Ok(_) => {
+                        stopped = Some(super::provider_binding_stamp(
+                            &record.launch_id,
+                            &record.session_id,
+                            &record.run_id,
+                            &record.conversation_id,
+                        ));
+                    }
+                    Err(e)
+                        if e.code == crate::teams::ops::PROVIDER_STOP_CHANGED
+                            || e.code == zerus_team_plan::problem::code::STALE_REVISION => {}
+                    Err(e) => return Err(e),
+                }
+                Ok(())
+            },
+            |row| self.first_on(member, row).is_some(),
+        )?;
+        Ok((answer, stopped))
+    }
     fn repository(&mut self, team: &Team) -> Result<String> {
         self.work_repository(team)
     }

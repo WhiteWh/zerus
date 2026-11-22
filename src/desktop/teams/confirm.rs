@@ -24,3 +24,5 @@ pub(super) use resumed::{resumed_binding, ResumedBinding};
 
 #[cfg(test)]
 mod lead151;
+#[cfg(test)]
+mod test_inspect;

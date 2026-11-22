@@ -930,6 +930,7 @@ pub fn worker() -> Result<()> {
         eprintln!("hgs swarm: record the worker version: {error:#}");
     }
     let mut schedule = Schedule::default();
+    let mut placements = crate::state::placement::Scan::default();
     let mut cutover=replica::CutoverScan::default();
     loop {
         // An upgrade replaced this program: exit so that the service manager
@@ -942,6 +943,11 @@ pub fn worker() -> Result<()> {
             .map_err(anyhow::Error::from)
             .and_then(|config| {
                 schedule.round(&mut Live(&config))?;
+                if let Err(error) = placements.advance(&config, |record, intent, end| {
+                    super::infer_project::complete_pending(&config, record, intent, end)
+                }) {
+                    eprintln!("hgs swarm: initial placement remains pending: {error:#}");
+                }
                 if let Err(error)=cutover.advance(&config) {
                     eprintln!("hgs swarm: the bounded task cutover pass remains pending: {error:#}");
                 }

@@ -15,7 +15,7 @@ import { emptyGrouping } from "../../store/organization";
 import { listRows, filterCounts } from "./model";
 import { favorite, setFavorite } from "../../store/favorites";
 import { setTeamCollapsed, teamCollapsed } from "../../store/teamCollapse";
-import { menu, setMenu, setStateFilter, setStripMode, setMachineFilter, setProjectFilter, setAccountFilter, setFolderFilter } from "../../store/ui";
+import { menu, setMenu, setStateFilter, setStripMode, setMachineFilter, setProjectFilter, setAccountFilter, setFolderFilter, setCompactRows } from "../../store/ui";
 
 const MACHINE = "11111111-1111-4111-8111-111111111111";
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -49,6 +49,38 @@ afterEach(() => { stop?.(); document.body.replaceChildren(); setMenu(undefined);
 const cards = () => listRows().flatMap((r) => r.type === "card" ? [r.id] : []);
 
 describe("actual session-row favorites menu and model", () => {
+  it.each([false, true])("opens a retained nonfavorite parent under a collapsed ancestor (compact: %s)", (compact) => {
+    const host = setup();
+    const a = compact ? 20 : 10, b = a + 1, f = a + 2, sibling = a + 3, unrelated = a + 4;
+    const parent = (n: number) => ({ machine: MACHINE, session_id: id(n), conversation_id: `conversation-${n}`, run_id: `favorite-${n}`, name: raw(n).name, state: "live" as const });
+    applyBatch({ ...emptyBatch(), replaces: [{ computer: "", rows: [
+      { computer: "", key: key(a).slice(1), row: raw(a) },
+      { computer: "", key: key(b).slice(1), row: raw(b, { parent: parent(a), subagents: { native: { state: "working", name: "Native child" } } }) },
+      { computer: "", key: key(f).slice(1), row: raw(f, { parent: parent(b) }) },
+      { computer: "", key: key(sibling).slice(1), row: raw(sibling, { parent: parent(b) }) },
+      { computer: "", key: key(unrelated).slice(1), row: raw(unrelated, { parent: parent(a) }) },
+    ] }] });
+    setFavorite(catalog.rows[key(f)], true); setTeamCollapsed(key(a), true); setCompactRows(key(b), compact);
+    const toggle = () => host.querySelector<HTMLButtonElement>(`.vrow[data-key='${CSS.escape(key(b))}'] ${compact ? ".cc-team" : ".sc-team"}`)!;
+    const native = () => listRows().some((r) => r.type === "child" && r.parent.key === key(b));
+    expect(cards()).toEqual([key(a), key(b), key(f)]);
+    const beforeExpanded = toggle().getAttribute("aria-expanded");
+    toggle().click();
+    expect({ beforeExpanded, afterExpanded: toggle().getAttribute("aria-expanded"), cards: cards(), native: native() }).toEqual({
+      beforeExpanded: "false", afterExpanded: "true", cards: [key(a), key(b), key(f), key(sibling)], native: true,
+    });
+    expect(teamCollapsed(key(a))).toBe(true);
+    toggle().click();
+    expect(cards()).toEqual([key(a), key(b), key(f)]); expect(native()).toBe(false);
+    setTeamCollapsed(key(a), false);
+    expect(cards()).toEqual([key(a), key(b), key(f), key(unrelated)]);
+    toggle().click(); setTeamCollapsed(key(a), true);
+    expect(cards()).toEqual([key(a), key(b), key(f), key(sibling)]); expect(native()).toBe(true);
+    grouping(true);
+    expect(cards()).toEqual([key(a), key(b), key(f), key(sibling)]);
+    setFavorite(catalog.rows[key(f)], false);
+    expect(cards()).toEqual([]);
+  });
   it("toggles a favorite's own children while its ancestor stays collapsed", () => {
     const host = setup();
     applyBatch({ ...emptyBatch(), upserts: [{ computer: "", key: "run:favorite-4", row: raw(4, { parent: {

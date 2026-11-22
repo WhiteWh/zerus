@@ -2,6 +2,7 @@
 mod inspection;
 mod claude_usage;
 mod model_defaults;
+mod codex_catalog;
 mod kimi_compaction;
 mod claude;
 mod claude_settings;

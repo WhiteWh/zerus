@@ -271,6 +271,11 @@ def tool_result(body, call_id):
 
 
 REMINDER = '<system-reminder>\n'
+# Kimi Code 2.6.3 flags an approved ExitPlanMode result as a tool error (isError,
+# zerus-on5uh): the model receives this exact line, then the unchanged result text.
+# Kimi's own recorded decision (approved, Approve) and plan_mode.exit are the
+# test's evidence of the approval; this line is upstream's, whoever approved.
+KIMI_TOOL_ERROR = '<system>ERROR: Tool execution failed.</system>\n'
 
 
 def native_plan_path(body):
@@ -314,10 +319,16 @@ def plan_action(body):
         return 'ExitPlanMode', {}
     if names == ['Write', 'ExitPlanMode']:
         result = tool_result(body, calls[1][0])
-        if result is not None and result.startswith('Exited plan mode.'):
+        if result is not None and approved_exit(result.removeprefix(KIMI_TOOL_ERROR)):
             return None
         raise ValueError('ExitPlanMode did not complete successfully')
     raise ValueError('unexpected native plan tool history: ' + repr(names))
+
+
+def approved_exit(text):
+    """Kimi's result text for the plan the person approved: it left plan mode and
+    hands the model the approved plan, the one the fixture wrote."""
+    return text.startswith('Exited plan mode.') and text.endswith('\n\n## Approved Plan:\n' + PLAN_BODY)
 
 
 def plan_mode_events(text):
@@ -1342,8 +1353,11 @@ class FixtureControls(unittest.TestCase):
                 body['messages'].append(dict(role='tool', tool_call_id='call_fixture_Write', content='Wrote plan'))
                 self.assertEqual(plan_action(body), ('ExitPlanMode', {}))
                 called('ExitPlanMode', 'call_fixture_ExitPlanMode')
+                # Kimi 2.6.3's real result for an approved plan (zerus-on5uh).
                 body['messages'].append(dict(role='tool', tool_call_id='call_fixture_ExitPlanMode',
-                                             content='Exited plan mode. Plan mode deactivated.'))
+                                             content=KIMI_TOOL_ERROR + 'Exited plan mode. Plan mode deactivated. '
+                                             'All tools are now available.\nPlan saved to: ' + path
+                                             + '\n\n## Approved Plan:\n' + PLAN_BODY))
                 # Kimi's exit reminder follows; the turn then ends normally.
                 body['messages'].append(dict(role='user', content=REMINDER + 'Plan mode is no longer active.\n'
                                              '</system-reminder>'))
@@ -1393,6 +1407,34 @@ class FixtureControls(unittest.TestCase):
                 body['messages'].append(dict(role='tool', tool_call_id=call_id, content=content))
             with self.subTest(names=names), self.assertRaisesRegex(ValueError, expected):
                 plan_action(body)
+
+    def exit_request(self, path, result):
+        """The model's request after Write and ExitPlanMode, with Kimi's ExitPlanMode result."""
+        body = self.plan_request(self.reminder(path))
+        for name, content in (('Write', 'Wrote 100 bytes to ' + path), ('ExitPlanMode', result)):
+            body['messages'].append(dict(role='assistant', tool_calls=[
+                dict(id='call_' + name, type='function', function=dict(name=name, arguments='{}'))]))
+            body['messages'].append(dict(role='tool', tool_call_id='call_' + name, content=content))
+        return body
+
+    def test_an_approved_exit_is_done_with_or_without_kimis_tool_error_line(self):
+        """Kimi Code 2.6.3 flags an approved ExitPlanMode result as a tool error
+        (isError; zerus-on5uh): the model receives Kimi's exact error line, then the
+        unchanged exit text and the approved plan. Recorded from real 2.6.3 runs,
+        including one where the person approved with Enter in Terminal. Only that
+        exact line, then Kimi's exit text ending in the reviewed plan, is done."""
+        path = '/tmp/private/agents/main/plans/example.md'
+        line = '<system>ERROR: Tool execution failed.</system>\n'
+        exit_text = ('Exited plan mode. Plan mode deactivated. All tools are now available.\n'
+                     'Plan saved to: ' + path + '\n\n## Approved Plan:\n' + PLAN_BODY)
+        for result in (line + exit_text, exit_text):
+            with self.subTest(result=result):
+                self.assertIsNone(plan_action(self.exit_request(path, result)))
+        for result in (line + 'No plan file found.', line, line + line + exit_text,
+                       '<system>ERROR: Plan rejected.</system>\n' + exit_text, 'Note.\n' + exit_text,
+                       exit_text.replace(PLAN_BODY, '# Another plan'), exit_text.split('\n\n## Approved Plan:')[0]):
+            with self.subTest(result=result), self.assertRaisesRegex(ValueError, 'did not complete successfully'):
+                plan_action(self.exit_request(path, result))
 
     def test_the_model_streams_the_native_plan_write(self):
         server = serve(MARKER, plan=True)

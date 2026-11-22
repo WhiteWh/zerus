@@ -301,6 +301,70 @@ fn with_no_other_member_the_task_waits_the_member_is_retried_by_a_growing_delay_
     assert_eq!(failure_gate(&a), None);
 }
 
+#[test]
+fn a_fresh_read_clears_the_unreadable_notice_while_a_terminal_still_waits() {
+    let (mut h, mut a, mut p) = setup(&["m1"]);
+    h.run(
+        &person(),
+        crate::teams::ops::Operation::ArchiveMember {
+            member: "m2".into(),
+        },
+    )
+    .unwrap();
+    p.answers.insert("m1".into(), Answer::Waiting);
+    for now in [100, 60_100, 180_100, 420_100] {
+        pass(&mut h, &mut a, &mut p, now);
+    }
+    let waiting = terminal_row(&a, "m1").unwrap();
+    assert_eq!(waiting["refusals"], 4);
+    assert_eq!(waiting["until"], 900_100);
+
+    let notices = |h: &Harness| {
+        h.store
+            .inbox(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .into_iter()
+            .filter(|row| row.kind.starts_with("unstaffed:"))
+            .collect::<Vec<_>>()
+    };
+    // This counter does not change the identity of the terminal refusal.
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    let member = h.store.member(TEAM, "m1").unwrap().unwrap();
+    set(&p, "$.process_work.count", &Value::Null);
+    assert_eq!(
+        p.availability(&team, &member).unwrap(),
+        ports::Availability::Unreadable(ports::Fact::Background)
+    );
+    pass(&mut h, &mut a, &mut p, 420_101);
+    assert!(notices(&h).is_empty());
+    pass(&mut h, &mut a, &mut p, 600_101);
+    let opened = notices(&h);
+    assert_eq!(opened.len(), 1);
+    assert_eq!(opened[0].state, "open");
+    assert_eq!(
+        h.store.unreadable_members(TEAM).unwrap(),
+        ["m1".into()].into()
+    );
+
+    set(&p, "$.process_work.count", &json!(0));
+    assert_eq!(
+        p.availability(&team, &member).unwrap(),
+        ports::Availability::Free
+    );
+    pass(&mut h, &mut a, &mut p, 600_102);
+    assert_eq!(notices(&h)[0].state, "open");
+    pass(&mut h, &mut a, &mut p, 780_102);
+    assert!(h.store.unreadable_members(TEAM).unwrap().is_empty());
+    let closed = notices(&h);
+    assert_eq!(closed.len(), 1);
+    assert_eq!(closed[0].seq, opened[0].seq);
+    assert_eq!(closed[0].state, "closed");
+    assert_eq!(terminal_row(&a, "m1"), Some(waiting));
+    assert_eq!(open_cards(&h), [CARD]);
+    assert_eq!(sent(&p).len(), 4);
+}
+
 /// The member's committed fleet rows, one value changed in place.
 fn set(p: &Terminal, path: &str, value: &Value) {
     let db =

@@ -23,7 +23,7 @@ Own session/project; REF: T-xxxxxx or PROJECT/T-xxxxxx; stdin text; --json: task
   hgs task cancel REF [--reason TEXT]
   hgs task cancel-attempt REF --attempt UUID   person only
 
-Add queues; --start/start records work, no resend. Only person accepts Done.
+Add queues; --start/start records work, no resend. Accept Done when the person asks.
 Acknowledge once as prompted. Inactive: start; activated: begin-attempt replaces managed start.
 Report with pinned command/UUID; never get/start's latest ID.
 --progress updates. Legacy start prints report command without UUID.

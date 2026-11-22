@@ -31,6 +31,7 @@ HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN or HGS_CODEX_TEST_BIN, outside any agent
 session: the Teams caller proof refuses a person command below a live agent.
 The Kimi class runs only in the hosted Kimi workflow.
 """
+from contextlib import closing, contextmanager, nullcontext
 import json
 import os
 from pathlib import Path
@@ -613,6 +614,9 @@ class ResumeContract(ClassFixture):
     delegations = {'resume_exited': True}
     exit_keys = ('/exit', 'Enter')
 
+    def during_exit(self, before):
+        return nullcontext()
+
     def brief_text(self):
         return (f'You are a member of team {self.fx.team} in role zt-dev. '
                 'Read `hgs team current` for your current team and work.')
@@ -628,10 +632,11 @@ class ResumeContract(ClassFixture):
         # Evidence for a refused resume: whether the member's folder exists over time.
         watch = fixture.FolderWatch(fx.members()['m1']['worktree'])
         watch.start()
-        for key in self.exit_keys:
-            subprocess.run(['tmux', 'send-keys', '-t', target, key], env=fx.env, check=True)
         try:
-            fx.wait('m1 agent exited by itself', lambda: fx.start_ticks(pid) is None or None, fixture.BOUND['exit'], 1)
+            with self.during_exit(before):
+                for key in self.exit_keys:
+                    subprocess.run(['tmux', 'send-keys', '-t', target, key], env=fx.env, check=True)
+                fx.wait('m1 agent exited by itself', lambda: fx.start_ticks(pid) is None or None, fixture.BOUND['exit'], 1)
             resumed = fx.wait('the service resumed m1 in a new run', lambda: (lambda v: v if v.get('run_id') not in (None, before['run_id'])
                               and v.get('runtime_state') == 'live' else None)(fx.inspect('m1')), fixture.BOUND['doorbell'], 3)
         except AssertionError:
@@ -1350,12 +1355,84 @@ class NativeTeamsQuestionAfterTrustClaude(QuestionAfterTrustContract, unittest.T
 
 @unittest.skipUnless(os.environ.get('HGS_CODEX_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CODEX_TEST_BIN')
 class NativeTeamsResumeCodex(ResumeContract, unittest.TestCase):
-    """Selected since zerus-63rru.54 and .56 (tx10: the brief arrives, nothing is read as an exit)."""
+    """Resume through a real archive publication whose metadata transaction rolls back."""
     agent = 'codex'
     variable = 'HGS_CODEX_TEST_BIN'
     # Native 0.169 buffers rapid characters plus Enter as a paste/newline. End
     # flushes that burst without changing the command; Enter then dispatches it.
     exit_keys = ('/quit', 'End', 'Enter')
+
+    @contextmanager
+    def during_exit(self, before):
+        import fcntl
+        import sqlite3
+        import threading
+
+        fx = self.fx
+        state = Path(fx.env['HGS_STATE_DIR'])
+        fx.hgs('__state', 'archive-catalog-worker')
+        aux = state / 'archive-catalog-v2'
+        catalog = state / 'archive-catalog-v1.sqlite3'
+        original_run = before['run_id']
+        quit_cooldown = threading.Event()
+        stamp = aux / 'teams-attempt.json'
+        self.assertFalse(stamp.exists(), 'the clean fixture has no previous Teams repair')
+
+        def suppress_generic_worker():
+            # Keep ordinary archive listing's five-second request cooldown
+            # current. The Teams request has its own durable admission.
+            pending = aux / 'fixture-attempt.json'
+            pending.write_text(json.dumps({'at': time.time()}))
+            pending.replace(aux / 'attempt.json')
+
+        def sustain():
+            while not quit_cooldown.wait(1):
+                suppress_generic_worker()
+
+        with (aux / 'worker.lock').open('r+b') as exclusion, closing(sqlite3.connect(catalog, timeout=5)) as db:
+            fcntl.flock(exclusion, fcntl.LOCK_EX)
+            quoted_run, = db.execute('SELECT quote(?)', (original_run,)).fetchone()
+            db.execute(f"""CREATE TRIGGER fixture_lost_publication BEFORE INSERT ON archive_rows
+                           WHEN NEW.run = {quoted_run}
+                           BEGIN SELECT RAISE(ABORT, 'fixture lost publication'); END""")
+            try:
+                yield
+
+                def original_archive():
+                    for path in sorted((state / 'archives').glob('*.json'))[:10]:
+                        raw = json.loads(path.read_text())
+                        if raw['run_id'] == original_run:
+                            return {key: raw[key] for key in (
+                                'archive_id', 'run_id', 'session_id', 'launch_id', 'conversation_id',
+                                'state', 'completion_source', 'completion_reason')}
+                    return None
+
+                raw = fx.wait('supervisor published the member archive', original_archive, fixture.BOUND['exit'])
+                self.assertEqual(raw['completion_reason'], 'clean_exit')
+                for key in ('run_id', 'session_id', 'launch_id', 'conversation_id'):
+                    self.assertEqual(raw[key], before[key])
+                fx.wait('the exited member is untracked', lambda: fx.inspect('m1').get('tracked') is False or None,
+                        fixture.BOUND['exit'])
+                rows = db.execute('SELECT id FROM archive_identities WHERE run=?', (original_run,)).fetchall()
+                self.assertEqual(rows, [], 'the native archive exists and its metadata transaction rolled back')
+                fx.evidence.write('catalog-gap.json', dict(native=raw, indexed=rows))
+            finally:
+                db.execute('DROP TRIGGER fixture_lost_publication')
+                suppress_generic_worker()
+                fcntl.flock(exclusion, fcntl.LOCK_UN)
+            thread = threading.Thread(target=sustain, daemon=True)
+            thread.start()
+            try:
+                fx.wait('Teams requested bounded archive repair', lambda: stamp.is_file() or None,
+                        fixture.BOUND['doorbell'], 1)
+                indexed = fx.wait('the repair indexed the original run', lambda: db.execute(
+                    'SELECT id FROM archive_identities WHERE run=?', (original_run,)).fetchone(),
+                    fixture.BOUND['exit'], 1)
+                self.assertEqual(indexed[0], raw['archive_id'])
+                fx.evidence.write('catalog-recovered.json', dict(repair=json.loads(stamp.read_text()), id=indexed[0]))
+            finally:
+                quit_cooldown.set()
+                thread.join()
 
 
 @unittest.skipUnless(os.environ.get('HGS_CODEX_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CODEX_TEST_BIN')

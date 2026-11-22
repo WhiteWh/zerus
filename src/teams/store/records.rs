@@ -64,6 +64,9 @@ pub struct QueueRow {
     pub pending: Option<String>,
     pub pending_replaceable: bool,
     pub unstaffed: Option<String>,
+    /// For a stage, the members who implemented any round of its target, whom
+    /// its Reassign refuses (zerus-3u5yu); empty for any other row.
+    pub earlier_implementers: Vec<String>,
     /// The stop facts the store keeps for the node (zerus-63rru.52): the
     /// newest recorded cancel, the key clear, and whether a cancel is still
     /// pending. None until the page's query fills them.
@@ -98,8 +101,7 @@ pub struct InboxItem {
     pub generation: u32,
     pub actor: Value,
     pub text: String,
-    /// The service's statements about the quoted report, apart from its text.
-    /// Every other item has none, and so does a row from before notes.
+    /// Service statements beside an inbox item. Rows from before notes have none.
     #[serde(default)]
     pub notes: Vec<ReportNote>,
     pub state: String,

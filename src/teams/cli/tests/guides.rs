@@ -171,8 +171,17 @@ fn every_example_of_both_pages_runs() {
         harness.reported(node);
     }
     let known = [
-        "current", "ask", "verdict", "inbox", "queue", "status", "accept", "return", "reassign",
+        "current",
+        "ask",
+        "verdict",
+        "inbox",
+        "queue",
+        "status",
+        "accept",
+        "return",
+        "reassign",
         "reply",
+        "lead-add-member",
     ];
     let steps = Cell::new(0);
     let mut item = 0u64;
@@ -250,6 +259,7 @@ fn the_pages_keep_their_bounds_and_name_the_new_commands() {
     assert!(lead.contains(&"return".to_owned()));
     assert!(lead.contains(&"reassign".to_owned()));
     assert!(lead.contains(&"reply".to_owned()));
+    assert!(lead.contains(&"lead-add-member".to_owned()));
 }
 
 /// This guide example runs inside the real operation-written rework fixture,

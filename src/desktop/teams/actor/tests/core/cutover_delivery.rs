@@ -120,11 +120,17 @@ fn old_open_cutover_is_settled_without_a_delivery_or_an_uncertain_item() {
 }
 
 #[test]
-fn old_false_uncertainty_closes_after_manual_recovery_without_touching_the_new_holder() {
+fn old_recovery_notices_close_without_touching_the_new_holder() {
     let (_temp, mut store, mut actor) = legacy("recovered");
     let team = store.team(TEAM).unwrap().unwrap();
     let before = store.effects(TEAM, 200, None).unwrap().rows;
     let holder = store.attempt_holder(TEAM, before[0].node).unwrap();
+    assert!(store
+        .inbox(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .iter()
+        .all(|i| i.state == "open"));
     actor.non_deliveries(&mut store, &team, 2000).unwrap();
     assert_eq!(store.attempt_holder(TEAM, before[0].node).unwrap(), holder);
     assert_eq!(store.effects(TEAM, 200, None).unwrap().rows, before);
@@ -133,7 +139,69 @@ fn old_false_uncertainty_closes_after_manual_recovery_without_touching_the_new_h
     assert_eq!(items[0].state, "closed");
     assert!(items
         .iter()
-        .any(|i| i.kind.starts_with("reopen_refused:") && i.state == "open"));
+        .any(|i| i.kind.starts_with("reopen_refused:") && i.state == "closed"));
+    let settled = store.team(TEAM).unwrap().unwrap().revision;
+    actor.non_deliveries(&mut store, &team, 3000).unwrap();
+    assert_eq!(store.team(TEAM).unwrap().unwrap().revision, settled);
+}
+
+#[test]
+fn a_refused_reopen_notice_stays_open_until_the_lead_releases_the_hold() {
+    let (mut h, mut actor, mut ports) = setup(0);
+    let lead = h.bind("lead");
+    let node = h.add(&person(), 1);
+    h.submit(node, "m1");
+    h.report(node, "m1");
+    h.run(
+        &lead,
+        Operation::Return {
+            node,
+            reason: "Revise the result".into(),
+        },
+    )
+    .unwrap();
+    let reopen = h.reopen(node, "m1");
+    let notice = format!("reopen_refused:{reopen}");
+    h.reopen_outcome(
+        &reopen,
+        HandoutOutcome::CuttingOver {
+            reason: "The fence is held. Nothing was sent.".into(),
+        },
+    );
+    let other = h.add(&person(), 2);
+    let unknown = h.intent(other, "m2");
+    h.outcome(
+        &unknown,
+        HandoutOutcome::Uncertain {
+            reason: "The original delivery receipt is unavailable.".into(),
+        },
+    );
+    ports.free.clear();
+    tick(&mut h, &mut actor, &mut ports, 2000, false);
+    assert!(h.node(node).hold);
+    assert!(h
+        .store
+        .inbox(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .iter()
+        .any(|item| item.kind == notice && item.state == "open"));
+
+    h.run(&lead, Operation::Release { node }).unwrap();
+    tick(&mut h, &mut actor, &mut ports, 3000, false);
+    assert!(!h.node(node).hold);
+    assert_eq!(ports.sends, 0);
+    let items = h.store.inbox(TEAM, 200, None).unwrap().rows;
+    assert!(items
+        .iter()
+        .any(|item| item.kind == notice && item.state == "closed"));
+    assert!(items
+        .iter()
+        .any(|item| item.kind == "delivery_uncertain" && item.state == "open"));
+    let open = h.store.open_effects(TEAM, 200, None).unwrap().rows;
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].request_id, unknown);
+    assert_eq!(open[0].state, "uncertain");
 }
 
 #[test]

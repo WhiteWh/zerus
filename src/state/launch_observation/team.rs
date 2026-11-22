@@ -1,5 +1,5 @@
 //! Additive Teams facts using the strict observer's pinned, bounded reads.
-//! A label is only a route: every final record must carry the launch UUID.
+//! A label is only a route. A matching launch or run identifies the record.
 use super::unix::*;
 use super::{TeamObservation, TeamRecord, TeamSession};
 use std::{path::Path, time::Instant};
@@ -119,6 +119,10 @@ fn record(value: Value, launch: &str) -> Checked<TeamObservation> {
             field: "launch_id".into(),
         });
     }
+    Ok(TeamObservation::Record(team_record(&value)?))
+}
+
+fn team_record(value: &Value) -> Checked<TeamRecord> {
     if value["rename_shadow"] == true {
         return Err(Fault);
     }
@@ -145,20 +149,21 @@ fn record(value: Value, launch: &str) -> Checked<TeamObservation> {
         return Err(Fault);
     }
     let account = get("account_id", 256)?;
-    Ok(TeamObservation::Record(TeamRecord {
-        launch_id: actual.into(),
+    Ok(TeamRecord {
+        launch_id: get("launch_id", 256)?,
         name: label,
         agent: agent.clone(),
         session_id: get("session_id", 256)?,
         run_id: get("run_id", 256)?,
         conversation_id: get("conversation_id", 2048)?,
         cwd: get("cwd", 4096)?,
+        provider: None,
         account: if account.is_empty() {
             format!("native-{agent}")
         } else {
             account
         },
-    }))
+    })
 }
 fn selected_team(state: &Path, launch: &str, r: &mut Reads<'_>) -> Checked<TeamObservation> {
     let start = r.read(
@@ -244,10 +249,12 @@ const HOPS: usize = 3;
 /// Whether `v` is the live or saved record of session `id`: it carries the
 /// ID, is no rename shadow and no archive.
 fn carries(v: &Value, id: &str) -> bool {
-    v["session_id"] == id
-        && v["rename_shadow"] != true
-        && v.get("archive_id")
-            .is_none_or(|a| a.is_null() || a.as_str() == Some(""))
+    v["session_id"] == id && v["rename_shadow"] != true && unarchived(v)
+}
+
+fn unarchived(v: &Value) -> bool {
+    v.get("archive_id")
+        .is_none_or(|a| a.is_null() || a.as_str() == Some(""))
 }
 /// Whether `v` lost its launch ID by starting fresh: a fresh start carries
 /// no launch ID and marks the record with `fresh_from` until its new
@@ -307,6 +314,7 @@ fn selected_session(
     agent: &str,
     hint: &str,
     r: &mut Reads<'_>,
+    provider: bool,
 ) -> Checked<TeamSession> {
     if !canonical(id) || !canonical(launch) {
         return Err(Fault);
@@ -325,10 +333,48 @@ fn selected_session(
             TeamSession::LaunchChanged
         });
     }
-    match record(v, launch)? {
-        TeamObservation::Record(found) => Ok(TeamSession::Record(found)),
-        _ => Err(Fault),
+    observed_record(&v, state, r, provider)
+}
+
+fn observed_record(
+    v: &Value,
+    state: &Path,
+    r: &mut Reads<'_>,
+    provider: bool,
+) -> Checked<TeamSession> {
+    let progress = provider
+        .then(|| {
+            ["last_main_progress_at", "turn_started"]
+                .iter()
+                .filter_map(|field| v[field].as_f64())
+                .reduce(f64::max)
+                .map(|t| (t * 1000.0).round() as i64)
+        })
+        .flatten();
+    let mut stop = provider
+        .then(|| crate::state::team_provider_stop::saved_stop(v))
+        .flatten();
+    if stop.is_some_and(|stop| {
+        stop.kind == crate::state::team_provider_stop::ProviderStopKind::Provider
+    }) {
+        let owner = crate::state::storage::owner_key(v);
+        let job = state.join("recovery/jobs").join(format!("{owner}.json"));
+        match r.read(&job, RAW) {
+            Ok(job)
+                if !job
+                    .as_ref()
+                    .is_some_and(|job| crate::state::recovery::same_active_failure(v, job)) => {}
+            _ => stop = None,
+        }
     }
+    let mut found = team_record(v)?;
+    found.provider = provider.then(|| {
+        Box::new(crate::state::team_provider_stop::ProviderObservation {
+            stop,
+            progress_ms: progress,
+        })
+    });
+    Ok(TeamSession::Record(found))
 }
 pub(super) fn session(
     state: &Path,
@@ -337,6 +383,47 @@ pub(super) fn session(
     agent: &str,
     hint: &str,
     deadline: Instant,
+    provider: bool,
+) -> TeamSession {
+    pinned_session_read(state, deadline, |state, r| {
+        selected_session(state, id, launch, agent, hint, r, provider)
+    })
+}
+
+pub(super) fn run(
+    state: &Path,
+    run: &str,
+    id: &str,
+    agent: &str,
+    hint: &str,
+    deadline: Instant,
+) -> TeamSession {
+    pinned_session_read(state, deadline, |state, r| {
+        let row = if id.is_empty() {
+            // A legacy record may have only the current catalog label.
+            r.label(state, hint)?.filter(unarchived)
+        } else if canonical(id) {
+            match by_handle(state, id, agent, r)? {
+                Some(record) => Some(record),
+                None => by_hint(state, id, hint, r)?,
+            }
+        } else {
+            return Err(Fault);
+        };
+        let Some(row) = row else {
+            return Ok(TeamSession::Gone);
+        };
+        if run.is_empty() || row["run_id"] != run || row["agent"] != agent {
+            return Ok(TeamSession::LaunchChanged);
+        }
+        observed_record(&row, state, r, true)
+    })
+}
+
+fn pinned_session_read(
+    state: &Path,
+    deadline: Instant,
+    read: impl FnOnce(&Path, &mut Reads<'_>) -> Checked<TeamSession>,
 ) -> TeamSession {
     let Ok(state) = configured_root(state, deadline) else {
         return TeamSession::Unavailable;
@@ -346,8 +433,7 @@ pub(super) fn session(
         ..Counts::default()
     };
     let mut r = Reads::new(&mut counts);
-    let result = selected_session(&state, id, launch, agent, hint, &mut r)
-        .and_then(|result| r.finish().map(|()| result));
+    let result = read(&state, &mut r).and_then(|result| r.finish().map(|()| result));
     if Instant::now() >= deadline {
         return TeamSession::Unavailable;
     }

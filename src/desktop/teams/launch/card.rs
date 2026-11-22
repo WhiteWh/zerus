@@ -61,14 +61,23 @@ impl Runtime {
             } else {
                 format!("Member {}", row.member)
             };
-            let text = format!(
-                "{}: {}. {} {}{}",
-                subject,
-                problem.code,
-                detail,
-                problem_refs(problem),
-                timing
-            );
+            let text = if problem.detail.as_deref() == Some(crate::teams::OLDER_DEEPSEEK_HOST) {
+                let action = if row.member == LEAD {
+                    "stop this team and create a new one"
+                } else {
+                    "remove this member and add a replacement"
+                };
+                format!("{subject} needs a DeepSeek host with Agent Teams support. Stop idle DeepSeek sessions or restart the host yourself, then {action} once the host is back, since Zerus will not retry this start.")
+            } else {
+                format!(
+                    "{}: {}. {} {}{}",
+                    subject,
+                    problem.code,
+                    detail,
+                    problem_refs(problem),
+                    timing
+                )
+            };
             row.card_request = Some(Request {
                 request_id: uuid::Uuid::new_v4().to_string(),
                 team: row.team.clone(),
@@ -130,10 +139,14 @@ fn parameters(row: &Row, problem: &Problem) -> Vec<(String, String)> {
     if row.member == crate::desktop::teams::ledger::BUDGET {
         Vec::new()
     } else {
-        vec![
+        let mut parameters = vec![
             ("member".to_owned(), row.member.clone()),
             ("code".to_owned(), problem.code.clone()),
-        ]
+        ];
+        if problem.detail.as_deref() == Some(crate::teams::OLDER_DEEPSEEK_HOST) {
+            parameters.push(("reason".into(), crate::teams::OLDER_DEEPSEEK_HOST.into()));
+        }
+        parameters
     }
 }
 

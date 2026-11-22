@@ -112,7 +112,7 @@ fn binding_location(name: &str) -> (Option<&'static str>, PathBuf) {
     let path = provider_binding::Provider::named(name).map_or_else(|| record_path(name), |provider| provider.path(name));
     (provider, path)
 }
-fn binding_metadata(path: &Path, name: &str, provider: Option<&str>) -> anyhow::Result<Value> {
+pub(super) fn binding_metadata(path: &Path, name: &str, provider: Option<&str>) -> anyhow::Result<Value> {
     let bytes = labels::read_file(path, 1_048_576)?
         .ok_or_else(|| anyhow::anyhow!("Session binding is absent"))?;
     let record: Value = serde_json::from_slice(&bytes)?;

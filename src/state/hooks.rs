@@ -516,6 +516,9 @@ pub(super) fn resolved_target(path: &Path) -> Result<PathBuf> {
     Ok(resolved)
 }
 
+/// Allow scheduling/journal contention without losing native hook acceptance.
+const HOOK_TIMEOUT: u64 = 15;
+
 /// The hook entry hgs adds to a JSON hook configuration (Claude Code's
 /// `settings.json`, Codex's `hooks.json`) for each event without one.
 ///
@@ -557,7 +560,7 @@ impl Entry {
 
     /// A matcher group holding this entry, as hgs writes it for one event.
     fn group(&self) -> Value {
-        let mut hook = json!({"type": "command", "command": self.command, "timeout": 5});
+        let mut hook = json!({"type": "command", "command": self.command, "timeout": HOOK_TIMEOUT});
         if let Some(args) = &self.args {
             hook["args"] = json!(args);
         }
@@ -668,8 +671,93 @@ fn marker_line(text: &str, marker: &str, crlf: bool) -> Option<(usize, usize)> {
     None
 }
 
+/// Replace only parsed old timeout values, leaving all other bytes intact.
+fn upgraded_timeouts(original: &str, mut spans: Vec<std::ops::Range<usize>>) -> Option<String> {
+    if spans.is_empty() {
+        return None;
+    }
+    spans.sort_unstable_by_key(|span| span.start);
+    let mut content = original.to_owned();
+    for span in spans.into_iter().rev() {
+        content.replace_range(span, &HOOK_TIMEOUT.to_string());
+    }
+    Some(content)
+}
+
+/// JSON refresh must not reformat personal/foreign entries just to raise an
+/// owned tracking timeout. RawValue borrows each value from this input, so its
+/// byte range names precisely the old integer, not its containing hook/group.
+fn upgraded_json_timeouts(original: &str, windows: bool) -> Option<String> {
+    use serde_json::value::RawValue;
+    type Object<'a> = std::collections::BTreeMap<String, &'a RawValue>;
+    let document: Object<'_> = serde_json::from_str(original).ok()?;
+    let hooks: Object<'_> = serde_json::from_str(document.get("hooks")?.get()).ok()?;
+    let mut spans = Vec::new();
+    for groups in hooks.values() {
+        let Ok(groups) = serde_json::from_str::<Vec<&RawValue>>(groups.get()) else {
+            continue;
+        };
+        for group in groups {
+            let Ok(group) = serde_json::from_str::<Object<'_>>(group.get()) else {
+                continue;
+            };
+            let Some(entries) = group.get("hooks") else {
+                continue;
+            };
+            let Ok(entries) = serde_json::from_str::<Vec<&RawValue>>(entries.get()) else {
+                continue;
+            };
+            for raw in entries {
+                let hook: Value = serde_json::from_str(raw.get()).ok()?;
+                if hook["type"] != "command" || Entry::owned(&hook, windows).is_none() {
+                    continue;
+                }
+                let fields: Object<'_> = serde_json::from_str(raw.get()).ok()?;
+                if let Some(timeout) = fields.get("timeout").filter(|timeout| timeout.get() == "5")
+                {
+                    let start = timeout.get().as_ptr() as usize - original.as_ptr() as usize;
+                    spans.push(start..start + timeout.get().len());
+                }
+            }
+        }
+    }
+    upgraded_timeouts(original, spans)
+}
+
+/// TOML spans retain comments, line endings and personal settings even when a
+/// complete managed block or a legacy registration needs its timeout raised.
+fn upgraded_kimi_timeouts(original: &str, path: &Path) -> Result<Option<String>> {
+    let document = toml_edit::Document::parse(original)
+        .map_err(|e| format!("cannot merge tracking hooks into {}: {e}", path.display()))?;
+    let mut spans = Vec::new();
+    if let Some(tables) = document
+        .get("hooks")
+        .and_then(toml_edit::Item::as_array_of_tables)
+    {
+        for table in tables {
+            if !table
+                .get("command")
+                .and_then(toml_edit::Item::as_str)
+                .is_some_and(owns_hook)
+            {
+                continue;
+            }
+            if let Some(timeout) = table
+                .get("timeout")
+                .filter(|timeout| timeout.as_integer() == Some(5))
+            {
+                if let Some(span) = timeout.span() {
+                    spans.push(span);
+                }
+            }
+        }
+    }
+    Ok(upgraded_timeouts(original, spans))
+}
+
 /// The Kimi `config.toml` text `original` with hgs's block of hooks, or `None`
-/// when its block already has every event: then its bytes are kept. A block
+/// when its block already has every event and no old own timeout remains.
+/// Timeout-only upgrades keep every other byte. A block
 /// that misses events is written again, with the hgs command it holds when it
 /// holds one and else the command `fresh` gives.
 fn merge_kimi(
@@ -678,6 +766,8 @@ fn merge_kimi(
     crlf: bool,
     fresh: &mut dyn FnMut() -> Result<String>,
 ) -> Result<Option<String>> {
+    let upgraded = upgraded_kimi_timeouts(original, path)?;
+    let original = upgraded.as_deref().unwrap_or(original);
     let mut command = None;
     let mut content_without = original.to_owned();
     if let Some((start, begin)) = marker_line(original, KIMI_BEGIN, crlf) {
@@ -734,7 +824,7 @@ fn merge_kimi(
                 original
                     .parse::<toml_edit::DocumentMut>()
                     .map_err(|e| e.to_string())?;
-                return Ok(None);
+                return Ok(upgraded);
             }
         }
         content_without = format!("{}{}", &original[..start], &rest[finish + end..]);
@@ -742,7 +832,7 @@ fn merge_kimi(
     let document = original.parse::<toml_edit::DocumentMut>()
         .map_err(|e| format!("cannot merge tracking hooks into {}: {e}", path.display()))?;
     if kimi_complete(&document) {
-        return Ok(None);
+        return Ok(upgraded);
     }
     let command = match command {
         Some(command) => command,
@@ -751,7 +841,7 @@ fn merge_kimi(
     let mut block = format!("{KIMI_BEGIN}\n");
     for event in events("kimi") {
         block.push_str(&format!(
-            "[[hooks]]\nevent = {}\ncommand = {}\ntimeout = 5\n",
+            "[[hooks]]\nevent = {}\ncommand = {}\ntimeout = {HOOK_TIMEOUT}\n",
             json!(event),
             json!(command)
         ));
@@ -780,8 +870,9 @@ fn kimi_complete(document: &toml_edit::DocumentMut) -> bool {
 }
 
 /// The JSON hook configuration text `original` of `agent` with an hgs entry
-/// for each of its events, or `None` when every event has one: then nothing
-/// is written. New events repeat the hgs entry already there, exactly;
+/// for each of its events, or `None` when every event has one and no old own
+/// timeout remains. Timeout-only upgrades keep every other byte. New events
+/// repeat the hgs entry already there, exactly;
 /// only without one is `fresh` asked for the entry to write. An event of
 /// `versioned_events` without an entry asks `version` for the agent's version
 /// and is added only when that version has it.
@@ -805,6 +896,8 @@ fn merge_json_mode(
     version: &mut dyn FnMut() -> Option<Version>,
     channels: bool,
 ) -> Result<Option<String>> {
+    let upgraded = upgraded_json_timeouts(original, windows);
+    let original = upgraded.as_deref().unwrap_or(original);
     let mut document: Value = if original.trim().is_empty() {
         json!({})
     } else {
@@ -951,7 +1044,7 @@ fn merge_json_mode(
         }
     }
     if !changed {
-        return Ok(None);
+        return Ok(upgraded);
     }
     Ok(Some(format!(
         "{}\n",
@@ -2575,6 +2668,188 @@ mod tests {
     }
 
     #[test]
+    fn tracking_timeout_new_writes_are_fifteen_seconds_in_every_hook_form() {
+        for (agent, windows, entry) in [
+            ("claude", false, Entry::shell(UNIX.into())),
+            ("codex", false, Entry::shell(UNIX.into())),
+            (
+                "claude",
+                true,
+                forms::claude_entry(STABLE, CLAUDE_EXEC_FORM, false).unwrap(),
+            ),
+            ("claude", true, Entry::shell(SHELL.into())),
+            ("codex", true, forms::codex_entry(STABLE).unwrap()),
+        ] {
+            let (written, _) =
+                versioned_merge("", agent, windows, entry, Some(CLAUDE_ANSWER_CHANNEL));
+            let written = written.unwrap();
+            for event in events(agent) {
+                let hooks = journal_entries(&written, event);
+                assert_eq!(hooks.len(), 1, "{agent}/{windows}/{event}");
+                assert_eq!(hooks[0]["timeout"], 15, "{agent}/{windows}/{event}");
+            }
+            for group in channel_groups(&written) {
+                assert_eq!(group["hooks"][0]["timeout"], 86_400);
+            }
+        }
+        for crlf in [false, true] {
+            let written = kimi_merge("default_model = \"synthetic\"\n", crlf, UNIX).unwrap();
+            let document = written.parse::<toml_edit::DocumentMut>().unwrap();
+            let hooks = document["hooks"].as_array_of_tables().unwrap();
+            assert_eq!(hooks.len(), events("kimi").len());
+            for hook in hooks {
+                assert_eq!(hook["timeout"].as_integer(), Some(15));
+            }
+        }
+    }
+
+    #[test]
+    fn tracking_timeout_json_refresh_upgrades_own_five_but_keeps_other_entries() {
+        for (agent, windows, entry) in [
+            ("claude", false, Entry::shell(UNIX.into())),
+            ("codex", false, Entry::shell(UNIX.into())),
+            (
+                "claude",
+                true,
+                forms::claude_entry(STABLE, CLAUDE_EXEC_FORM, false).unwrap(),
+            ),
+            ("codex", true, forms::codex_entry(STABLE).unwrap()),
+            (
+                "claude",
+                false,
+                Entry::shell("python3 /synthetic/hgs_state.py hook".into()),
+            ),
+        ] {
+            // Product-written rows, with explicit old-version/custom-timeout
+            // metadata seams. Foreign commands below are deliberate controls.
+            let written = json_merge("", agent, windows, entry).unwrap();
+            let mut old: Value = serde_json::from_str(&written).unwrap();
+            for event in events(agent) {
+                old["hooks"][event][0]["hooks"][0]["timeout"] = json!(5);
+            }
+            old["hooks"]["Stop"][0]["hooks"][0]["timeout"] = json!(6);
+            old["hooks"]["Stop"][0]["hooks"][0]["statusMessage"] = json!("person's setting");
+            let personal = old["hooks"]["Stop"][0]["hooks"][0].clone();
+            let foreign =
+                json!({"type":"command","command":"/synthetic/other __state hook","timeout":5});
+            let look_alike = json!({"type":"command","command":"/synthetic/hgs-wrapper __state hook","timeout":5});
+            let exec_look_alike = json!({"type":"command","command":"C:/synthetic/hgs-wrapper.exe","args":HOOK_ARGS,"timeout":5});
+            old["hooks"]["Stop"][0]["hooks"]
+                .as_array_mut()
+                .unwrap()
+                .extend([foreign.clone(), look_alike.clone(), exec_look_alike.clone()]);
+            let foreign_bytes = r#"{ "command" : "/synthetic/other __state hook", "timeout" : 5, "type" : "command" }"#;
+            let original = old.to_string().replace(&foreign.to_string(), foreign_bytes);
+            let refreshed =
+                json_reuse(&original, agent, windows).expect("old owned timeouts need refresh");
+            assert!(refreshed.contains(foreign_bytes));
+            for event in events(agent) {
+                assert_eq!(
+                    hook_entries(&refreshed, event)[0]["timeout"],
+                    if event == "Stop" { 6 } else { 15 }
+                );
+            }
+            assert_eq!(
+                hook_entries(&refreshed, "Stop"),
+                [personal, foreign, look_alike, exec_look_alike]
+            );
+            assert_eq!(json_reuse(&refreshed, agent, windows), None);
+        }
+    }
+
+    #[test]
+    fn tracking_timeout_json_keeps_person_timeouts_and_the_answer_channel_byte_stable() {
+        for timeout in [
+            json!(6),
+            json!(30),
+            json!(0),
+            json!(null),
+            json!("5"),
+            json!(5.0),
+        ] {
+            let (written, _) = versioned_merge(
+                "",
+                "claude",
+                false,
+                Entry::shell(UNIX.into()),
+                Some(CLAUDE_ANSWER_CHANNEL),
+            );
+            let written = written.unwrap();
+            let channels = channel_groups(&written);
+            let mut custom: Value = serde_json::from_str(&written).unwrap();
+            for event in events("claude").into_iter().chain(["PostModelSwitch"]) {
+                custom["hooks"][event][0]["hooks"][0]["timeout"] = timeout.clone();
+            }
+            let original = format!("{}\n", serde_json::to_string_pretty(&custom).unwrap());
+            let (refreshed, _) = versioned_merge(
+                &original,
+                "claude",
+                false,
+                Entry::shell("unused".into()),
+                Some(CLAUDE_ANSWER_CHANNEL),
+            );
+            assert_eq!(refreshed, None, "person timeout {timeout}");
+            assert_eq!(channel_groups(&original), channels);
+        }
+        // Preserve the answer channel even if a person independently changed it
+        // to five seconds; it is not a tracking hook to migrate.
+        let (written, _) = versioned_merge(
+            "",
+            "claude",
+            false,
+            Entry::shell(UNIX.into()),
+            Some(CLAUDE_ANSWER_CHANNEL),
+        );
+        let written = written.unwrap();
+        let original = written.replace("86400", "5");
+        assert_eq!(
+            versioned_merge(
+                &original,
+                "claude",
+                false,
+                Entry::shell("unused".into()),
+                Some(CLAUDE_ANSWER_CHANNEL)
+            )
+            .0,
+            None
+        );
+    }
+
+    #[test]
+    fn tracking_timeout_kimi_refresh_changes_only_old_owned_values_and_keeps_bytes() {
+        let seed = kimi_merge(
+            "# Personal settings\ndefault_model = \"synthetic\"\n",
+            false,
+            UNIX,
+        )
+        .unwrap();
+        // Product-written rows with explicit historical/custom timeout metadata.
+        let old = seed.replace("timeout = 15", "timeout = 5");
+        let old = old.replacen("timeout = 5", "timeout  =  5 # keep comment", 1);
+        let stop = format!("event = \"Stop\"\ncommand = {}\ntimeout = 5", json!(UNIX));
+        let custom = old.replace(&stop, &stop.replace("timeout = 5", "timeout = 6"));
+        let foreign = "\n# Personal hooks stay byte-identical\n[[hooks]]\nevent = 'Stop'\ncommand = '/synthetic/other __state hook'\ntimeout = 5\n[[hooks]]\nevent = 'Stop'\ncommand = '/synthetic/hgs-wrapper __state hook'\ntimeout = 5\n";
+        let expected = custom
+            .replace("timeout = 5", "timeout = 15")
+            .replace("timeout  =  5 #", "timeout  =  15 #");
+        for (crlf, newline) in [(false, "\n"), (true, "\r\n"), (false, "\r\n")] {
+            let original = format!("{custom}{foreign}").replace('\n', newline);
+            let expected = format!("{expected}{foreign}").replace('\n', newline);
+            let refreshed =
+                kimi_merge(&original, crlf, "unused").expect("old owned timeouts need refresh");
+            assert_eq!(refreshed, expected);
+            assert_eq!(kimi_merge(&refreshed, crlf, "unused"), None);
+        }
+        let custom = seed
+            .replace("timeout = 15", "timeout = 6")
+            .replace("timeout = 5", "timeout = 6");
+        assert_eq!(
+            kimi_merge(&format!("{custom}{foreign}"), false, "unused"),
+            None
+        );
+    }
+
+    #[test]
     fn hint_output_format_comes_from_the_decided_record_not_the_environment() {
         assert_eq!(format_agent("kimi", Some("claude".into())), "kimi");
         assert_eq!(format_agent("", Some("kimi".into())), "kimi");
@@ -2591,7 +2866,8 @@ mod tests {
         assert!(!health.to_string().contains("secret"));assert!(!health.to_string().contains("apiKey"));
         let merged=merge_json(&original,Path::new("/config"),"claude",false,&mut ||panic!("must retain legacy command"),&mut ||Some((2,1,296))).unwrap().unwrap();
         let doc:Value=serde_json::from_str(&merged).unwrap();
-        assert_eq!(doc["hooks"]["Stop"][0]["hooks"],json!([personal,legacy]));
+        let mut expected_legacy = legacy; expected_legacy["timeout"] = json!(15);
+        assert_eq!(doc["hooks"]["Stop"][0]["hooks"],json!([personal,expected_legacy]));
         assert_eq!(health_document(&merged,&path(),"claude",Some((2,1,296))).unwrap()["state"],"configured");
         assert!(merge_json(&merged,Path::new("/config"),"claude",false,&mut ||panic!(),&mut ||Some((2,1,296))).unwrap().is_none());
     }
@@ -2695,7 +2971,7 @@ mod tests {
                 .any(|entry| owns_hook(string(entry, "command")));
             if !installed {
                 entries.push(
-                    json!({"hooks": [{"type": "command", "command": command, "timeout": 5}]}),
+                    json!({"hooks": [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT}]}),
                 );
                 changed = true;
             }
@@ -2746,7 +3022,7 @@ mod tests {
         let mut block = begin.to_owned();
         for event in events("kimi") {
             block.push_str(&format!(
-                "[[hooks]]\nevent = {}\ncommand = {}\ntimeout = 5\n",
+                "[[hooks]]\nevent = {}\ncommand = {}\ntimeout = {HOOK_TIMEOUT}\n",
                 json!(event),
                 json!(command)
             ));
@@ -3367,8 +3643,18 @@ mod tests {
     #[test]
     fn complete_legacy_kimi_hooks_do_not_receive_another_managed_block() {
         let original = legacy_kimi_document();
-        assert_eq!(merge_kimi(&original, &path(), false, &mut || panic!("existing hooks are complete")).unwrap(), None);
-        let conditional = original.replace("event = \"TurnStarted\"", "event = \"TurnStarted\"\nmatcher = \"restricted-origin\"");
+        let upgraded = merge_kimi(&original, &path(), false, &mut || {
+            panic!("existing hooks are complete")
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(upgraded, original.replace("timeout = 5", "timeout = 15"));
+        assert!(!upgraded.contains(KIMI_BEGIN));
+        assert_eq!(kimi_merge(&upgraded, false, "unused"), None);
+        let conditional = original.replace(
+            "event = \"TurnStarted\"",
+            "event = \"TurnStarted\"\nmatcher = \"restricted-origin\"",
+        );
         assert!(kimi_merge(&conditional, false, UNIX).is_some());
     }
 
@@ -3378,15 +3664,16 @@ mod tests {
         let block = reference_kimi("", UNIX).unwrap().unwrap();
         let duplicate = format!("{original}{block}");
         let merged = kimi_merge(&duplicate, false, UNIX).unwrap();
-        assert_eq!(merged, format!("{original}\n\n"));
+        let upgraded = original.replace("timeout = 5", "timeout = 15");
+        assert_eq!(merged, format!("{upgraded}\n\n"));
         let health = health_document(&merged, &path(), "kimi", Some((2, 3, 1))).unwrap();
         assert_eq!(health["duplicate_events"], json!([]));
         assert!(merged.contains("# Personal memory hook"));
         assert_eq!(kimi_merge(&merged, false, UNIX), None);
         // A personal entry or different callback parameters forbid block removal.
-        for protected in [block.replace("timeout = 5", "timeout = 6"),
+        for protected in [block.replace("timeout = 15", "timeout = 6"),
             block.replace(KIMI_END, &format!("[[hooks]]\nevent = \"Stop\"\ncommand = \"personal-hook\"\n{KIMI_END}"))] {
-            assert_eq!(kimi_merge(&format!("{original}{protected}"), false, UNIX), None);
+            assert_eq!(kimi_merge(&format!("{original}{protected}"), false, UNIX), Some(format!("{upgraded}{protected}")));
         }
     }
 
@@ -3536,7 +3823,7 @@ mod tests {
             assert_eq!(
                 hook_entries(&settings, event),
                 [json!({"type": "command", "command": exec.command,
-                    "args": ["__state", "hook"], "timeout": 5})],
+                    "args": ["__state", "hook"], "timeout": HOOK_TIMEOUT})],
                 "{event}"
             );
         }
@@ -3544,7 +3831,7 @@ mod tests {
         let stop = "    \"Stop\": [\n      {\n        \"hooks\": [\n          {\n            \
             \"args\": [\n              \"__state\",\n              \"hook\"\n            ],\n            \
             \"command\": \"C:/Profiles/Иван Петров/.local/bin/hgs.exe\",\n            \
-            \"timeout\": 5,\n            \"type\": \"command\"\n          }\n        ]\n      }\n    ],\n";
+            \"timeout\": 15,\n            \"type\": \"command\"\n          }\n        ]\n      }\n    ],\n";
         assert!(settings.contains(stop), "{settings}");
         assert_eq!(json_reuse(&settings, "claude", true), None);
         // A missing event gets the same exec form, never a new decision.
@@ -3565,7 +3852,7 @@ mod tests {
         let merged = json_reuse(&document.to_string(), "claude", true).unwrap();
         assert_eq!(
             hook_entries(&merged, "Notification"),
-            [json!({"type": "command", "command": SHELL, "timeout": 5})]
+            [json!({"type": "command", "command": SHELL, "timeout": HOOK_TIMEOUT})]
         );
         // Unix never reads an exec form as an hgs hook.
         assert_eq!(
@@ -3593,7 +3880,7 @@ mod tests {
                 hook_entries(&hooks, event),
                 [
                     json!({"type": "command", "command": SHELL, "commandWindows": POWERSHELL,
-                    "timeout": 5})
+                    "timeout": HOOK_TIMEOUT})
                 ]
             );
         }
@@ -3727,7 +4014,7 @@ mod tests {
         for event in events("claude").into_iter().chain(["PostModelSwitch"]) {
             assert_eq!(
                 journal_entries(&fresh, event),
-                [json!({"type": "command", "command": UNIX, "timeout": 5})]
+                [json!({"type": "command", "command": UNIX, "timeout": HOOK_TIMEOUT})]
             );
         }
         // The user's own PostModelSwitch hook stays, beside hgs's.
@@ -3817,7 +4104,7 @@ mod tests {
         );
         // The journaling entry keeps its own group and short timeout.
         assert!(hook_entries(&merged, "PermissionRequest")
-            .contains(&json!({"type": "command", "command": UNIX, "timeout": 5})));
+            .contains(&json!({"type": "command", "command": UNIX, "timeout": HOOK_TIMEOUT})));
         assert_eq!(versioned_merge(&merged, "claude", false, unix.clone(), None), (None, 0));
         // Claude's exec form derives the channel's arguments.
         let exec = forms::claude_entry(STABLE, CLAUDE_EXEC_FORM, false).unwrap();
@@ -3847,7 +4134,7 @@ mod tests {
             assert_eq!(channel_groups(&merged), std::slice::from_ref(&channel));
             // The journaling entry keeps its own group and short timeout.
             assert!(hook_entries(&merged, "PermissionRequest").contains(&json!({"type": "command",
-                "command": exec.command, "args": ["__state", "hook"], "timeout": 5})));
+                "command": exec.command, "args": ["__state", "hook"], "timeout": HOOK_TIMEOUT})));
             assert_eq!(versioned_merge(&merged, "claude", true, exec.clone(), None), (None, 0));
             // An older version loses it before it starts.
             let (pruned, _) = versioned_prune(&merged, "claude", true, Some((2, 1, 295)));

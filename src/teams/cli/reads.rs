@@ -469,3 +469,66 @@ fn by_state(
 fn scalar(db: &rusqlite::Connection, sql: &str, team: &str) -> Result<u32, Problem> {
     db.query_row(sql, [team], |row| row.get(0)).map_err(storage)
 }
+
+/// `evidence --team ID --node N` (zerus-5gcbh): the evidence beside one task's
+/// decision for the person and the lead. The task's latest report (by the
+/// task's implementer, with its commit and the service's notes) and its
+/// stages, newest first and bounded, each with its kind and round from the
+/// team's pinned bundle and its latest verdict: who gave it, pass or return,
+/// and the findings. Nothing is invented for a task that has none.
+pub(super) fn evidence(
+    config: &Config,
+    caller: &Caller,
+    args: &[String],
+) -> Result<Value, Problem> {
+    let options = Options::parse(args, &["--team", "--node"], &[])?;
+    options.nothing_else("evidence")?;
+    let node = options
+        .get("--node")
+        .ok_or_else(|| input::invalid("Select a task with --node."))?
+        .parse::<u32>()
+        .ok()
+        .filter(|node| *node > 0)
+        .ok_or_else(|| input::invalid("Invalid node."))?;
+    let store = Store::open(&config.state)?;
+    let identity = actor::resolve(&store, caller)?;
+    let team = actor::target_team(&store, &identity, options.team()?)?;
+    actor::lead_reader(&store, &identity, &team)?;
+    // The revision, the report and every stage come from one snapshot, so a
+    // window can tell evidence of the decision it shows from an older one.
+    let evidence = store.task_evidence(&team, node)?;
+    let stages: Vec<Value> = evidence
+        .stages
+        .iter()
+        .map(|stage| {
+            json!({
+                "node": stage.node,
+                "kind": stage.kind,
+                "round": stage.round,
+                "state": stage.state,
+                "verdict": stage.verdict.as_ref().map(|verdict| json!({
+                    "generation": verdict.generation,
+                    "member": verdict.actor.get("member").and_then(Value::as_str),
+                    "pass": verdict.pass,
+                    "text": verdict.text,
+                })),
+            })
+        })
+        .collect();
+    Ok(json!({
+        "ok": true,
+        "actor": actor::view(&identity.actor),
+        "team": team,
+        "revision": evidence.revision,
+        "node": node,
+        "report": evidence.report.map(|report| json!({
+            "generation": report.generation,
+            "member": report.member,
+            "commit": report.commit,
+            "text": report.text,
+            "notes": report.notes,
+        })),
+        "stages": stages,
+        "more_stages": evidence.more_stages,
+    }))
+}

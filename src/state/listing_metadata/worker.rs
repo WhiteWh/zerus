@@ -160,7 +160,7 @@ pub(in crate::state) fn entry() -> Result<i32> {
                 }
                 Err(error) => {
                     gap(&root.path);
-                    status(&root.path, "unavailable", &error.to_string());
+                    status(&root.path, "unavailable", &public_index_error(&error));
                     last_state = "unavailable".into();
                     work = None;
                     thread::sleep(Duration::from_secs(2));

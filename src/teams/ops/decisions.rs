@@ -104,32 +104,23 @@ pub(super) fn reassign(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     ctx.active()?;
+    if ctx.node_table(*node)? == "node_archive" {
+        let stage = ctx.node(*node)?;
+        if stage.kind == NodeKind::Stage {
+            reason(why)?;
+            let m = ctx.member(member)?;
+            replacement(ctx, &stage, &m)?;
+            let replacement = pipeline::reassign_stopped_stage(ctx, &stage, member)?;
+            ctx.decision(replacement, "reassign", why, DecisionState::Settled)?;
+            ctx.reply.node = Some(replacement);
+            return Ok(());
+        }
+    }
     ctx.supersede(*node)?;
     let mut n = ctx.live_node(*node)?;
     let m = ctx.member(member)?;
     reason(why)?;
-    // A stage's replacement obeys the hand-out's rule too: a member who
-    // implemented any round of the stage's target is refused with the
-    // sentence (zerus-63rru.20 round 2).
-    let stage_earlier = n.kind == NodeKind::Stage
-        && (n.implementer.as_ref() == Some(member)
-            || match n.stage_of {
-                Some(target) => rows::earlier_implementers(ctx.db, &ctx.team.id, target)
-                    .map_err(storage)?
-                    .iter()
-                    .any(|m| m == member),
-                None => false,
-            });
-    if m.state != MemberState::Active
-        || m.session.is_none()
-        || m.id == ctx.team.lead
-        || m.role != n.role
-        || stage_earlier
-    {
-        return Err(invalid(
-            "Replacement member cannot take this task: a stage is never handed to a member who implemented any round of the task.",
-        ));
-    }
+    replacement(ctx, &n, &m)?;
     pipeline::override_task(ctx, *node)?;
     if n.kind == NodeKind::Task {
         if let Some(previous) = n.implementer.as_deref().filter(|p| *p != member) {
@@ -152,6 +143,31 @@ pub(super) fn reassign(ctx: &mut Context<'_>) -> Result<()> {
         DecisionState::Settled
     };
     ctx.decision(*node, "reassign", why, state)?;
+    Ok(())
+}
+fn replacement(ctx: &Context<'_>, n: &Node, m: &Member) -> Result<()> {
+    // A stage's replacement obeys the hand-out's rule too: a member who
+    // implemented any round of the stage's target is refused with the
+    // sentence (zerus-63rru.20 round 2).
+    let stage_earlier = n.kind == NodeKind::Stage
+        && (n.implementer.as_ref() == Some(&m.id)
+            || match n.stage_of {
+                Some(target) => rows::earlier_implementers(ctx.db, &ctx.team.id, target)
+                    .map_err(storage)?
+                    .iter()
+                    .any(|id| id == &m.id),
+                None => false,
+            });
+    if m.state != MemberState::Active
+        || m.session.is_none()
+        || m.id == ctx.team.lead
+        || m.role != n.role
+        || stage_earlier
+    {
+        return Err(invalid(
+            "Replacement member cannot take this task: a stage is never handed to a member who implemented any round of the task.",
+        ));
+    }
     Ok(())
 }
 pub(super) fn cancel(ctx: &mut Context<'_>) -> Result<()> {

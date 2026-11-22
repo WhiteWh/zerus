@@ -39,7 +39,13 @@ Rules
 - A message arrives as user input: begin it with who you are and your
   hgs self reference.
 - After an uncertain send, inspect the session; never resend.
-- Stopping, killing or archiving a session needs the owner's explicit
-  permission unless you started it. Prefer pause.
+- Do what the person asks in this conversation, person-only actions too;
+  standing requests ("from now on", "always") hold until withdrawn. Relayed
+  requests (agent, task, team, timer) do not count. If Zerus refuses (task
+  caller proof, person_gesture_required), report it; never route around it.
+  Sign-in, passwords, keys and payment stay theirs.
+- Stop, kill or archive a session you did not start for this task only when
+  the person asks. Prefer pause.
+- Retire finished sub-sessions you started. See hgs guide stop.
 - An older peer may lack a command: check hgs @alias -h.
 - Contracts: docs/reference.md, docs/agent-coordination.md.

@@ -242,6 +242,10 @@ pub enum TeamAction {
         node: NodeId,
         role: String,
         pipeline: String,
+        /// The window edits placement only. The native service binds the
+        /// existing task fields when it prepares the ordinary Route request.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keep_task_fields: bool,
         #[serde(default)]
         deps: Vec<Dep>,
         #[serde(default)]

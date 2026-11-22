@@ -155,9 +155,10 @@ pub const KEYS: &[Key] = &[
     // key is the device's record of the child links it already handled.
     client("sessions/compactNewChildren", Kind::Flag(true)),
     client("sessions/childRowsSeen", Kind::Text("")),
-    // Parents whose child sessions are hidden, by machine UUID and session
-    // ID, so the choice survives a relaunch (zerus-sa9qn.15).
+    // Explicit child visibility choices, by machine UUID and session ID,
+    // including retained ancestors of favorites (zerus-sa9qn.15, zerus-e4evu).
     client("sessions/collapsedTeams", Kind::Text("")),
+    client("sessions/expandedTeams", Kind::Text("")),
     client("sessions/favorites", Kind::Text("")),
     key("workspace/animateActivity", Kind::Flag(true)),
     key("workspace/showCompletedSubagents", Kind::Flag(false)),

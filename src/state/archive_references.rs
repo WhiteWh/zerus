@@ -572,18 +572,19 @@ fn read_record(file: &fs::File, id: &str, expected: &Version) -> Result<Value> {
     Metadata::from_record(id, &record)?;
     Ok(record)
 }
-/// Compact references only, with complete native file/version coverage. No
-/// unrelated archive body or conversation journal is opened by cleanup review.
+/// Compact terminal references and bounded DeepSeek binding metadata, with
+/// complete archive coverage. No conversation journal is opened by review.
 pub(super) fn visit_metadata(
     until: Instant,
     mut visit: impl FnMut(Value) -> Result<()>,
 ) -> Result<()> {
     let snapshot = snapshot(until, None)?;
+    let remaining = FILES - snapshot.rows.len();
     for (_, (_, metadata)) in snapshot.rows {
         live(until)?;
         visit(metadata.value())?;
     }
-    Ok(())
+    super::dsh::native_archives::visit_references(until, remaining, BYTES - snapshot.bytes, visit)
 }
 /// Select through the folder index, then verify the authoritative relevant
 /// bodies before the first callback. Caller retains repository -> state locks
@@ -616,6 +617,24 @@ pub(super) fn visit_related(
         }
         records.push((id.clone(), expected.clone(), record));
     }
+    let mut native = Vec::new();
+    super::dsh::native_archives::visit_references(
+        until,
+        FILES - snapshot.rows.len(),
+        BYTES - bytes,
+        |record| {
+            let original = string(&record["worktree_owner"], "id");
+            if (original.is_empty() || original == owner)
+                && ["cwd", "launch_dir"].iter().any(|key| {
+                    let folder = Path::new(string(&record, key));
+                    folder.is_absolute() && folder.starts_with(target)
+                })
+            {
+                native.push(record);
+            }
+            Ok(())
+        },
+    )?;
     live(until)?;
     if snapshot
         .namespace
@@ -629,6 +648,10 @@ pub(super) fn visit_related(
         if file_version(&super::archive::path(&id)?)? != expected {
             return Err(INVALID.into());
         }
+        visit(record)?;
+    }
+    for record in native {
+        live(until)?;
         visit(record)?;
     }
     Ok(())

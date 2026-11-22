@@ -645,10 +645,10 @@ thread_local! { static MODEL_CACHE_PARSES: std::cell::Cell<usize> = const { std:
 /// Codex's models_cache.json (hundreds of KiB) for this record's account. Every
 /// listed Codex session reads its options and catalog from it, so one listing
 /// parsed it twice per session. Reuse the parse while the file is unchanged.
-fn codex_models(record: &Value) -> Option<std::sync::Arc<Value>> {
+fn codex_models(home: &Path) -> Option<std::sync::Arc<Value>> {
     type Cached = (u64, Option<SystemTime>, std::sync::Arc<Value>);
     static CACHE: OnceLock<Mutex<BTreeMap<PathBuf, Cached>>> = OnceLock::new();
-    let path = agent_home(record).join("models_cache.json");
+    let path = home.join("models_cache.json");
     let file = File::open(&path).ok()?;
     let meta = file.metadata().ok()?;
     let modified = meta.modified().ok();
@@ -671,10 +671,26 @@ fn codex_models(record: &Value) -> Option<std::sync::Arc<Value>> {
     Some(value)
 }
 
+#[derive(Default, PartialEq)]
+pub(crate) struct CodexCacheInfo {
+    pub(crate) client_version: Option<String>,
+    pub(crate) fetched_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+pub(crate) fn codex_cache_info(home: &Path) -> CodexCacheInfo {
+    let Some(cache) = codex_models(home) else {
+        return CodexCacheInfo::default();
+    };
+    CodexCacheInfo {
+        client_version: cache["client_version"].as_str().map(str::to_owned),
+        fetched_at: cache["fetched_at"].as_str().and_then(|date| date.parse().ok()),
+    }
+}
+
 fn options(record: &Value, model: &str) -> Vec<String> {
     match string(record, "agent") {
         "codex" => {
-            let Some(cache) = codex_models(record) else {
+            let Some(cache) = codex_models(&agent_home(record)) else {
                 return vec![];
             };
             cache["models"]
@@ -771,7 +787,7 @@ fn catalog(record: &Value) -> Vec<ModelOption> {
     }
     let mut result = Vec::new();
     if string(record, "agent") == "codex" {
-        let parsed = codex_models(record);
+        let parsed = codex_models(&agent_home(record));
         if let Some(models) = parsed.as_ref().and_then(|v| v["models"].as_array()) {
             let mut entries: Vec<_> = models.iter().take(256).collect();
             // Codex's ModelsManager stably sorts by its signed i32 priority.
@@ -1942,25 +1958,56 @@ enum ClaudeSection {
     Expanded,
 }
 
+/// The top rule Claude draws above a panel: "▔", with the effort indicator
+/// embedded near its end, or "─" in Windows' normal-screen layout.
+fn claude_panel_rule(line: &str) -> bool {
+    let line = line.trim();
+    composer_rule(line)
+        || (line.chars().take_while(|ch| *ch == '▔').count() >= 12 && line.ends_with('▔'))
+}
+
+/// A panel's key legend: its last block of lines below a blank line, joined
+/// where a narrow terminal wraps it.
+fn claude_legend(below: &[&str]) -> Option<String> {
+    let end = below.iter().rposition(|line| !line.trim().is_empty())? + 1;
+    let start = below[..end]
+        .iter()
+        .rposition(|line| line.trim().is_empty())?
+        + 1;
+    Some(
+        below[start..end]
+            .iter()
+            .map(|line| line.trim())
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
 /// Recognize the native panel independently of its selected row. In particular,
 /// a collapsed section has no numbered selection and offers no model apply key.
+/// Claude rewords the panel's prose between releases, so only its structure
+/// counts: the title directly below Claude's panel rule, and a key legend that
+/// offers Esc to cancel. The title matters: since 2.1.327 the /effort panel
+/// shows this exact legend, and its `s` applies only an effort.
 fn claude_model_panel(screen: &str) -> Option<Vec<&str>> {
     let lines: Vec<_> = screen.lines().collect();
-    let title = lines.iter().rposition(|line| line.trim() == "Select model")?;
-    let below = &lines[title + 1..];
-    if !below.iter().find(|line| !line.trim().is_empty())?
-        .trim_start().starts_with("Switch between Claude models.")
-        || !below.iter().rfind(|line| !line.trim().is_empty())?.contains("Esc to cancel")
-    {
+    let title = lines
+        .iter()
+        .rposition(|line| line.trim() == "Select model")?;
+    if !claude_panel_rule(lines[..title].last()?) {
         return None;
     }
-    Some(below.to_vec())
+    let below = &lines[title + 1..];
+    claude_legend(below)?
+        .contains("Esc to cancel")
+        .then(|| below.to_vec())
 }
 
 /// Claude's /model picker: numbered rows (the label column, then the model's
 /// name and description), the effort adjusted with ←/→, and the key legend.
 fn claude_picker(screen: &str) -> Option<ClaudePicker> {
     let below = claude_model_panel(screen)?;
+    let legend = claude_legend(&below)?;
     let mut rows = below.iter().filter_map(|line| {
         let row = line.trim_start().strip_prefix("❯ ")?.trim_end();
         let (number, _) = row.split_once(". ")?;
@@ -1971,9 +2018,9 @@ fn claude_picker(screen: &str) -> Option<ClaudePicker> {
     if rows.next().is_some() {
         return None;
     }
-    let section = if below.iter().any(|line| line.contains("Enter to expand")) {
+    let section = if legend.contains("Enter to expand") {
         Some(ClaudeSection::Collapsed)
-    } else if below.iter().any(|line| line.contains("Enter to collapse")) {
+    } else if legend.contains("Enter to collapse") {
         Some(ClaudeSection::Expanded)
     } else {
         None
@@ -2000,17 +2047,25 @@ fn claude_picker(screen: &str) -> Option<ClaudePicker> {
     } else {
         selected?
     };
+    // "◐ Medium effort (default)", maybe followed by " · Ultracode on (/effort)".
+    // Its "←/→ to adjust" hint follows the label until 2.1.326 and is in the
+    // legend since 2.1.327; either way the arrows must be offered.
     let effort = below.iter().find_map(|line| {
         if line.contains("Effort not supported") {
             return Some(String::new());
         }
-        let (shown, legend) = line.trim().split_once(" effort")?;
-        let level = shown.split_whitespace().last()?.to_ascii_lowercase();
-        (legend.contains("←/→ to adjust") && valid(&level)).then_some(level)
+        let (shown, rest) = line.trim().split_once(" effort")?;
+        let [mark, level] = shown.split_whitespace().collect::<Vec<_>>()[..] else {
+            return None;
+        };
+        let glyph = mark.chars().count() == 1 && !mark.chars().all(char::is_alphanumeric);
+        let level = level.to_ascii_lowercase();
+        let adjustable = rest.contains("←/→ to adjust") || legend.contains("←/→ to adjust");
+        (glyph && adjustable && valid(&level)).then_some(level)
     });
-    let session_only = below.iter().any(|line| {
-        line.contains("Enter to set as default") && line.contains("s to use this session only")
-    });
+    // Only `s` keeps the choice in this session; Enter, whatever its label,
+    // saves a default and is never pressed on a model row.
+    let session_only = legend.contains("s to use this session only");
     Some(ClaudePicker {
         row,
         section,
@@ -3652,8 +3707,170 @@ mod tests {
         assert!(claude_picker(&unknown).is_none());
         assert!(claude_model_panel(&unknown).is_some());
         assert!(claude_model_panel(&format!("{unknown}\nA different dialog")).is_none());
-        assert!(claude_model_panel(&unknown.replace("Switch between Claude models.", "Quoted conversation text.")).is_none());
+        assert!(claude_model_panel(&unknown.replace("Esc to cancel", "Esc to close")).is_none());
         assert!(claude_model_panel(CLAUDE_SWITCH).is_none());
+    }
+
+    // Claude Code 2.1.326 and 2.1.327 at 120 columns, verbatim from private
+    // native captures (tests/fixtures): the compiled picker, then a served
+    // catalog's expanded overflow section with Fable 5.2 and xhigh selected.
+    // 2.1.327 rewrote the subtitle, moved "←/→ to adjust" from the effort line
+    // into the legend and renamed Enter's action to "save".
+    const CLAUDE_PICKER_326: &str =
+        include_str!("../../tests/fixtures/claude-model-picker-2.1.326.txt");
+    const CLAUDE_PICKER_327: &str =
+        include_str!("../../tests/fixtures/claude-model-picker-2.1.327.txt");
+    const CLAUDE_SERVED_326: &str =
+        include_str!("../../tests/fixtures/claude-model-picker-served-2.1.326.txt");
+    const CLAUDE_SERVED_327: &str =
+        include_str!("../../tests/fixtures/claude-model-picker-served-2.1.327.txt");
+    // 2.1.327's /effort panel shows the model picker's exact key legend.
+    const CLAUDE_EFFORT_327: &str =
+        include_str!("../../tests/fixtures/claude-effort-panel-2.1.327.txt");
+
+    #[test]
+    fn claude_picker_of_2_1_326_and_2_1_327_is_recognized_by_its_title_rows_and_keys() {
+        for screen in [CLAUDE_PICKER_326, CLAUDE_PICKER_327] {
+            let picker = claude_picker(screen).unwrap_or_else(|| panic!("{screen}"));
+            assert!(
+                picker.row.starts_with("1. Default (recommended) ✔"),
+                "{}",
+                picker.row
+            );
+            assert_eq!(picker.section, None);
+            assert_eq!(picker.effort.as_deref(), Some("medium"));
+            assert!(picker.session_only);
+        }
+        for screen in [CLAUDE_SERVED_326, CLAUDE_SERVED_327] {
+            let picker = claude_picker(screen).unwrap_or_else(|| panic!("{screen}"));
+            assert!(claude_row_is(&picker.row, "Fable 5.2"), "{}", picker.row);
+            assert!(!claude_row_is(&picker.row, "Fable 5"));
+            assert_eq!(picker.section, None);
+            assert_eq!(picker.effort.as_deref(), Some("xhigh"));
+            assert!(picker.session_only);
+        }
+        // Neither the subtitle nor Enter's wording is something hgs uses.
+        let reworded = CLAUDE_PICKER_327
+            .replace(
+                "Your pick is the default for new sessions. For other models, use --model.",
+                "Reworded prose.",
+            )
+            .replace("Enter to save", "Enter to keep");
+        assert_eq!(claude_picker(&reworded), claude_picker(CLAUDE_PICKER_327));
+        let unsubtitled = CLAUDE_PICKER_327.replace(
+            "  Your pick is the default for new sessions. For other models, use --model.\n",
+            "",
+        );
+        assert_eq!(
+            claude_picker(&unsubtitled),
+            claude_picker(CLAUDE_PICKER_327)
+        );
+        // A wrapped legend is still one legend.
+        let wrapped = CLAUDE_PICKER_327.replace(" · Enter to save", "\n  Enter to save");
+        assert_eq!(claude_picker(&wrapped), claude_picker(CLAUDE_PICKER_327));
+        // Ultracode follows the effort label on the same line.
+        let ultracode =
+            CLAUDE_SERVED_327.replace("◉ xHigh effort", "◉ xHigh effort · Ultracode on (/effort)");
+        assert_eq!(
+            claude_picker(&ultracode).unwrap().effort.as_deref(),
+            Some("xhigh")
+        );
+        let ultracode =
+            CLAUDE_SERVED_326.replace("←/→ to adjust", "←/→ to adjust · Ultracode on (/effort)");
+        assert_eq!(
+            claude_picker(&ultracode).unwrap().effort.as_deref(),
+            Some("xhigh")
+        );
+    }
+
+    #[test]
+    fn claude_picker_needs_every_key_hgs_presses_on_screen() {
+        for screen in [
+            CLAUDE_PICKER_326,
+            CLAUDE_PICKER_327,
+            CLAUDE_SERVED_326,
+            CLAUDE_SERVED_327,
+        ] {
+            // s applies the change for this session only; without it nothing is applied.
+            let picker =
+                claude_picker(&screen.replace(" · s to use this session only", "")).unwrap();
+            assert!(!picker.session_only, "{screen}");
+            // Esc cancels: a panel without it is neither driven nor cleaned up.
+            assert!(
+                claude_model_panel(&screen.replace("Esc to cancel", "Esc to go back")).is_none()
+            );
+            assert!(claude_picker(&screen.replace("Esc to cancel", "Esc to go back")).is_none());
+        }
+        // ←/→ adjusts effort: the level alone is not an adjustable effort.
+        assert_eq!(
+            claude_picker(&CLAUDE_PICKER_327.replace("←/→ to adjust · ", ""))
+                .unwrap()
+                .effort,
+            None
+        );
+        assert_eq!(
+            claude_picker(&CLAUDE_PICKER_326.replace(" ←/→ to adjust", ""))
+                .unwrap()
+                .effort,
+            None
+        );
+        // A key named in a model's description is not the legend's key.
+        let described = CLAUDE_PICKER_327
+            .replace(" · s to use this session only", "")
+            .replace(
+                "Efficient for routine tasks",
+                "Press s to use this session only · Esc to cancel",
+            );
+        assert!(!claude_picker(&described).unwrap().session_only);
+        let described = CLAUDE_PICKER_327.replace("Efficient for routine tasks", "Enter to expand");
+        assert_eq!(claude_picker(&described), claude_picker(CLAUDE_PICKER_327));
+        // Effort words in a description are not the effort line.
+        let described =
+            CLAUDE_PICKER_327.replace("Efficient for routine tasks", "Fast at low effort");
+        assert_eq!(
+            claude_picker(&described).unwrap().effort.as_deref(),
+            Some("medium")
+        );
+        let described = CLAUDE_PICKER_327
+            .replace("  ◐ Medium effort (default)\n", "")
+            .replace("Efficient for routine tasks", "Fast at low effort");
+        assert_eq!(claude_picker(&described).unwrap().effort, None);
+    }
+
+    #[test]
+    fn screens_that_are_not_the_model_picker_are_never_driven() {
+        // The /effort panel offers the same keys; its s applies only an effort.
+        assert!(CLAUDE_EFFORT_327.contains(
+            "←/→ to adjust · s to use this session only · Enter to save · Esc to cancel"
+        ));
+        assert!(claude_model_panel(CLAUDE_EFFORT_327).is_none());
+        assert!(claude_picker(CLAUDE_EFFORT_327).is_none());
+        // The model picker quoted in conversation text: above the composer, or
+        // ending the screen without Claude's panel rule above its title.
+        let start = CLAUDE_PICKER_327.find("  Select model").unwrap();
+        let quoted = &CLAUDE_PICKER_327[start..];
+        let rule = "─".repeat(120);
+        let above_composer = format!(
+            "● The picker read:\n\n{quoted}\n{:>100}\n{rule}\n❯\u{a0}\n{rule}\n  ⏵⏵ auto mode on\n",
+            "◐ medium · /effort"
+        );
+        assert!(claude_model_panel(&above_composer).is_none());
+        assert!(claude_picker(&above_composer).is_none());
+        let ending = format!("● The picker read:\n{quoted}");
+        assert!(claude_model_panel(&ending).is_none());
+        assert!(claude_picker(&ending).is_none());
+        // Another title below the same rule, and the cache notice, are not it either.
+        assert!(
+            claude_picker(&CLAUDE_PICKER_327.replace("Select model", "Select agent")).is_none()
+        );
+        assert!(claude_model_panel(CLAUDE_SWITCH).is_none());
+        // A legend is the panel's last block, below a blank line.
+        let unseparated: String = CLAUDE_PICKER_327
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(claude_model_panel(&unseparated).is_none());
     }
 
     #[test]

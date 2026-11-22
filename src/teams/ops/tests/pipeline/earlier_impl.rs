@@ -400,6 +400,7 @@ fn the_real_reconcile_retires_a_wanted_unstaffed_stage_and_tells_the_lead() {
         &readiness,
         &members,
         &std::collections::BTreeSet::new(),
+        &std::collections::BTreeSet::new(),
     );
     assert_eq!(
         unstaffed.iter().map(|u| u.node).collect::<Vec<_>>(),
@@ -537,4 +538,42 @@ fn a_failed_record_read_refuses_rather_than_admits() {
         )
         .unwrap_err();
     assert_eq!(e.code, code::STORAGE_FAILED);
+}
+
+/// zerus-3u5yu (5): the queue row of a stage names its target's earlier
+/// implementers, whom a stage's Reassign refuses, so the window can leave
+/// them out of the stage's replacement choices. Another row names nobody.
+#[test]
+fn a_stage_row_names_its_targets_earlier_implementers() {
+    let mut h = three_developers();
+    let parent = h.add(&person(), 1);
+    h.submit(parent, "m1");
+    h.report(parent, "m1");
+    let first = created_stage(&mut h, parent);
+    h.submit(first, "m2");
+    let m2 = bound(&h, "m2");
+    h.run(&m2, verdict(first, 1, true)).unwrap();
+    h.observe(first, TaskStage::Done);
+    let lead = bound(&h, "lead");
+    h.run(&lead, Operation::Accept { node: parent }).unwrap();
+    let decision = h.accept_decision(parent);
+    h.run(
+        &service(),
+        Operation::RecordIntegration {
+            node: parent,
+            decision,
+            commit: COMMIT.into(),
+        },
+    )
+    .unwrap();
+    h.observe(parent, TaskStage::Done);
+    h.observe(parent, TaskStage::Todo);
+    h.submit(parent, "m2");
+    h.report(parent, "m2");
+    let stage = created_stage(&mut h, parent);
+    let rows = h.store.queue_rows(TEAM, 200, None).unwrap().rows;
+    let row = |id: u32| rows.iter().find(|row| row.node.id == id).unwrap();
+    assert_eq!(row(stage).node.implementer.as_deref(), Some("m2"));
+    assert_eq!(row(stage).earlier_implementers, ["m1"]);
+    assert!(row(parent).earlier_implementers.is_empty());
 }

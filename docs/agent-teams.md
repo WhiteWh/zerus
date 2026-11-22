@@ -254,7 +254,11 @@ The bar also opens **Feed**, **Inbox**, **Reports**, **Cards** and **Lead chat**
 The first four read one page at a time, at most 200 rows. **Next page** keeps
 the original page cursor, so later inserts do not move that snapshot;
 **First page** starts a fresh snapshot, and **Refresh** rereads the selected
-page. The feed follows the journal's oldest-first order. Reports are the
+page. The feed follows the journal's oldest-first order. Each event reads as
+a sentence: who acted (you, the team service or a member), what happened, and
+the task number and member it names; the journal's exact text stays in the
+event's tooltip. Inbox and card rows show their state and who wrote them the
+same way. Reports are the
 report items on the selected inbox page, not an exhaustive report search.
 Only one page is retained, and closing the drawer drops it.
 
@@ -270,7 +274,11 @@ and conversation must be available. Sends keep the normal guarded delivery
 and durable request identity; an uncertain delivery is never replayed.
 
 **Members** lists each member with its role, what it works on ("Working on
-#%1", "Reviewing #%1", "Testing #%1") and whether its session is linked. A
+#%1", "Reviewing #%1", "Testing #%1") and whether its session is linked. The
+member's name, **Session linked** in its details and **Open session** in its
+menu open the member's own session, found by the same computer and launch
+binding the lead's Team tab uses; when that session is not on the session list
+the menu says so and nothing opens. A
 member's actions are **Pause**, **Resume**, **Stop** and **Remove**; the lead
 cannot be removed. Removing a member puts its open work back to the lead.
 
@@ -293,12 +301,44 @@ shows the task's role, pipeline, member, round and stages; a stage card says
 which task it checks ("checks the work of %1"), and a card that waits for a
 decision says "Decision needed".
 
+When every eligible member for a ready task stays unreadable for three
+minutes, the lead's inbox names those members. Zerus keeps checking and closes
+the item after a member is readable for three minutes, or when the task stops
+waiting. A brief change in readability keeps the current item. An unreadable
+reviewer or tester leaves its stage in the pipeline. The person's existing
+unreadable-member card still provides the specific reason and retry action.
+
+A task's details show its evidence above the decisions: the member's latest
+report with its commit, and each stage, newest first, with its latest verdict:
+who gave it, whether it passed or returned the work, and the findings. The
+details read it once for the task they show and again when the team changes;
+a stage shows its own facts. While the evidence on screen is of another team
+revision than the decisions, it stays readable, is marked as being read again,
+and Accept and Return wait for the matching evidence. A read that fails says
+why and leaves the decisions as they are.
+
 A card's decisions are **Admit** for a task that waits for admission,
 **Accept** and **Return** for reported work, **Hold** or **Release**, and
-**Cancel task**. Return and Cancel task ask for a reason. Reassign and Route
-are commands (`hgs team reassign`, `hgs team route`); Route cannot move a
-stage, whose member is chosen by the hand-out. **Add task** opens the
-project's task board.
+**Cancel task**. Return and Cancel task ask for a reason. **Reassign** asks
+for another active member of the same role and a reason; a stage's Reassign
+leaves out the members who implemented any round of its task. **Route**
+selects a role and one of its pipelines for a waiting or pending queue task.
+Routing keeps the dependencies and write paths, and the assignment while the
+role stays the same and the assigned member can still take it. Changing the
+role, or a removed assigned member, clears the assignment. Both actions use
+the window's native confirmation, which lists what Route keeps and clears;
+the selected desktop service must be updated for Route if it is older. An
+open form stays open while the team changes and keeps its choices, but it
+sends only the team revision you reviewed. When another change arrives, the
+form says so and waits until you check the choices and press **Review
+again**. The service refuses a request whose revision is no longer current.
+A stage's role follows its pipeline. Routing an approved task requires a
+logged plan edit.
+
+**Add task** opens the New task form in the Tasks side panel with this team
+preselected. If a previous draft is still saving, the team choice waits for
+the reopened form's active editor. A reserved card keeps its original
+destination. Stopped and archived teams offer no Add task.
 
 On a stopped or archived team's board, a task also shows what the current
 stop recorded: cancellation, release, key clearing, a refusal and its reason,
@@ -379,6 +419,13 @@ later slices.
 
 - On the task board, a task in Backlog or To do has **Send to team: %1** in
   its menu, one entry per running or paused team of its project.
+- Drag a task card from the session's Tasks side panel onto the Team tab's
+  **Board** view to send it to that team. Graph, Lanes and Layers have no task
+  drop target. This uses the same **Send to team** command and refusal
+  messages. Only writable Backlog and To do cards from the same project are
+  accepted; the task's current stage is checked again on drop. HTML dragging
+  and the macOS/Windows pointer path have the same checks. An in-flight send
+  is not duplicated, and an uncertain result is never retried automatically.
 - The New task form has a **Team** chooser ("Send the new task to a team's
   queue"), with the same running/paused choices. Stopped, archived, finished
   and not-yet-running teams are not offered. Identically named live teams
@@ -524,6 +571,13 @@ and is accepted when the review passes; `check` goes straight to the lead.
 Each stage is a task of its own, handed to a free member of the stage's role
 and never to the member who implemented the work.
 
+In Team settings, **Allow land stages** is off by default. After the update,
+existing teams with that switch off skip Land steps in custom pipelines.
+The Feed records why, and the pipeline continues to the next step or its
+normal acceptance. Turn the switch on to create new Land stages. A Land stage
+already created can finish. Creating a replacement for a retired Land stage
+also requires the switch to be on.
+
 The stage's holder answers with a verdict: pass, or return with findings. A
 return reopens the task to its implementer without the lead. After the
 pipeline's rounds, three unless it sets another number, the task goes to the
@@ -661,7 +715,9 @@ A proven non-delivery does not open a `delivery_uncertain` inbox item. The
 service also reconciles such effects recorded by older versions and closes
 only the false item bound to their original outcome receipt, including after
 manual recovery. A genuine unknown delivery stays open. A refused reopen
-still hands the task back to the lead, with its own reason and hold.
+hands the task back to the lead with a notice that explains the refusal.
+The service closes that notice after the lead releases the hand-back or
+newer work supersedes it, including for tasks recovered on older versions.
 
 ## Project limits
 
@@ -731,9 +787,11 @@ tool approvals.
   accept phases; send-back rework and phase controls follow in later slices.
 - DeepSeek can be a lead or member with a host that proves each tool call
   with its per-call token, witnesses task input and reports its lifecycle.
-  A host lacking those capabilities stays unavailable; Zerus never reloads
-  or restarts a live host to add them. OpenCode's shared-service sessions
-  cannot be a lead or member in this milestone.
+  If the host lacks those capabilities, stop idle DeepSeek sessions or restart
+  the host yourself. After the host is back, remove the blocked member and add
+  a replacement. For a blocked lead, stop the team and create a new one.
+  Zerus does not retry the blocked start or restart a live host. OpenCode's
+  shared-service sessions cannot be a lead or member in this milestone.
 - On Linux, `hgs team` from a shell inside a sandbox with its own user
   namespace is refused, whether a person or an agent runs it, so a member
   whose agent runs its commands in such a sandbox cannot take part.

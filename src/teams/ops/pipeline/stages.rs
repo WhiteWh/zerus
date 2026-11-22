@@ -91,6 +91,85 @@ pub(super) fn want_stage(
             "The stage needs a capacity slot; the admitted task cap is reached.",
         );
     }
+    create_stage(ctx, n, index, kind, role, None)?;
+    Ok(())
+}
+
+/// Reassign only the retired stage identified by the current provider-stop
+/// report. The old task and its delivery receipt remain retired.
+pub(in crate::teams::ops) fn reassign_stopped_stage(
+    ctx: &Context<'_>,
+    old: &Node,
+    member: &str,
+) -> Result<u32> {
+    let refused =
+        || invalid("The stage is no longer the provider-stopped step waiting for the lead.");
+    let target = ctx.live_node(old.stage_of.ok_or_else(refused)?)?;
+    ctx.undecided(target.id)?;
+    if target.state != NodeState::Reported || old.round != target.round {
+        return Err(refused());
+    }
+    let generation = ctx.generation(target.id)?;
+    let entry = ctx.db.query_row(
+        "SELECT i.seq,i.notes FROM inbox i JOIN pipeline_runs p ON p.team=i.team AND p.node=i.node AND p.generation=i.generation JOIN stage_tasks s ON s.team=p.team AND s.target=p.node AND s.generation=p.generation
+         WHERE i.team=?1 AND i.node=?2 AND i.generation=?3 AND i.kind='report' AND i.state='open' AND json_extract(i.actor,'$.kind')='service'
+         AND p.state='lead' AND p.stage IS NULL AND s.node=?4 AND s.state='superseded'",
+        params![ctx.team.id, target.id, generation, old.id],
+        |row| Ok((row.get::<_, u64>(0)?, store::sql_json::<Vec<ReportNote>>(row, 1)?)),
+    ).optional().map_err(storage)?;
+    let Some((item, notes)) = entry else {
+        return Err(refused());
+    };
+    let task = target.id.to_string();
+    let stage = old.id.to_string();
+    if !notes.iter().any(|note| {
+        note.code.starts_with("provider_stop_")
+            && matches!(note.parameters.as_slice(), [_, _, parent, retired] if parent == &task && retired == &stage)
+    }) {
+        return Err(refused());
+    }
+    let step = spec(ctx, &target)?
+        .stages
+        .get(old.stage_index as usize)
+        .filter(|step| step.role == old.role)
+        .ok_or_else(refused)?;
+    if ctx.task_capacity_used()? >= ctx.team.settings.caps.max_open_tasks {
+        return Err(over(
+            "The stage needs a capacity slot; the admitted task cap is reached.",
+        ));
+    }
+    let id = create_stage(
+        ctx,
+        &target,
+        old.stage_index,
+        step.kind,
+        &old.role,
+        Some(member),
+    )?;
+    ctx.db
+        .execute(
+            "UPDATE inbox SET state='closed' WHERE team=?1 AND seq=?2",
+            params![ctx.team.id, item],
+        )
+        .map_err(storage)?;
+    Ok(id)
+}
+
+fn create_stage(
+    ctx: &Context<'_>,
+    n: &Node,
+    index: u32,
+    kind: zerus_team_plan::catalog::StageKind,
+    role: &str,
+    member: Option<&str>,
+) -> Result<u32> {
+    // Normal progression skips disabled steps. A replacement is a separate
+    // creation entry point and must respect the same setting.
+    if kind == StageKind::Land && !ctx.team.settings.land_allowed {
+        return Err(invalid(
+            "Landing is disabled in Team settings. Enable Land stages to create a replacement.",
+        ));
+    }
     let id: u32 = ctx
         .db
         .query_row(
@@ -102,7 +181,8 @@ pub(super) fn want_stage(
     if id == u32::MAX {
         return Err(over("Node IDs are exhausted."));
     }
-    let stage = metadata(ctx, n, id, index, kind, role)?;
+    let mut stage = metadata(ctx, n, id, index, kind, role)?;
+    stage.assignee = member.map(str::to_owned);
     ctx.db
         .execute(
             "INSERT INTO node_identity(team,id,task_project,task_uuid) VALUES(?1,?2,?3,'')",
@@ -119,7 +199,7 @@ pub(super) fn want_stage(
         .map_err(storage)?;
     state(ctx, n.id, "active", Some(id))?;
     queue::hand_back(ctx, n.id, true)?;
-    Ok(())
+    Ok(id)
 }
 
 fn metadata(
@@ -151,7 +231,6 @@ fn metadata(
     stage.stage_index = index;
     stage.title = format!("{label}: {}", n.title);
     stage.role = role.into();
-    stage.assignee = None;
     // The parent's implementation estimate is no estimate of this review.
     stage.estimate_minutes = 0;
     let quoted_report = report
