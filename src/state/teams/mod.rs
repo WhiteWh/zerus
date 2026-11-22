@@ -45,6 +45,8 @@ pub(crate) mod spans;
 pub(crate) mod strict;
 pub(crate) mod stages;
 pub(crate) mod store;
+// WhiteWh fork: a remote member's report when the lead's computer is out of reach.
+pub(crate) mod member_outbox;
 pub(crate) mod templates;
 pub(crate) mod test_queue;
 pub(crate) mod test_results;

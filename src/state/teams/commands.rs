@@ -6962,6 +6962,16 @@ pub(crate) fn dispatch(args: &[String]) -> Result<i32> {
     if args.len() == 2 && args[0] == "worker" && args[1] == "--run" {
         return super::dispatcher::worker_run();
     }
+    // WhiteWh fork: the lead computer's worker collects the reports and
+    // questions a member kept here while the lead's computer was out of reach.
+    if args.len() == 3 && args[0] == "outbox" && args[2] == "--json" {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::Read::take(std::io::stdin(), 64 * 1024), &mut text).map_err(|e| e.to_string())?;
+        let input: Value = if text.trim().is_empty() { json!({}) } else { serde_json::from_str(&text).map_err(|e| e.to_string())? };
+        let result = super::member_outbox::command(&args[1..2], &input).map_err(|e| format!("{e:#}"))?;
+        println!("{result}");
+        return Ok(0);
+    }
     // H2: `--json` reads stdin; `--json-file PATH` reads the same request from
     // a file (PowerShell 5.1 turns Cyrillic in a pipe into "?").
     let mut args = args.to_vec();

@@ -12034,6 +12034,9 @@ fn tick_teams(store: &mut Store, host: &str) -> anyhow::Result<bool> {
         }
         super::tick_clock::phase(&format!("hand-outs: {}", team.name), || run_team_steps(store, team, &sessions, &listed, host, Pass::Urgent));
     }
+    // WhiteWh fork: reports and questions members on other computers kept
+    // while this computer was out of their reach (outbox.rs).
+    super::tick_clock::phase("member outboxes", || super::member_outbox::collect(&teams));
     sample_usage(&teams, &sessions);
     for team in &teams {
         // Task #406: a member's report reads git (its test delta); the outbox

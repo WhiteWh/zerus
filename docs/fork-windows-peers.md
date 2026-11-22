@@ -171,6 +171,38 @@ it again within a minute; `autostart off` first.
 The desktop app on the managing PC still does all the work: sessions, teams,
 Activity and Terminal go through the peer's `hgs` over SSH as before.
 
+### Light mode
+
+`hgs-tray.exe --light` runs the same keeper behind a notification-area icon
+and nothing else (no window, webview or desktop engine). Its tooltip says
+whether the session host runs; Open Zerus starts the full desktop and closes
+the icon, Quit closes only the icon. Settings > Startup > **Start in light
+mode at login** replaces Start Zerus at login with it, and **Switch to light
+mode now** starts it and quits the desktop.
+
+## Teams across computers
+
+A team's lead and worker run on one computer; a member may run on another
+(the member row's Computer). The lead's computer starts the member there and
+hands out its tasks over SSH, so it needs SSH to the member's computer. The
+member reports, asks and reads its attempt with `hgs @LEAD team report|ask|current
+--json`, which the lead's computer authorizes by the attempt id; an agent's
+other `team` operations on another computer stay refused.
+
+When the member's computer cannot reach the lead's (a Windows PC without an
+SSH server, as is common), its `report` and `ask` are kept on the member's
+computer (`teams/member-outbox`) and the call answers `"queued": true`. The
+lead's team worker collects them every 15 seconds over its own connection
+(`hgs @MEMBER team outbox take --json`, through the lasting channel to a
+Windows peer), applies each on its computer and then removes it there
+(`ack`). A taken item that was never applied is offered again after ten
+minutes and dropped after a day. `current` has no such fallback: the task and
+attempt are in the hand-out message. Both computers need this build.
+
+A member's startup text spans lines once iron rules apply. `cmd.exe` cannot
+carry a line break, `%` or `"` to a Windows peer, so such a detached launch
+goes through the lasting channel, which passes the arguments unchanged.
+
 ## Limits
 
 - The peer's sessions start only while its session host runs (step 2 above).

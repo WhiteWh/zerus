@@ -148,6 +148,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        hgs [@host] graph snapshot --json   bounded saved relationship metadata (partial coverage)
        hgs [@host] wait begin|ack|finish|cancel|list --json   explicit independent-agent waits (JSON stdin)
        hgs [@host] team OPERATION --json   agent teams: plan, run, report and decide tasks (JSON stdin or --json-file PATH)
+       hgs team outbox take|ack --json   a lead computer's worker collects its remote members' kept reports
        hgs [@host] rules get|set|migrate --json   owner-managed iron rules, iron-rules-v1 (JSON stdin)
        hgs run --json [--wait] | --list --json   a build Zerus tracks as this session's work (JSON stdin)
        hgs test config|map|affected|durations|coverage|tools …   the project's tests (.zerus/tests.toml; hgs guide tests)
@@ -2154,7 +2155,28 @@ fn remote(
     global_dry: bool,
 ) -> Result<i32> {
     if let Some(profile) = crate::wsl::profile(config, target) { return crate::wsl::run(profile, command, args, global_dry); }
-    remote_via(config, target, command, args, global_dry, None)
+    let result = remote_via(config, target, command, args, global_dry, None);
+    // WhiteWh fork: a member's report or question that could not reach the
+    // lead's computer waits here; the lead's worker collects it (outbox.rs).
+    let input = MEMBER_INPUT.with(|kept| kept.borrow_mut().take());
+    match (&result, input) {
+        (Err(error), Some(input)) if error.code == 3 && matches!(args[0].as_str(), "report" | "ask") => {
+            let value: Value = serde_json::from_slice(&input).map_err(|e| Error::new(1, e.to_string()))?;
+            let receipt = crate::state::teams::member_outbox::queue(target, &args[0], &value).map_err(|e| Error::new(1, format!("{}; {e:#}", error.message)))?;
+            println!("{receipt}");
+            Ok(0)
+        }
+        (Err(error), _) if error.code == 3 && member_team_call(command, args) && args[0] == "current" => Err(Error::new(
+            3,
+            format!("{}; your task and attempt are in your hand-out message", error.message),
+        )),
+        _ => result,
+    }
+}
+
+thread_local! {
+    /// WhiteWh fork: an agent's member call input, kept for its outbox.
+    static MEMBER_INPUT: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Commands whose handler takes a caller without session markers for the
@@ -2284,6 +2306,7 @@ fn forwarded_answer_input(command: &str, args: &[String]) -> Result<Option<fs::F
             return Err(Error::new(1, "a team member's call exceeds 256 KiB"));
         }
         member_team_input(&bytes).map_err(|reason| Error::new(1, reason))?;
+        MEMBER_INPUT.with(|kept| *kept.borrow_mut() = Some(bytes.clone()));
         let mut input = tempfile::tempfile()?;
         input.write_all(&bytes)?;
         input.rewind()?;

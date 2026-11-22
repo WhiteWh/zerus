@@ -98,6 +98,8 @@ pub fn routed(command: &str, args: &[String]) -> Option<bool> {
         "ls" | "archives" | "inspect" | "worktrees" | "git-status" | "git-diff" | "dirs" | "project" | "analytics" => Some(false),
         "account" if matches!(args.first().map(String::as_str), Some("ls" | "inspect")) => Some(false),
         "terminal" | "send" | "settings" | "effort" | "history" | "rules" if json => Some(true),
+        // WhiteWh fork: the lead's worker collecting a member's kept reports.
+        "team" if json && args.first().is_some_and(|verb| verb == "outbox") => Some(true),
         _ => None,
     }
 }
