@@ -183,16 +183,27 @@ export function shownOf(f: LaunchForm): LaunchShown {
 export function bridgeOf(world: World): NewSessionBridge {
   const record = (command: string, ...args: unknown[]) => { world.calls.push({ command, args }); };
   const context = (): NewSessionContext => ({ branch: "work-1a2b3c4d", own_windows_session: null, build_style: "posix", remembered: { agent: "", accounts: {}, open_terminal: false }, swarm: world.swarm });
+  const derived = ({ form, catalog }: NewSessionFormInput) => {
+    const worktrees = catalog as Json | null;
+    return { ...form, automatic_available: !form.catalog_pending && worktrees?.state === "ok" && worktrees.selected_root === form.path };
+  };
   return {
     newSessionContext: async () => { record("newSessionContext"); return world.context ?? context(); },
-    newSessionForm: async (input: NewSessionFormInput) => { record("newSessionForm", input); return { shown: shownOf(input.form), automatic_available: false, automatic_path: "", project_worktree: false }; },
+    newSessionForm: async (input: NewSessionFormInput) => {
+      record("newSessionForm", input);
+      const form = derived(input);
+      return { shown: shownOf(form), automatic_available: form.automatic_available, automatic_path: "", project_worktree: false };
+    },
     newSessionStart: async (input: NewSessionFormInput, submitted: boolean) => {
       record("newSessionStart", input, submitted);
-      const answer = !submitted && shownOf(input.form).start_enabled ? "background" : "nothing";
+      const answer = !submitted && shownOf(derived(input)).start_enabled ? "background" : "nothing";
       world.onStart?.(world.count("newSessionStart"));
       return answer;
     },
-    newSessionPlan: async (input, choices) => { record("newSessionPlan", input, choices); return { cmd: choices.agent, tag: input.form.name } as never; },
+    newSessionPlan: async (input, choices) => {
+      record("newSessionPlan", input, choices);
+      return { cmd: choices.agent, tag: input.form.name, auto: shownOf(derived(input)).automatic } as never;
+    },
     launchWarning: async (local, computer) => { record("launchWarning", local, computer); return world.warning; },
     repositoryFields: async (url, destination, style, custom, fresh = null) => {
       record("repositoryFields", url, destination, style, custom, fresh);

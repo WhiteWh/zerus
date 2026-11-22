@@ -26,7 +26,7 @@ describe("the remembered folder mode (task 102, NewSessionDialog.cpp 259, 849, 9
     }
   });
   it("remembers only a choice made in this dialog", async () => {
-    const chosen = setup(ctx("none"));
+    const chosen = setup((w) => { ctx("none")(w); w.flags.add("prefill-linked"); });
     await chosen.open({ agent: "codex", path: "/workspace/example" });
     chosen.act.setAuto(true);
     expect(chosen.state().autoPreferred).toBe(true);
@@ -472,6 +472,43 @@ describe("placement", () => {
 
 describe("Start (NewSessionDialog.cpp 743-786)", () => {
   const windowsCard = machineMeta("pc", {}, { platform: "windows", local_host: { state: "running", pid: 4242, protocol: 1, conpty: "bundled", integrity: "medium", windows_session: 2, error: null } });
+  const projectWithFolder = project("example", "Example", [folder("f1", "pc", "/workspace/example")], { is_default: true });
+
+  it("shows no worktree mode while Git is still being checked", async () => {
+    const t = setup((w) => { w.projects = [projectWithFolder]; w.flags.add("prefill-linked"); });
+    t.world.hold("catalog");
+    await t.open({ agent: "codex", project: "example" });
+    expect(t.state().worktrees.automatic).toBeUndefined();
+    await t.start();
+    expect(t.world.creating()).toEqual([]);
+    t.world.release("catalog");
+    await settle();
+    expect(t.state().worktrees.automatic).toBe(true);
+    await t.start();
+    expect(t.world.of("creationSubmit")[0].args[0]).toMatchObject({ auto: true });
+  });
+
+  it("launches directly when None was shown at Start even if Git becomes available during confirmation", async () => {
+    const t = setup((w) => { w.projects = [projectWithFolder]; w.warning = "Launch anyway?"; });
+    await t.open({ agent: "codex", project: "example" });
+    expect(t.state()).toMatchObject({ autoPreferred: true, form: { start_enabled: true }, worktrees: { automatic: false } });
+
+    await t.store.startNewSession(async () => {
+      t.world.online[""] = false;
+      t.store.fleetChanged();
+      await settle();
+      t.world.flags.add("prefill-linked");
+      t.world.online[""] = true;
+      t.store.fleetChanged();
+      await settle();
+      expect(t.state().worktrees.automatic).toBe(true);
+      return true;
+    });
+
+    expect(t.world.of("creationSubmit")[0].args[0]).toMatchObject({ auto: false });
+    expect(t.choices()).toMatchObject({ auto_preferred: false, worktree_chosen: false });
+    expect(t.world.admitted).toEqual(["creation-1"]);
+  });
 
   it("launchIntoAnotherWindowsSessionAsksFirst", async () => {
     const t = setup((w) => { w.cards[""] = windowsCard; w.warning = "The session host on this computer runs in another Windows session (2), for example one started over SSH. Launch anyway?"; });

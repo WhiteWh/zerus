@@ -128,6 +128,8 @@ export interface NewSessionState extends OpenCodeView {
   worktrees: {
     /** The folder's catalog (Choose existing… and Create manually… read it). */
     catalog: Json;
+    /** The mode shown in the dialog. Undefined while the default is being resolved. */
+    automatic: boolean | undefined;
     /** Choose existing… shows when the catalog lists worktrees, Create manually… when its state is ok. */
     chooseVisible: boolean;
     createVisible: boolean;
@@ -367,14 +369,14 @@ function createDialog(deps: NewSessionDeps, context: NewSessionContext, init: { 
 
   // The form (updateForm 660-742): the core answers for the latest state only.
 
-  function formInput(): NewSessionFormInput {
+  function formInput(preferAuto = autoPreferred): NewSessionFormInput {
     const fields = repository?.fields;
     const form: LaunchForm = {
       no_machine: machines.length === 0, can_enable_local_sessions: false, online: online(host()), agent: agent(), name,
       account_count: rows.length, account_selected: accountIndex >= 0, account_loading: accountRequest !== 0, account_preset: accountPreset,
       path: path(), listed_folder: listedKey() !== "", folder_online: folderIndex >= 0 && folderAvailable, prefill_pending: prefillRequest !== 0,
       catalog_pending: catalogRequest !== 0, catalog_worktrees: worktreeCatalog.stale !== true && array(worktreeCatalog.worktrees).length > 0,
-      auto_preferred: autoPreferred, creation_failed: false, implicit_inbox: implicitInbox(), branch, style: style(host()), stage: "idle",
+      auto_preferred: preferAuto, creation_failed: false, implicit_inbox: implicitInbox(), branch, style: style(host()), stage: "idle",
       repository: repositorySource ? {
         busy: false, cloning: false, can_submit: !!fields && !repository?.pending && fields.can_submit, created: false, uncertain: false, fields_locked: false,
         new_project: isNewProject(), new_project_name: newProjectName, destination: fields?.destination ?? "",
@@ -897,15 +899,21 @@ function createDialog(deps: NewSessionDeps, context: NewSessionContext, init: { 
 
   // Start (743-786).
 
-  function choices(): LaunchChoices {
+  function displayedAutomatic(): boolean | undefined {
+    if (!autoPreferred || repositorySource) return autoPreferred;
+    if (catalogRequest !== 0 || prefillRequest !== 0) return undefined;
+    return formView?.shown.automatic;
+  }
+
+  function choices(automatic: boolean): LaunchChoices {
     const card = cards()[host()];
     const fields = repository?.fields;
     const model = oc.model();
     return {
       host: host(), machine: card?.host || host(), agent: agent(), account: account(), name, project: projectId(),
-      project_name: projectRow()?.name ?? "", implicit_inbox: implicitInbox(), swarm, path: path(), auto_preferred: autoPreferred,
+      project_name: projectRow()?.name ?? "", implicit_inbox: implicitInbox(), swarm, path: path(), auto_preferred: automatic,
       automatic_available: false, branch, catalog: worktreeCatalog, automatic_path: "", listed_folder: listedKey() !== "", project_worktree: false,
-      model, effort: model ? oc.effort() : "", open_terminal: openTerminal, worktree_chosen: worktreeChosen,
+      model, effort: model ? oc.effort() : "", open_terminal: openTerminal, worktree_chosen: worktreeChosen && automatic === autoPreferred,
       repository: repositorySource ? {
         url: fields?.url ?? url, parent: fields?.parent ?? "", name: fields?.name ?? "", destination: fields?.destination ?? "",
         created_path: "", new_project: isNewProject(), project_name: newProjectName.trim(),
@@ -916,10 +924,14 @@ function createDialog(deps: NewSessionDeps, context: NewSessionContext, init: { 
 
   async function start(confirm: (text: string) => Promise<boolean>): Promise<{ id: string; plan: LaunchPlan } | undefined> {
     if (closed || starting || submitted) return undefined;
+    // A catalog refresh or a confirmation dialog can outlast the click.
+    // Use the displayed worktree mode for both validation and the plan.
+    const automatic = displayedAutomatic();
+    if (automatic === undefined) return undefined;
     starting = true;
     emit();
     try {
-      if ((await b.newSessionStart(formInput(), submitted)) !== "background" || closed) return undefined;
+      if ((await b.newSessionStart(formInput(automatic), submitted)) !== "background" || closed) return undefined;
       // Spec D5: ask before this computer's session host of another Windows
       // session starts the agent. Cancel keeps the form; nothing else runs.
       const warning = await b.launchWarning(localCard() ?? emptyMeta(), host());
@@ -927,8 +939,8 @@ function createDialog(deps: NewSessionDeps, context: NewSessionContext, init: { 
       if (warning && !(await confirm(warning))) return undefined;
       if (closed) return undefined;
       // The form and its choices are read in one turn, as Qt builds the plan (751-771).
-      const input = formInput();
-      const picked = choices();
+      const input = formInput(automatic);
+      const picked = choices(automatic);
       if ((await b.newSessionStart(input, submitted)) !== "background" || closed) return undefined;
       // One Start submits once: set before the submission, cleared only by a refusal.
       submitted = true;
@@ -1002,7 +1014,7 @@ function createDialog(deps: NewSessionDeps, context: NewSessionContext, init: { 
       computers: machines, computer: machineIndex, host: host(), style: style(host()), noMachine: machines.length === 0,
       repository: repositorySource, url, destination: field, repositoryParent: repository?.fields?.parent ?? "", focusUrl,
       folders, folder: folderIndex, folderPath: native(path(), style(host())), autoPreferred,
-      worktrees: { catalog: worktreeCatalog, chooseVisible: array(worktreeCatalog.worktrees).length > 0, createVisible: worktreeCatalog.state === "ok" },
+      worktrees: { catalog: worktreeCatalog, automatic: displayedAutomatic(), chooseVisible: array(worktreeCatalog.worktrees).length > 0, createVisible: worktreeCatalog.state === "ok" },
       accounts: rows, account: accountIndex, accountStatus, refreshEnabled: machines.length > 0 && !accountRequest,
       agent: agent(), accountId: account(),
       ...oc.view(),

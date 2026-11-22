@@ -52,7 +52,7 @@ function state(): NewSessionState {
     computers: [{ target: "", label: "Fixture PC", online: true }], computer: 0, host: "", style: "posix", noMachine: false,
     repository: false, url: "https://example.invalid/team/project.git", destination: "/fixture/clone", repositoryParent: "/fixture", focusUrl: 0,
     folders: [{ key: "fixture", path: "/fixture/project", name: "Project", tooltip: "/fixture/project" }], folder: 0, folderPath: "/fixture/project", autoPreferred: true,
-    worktrees: { catalog: {}, chooseVisible: false, createVisible: false }, accounts: [], account: -1, accountStatus: "", refreshEnabled: true,
+    worktrees: { catalog: {}, automatic: true, chooseVisible: false, createVisible: false }, accounts: [], account: -1, accountStatus: "", refreshEnabled: true,
     agent: "codex", accountId: "", name: "fixture-session", branch: "fixture", openTerminal: false,
     form: { fields_enabled: true, cancel_enabled: true, start_enabled: false, start_text: { source: "Start session" }, automatic: true,
       auto_enabled: true, none_enabled: true, worktree_options_enabled: false, browse_enabled: true, open_terminal_enabled: true,
