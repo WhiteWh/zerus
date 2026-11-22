@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount, type JSX } from "solid-js";
 import { tr } from "../../i18n";
 import { localFolderProbe, teamAction } from "../../bridge";
-import { createNewTeam, type NewTeamStore } from "../../store/teamsNew";
+import { createNewTeam, portOn, type NewTeamStore } from "../../store/teamsNew";
 import { selected, setDetailTab, setPage } from "../../store/ui";
 import { catalog as sessions, computerFresh } from "../../store/catalog";
 import { accountsPage, loadAccounts } from "../../store/accounts";
@@ -56,7 +56,7 @@ export function NewTeamPage(props: { draft?: string; embedded?: boolean; compute
   // lives on that computer: its hgs makes the draft, the lead and the members,
   // with that computer's catalog, accounts and folder.
   const computer = () => props.computer ?? "";
-  const store = createNewTeam({ action: (call) => teamAction(call) });
+  const store = createNewTeam(portOn(computer, teamAction));
   const row = () => { const found = selected(); return found && found.computer === computer() && found.state !== "archived" ? found : undefined; };
   onMount(() => {
     store.openNew();

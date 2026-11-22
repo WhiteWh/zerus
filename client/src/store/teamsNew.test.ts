@@ -8,7 +8,27 @@ import {
   type ComputerChoice,
   type NewTeamFields,
   type NewTeamPort,
+  portOn,
 } from "./teamsNew";
+
+describe("a form for another computer", () => {
+  it("saves the draft and creates the team on that computer, not only starts it there", async () => {
+    const sent: TeamCall[] = [];
+    const done: TeamOutcome = { outcome: "done", receipt: { team: "t1", revision: 1 }, request_id: "" };
+    const store = createNewTeam(portOn(() => "peer", async (call) => { sent.push(call); return done; }));
+    store.openNew();
+    store.edit("goal", "Ship it");
+    await store.startPlanning({ folder: "/work/repo", lead: { role: "lead", agent: "claude" } as DraftMember });
+    store.applyView(draftView({ team: "t1" }));
+    store.edit("goal", "Ship it now");
+    await store.createTeam();
+    expect(sent.map((call) => [call.action.kind, call.computer])).toEqual([
+      ["draft_start", "peer"],
+      ["draft_update", "peer"],
+      ["draft_create", "peer"],
+    ]);
+  });
+});
 
 const TEAM = "33fbafeb-8291-4eda-a00c-6e1448ec6f20";
 

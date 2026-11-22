@@ -46,6 +46,15 @@ export interface NewTeamPort {
   action(call: TeamCall): Promise<TeamOutcome>;
 }
 
+/**
+ * WhiteWh fork: a form opened for another computer sends every call there.
+ * Its draft lives on that computer; a save or Create team sent here finds
+ * no such team ("Unknown team").
+ */
+export function portOn(computer: () => string, send: (call: TeamCall) => Promise<TeamOutcome>): NewTeamPort {
+  return { action: (call) => send({ ...call, computer: call.computer || computer() }) };
+}
+
 export interface ComputerChoice {
   alias: string;
   label: string;
