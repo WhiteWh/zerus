@@ -38,6 +38,9 @@ pub(crate) mod gate;
 #[cfg(windows)]
 pub(crate) mod job;
 pub(crate) mod keys;
+// WhiteWh fork: the session host kept without the desktop app.
+#[cfg(windows)]
+pub(crate) mod keeper;
 mod link;
 pub(crate) mod log;
 mod pe;

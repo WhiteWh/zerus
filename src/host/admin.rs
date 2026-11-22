@@ -20,9 +20,9 @@ use super::{
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-pub const USAGE: &str = "usage: hgs session-host install | status | start | stop | uninstall [--json]";
+pub const USAGE: &str = "usage: hgs session-host install | status | start | stop | uninstall | keep | autostart on|off|status [--json]";
 /// The line `hgs --help` adds on Windows.
-pub const HELP: &str = "       hgs session-host install | status | start | stop | uninstall [--json]   local sessions on this Windows computer (start: a host that stays for SSH peers)\n";
+pub const HELP: &str = "       hgs session-host install | status | start | stop | uninstall | keep | autostart on|off|status [--json]   local sessions on this Windows computer (start: a host that stays for SSH peers; keep, autostart: without the desktop app)\n";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -32,6 +32,13 @@ pub enum Action {
     Start,
     Stop,
     Uninstall,
+    // WhiteWh fork: no desktop app on this computer (src/host/keeper.rs).
+    Keep,
+    /// The detached keeper itself (internal).
+    KeepRun,
+    AutostartOn,
+    AutostartOff,
+    AutostartStatus,
 }
 
 /// A parsed `hgs session-host` command line.
@@ -43,8 +50,22 @@ pub struct Request {
 
 /// The request in `args` (after `session-host`), None when they are not one.
 pub fn parse(args: &[String]) -> Option<Request> {
-    let (action, options) = args.split_first()?;
+    let (action, mut options) = args.split_first()?;
+    if action == "keep" && options.len() == 1 && options[0] == "--run" {
+        return Some(Request { action: Action::KeepRun, json: false });
+    }
     let action = match action.as_str() {
+        "keep" => Action::Keep,
+        "autostart" => {
+            let (choice, rest) = options.split_first()?;
+            options = rest;
+            match choice.as_str() {
+                "on" => Action::AutostartOn,
+                "off" => Action::AutostartOff,
+                "status" => Action::AutostartStatus,
+                _ => return None,
+            }
+        }
         "install" => Action::Install,
         "start" => Action::Start,
         "status" => Action::Status,
@@ -421,7 +442,7 @@ impl Status {
 }
 
 #[cfg(windows)]
-pub(crate) use self::native::{dispatch, local_host};
+pub(crate) use self::native::{dispatch, host_state, local_host, start_resident};
 
 #[cfg(windows)]
 mod native {
@@ -513,6 +534,11 @@ mod native {
                 Ok(0)
             }
             Action::Start => start(&config.state, request.json),
+            Action::Keep => crate::host::keeper::keep(config, &layout, request.json),
+            Action::KeepRun => crate::host::keeper::run(config, &layout),
+            Action::AutostartOn => crate::host::keeper::autostart(config, &layout, Some(true), request.json),
+            Action::AutostartOff => crate::host::keeper::autostart(config, &layout, Some(false), request.json),
+            Action::AutostartStatus => crate::host::keeper::autostart(config, &layout, None, request.json),
             Action::Stop => stop(&config.state, request.json),
             Action::Uninstall => uninstall(&layout, &config.state, request.json),
         }
@@ -556,21 +582,10 @@ mod native {
     /// can start sessions here: an SSH session itself never starts the host.
     /// A host that already runs is left as it is.
     fn start(state: &Path, json: bool) -> Result<i32> {
-        if !platform::local_sessions() {
-            return Err(Error::new(1, "Local sessions are not enabled on this computer: run hgs session-host install first."));
-        }
-        let running = matches!(query(state), Host::Running { .. });
-        if !running {
-            // The host takes this process's environment (D8).
-            // SAFETY: set before any thread of this short-lived command starts.
-            unsafe { std::env::set_var(crate::host::registry::RESIDENT_ENV, "1") };
-            std::fs::create_dir_all(state)?;
-            let state = platform::canonical(state)?;
-            client::connect_or_start(&state, Role::Cli, &|| {
-                crate::host::gate::host_image(&state).map_err(client::ClientError::Start)
-            })
-            .map_err(|error| Error::new(1, format!("cannot start the session host: {error}")))?;
-        }
+        // The host takes this process's environment (D8).
+        // SAFETY: set before any thread of this short-lived command starts.
+        unsafe { std::env::set_var(crate::host::registry::RESIDENT_ENV, "1") };
+        let running = !start_resident(state)?;
         if json {
             print_json(&json!({"was_running": running, "running": true}));
         } else if running {
@@ -579,6 +594,30 @@ mod native {
             println!("The session host runs and stays until hgs session-host stop.");
         }
         Ok(0)
+    }
+
+    /// A host that stays, started unless one runs; true when this call
+    /// started it. The caller has set `RESIDENT_ENV`, which the host takes
+    /// from this process's environment (D8).
+    pub(crate) fn start_resident(state: &Path) -> Result<bool> {
+        if !platform::local_sessions() {
+            return Err(Error::new(1, "Local sessions are not enabled on this computer: run hgs session-host install first."));
+        }
+        if matches!(query(state), Host::Running { .. }) {
+            return Ok(false);
+        }
+        std::fs::create_dir_all(state)?;
+        let state = platform::canonical(state)?;
+        client::connect_or_start(&state, Role::Cli, &|| {
+            crate::host::gate::host_image(&state).map_err(client::ClientError::Start)
+        })
+        .map_err(|error| Error::new(1, format!("cannot start the session host: {error}")))?;
+        Ok(true)
+    }
+
+    /// The host's state word as `status` finds it, never starting one.
+    pub(crate) fn host_state(state: &Path) -> &'static str {
+        query(state).found(platform::local_sessions()).state()
     }
 
     fn stop(state: &Path, json: bool) -> Result<i32> {
@@ -685,13 +724,17 @@ mod tests {
     }
 
     #[test]
-    fn only_the_four_actions_and_json_parse() {
+    fn only_the_known_actions_and_json_parse() {
         for (words, action) in [
             (&["install"][..], Action::Install),
             (&["status"], Action::Status),
             (&["start"], Action::Start),
             (&["stop"], Action::Stop),
             (&["uninstall"], Action::Uninstall),
+            (&["keep"], Action::Keep),
+            (&["autostart", "on"], Action::AutostartOn),
+            (&["autostart", "off"], Action::AutostartOff),
+            (&["autostart", "status"], Action::AutostartStatus),
         ] {
             assert_eq!(
                 parse(&args(words)),
@@ -704,6 +747,8 @@ mod tests {
             with_json.push("--json".into());
             assert_eq!(parse(&with_json), Some(Request { action, json: true }));
         }
+        // The detached keeper's own line, which no one types.
+        assert_eq!(parse(&args(&["keep", "--run"])), Some(Request { action: Action::KeepRun, json: false }));
         // `hgs --help` on Windows names exactly what parses.
         assert!(HELP.contains(USAGE.trim_start_matches("usage: ")));
         for words in [
@@ -714,6 +759,9 @@ mod tests {
             &["install", "--json", "--json"],
             &["status", "extra"],
             &["stop", "-d"],
+            &["autostart"],
+            &["autostart", "maybe"],
+            &["keep", "--run", "--json"],
         ] {
             assert_eq!(parse(&args(words)), None, "{words:?}");
         }

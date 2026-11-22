@@ -83,7 +83,7 @@ On the **peer** (the PC to be managed):
 
 1. Install the fork's Zerus, start it, and enable local sessions (Machines).
 2. Turn on **Settings -> Sessions -> Keep the session host running for other
-   computers**.
+   computers**, or run the peer without the desktop app (below).
 3. Make sure both PCs can reach each other, for example in one Tailscale tailnet.
 4. Enable OpenSSH Server for key logins from the managing PC. In PowerShell as
    Administrator (the account must be an administrator):
@@ -139,6 +139,37 @@ removing a folder on one computer removes it everywhere.
 
 A computer whose hgs predates this (upstream, or an older fork build) refuses a
 drive folder in the catalog, and project sync with it fails until it is updated.
+
+## A peer without the desktop app
+
+A PC that only runs agents for another computer does not need Zerus's window,
+tray or webview. After local sessions are enabled once (step 1, or
+`hgs session-host install` from the unpacked zip), on the peer:
+
+```powershell
+hgs session-host autostart on      # start the keeper at every sign-in, and now
+hgs session-host autostart status  # sign-in entry, keeper and session host
+hgs session-host autostart off     # remove the entry and stop the keeper
+```
+
+`autostart on` writes `"%USERPROFILE%\.local\bin\hgs.exe" session-host keep`
+into this user's `HKCU\...\Run` key. `hgs session-host keep` starts the keeper
+once, windowless and detached (`src/host/keeper.rs`). It holds one lock (a
+second keeper leaves), and once a minute it starts the session host unless it
+runs and the team worker while a team is active and no worker runs; the
+session host restarts the recovery worker itself. It has no window, webview or
+GPU context and sleeps between checks. When an update replaces the stable CLI,
+the keeper hands over to the new one.
+
+The keeper must start in the user's own sign-in, never in an SSH session, for
+the same reason as the host: over SSH, `autostart on` only registers it, and it
+starts at the next sign-in. A PC without anyone signed in runs nothing; use
+Windows automatic sign-in for a PC that boots unattended (a locked screen is
+fine). `hgs session-host stop` stops an idle host, but a running keeper starts
+it again within a minute; `autostart off` first.
+
+The desktop app on the managing PC still does all the work: sessions, teams,
+Activity and Terminal go through the peer's `hgs` over SSH as before.
 
 ## Limits
 
