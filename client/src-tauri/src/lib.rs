@@ -779,6 +779,16 @@ pub fn run() {
 /// (Decision 5). Tauri's `app_data_dir` names the compile-time identifier,
 /// which a switch build promotes at signing, so the client never calls it.
 #[cfg_attr(not(feature = "live"), allow(dead_code))]
+/// WhiteWh fork: `hgs-tray.exe --light` (platform/windows/light.rs).
+#[cfg(all(windows, feature = "live"))]
+pub const LIGHT_FLAG: &str = platform::windows::light::FLAG;
+
+/// WhiteWh fork: runs light mode until its icon closes; the exit code.
+#[cfg(all(windows, feature = "live"))]
+pub fn light_mode() -> i32 {
+    platform::windows::light::run()
+}
+
 pub(crate) fn data_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
     use tauri::Manager;
     app.state::<identity::Identity>().data_dir_now()
@@ -2310,6 +2320,9 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         fork_updates::fork_updates_confirm,
         login_item::login_entry_view,
         login_item::login_entry_set,
+        login_item::light_entry_view,
+        login_item::light_entry_set,
+        login_item::light_mode_start,
         #[cfg(feature = "media")]
         voice::voice_open,
         #[cfg(feature = "media")]

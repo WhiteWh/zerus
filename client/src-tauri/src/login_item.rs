@@ -95,6 +95,71 @@ fn write_registration(_: bool) -> Result<(), String> {
     Err("Start Zerus at login is available on Windows only.".into())
 }
 
+/// WhiteWh fork: Settings > Startup > light mode at sign-in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct LightEntry {
+    pub available: bool,
+    pub on: bool,
+}
+
+#[cfg(windows)]
+fn read_light() -> bool {
+    let Ok(executable) = std::env::current_exe() else {
+        return false;
+    };
+    let expected = crate::platform::windows::startup::light_command(&executable);
+    matches!(crate::platform::windows::startup::read_light_login_item(), Ok(Some(command)) if command.eq_ignore_ascii_case(&expected))
+}
+
+#[cfg(not(windows))]
+fn read_light() -> bool {
+    false
+}
+
+/// Reads only.
+#[tauri::command(async)]
+pub fn light_entry_view(app: AppHandle) -> LightEntry {
+    let available = allowed(&app);
+    LightEntry { available, on: available && read_light() }
+}
+
+/// On: light mode starts at sign-in instead of the desktop, whose own entry
+/// goes. Off: only light mode's entry goes.
+#[tauri::command(async)]
+pub fn light_entry_set(app: AppHandle, enabled: bool) -> Result<LightEntry, String> {
+    if !allowed(&app) {
+        return Err("Light mode at sign-in is not available in this build.".into());
+    }
+    #[cfg(windows)]
+    {
+        if enabled {
+            write_registration(false)?;
+        }
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        crate::platform::windows::startup::light_login_item(enabled, &executable)?;
+    }
+    Ok(LightEntry { available: true, on: read_light() })
+}
+
+/// Starts light mode now; the page then quits the desktop as its Quit does.
+#[tauri::command(async)]
+pub fn light_mode_start() -> Result<(), String> {
+    #[cfg(all(windows, feature = "live"))]
+    {
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        std::process::Command::new(executable)
+            .arg(crate::LIGHT_FLAG)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(all(windows, feature = "live")))]
+    Err("Light mode is available on Windows only.".into())
+}
+
 /// What the Settings toggle shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct LoginEntry {

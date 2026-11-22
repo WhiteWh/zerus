@@ -331,7 +331,7 @@ fn setting_area(l: LPARAM) -> String {
 }
 
 /// Explorer's taskbar follows SystemUsesLightTheme, independently of the app theme.
-fn light_taskbar() -> bool {
+pub(super) fn light_taskbar() -> bool {
     use windows_sys::Win32::System::Registry::*;
     let mut light = 0u32;
     let mut size = std::mem::size_of_val(&light) as u32;

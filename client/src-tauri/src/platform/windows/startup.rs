@@ -173,6 +173,21 @@ fn login_command(executable: &Path, args: &[String]) -> String {
         &crate::windows_shell::restart_arguments(args),
     )
 }
+/// WhiteWh fork: light mode's own Run value, beside the desktop's.
+const LIGHT_VALUE: &str = "hgs-tray light";
+
+/// WhiteWh fork: `"<app>" --light` at sign-in, or no such entry.
+pub fn light_login_item(enabled: bool, executable: &Path) -> Result<(), String> {
+    let command = light_command(executable);
+    set_login_item(RUN_KEY, LIGHT_VALUE, enabled.then_some(command.as_str()))
+}
+pub fn light_command(executable: &Path) -> String {
+    format!("\"{}\" {}", executable.to_string_lossy(), super::light::FLAG)
+}
+/// WhiteWh fork: light mode's Run value, as `read_login_item` reads the desktop's.
+pub fn read_light_login_item() -> Result<Option<String>, crate::login_item::Unreadable> {
+    read_value(RUN_KEY, LIGHT_VALUE)
+}
 /// Reads this app's own Run value only; absent is `None`, and anything that
 /// cannot be read as text, or is implausibly long, is unreadable.
 pub fn read_login_item() -> Result<Option<String>, crate::login_item::Unreadable> {

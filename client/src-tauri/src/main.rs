@@ -25,6 +25,11 @@ fn main() {
         if arguments.first().map(String::as_str) == Some(console_host::OPTION) {
             std::process::exit(console_host::run(&arguments));
         }
+        // WhiteWh fork: light mode, the icon and the session host keeper only;
+        // before any Tauri, webview or instance setup.
+        if arguments.first().map(String::as_str) == Some(zerus_client_lib::LIGHT_FLAG) {
+            std::process::exit(zerus_client_lib::light_mode());
+        }
     }
     zerus_client_lib::run();
 }

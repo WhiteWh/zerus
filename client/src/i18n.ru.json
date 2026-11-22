@@ -7305,5 +7305,13 @@
   "%1 on %2 generates %3 tokens per second now.": "%1 на %2 сейчас выдаёт %3 токена в секунду.",
   "%1 on %2 generated its latest answer at %3 tokens per second.": "%1 на %2 выдала последний ответ со скоростью %3 токена в секунду.",
   "%1 on %2 generates %3 tokens per second on average.": "%1 на %2 в среднем выдаёт %3 токена в секунду.",
-  "%1 on %2: %3 tokens per second.": "%1 на %2: %3 токена в секунду."
+  "%1 on %2: %3 tokens per second.": "%1 на %2: %3 токена в секунду.",
+  "Start in light mode at login": "Запускать в лёгком режиме при входе",
+  "Only the notification-area icon starts, with no window: it keeps this computer's session host and team worker running for another computer's Zerus, using almost no memory, processor or graphics. Open Zerus from its icon when you need the window. Replaces Start Zerus at login.": "Запускается только значок в области уведомлений, без окна: он держит хост сессий и обработчик команд этого компьютера для Zerus на другом компьютере и почти не тратит память, процессор и графику. Когда нужно окно, откройте Zerus из значка. Заменяет «Запускать Zerus при входе».",
+  "Switch to light mode now": "Перейти в лёгкий режим сейчас",
+  "Zerus light mode": "Zerus в лёгком режиме",
+  "Checking the session host…": "Проверка хоста сессий…",
+  "Session host running": "Хост сессий работает",
+  "Session host not running": "Хост сессий не запущен",
+  "Local sessions are not enabled on this computer": "Локальные сессии на этом компьютере не включены"
 }

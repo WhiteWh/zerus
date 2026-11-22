@@ -9,6 +9,9 @@ use windows_sys::Win32::{
 #[cfg(feature = "live")]
 mod drawing;
 pub mod foreground;
+// WhiteWh fork: hgs-tray.exe --light, the icon without the desktop.
+#[cfg(feature = "live")]
+pub mod light;
 #[cfg(feature = "live")]
 pub mod startup;
 #[cfg(feature = "live")]
