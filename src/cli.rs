@@ -2226,6 +2226,12 @@ fn person_only_forwarding(command: &str, args: &[String]) -> Result<()> {
     if state::dsh::host_check() == state::dsh::HostCheck::Unregistered {
         return Err(Error::new(1, state::dsh::UNREGISTERED_HOST));
     }
+    // WhiteWh fork: a team member on another computer reports, asks and reads
+    // its attempt on the lead's computer, which authorizes these by the
+    // attempt id alone (never as the person); its input is checked below.
+    if member_team_call(command, args) {
+        return Ok(());
+    }
     if !agent_caller() {
         // A peer loses readable local ancestry as well as session markers.
         // Apply the same refusal as a local person action before any SSH,
@@ -2247,8 +2253,42 @@ fn person_only_forwarding(command: &str, args: &[String]) -> Result<()> {
 /// Inspect only an agent's forwarded answer, before any SSH or capability
 /// probe. Other answer bytes pass on unchanged; people keep their original
 /// stdin. A private file retains bounded JSON for Windows' SSH relay too.
+/// WhiteWh fork: `hgs @LEAD team report|ask|current --json`, the three calls
+/// a member's hand-out names for a team whose lead runs on another computer.
+fn member_team_call(command: &str, args: &[String]) -> bool {
+    command == "team"
+        && matches!(args, [op, json] if json == "--json" && matches!(op.as_str(), "report" | "ask" | "current"))
+}
+
+/// WhiteWh fork: an agent's member call carries its attempt id and never
+/// speaks for the person (`"by"`), so the lead's computer authorizes it by
+/// that attempt only.
+fn member_team_input(bytes: &[u8]) -> std::result::Result<(), &'static str> {
+    let value: Value = serde_json::from_slice(bytes).map_err(|_| "a team member's call reads one JSON object on stdin")?;
+    let object = value.as_object().ok_or("a team member's call reads one JSON object on stdin")?;
+    if object.contains_key("by") {
+        return Err("a team member's call on another computer never speaks for the person (\"by\")");
+    }
+    if !object.get("attempt").and_then(Value::as_str).is_some_and(|attempt| !attempt.trim().is_empty()) {
+        return Err("a team member's call on another computer names its attempt (\"attempt\" from the hand-out)");
+    }
+    Ok(())
+}
+
 fn forwarded_answer_input(command: &str, args: &[String]) -> Result<Option<fs::File>> {
     use std::io::{Read, Seek, Write};
+    if member_team_call(command, args) && agent_caller() {
+        let mut bytes = Vec::new();
+        std::io::stdin().lock().take(256 * 1024 + 1).read_to_end(&mut bytes)?;
+        if bytes.len() > 256 * 1024 {
+            return Err(Error::new(1, "a team member's call exceeds 256 KiB"));
+        }
+        member_team_input(&bytes).map_err(|reason| Error::new(1, reason))?;
+        let mut input = tempfile::tempfile()?;
+        input.write_all(&bytes)?;
+        input.rewind()?;
+        return Ok(Some(input));
+    }
     if routed_command(command, args) != Some("answer") || !agent_caller() {
         return Ok(None);
     }
@@ -2681,6 +2721,22 @@ fn remote_via(
                 }
             }
         }
+        // WhiteWh fork: a detached agent launch whose words cmd.exe cannot
+        // carry (a team member's multi-line startup text) goes through the
+        // lasting channel, which hands the peer's hgs its argv unchanged.
+        if crate::windows_peer::is_windows(config, target)
+            && channel_launch(command, &args)
+            && remote_args.iter().any(|word| crate::windows_peer::quote(word).is_err())
+        {
+            return match crate::peer_channel::request(config, target, &channel_args(command, &remote_args), None) {
+                Some(Ok(answer)) => channel_answer(answer),
+                Some(Err(error)) => Err(Error::new(3, error)),
+                None => Err(Error::new(3, not_forwarded(
+                    target,
+                    "this launch's text holds a line break, % or \" that only the lasting channel carries, and the channel did not start",
+                ))),
+            };
+        }
         // Planning only asks; a failure here ends the command before its
         // operation reaches the peer, and says so for a caller that must
         // tell "not sent" from "maybe sent" (the desktop's Send and answers).
@@ -2780,6 +2836,17 @@ fn not_forwarded(target: &str, message: &str) -> String {
         format!("{target} unreachable: {message}")
     } else {
         format!("{target} unreachable: {message}; {NOT_FORWARDED}")
+    }
+}
+
+/// WhiteWh fork: an agent launch that never attaches a terminal here: a
+/// terminal agent's with `-d`, DeepSeek's and OpenCode's always.
+fn channel_launch(command: &str, args: &[String]) -> bool {
+    let own: Vec<&String> = args.iter().take_while(|arg| arg.as_str() != "--").collect();
+    match command {
+        "dsh" | "opencode" => true,
+        "claude" | "codex" | "kimi" | "qwen" | "hermes" => own.iter().any(|arg| arg.as_str() == "-d"),
+        _ => false,
     }
 }
 
@@ -5551,5 +5618,38 @@ mod tests {
             );
         }
         TEST_AGENT.with(|agent| agent.set(None));
+    }
+
+    /// WhiteWh fork: a team member on another computer still reports, asks and
+    /// reads its attempt on the lead's computer; every other team operation of
+    /// an agent stays refused there.
+    #[test]
+    fn a_member_on_another_computer_reports_asks_and_reads_its_attempt() {
+        let args = |words: &[&str]| words.iter().map(|word| word.to_string()).collect::<Vec<_>>();
+        TEST_AGENT.with(|agent| agent.set(Some(true)));
+        for op in ["report", "ask", "current"] {
+            assert!(person_only_forwarding("team", &args(&[op, "--json"])).is_ok(), "{op}");
+        }
+        for words in [&["accept", "--json"][..], &["report"], &["status", "--json"], &["report", "--json", "extra"]] {
+            let refused = person_only_forwarding("team", &args(words)).unwrap_err();
+            assert!(refused.message.contains("would act as the person"), "{words:?}");
+        }
+        TEST_AGENT.with(|agent| agent.set(None));
+        assert!(member_team_input(br#"{"attempt":"a1","text":"done"}"#).is_ok());
+        assert!(member_team_input(br#"{"attempt":"a1","by":"human"}"#).is_err(), "never as the person");
+        assert!(member_team_input(br#"{"text":"done"}"#).is_err(), "an attempt is named");
+        assert!(member_team_input(br#"{"attempt":"  "}"#).is_err());
+        assert!(member_team_input(b"[1]").is_err());
+    }
+
+    /// WhiteWh fork: only a launch that never attaches a terminal here may go
+    /// through a Windows peer's channel.
+    #[test]
+    fn only_a_detached_launch_uses_the_channel() {
+        let args = |words: &[&str]| words.iter().map(|word| word.to_string()).collect::<Vec<_>>();
+        assert!(channel_launch("claude", &args(&["/w", "--new", "-d", "--", "Ready.\nrules"])));
+        assert!(!channel_launch("claude", &args(&["/w", "--new", "--", "-d"])), "an agent's -d is not hgs's");
+        assert!(channel_launch("dsh", &args(&["/w", "--new"])));
+        assert!(!channel_launch("send", &args(&["s", "-d"])));
     }
 }

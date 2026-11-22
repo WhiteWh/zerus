@@ -3383,7 +3383,7 @@ fn hand_off_text_rules(
     if !extra.is_empty() {
         text += extra;
     }
-    let at = if member_host.is_empty() { String::new() } else { format!("@{report_host} ") };
+    let at = if member_host.is_empty() || report_host.is_empty() { String::new() } else { format!("@{report_host} ") };
     let mut report = json!({"request_id":uuid::Uuid::new_v4().to_string(),"team":team.id,"task":task.id,"attempt":attempt.id,"text":"..."});
     if task.is_check() {
         report["text"] = json!("");
@@ -10702,7 +10702,14 @@ fn recover_crash(store: &mut Store, team: &Team, task_id: u32, member_id: &str, 
     let Some(session) = member.session.clone() else { return Ok(None) };
     let rules = super::super::iron_rules::for_team(&snapshot, &member)?;
     let extra = continuation_extra(task);
-    let text = format!("{}{}", crash_preamble(&snapshot, task, attempt), hand_off_text_rules(&snapshot, task, attempt, "", &member.computer, &extra, &rules));
+    // WhiteWh fork: a member on another computer is told this computer's name
+    // to report to, as in the first hand-out; empty, its commands read "hgs @ team".
+    let report_host = if member.computer.is_empty() {
+        String::new()
+    } else {
+        crate::config::Config::load().map(|config| config.host().to_owned()).unwrap_or_default()
+    };
+    let text = format!("{}{}", crash_preamble(&snapshot, task, attempt), hand_off_text_rules(&snapshot, task, attempt, &report_host, &member.computer, &extra, &rules));
     let request = uuid::Uuid::new_v4().to_string();
     let outcome = super::doorbell::post_and_ring(store, &team.id, member_id, &session, &request, "hand_out", "zerus", Urgency::Normal, &text);
     let mut how = "";
