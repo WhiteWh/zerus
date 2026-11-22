@@ -75,7 +75,7 @@ const state = (view: string, appearance = "dark") => ({
   computers: [{ label: "workstation", target: "", online: true }], computer: 0, host: "", style: "windows", noMachine: false,
   repository: false, url: "", destination: "", repositoryParent: "", focusUrl: 0,
   folders: [{ key: "f1", path: "D:\\work\\orbit", name: "orbit", tooltip: "D:\\work\\orbit" }], folder: 0, folderPath: "D:\\work\\orbit",
-  autoPreferred: true, worktrees: { catalog: {}, chooseVisible: true, createVisible: true },
+  autoPreferred: true, worktrees: { catalog: {}, automatic: true as boolean | undefined, chooseVisible: true, createVisible: true },
   accounts, account: 0, accountStatus: "", refreshEnabled: true, agent: "claude", accountId: "a",
   name: "orbit-2", branch: "main", openTerminal: false, form, error: "", starting: false, submitted: false,
   models: [], model: "", modelVisible: true, modelButton: "Native default model", modelEnabled: true, pickerOpen: false, openCode: true,
@@ -134,6 +134,18 @@ const prepare = (view: string, appearance = "dark") => {
 const plain = (html: string) => html.replace(/<!--[^>]*-->/g, "");
 
 describe("the dense New session view (task #368)", () => {
+  it.each(["dense", "classic"])("shows None only when the folder itself is selected in %s", (layout) => {
+    const state = prepare(layout);
+    const pressed = () => {
+      const controls = plain(renderDialog()).match(/<div[^>]*aria-label="Worktree"[^>]*>([\s\S]*?)<\/div>/)?.[1] ?? "";
+      return [...controls.matchAll(/aria-pressed="(true|false)"/g)].map((match) => match[1]);
+    };
+    state.worktrees.automatic = undefined;
+    expect(pressed()).toEqual(["false", "false"]);
+    state.worktrees.automatic = false;
+    expect(pressed()).toEqual(["false", "true"]);
+  });
+
   it("is the skin's default view and draws Qt's grid, captions, rail and menus", () => {
     prepare("dense");
     const html = plain(renderDialog());

@@ -453,6 +453,8 @@ function DenseChip(props: { agent: DenseAgent; open: boolean; onOpen(open: boole
 function NewSessionForm(props: { s: () => NewSessionState; popup: () => string | undefined; setPopup(popup: string | undefined): void; confirm: ReturnType<typeof createConfirm> }) {
   const s = props.s;
   const form = () => s().form;
+  const automatic = () => s().worktrees.automatic;
+  const canStart = () => automatic() !== undefined && !!form()?.start_enabled && !s().starting && !s().submitted;
   // Until the core's first answer: nothing is locked, nothing can start.
   const fields = () => form()?.fields_enabled ?? true;
   const project = () => s().projects[s().project];
@@ -637,7 +639,7 @@ function NewSessionForm(props: { s: () => NewSessionState; popup: () => string |
 
   const start = (e: Event) => {
     e.preventDefault();
-    if (!form()?.start_enabled || s().starting || s().submitted) return;
+    if (!canStart()) return;
     void startNewSession((text) => props.confirm.ask(text));
   };
 
@@ -710,9 +712,9 @@ function NewSessionForm(props: { s: () => NewSessionState; popup: () => string |
             disabled={!(form()?.browse_enabled ?? false)} onClick={browse}><Icon name="folder" size={16} /></button>
           <div class="nsd-right">
             <div class="nsd-seg" role="group" aria-label={tr("Worktree")}>
-              <button type="button" class="nsd-segbtn" data-keys="button" classList={{ on: !!form()?.automatic }} aria-pressed={!!form()?.automatic}
+              <button type="button" class="nsd-segbtn" data-keys="button" classList={{ on: automatic() === true }} aria-pressed={automatic() === true}
                 disabled={!(form()?.auto_enabled ?? false)} onClick={() => act.setAuto(true)}>{tr("Auto")}</button>
-              <button type="button" class="nsd-segbtn" data-keys="button" classList={{ on: !form()?.automatic }} aria-pressed={!form()?.automatic}
+              <button type="button" class="nsd-segbtn" data-keys="button" classList={{ on: automatic() === false }} aria-pressed={automatic() === false}
                 disabled={!(form()?.none_enabled ?? true)} onClick={() => act.setAuto(false)}>{tr("None")}</button>
               <button type="button" id="nsd-worktree-options" class="nsd-seg-more" data-keys="button" data-tip={tr("More worktree options")}
                 aria-label={tr("More worktree options")} aria-haspopup="menu" aria-expanded={opened("worktree")}
@@ -837,7 +839,7 @@ function NewSessionForm(props: { s: () => NewSessionState; popup: () => string |
         <span class="grow" />
         <Show when={s().noMachine}><button type="button" class="btn" onClick={() => act.openMachines()}>{tr("Open Machines")}</button></Show>
         <button type="button" class="btn" disabled={!(form()?.cancel_enabled ?? true)} onClick={() => closeNewSession()}>{tr("Cancel")}</button>
-        <button type="submit" class="btn primary nsd-start" disabled={!form()?.start_enabled || s().starting || s().submitted}>{form() ? trText(form()!.start_text) : tr("Start session")}</button>
+        <button type="submit" class="btn primary nsd-start" disabled={!canStart()}>{form() ? trText(form()!.start_text) : tr("Start session")}</button>
       </div>
     </div>
   );
@@ -928,11 +930,11 @@ function NewSessionForm(props: { s: () => NewSessionState; popup: () => string |
           <div class="col ns-wt">
             <div class="row">
               <div class="ns-seg" role="group" aria-label={tr("Worktree")}>
-                <button type="button" class="ns-segbtn" data-keys="button" classList={{ on: !!form()?.automatic }} aria-pressed={!!form()?.automatic} disabled={!(form()?.auto_enabled ?? false)}
+                <button type="button" class="ns-segbtn" data-keys="button" classList={{ on: automatic() === true }} aria-pressed={automatic() === true} disabled={!(form()?.auto_enabled ?? false)}
                   title={tr("Create a generated branch and worktree when you start the session.")} onClick={() => act.setAuto(true)}>
                   <Icon name="git-branch" size={14} />{tr("Auto")}
                 </button>
-                <button type="button" class="ns-segbtn" data-keys="button" classList={{ on: !form()?.automatic }} aria-pressed={!form()?.automatic} disabled={!(form()?.none_enabled ?? true)}
+                <button type="button" class="ns-segbtn" data-keys="button" classList={{ on: automatic() === false }} aria-pressed={automatic() === false} disabled={!(form()?.none_enabled ?? true)}
                   title={tr("Start directly in the working folder.")} onClick={() => act.setAuto(false)}>
                   <Icon name="folder" size={14} />{tr("None")}
                 </button>
@@ -1056,7 +1058,7 @@ function NewSessionForm(props: { s: () => NewSessionState; popup: () => string |
           <button type="button" class="btn" onClick={() => act.openMachines()}>{tr("Open Machines")}</button>
         </Show>
         <button type="button" class="btn" disabled={!(form()?.cancel_enabled ?? true)} onClick={() => closeNewSession()}>{tr("Cancel")}</button>
-        <button type="submit" class="btn primary ns-start" disabled={!form()?.start_enabled || s().starting || s().submitted}>{form() ? trText(form()!.start_text) : tr("Start session")}</button>
+        <button type="submit" class="btn primary ns-start" disabled={!canStart()}>{form() ? trText(form()!.start_text) : tr("Start session")}</button>
       </div>
       </Show>
     </form>
