@@ -715,6 +715,7 @@
   "Move up": "Выше",
   "Mute notifications": "Отключить уведомления",
   "Names cannot contain shell syntax or invisible formatting characters.": "Имена не могут содержать синтаксис командной оболочки или невидимые символы форматирования.",
+  "Native DeepSeek sessions cannot start fresh. Start a new session instead.": "Нативную сессию DeepSeek нельзя начать заново. Создайте новую сессию.",
   "Native renderer diagnostics unavailable": "Диагностика нативной отрисовки недоступна",
   "Navigation": "Навигация",
   "Needs review": "Требуется проверка",

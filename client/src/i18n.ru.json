@@ -2140,6 +2140,7 @@
   "Named account": "Указанный аккаунт",
   "Names cannot contain /, : or . or control characters.": "Имена не могут содержать /, : или . или управляющие символы.",
   "Names cannot contain shell syntax or invisible formatting characters.": "Имена не могут содержать синтаксис командной оболочки или невидимые символы форматирования.",
+  "Native DeepSeek sessions cannot start fresh. Start a new session instead.": "Нативную сессию DeepSeek нельзя начать заново. Создайте новую сессию.",
   "Native UI": "Интерфейс агента",
   "Native UI could not load. Use Reload to reconnect, or open it in your browser.": "Не удалось загрузить собственный пользовательский интерфейс. Используйте «Обновить», чтобы повторно подключиться, или откройте его в браузере.",
   "Native UI is unavailable while this machine is offline.": "Собственный пользовательский интерфейс недоступен, пока этот компьютер находится в автономном режиме.",

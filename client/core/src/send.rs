@@ -250,11 +250,13 @@ pub const COMPACT_LIMIT: f64 = 600.0;
 /// Whether a stopped session can start to take a message (`canStartStopped`).
 /// `busy`: a session update, rename or settings change runs, another
 /// start-to-send waits anywhere, or this session compacts or sends.
+/// A native DeepSeek session (`dsh`) whose agent exited resumes the same way:
+/// without it Send stayed blocked behind "Resume the session to send a message".
 pub fn can_start_stopped(session: &Session, busy: bool) -> bool {
     session.online
         && matches!(session.state.as_str(), "paused" | "stopped")
         && session.tracked
-        && matches!(session.cmd.as_str(), "codex" | "claude" | "kimi" | "qwen" | "hermes")
+        && matches!(session.cmd.as_str(), "codex" | "claude" | "kimi" | "qwen" | "hermes" | "dsh")
         && !session.terminating
         && !busy
 }
@@ -329,12 +331,18 @@ pub fn start_question(session: &Session, context: &str) -> StartQuestion {
                 session.resumable,
                 Some(crate::text!("Resume the saved conversation, run native /compact when ready, then send this exact message after successful completion.")),
             ),
-            option(
-                StartChoice::Fresh,
-                crate::text!("Start fresh"),
-                true,
-                None,
-            ),
+            // `hgs resume --fresh` starts only Claude, Codex and Kimi
+            // recipes; a native DeepSeek conversation has no fresh start.
+            if session.cmd == "dsh" {
+                option(
+                    StartChoice::Fresh,
+                    crate::text!("Start fresh"),
+                    false,
+                    Some(crate::text!("Native DeepSeek sessions cannot start fresh. Start a new session instead.")),
+                )
+            } else {
+                option(StartChoice::Fresh, crate::text!("Start fresh"), true, None)
+            },
         ],
     }
 }
@@ -1097,6 +1105,38 @@ mod continuation_tests {
             .starts_with(
                 "Resume continues the saved conversation, and the message is sent with its full context.\n\n"
             ));
+    }
+
+    #[test]
+    fn an_exited_deepseek_session_resumes_to_send_without_a_fresh_start() {
+        let session = Session {
+            name: "dsh/sample-project/review".into(),
+            cmd: "dsh".into(),
+            ..stopped()
+        };
+        assert!(can_start_stopped(&session, false));
+        assert!(!can_start_stopped(&session, true));
+        let options: Vec<_> = start_question(&session, "")
+            .options
+            .iter()
+            .map(|o| (o.choice, o.enabled, o.tooltip.as_ref().map(|t| t.english())))
+            .collect();
+        assert_eq!(
+            options,
+            [
+                (StartChoice::Resume, true, None),
+                (
+                    StartChoice::ResumeCompact,
+                    true,
+                    Some("Resume the saved conversation, run native /compact when ready, then send this exact message after successful completion.".to_owned())
+                ),
+                (
+                    StartChoice::Fresh,
+                    false,
+                    Some("Native DeepSeek sessions cannot start fresh. Start a new session instead.".to_owned())
+                ),
+            ]
+        );
     }
 
     #[test]
