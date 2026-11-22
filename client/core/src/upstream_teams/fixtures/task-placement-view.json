@@ -1,0 +1,522 @@
+{
+  "after": {
+    "bar": {
+      "base_commit": "0123456789abcdef0123456789abcdef01234567",
+      "counts": {
+        "cards": 0,
+        "inbox": 1,
+        "members": {
+          "active": 4,
+          "not_created": 0,
+          "paused": 0,
+          "removed": 0,
+          "total": 4
+        },
+        "nodes": {
+          "accepted": 0,
+          "cancelled": 0,
+          "in_progress": 0,
+          "pending": 1,
+          "reported": 1,
+          "waiting": 0
+        }
+      },
+      "goal": "",
+      "id": "00000000-0000-4000-8000-00000000beef",
+      "integration_branch": "zerus/team/fixes",
+      "lead": "lead",
+      "name": "Fixes",
+      "project": "example-project",
+      "revision": 17,
+      "status": "running"
+    },
+    "groups": [
+      {
+        "cards": [],
+        "state": "draft"
+      },
+      {
+        "cards": [],
+        "state": "waiting"
+      },
+      {
+        "cards": [
+          {
+            "admitted": true,
+            "assignee": "m2",
+            "decided_by": "",
+            "deps_editable": true,
+            "held": true,
+            "holder": null,
+            "implementer": "",
+            "integrated": false,
+            "kind": "task",
+            "node": 2,
+            "pending_decision": null,
+            "pending_replaceable": false,
+            "pipeline": "reviewed",
+            "rank": "a02",
+            "role": "developer",
+            "round": 1,
+            "rounds": 3,
+            "stages": [],
+            "state": "pending",
+            "task": {
+              "project": "example-project",
+              "uuid": "00000000-0000-4000-8000-000000000002"
+            },
+            "title": "Task 2"
+          }
+        ],
+        "state": "pending"
+      },
+      {
+        "cards": [],
+        "state": "in_progress"
+      },
+      {
+        "cards": [
+          {
+            "admitted": true,
+            "assigned_base": "0123456789abcdef0123456789abcdef01234567",
+            "assignee": "",
+            "decided_by": "",
+            "deps_editable": false,
+            "held": false,
+            "holder": "m1",
+            "implementer": "m1",
+            "integrated": false,
+            "kind": "task",
+            "node": 1,
+            "pending_decision": null,
+            "pending_replaceable": false,
+            "pipeline": "reviewed",
+            "rank": "a01",
+            "role": "developer",
+            "round": 1,
+            "rounds": 3,
+            "stages": [],
+            "state": "reported",
+            "task": {
+              "project": "example-project",
+              "uuid": "00000000-0000-4000-8000-000000000001"
+            },
+            "title": "Task 1"
+          }
+        ],
+        "state": "reported"
+      },
+      {
+        "cards": [],
+        "state": "accepted"
+      },
+      {
+        "cards": [],
+        "state": "cancelled"
+      }
+    ],
+    "member_roles": [
+      {
+        "account": {
+          "mode": "freest"
+        },
+        "agent": "claude",
+        "effort": "",
+        "id": "developer",
+        "model": "",
+        "name": "Developer"
+      },
+      {
+        "account": {
+          "mode": "freest"
+        },
+        "agent": "claude",
+        "effort": "",
+        "id": "reviewer",
+        "model": "",
+        "name": "Reviewer"
+      }
+    ],
+    "members": [
+      {
+        "account": "account-example",
+        "account_choice": {
+          "mode": "freest"
+        },
+        "agent": "claude",
+        "id": "lead",
+        "lead": true,
+        "model": null,
+        "open_work": 0,
+        "person_stopped": false,
+        "role": "lead",
+        "session": {
+          "machine": "00000000-0000-4000-8000-0000000000aa",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000064"
+        },
+        "state": "active"
+      },
+      {
+        "account": "account-example",
+        "account_choice": {
+          "mode": "freest"
+        },
+        "agent": "claude",
+        "id": "m1",
+        "lead": false,
+        "model": null,
+        "open_work": 1,
+        "person_stopped": false,
+        "role": "developer",
+        "session": {
+          "machine": "00000000-0000-4000-8000-0000000000aa",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000031"
+        },
+        "state": "active"
+      },
+      {
+        "account": "account-example",
+        "account_choice": {
+          "mode": "freest"
+        },
+        "agent": "claude",
+        "id": "m2",
+        "lead": false,
+        "model": null,
+        "open_work": 1,
+        "person_stopped": false,
+        "role": "developer",
+        "session": {
+          "machine": "00000000-0000-4000-8000-0000000000aa",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000032"
+        },
+        "state": "active"
+      },
+      {
+        "account": "account-example",
+        "account_choice": {
+          "mode": "freest"
+        },
+        "agent": "claude",
+        "id": "m3",
+        "lead": false,
+        "model": null,
+        "open_work": 0,
+        "person_stopped": false,
+        "role": "reviewer",
+        "session": {
+          "machine": "00000000-0000-4000-8000-0000000000aa",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000033"
+        },
+        "state": "active"
+      }
+    ],
+    "next": null,
+    "revision": 17,
+    "routing_pipelines": [
+      {
+        "id": "reviewed",
+        "name": "Reviewed: review, lead",
+        "role": "developer"
+      },
+      {
+        "id": "analysis",
+        "name": "Analysis",
+        "role": "reviewer"
+      }
+    ],
+    "settings": {
+      "caps": {
+        "max_members": 6,
+        "max_open_questions": 3,
+        "max_open_tasks": 500,
+        "max_phase_tasks": 50
+      },
+      "delegations": {
+        "accept_results": true,
+        "answer_members": true,
+        "confirm_trust": true,
+        "merge_accepted": true,
+        "resume_exited": true
+      },
+      "integration": "branch",
+      "land_allowed": false,
+      "phase_acceptance": "lead",
+      "plan_approval": "review",
+      "queue": true,
+      "routing": "direct",
+      "timers": {
+        "answer_escalate_minutes": 10,
+        "inbox_interval_seconds": 120,
+        "lead_stall_minutes": 20,
+        "remind_lead_minutes": 15,
+        "remind_person_minutes": 60,
+        "report_timeout_seconds": 120,
+        "resume_limit_per_hour": 3,
+        "start_timeout_seconds": 180
+      }
+    },
+    "truncated": false
+  },
+  "before": {
+    "bar": {
+      "base_commit": "0123456789abcdef0123456789abcdef01234567",
+      "counts": {
+        "cards": 0,
+        "inbox": 1,
+        "members": {
+          "active": 4,
+          "not_created": 0,
+          "paused": 0,
+          "removed": 0,
+          "total": 4
+        },
+        "nodes": {
+          "accepted": 0,
+          "cancelled": 0,
+          "in_progress": 0,
+          "pending": 1,
+          "reported": 1,
+          "waiting": 0
+        }
+      },
+      "goal": "",
+      "id": "00000000-0000-4000-8000-00000000beef",
+      "integration_branch": "zerus/team/fixes",
+      "lead": "lead",
+      "name": "Fixes",
+      "project": "example-project",
+      "revision": 16,
+      "status": "running"
+    },
+    "groups": [
+      {
+        "cards": [],
+        "state": "draft"
+      },
+      {
+        "cards": [],
+        "state": "waiting"
+      },
+      {
+        "cards": [
+          {
+            "admitted": true,
+            "assignee": "m2",
+            "decided_by": "",
+            "deps_editable": true,
+            "held": false,
+            "holder": null,
+            "implementer": "",
+            "integrated": false,
+            "kind": "task",
+            "node": 2,
+            "pending_decision": null,
+            "pending_replaceable": false,
+            "pipeline": "reviewed",
+            "rank": "a02",
+            "role": "developer",
+            "round": 1,
+            "rounds": 3,
+            "stages": [],
+            "state": "pending",
+            "task": {
+              "project": "example-project",
+              "uuid": "00000000-0000-4000-8000-000000000002"
+            },
+            "title": "Task 2"
+          }
+        ],
+        "state": "pending"
+      },
+      {
+        "cards": [],
+        "state": "in_progress"
+      },
+      {
+        "cards": [
+          {
+            "admitted": true,
+            "assigned_base": "0123456789abcdef0123456789abcdef01234567",
+            "assignee": "",
+            "decided_by": "",
+            "deps_editable": false,
+            "held": false,
+            "holder": "m1",
+            "implementer": "m1",
+            "integrated": false,
+            "kind": "task",
+            "node": 1,
+            "pending_decision": null,
+            "pending_replaceable": false,
+            "pipeline": "reviewed",
+            "rank": "a01",
+            "role": "developer",
+            "round": 1,
+            "rounds": 3,
+            "stages": [],
+            "state": "reported",
+            "task": {
+              "project": "example-project",
+              "uuid": "00000000-0000-4000-8000-000000000001"
+            },
+            "title": "Task 1"
+          }
+        ],
+        "state": "reported"
+      },
+      {
+        "cards": [],
+        "state": "accepted"
+      },
+      {
+        "cards": [],
+        "state": "cancelled"
+      }
+    ],
+    "member_roles": [
+      {
+        "account": {
+          "mode": "freest"
+        },
+        "agent": "claude",
+        "effort": "",
+        "id": "developer",
+        "model": "",
+        "name": "Developer"
+      },
+      {
+        "account": {
+          "mode": "freest"
+        },
+        "agent": "claude",
+        "effort": "",
+        "id": "reviewer",
+        "model": "",
+        "name": "Reviewer"
+      }
+    ],
+    "members": [
+      {
+        "account": "account-example",
+        "account_choice": {
+          "mode": "freest"
+        },
+        "agent": "claude",
+        "id": "lead",
+        "lead": true,
+        "model": null,
+        "open_work": 0,
+        "person_stopped": false,
+        "role": "lead",
+        "session": {
+          "machine": "00000000-0000-4000-8000-0000000000aa",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000064"
+        },
+        "state": "active"
+      },
+      {
+        "account": "account-example",
+        "account_choice": {
+          "mode": "freest"
+        },
+        "agent": "claude",
+        "id": "m1",
+        "lead": false,
+        "model": null,
+        "open_work": 1,
+        "person_stopped": false,
+        "role": "developer",
+        "session": {
+          "machine": "00000000-0000-4000-8000-0000000000aa",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000031"
+        },
+        "state": "active"
+      },
+      {
+        "account": "account-example",
+        "account_choice": {
+          "mode": "freest"
+        },
+        "agent": "claude",
+        "id": "m2",
+        "lead": false,
+        "model": null,
+        "open_work": 1,
+        "person_stopped": false,
+        "role": "developer",
+        "session": {
+          "machine": "00000000-0000-4000-8000-0000000000aa",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000032"
+        },
+        "state": "active"
+      },
+      {
+        "account": "account-example",
+        "account_choice": {
+          "mode": "freest"
+        },
+        "agent": "claude",
+        "id": "m3",
+        "lead": false,
+        "model": null,
+        "open_work": 0,
+        "person_stopped": false,
+        "role": "reviewer",
+        "session": {
+          "machine": "00000000-0000-4000-8000-0000000000aa",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000033"
+        },
+        "state": "active"
+      }
+    ],
+    "next": null,
+    "revision": 16,
+    "routing_pipelines": [
+      {
+        "id": "reviewed",
+        "name": "Reviewed: review, lead",
+        "role": "developer"
+      },
+      {
+        "id": "analysis",
+        "name": "Analysis",
+        "role": "reviewer"
+      }
+    ],
+    "settings": {
+      "caps": {
+        "max_members": 6,
+        "max_open_questions": 3,
+        "max_open_tasks": 500,
+        "max_phase_tasks": 50
+      },
+      "delegations": {
+        "accept_results": true,
+        "answer_members": true,
+        "confirm_trust": true,
+        "merge_accepted": true,
+        "resume_exited": true
+      },
+      "integration": "branch",
+      "land_allowed": false,
+      "phase_acceptance": "lead",
+      "plan_approval": "review",
+      "queue": true,
+      "routing": "direct",
+      "timers": {
+        "answer_escalate_minutes": 10,
+        "inbox_interval_seconds": 120,
+        "lead_stall_minutes": 20,
+        "remind_lead_minutes": 15,
+        "remind_person_minutes": 60,
+        "report_timeout_seconds": 120,
+        "resume_limit_per_hour": 3,
+        "start_timeout_seconds": 180
+      }
+    },
+    "truncated": false
+  },
+  "pending": 2,
+  "reported": 1
+}

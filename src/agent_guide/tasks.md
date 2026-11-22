@@ -44,4 +44,4 @@ hgs task message REF --request-id UUID --mode queue|send|reopen|note
 Get: dispatch_id/executor. Queue waits for Start; note saves. Reopen leaves
 Review/Done after submission. Same UUID/mode/anchor/content: receipt lookup,
 never repeated input. Coordinator receipts prove no child ownership.
-Submitted: transport, not model-read; unknown stays unknown.
+Submitted: transport, not model-read; unknown stays so.

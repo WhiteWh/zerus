@@ -63,7 +63,7 @@ fn capture_older_deepseek_host_waiting_cards() {
 #[test]
 fn deepseek_host_cards_match_the_waiting_view_fixtures() {
     let fixtures: Value = serde_json::from_str(include_str!(
-        "../../../../client/src/ui/teams/fixtures/deepseek-host-cards.json"
+        "../../../../client/core/src/upstream_teams/fixtures/deepseek-host-cards.json"
     ))
     .unwrap();
     assert_eq!(waiting_fixture(false).3, fixtures["member"]);

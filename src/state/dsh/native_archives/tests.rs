@@ -66,6 +66,8 @@ fn census(max_rows: usize, rows: &mut Vec<Value>) -> Result<()> {
 }
 
 #[test]
+// WhiteWh fork: the child reads the Windows state layout, not HOME/state.
+#[cfg_attr(windows, ignore)]
 fn census_refuses_a_changed_archive_index_identity() {
     in_private_state("census_refuses_a_changed_archive_index_identity", || {
         let id = archived("identity");
@@ -104,6 +106,8 @@ fn census_refuses_a_changed_archive_index_identity() {
 }
 
 #[test]
+// WhiteWh fork: the child reads the Windows state layout, not HOME/state.
+#[cfg_attr(windows, ignore)]
 fn census_refuses_one_more_archive_than_its_row_bound() {
     in_private_state("census_refuses_one_more_archive_than_its_row_bound", || {
         let mut ids = [archived("first"), archived("second")];

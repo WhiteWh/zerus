@@ -1,0 +1,58 @@
+{
+  "member": {
+    "by": "local",
+    "card": 1,
+    "created_ms": 1234,
+    "decisions": [
+      "acknowledged"
+    ],
+    "id": "00000000-0000-4000-8000-00000000beef:1",
+    "kind": "launch_blocked",
+    "node": null,
+    "parameters": [
+      [
+        "member",
+        "m4"
+      ],
+      [
+        "code",
+        "invalid_state"
+      ],
+      [
+        "reason",
+        "older_deepseek_host"
+      ]
+    ],
+    "state": "open",
+    "team": "00000000-0000-4000-8000-00000000beef",
+    "text": "Member m4 needs a DeepSeek host with Agent Teams support. Stop idle DeepSeek sessions or restart the host yourself, then remove this member and add a replacement once the host is back, since Zerus will not retry this start."
+  },
+  "lead": {
+    "by": "local",
+    "card": 1,
+    "created_ms": 1234,
+    "decisions": [
+      "acknowledged"
+    ],
+    "id": "00000000-0000-4000-8000-00000000beef:1",
+    "kind": "launch_blocked",
+    "node": null,
+    "parameters": [
+      [
+        "member",
+        "lead"
+      ],
+      [
+        "code",
+        "invalid_state"
+      ],
+      [
+        "reason",
+        "older_deepseek_host"
+      ]
+    ],
+    "state": "open",
+    "team": "00000000-0000-4000-8000-00000000beef",
+    "text": "Member lead needs a DeepSeek host with Agent Teams support. Stop idle DeepSeek sessions or restart the host yourself, then stop this team and create a new one once the host is back, since Zerus will not retry this start."
+  }
+}

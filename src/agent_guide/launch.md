@@ -25,7 +25,7 @@ Start a session (hgs guide launch)
       '{expected_run_id:$run, expected_conversation_id:$conv, action:"adopt"}' |
       hgs parent SESSION --json
   RUN and CONVERSATION come from hgs inspect SESSION. "read" shows the link;
-  "clear" removes it. Process proof remains the default for adopt.
+  "clear" removes it. Adopt defaults to process proof.
 - DeepSeek/OpenCode tool shells obtain a claimed identity with hgs self --json.
   New launches accept --parent "$(hgs self --json | jq -c .parent_identity)".
   For adopt, include that object as parent. It must exactly match a live local

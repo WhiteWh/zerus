@@ -65,7 +65,7 @@ fn payload() -> Value {
 
 fn path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("client/src/ui/teams/fixtures/task-placement-view.json")
+        .join("client/core/src/upstream_teams/fixtures/task-placement-view.json")
 }
 
 #[test]
