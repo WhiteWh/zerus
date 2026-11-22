@@ -46,9 +46,9 @@ fn stamp(file: &fs::File) -> Option<(u64, u64, u64, std::time::SystemTime)> {
     ))
 }
 
-// A held regular file, bounded header + tail. A clipped row, replacement,
-// truncation, concurrent append, gap or malformed row yields unknown.
-fn source(path: &Path, conversation: Option<&str>) -> Option<Source> {
+// A held regular file, bounded header and window. First sends need the start
+// of the transcript, even after the first turn has aged out of its tail.
+fn source(path: &Path, conversation: Option<&str>, from_start: bool) -> Option<Source> {
     if !path.is_absolute() {
         return None;
     }
@@ -70,12 +70,20 @@ fn source(path: &Path, conversation: Option<&str>) -> Option<Source> {
         }
         native_header = Some(row);
     }
-    let start = before.2.saturating_sub(BYTES);
+    let start = if from_start {
+        0
+    } else {
+        before.2.saturating_sub(BYTES)
+    };
     file.seek(SeekFrom::Start(start)).ok()?;
     let mut bytes = Vec::new();
-    (&mut file).take(BYTES + 1).read_to_end(&mut bytes).ok()?;
+    let limit = if from_start { BYTES } else { BYTES + 1 };
+    (&mut file).take(limit).read_to_end(&mut bytes).ok()?;
     if bytes.len() as u64 > BYTES || stamp(&file)? != before || stamp(&open()?)? != before {
         return None;
+    }
+    if from_start && before.2 > BYTES {
+        bytes.truncate(bytes.iter().rposition(|&byte| byte == b'\n')? + 1);
     }
     let mut rows = Vec::new();
     for (index, line) in bytes.split_inclusive(|byte| *byte == b'\n').enumerate() {
@@ -146,7 +154,7 @@ fn kimi(record: &Value) -> Option<Source> {
     if state["id"] != record["conversation_id"] || state["version"] != 2 {
         return None;
     }
-    source(&path, None)
+    source(&path, None, false)
 }
 
 fn text<'a>(parts: &'a Value, kind: &str) -> Option<&'a str> {
@@ -319,6 +327,47 @@ fn receipt(record: &Value) -> Option<Value> {
     .then_some(receipt)
 }
 
+/// The first terminal send can predate Codex's own conversation ID. Only a
+/// main SessionStart observed for this run after the send can explain that
+/// empty binding. The transcript must still prove the first turn took it.
+fn first_codex_receipt(record: &Value, receipt: &Value) -> bool {
+    let observation = &record["hook_observation"];
+    let start = &observation["events"]["SessionStart"];
+    record["agent"] == "codex"
+        && receipt["transport"] == "terminal"
+        && receipt["first_message"] == true
+        && receipt["conversation_id"] == ""
+        && observation["run_id"] == record["run_id"]
+        && observation["conversation_id"] == record["conversation_id"]
+        && start["count"] == 1
+        && start["last_at"].as_f64().is_some_and(|at| {
+            at >= record["input_pending_at"].as_f64().unwrap_or(f64::INFINITY) && at <= now()
+        })
+}
+
+/// A later turn or replacement conversation cannot credit the first send,
+/// even if the person enters identical text there.
+fn first_codex_turn<'a>(record: &Value, source: &'a Source) -> Option<&'a [Value]> {
+    let meta = &source.header.as_ref()?["payload"];
+    let launched = record["created"].as_f64()?;
+    let pending = record["input_pending_at"].as_f64()?;
+    if meta["source"] != "cli" || !(launched - 1.0..=pending).contains(&timestamp(meta)?) {
+        return None;
+    }
+    let mut turns = source.rows.split(|row| {
+        row["type"] == "event_msg"
+            && matches!(
+                string(&row["payload"], "type"),
+                "task_started" | "turn_started"
+            )
+    });
+    // Keep the first start row so the ordinary exact-input check still verifies
+    // the turn identity and ordering.
+    let start = turns.next()?.len();
+    let body = turns.next()?;
+    Some(&source.rows[start..start + 1 + body.len()])
+}
+
 pub(in crate::state) fn allows_pending(record: &Value) -> bool {
     if !input_unconfirmed(record) {
         return true;
@@ -430,10 +479,12 @@ pub(in crate::state) fn reconcile_locked(record: &mut Value) -> Result<()> {
     } else {
         None
     };
+    let first = first_codex_receipt(record, &receipt);
     let source = if agent == "codex" {
         source(
             Path::new(string(record, "transcript")),
             Some(string(record, "conversation_id")),
+            first,
         )
     } else {
         kimi(record)
@@ -443,6 +494,7 @@ pub(in crate::state) fn reconcile_locked(record: &mut Value) -> Result<()> {
     };
     if agent == "codex"
         && receipt["conversation_id"] != record["conversation_id"]
+        && !first
         && !(codex_tasks::recovered_pending(record)
             && receipt["conversation_id"] == record["codex_binding_recovery"]["from"])
         && !bootstrap::receipt(record, &receipt)
@@ -459,8 +511,16 @@ pub(in crate::state) fn reconcile_locked(record: &mut Value) -> Result<()> {
     {
         return Ok(());
     }
+    let rows = if first {
+        let Some(rows) = first_codex_turn(record, &source) else {
+            return Ok(());
+        };
+        rows
+    } else {
+        &source.rows
+    };
     let Some((at, native_id)) = consumed(
-        &source.rows,
+        rows,
         agent,
         record["input_pending_at"].as_f64().unwrap_or(f64::INFINITY),
         string(&receipt, "submitted_text"),
@@ -490,6 +550,7 @@ pub(in crate::state) fn native_idle(record: &Value) -> bool {
             source(
                 Path::new(string(record, "transcript")),
                 Some(string(record, "conversation_id")),
+                false,
             ),
             "codex",
         ),
@@ -580,6 +641,72 @@ mod tests {
     use super::*;
     fn consumed(rows: &[Value], agent: &str, pending: f64, text: &str) -> Option<f64> {
         super::consumed(rows, agent, pending, text, None).map(|(at, _)| at)
+    }
+
+    #[test]
+    fn first_codex_send_is_reconciled_after_its_conversation_binds() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::state::with_test_state_root(dir.path(), || {
+            let _guard = lock(None).unwrap();
+            let name = "codex/example/first-send";
+            let run = "private-run";
+            let conversation = "private-conversation";
+            let request = uuid::Uuid::new_v4().to_string();
+            let receipt = json!({"request_id":request,"name":name,"run_id":run,"conversation_id":"",
+                "first_message":true,"submitted_at":10.0,"transport":"terminal","status":"submitted",
+                "submitted_text":"First input","digest":"a".repeat(64),"attachments":[]});
+            let receipt_path = dir
+                .path()
+                .join("input_receipts")
+                .join(format!("{request}.json"));
+            let original = receipt.to_string();
+            atomic(&receipt_path, &original).unwrap();
+            let transcript = dir.path().join("native.jsonl");
+            let write_turns = |created: &str, first: &str| {
+                let rows = [
+                    json!({"type":"session_meta","payload":{"id":conversation,"source":"cli","timestamp":created}}),
+                    json!({"type":"event_msg","timestamp":"1970-01-01T00:00:11Z","payload":{"type":"task_started","turn_id":"first"}}),
+                    json!({"type":"response_item","timestamp":"1970-01-01T00:00:12Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":first}]}}),
+                    json!({"type":"event_msg","timestamp":"1970-01-01T00:00:13Z","payload":{"type":"task_started","turn_id":"second"}}),
+                    json!({"type":"response_item","timestamp":"1970-01-01T00:00:14Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"First input"}]}}),
+                ];
+                fs::write(&transcript, rows.map(|row| format!("{row}\n")).concat()).unwrap();
+            };
+            let mut record = json!({"version":1,"name":name,"agent":"codex","created":5.0,"run_id":run,
+                "conversation_id":conversation,"transcript":transcript,"input_pending_at":10.0,
+                "input_pending_request":request,"input_seen_at":0.0,
+                "hook_observation":{"run_id":run,"conversation_id":conversation,
+                    "events":{"SessionStart":{"count":1,"last_at":10.5}}}});
+            write_turns("1970-01-01T00:00:09Z", "Different input");
+            reconcile_locked(&mut record).unwrap();
+            assert!(
+                input_unconfirmed(&record),
+                "a later identical turn is irrelevant"
+            );
+            write_turns("1970-01-01T00:00:10.800Z", "First input");
+            reconcile_locked(&mut record).unwrap();
+            assert!(
+                input_unconfirmed(&record),
+                "a newly opened conversation cannot rehome the send"
+            );
+
+            write_turns("1970-01-01T00:00:09Z", "First input");
+            let mut other = record.clone();
+            other["hook_observation"]["conversation_id"] = json!("another-conversation");
+            reconcile_locked(&mut other).unwrap();
+            assert!(
+                input_unconfirmed(&other),
+                "SessionStart must be scoped to this conversation"
+            );
+            reconcile_locked(&mut record).unwrap();
+            assert_eq!(record["input_seen_at"], 12.0);
+            assert!(!input_unconfirmed(&record));
+            assert_eq!(
+                read(name).unwrap()["input_acceptance"]["request_id"],
+                request
+            );
+            assert_eq!(fs::read_to_string(receipt_path).unwrap(), original);
+        });
     }
     #[test]
     fn native_hook_text_accepts_only_the_complete_native_input() {
