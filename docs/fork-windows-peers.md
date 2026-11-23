@@ -51,13 +51,42 @@ one connection per Windows peer instead:
   pipe that only this user can open; the peer runs each as its own `hgs.exe`
   with the request's arguments, several at once, so no argument passes through
   `cmd.exe`;
-- the broker leaves after ten idle minutes or when its connection ends.
+- the broker leaves after ten idle minutes without requests or streams, or when
+  its connection ends.
 
 Polling and JSON commands use it (`ls`, `inspect`, `archives`, `worktrees`,
-`git-status`, `dirs`, `project`, `analytics`, `account ls|inspect`, and
-`terminal`, `send`, `settings`, `effort`, `history` with `--json`). Interactive
-commands, launches and everything else keep their own ssh. A request that no
-broker took uses its own ssh as before.
+`git-status`, `git-diff`, `dirs`, `project`, `analytics`, `account ls|inspect`,
+`recovery get`, swarm exchanges, and listed JSON team reads). JSON `terminal`,
+`send`, `settings`, `effort`, `history` and `rules` commands also use it.
+Interactive commands and other unlisted commands keep their own ssh. A request
+that no broker took uses its own ssh as before; an uncertain submission is never
+replayed.
+
+With protocol 2 at both ends, `hgs @peer watch --json` uses the same connection.
+The watch-v1 NDJSON bytes, input operations and desktop helper stay unchanged.
+The peer advertises `protocol: 2` and `streams: true` alongside `hello: 1`.
+The broker also answers a local capability probe, so a running protocol 1 broker
+or a protocol 1 peer keeps today's `--ssh-bytes-client` watch path without
+consuming stdin or submitting a watch as a probe. No running broker is stopped
+or replaced to negotiate a newer protocol.
+
+Stream requests carry `stream: true`; output frames carry an ID, a base64
+`chunk` and its `stdout` or `stderr` channel. Input frames carry the same ID and
+base64 `input`; null input closes that watch's stdin. A `code` or `error` frame
+ends the stream. Ordinary protocol 2 answers also use chunks, which the broker
+reassembles for existing local request clients. Each chunk contains at most
+64 KiB of raw bytes (about 86 KiB after base64); the existing 96 MiB frame cap
+and watch-v1's own 1 MiB limit remain. Protocol 1 requests retain their original
+single answer.
+
+A bounded round-robin output queue interleaves IDs so a large answer cannot
+monopolize the writer. A slow local consumer loses only its own pipe; it never
+blocks the shared peer reader. Closing a watch closes its remote stdin. Closing
+an ordinary request discards its eventual answer without cancelling the remote
+operation. A lost connection ends watch and lets the desktop reconnect as
+before. The peer serve process also checks for a settled executable replacement,
+closes watch inputs and drains already accepted commands before leaving.
+Linux and macOS peers keep their existing OpenSSH ControlMaster path.
 
 A command's preparation asks the broker too. Before a command runs, `hgs` finds
 the peer's login shell and, when the command needs a capability (a session

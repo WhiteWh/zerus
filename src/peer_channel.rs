@@ -29,6 +29,19 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod multiplex;
+#[cfg(windows)]
+mod stream_client;
+
+/// A negotiated watch stream. None proves no watch was submitted, so an old
+/// broker/peer can keep the existing SSH byte-client path.
+pub fn watch(config: &Config, alias: &str, args: &[String]) -> Option<Result<i32, String>> {
+    #[cfg(windows)]
+    { stream_client::watch(config, alias, args) }
+    #[cfg(not(windows))]
+    { let _ = (config, alias, args); None }
+}
+
 /// The largest frame either side accepts: a JSON object with base64 output.
 const MAX_FRAME: usize = 96 << 20;
 /// Requests the peer runs at once; more wait their turn.
@@ -181,13 +194,6 @@ fn listed_input(args: &[String], input: Option<&[u8]>) -> bool {
     true
 }
 
-/// A `watch --json` stream carried by the lasting channel (#19). None means
-/// neither endpoint took the stream, and the caller keeps its own ssh.
-/// Protocol 2 is not wired yet, so every call keeps that fallback.
-pub fn watch(_config: &Config, _alias: &str, _args: &[String]) -> Option<Result<i32, String>> {
-    None
-}
-
 /// Whether the peer's hgs lists every marker in its help, asked through the
 /// channel: no ssh connection of its own, which to a Windows computer costs
 /// seconds and, twice within the six seconds a command's preparation gets,
@@ -333,30 +339,7 @@ fn installed() -> PathBuf {
 
 /// The peer's end: requests on stdin, answers on stdout, in any order.
 fn serve() -> io::Result<()> {
-    let output: Arc<Mutex<io::Stdout>> = Arc::new(Mutex::new(io::stdout()));
-    write_frame(&mut *output.lock().unwrap(), &json!({"hello": 1, "version": env!("CARGO_PKG_VERSION")}))?;
-    let running = Arc::new((Mutex::new(0usize), Condvar::new()));
-    let program = installed();
-    let mut input = io::stdin().lock();
-    while let Some(request) = read_frame(&mut input)? {
-        {
-            let (count, ready) = &*running;
-            let mut count = count.lock().unwrap();
-            while *count >= PARALLEL {
-                count = ready.wait(count).unwrap();
-            }
-            *count += 1;
-        }
-        let (output, running, program) = (output.clone(), running.clone(), program.clone());
-        thread::spawn(move || {
-            let answer = run(&program, &request);
-            let _ = write_frame(&mut *output.lock().unwrap(), &answer);
-            let (count, ready) = &*running;
-            *count.lock().unwrap() -= 1;
-            ready.notify_one();
-        });
-    }
-    Ok(())
+    multiplex::serve(installed())
 }
 
 fn run(program: &PathBuf, request: &Value) -> Value {
@@ -402,7 +385,13 @@ enum ClientEvent {
 }
 
 #[cfg(windows)]
-type Pending = Arc<Mutex<HashMap<u64, mpsc::Sender<ClientEvent>>>>;
+type Pending = Arc<Mutex<HashMap<u64, PendingClient>>>;
+
+#[cfg(windows)]
+struct PendingClient {
+    sender: mpsc::SyncSender<ClientEvent>,
+    stream: crate::host::pipe::PipeStream,
+}
 
 #[cfg(windows)]
 type InFlight = Arc<Mutex<HashSet<u64>>>;
@@ -424,14 +413,14 @@ fn relay_request<W: Write + Send + 'static>(
     // is closure; do not mistake a long operation for a disconnected client.
     stream.set_read_timeout(None)?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
-    let (sender, events) = mpsc::channel();
+    let (sender, events) = mpsc::sync_channel(64);
     let gone = sender.clone();
     thread::spawn(move || {
         let _ = closed.read(&mut [0]);
         let _ = gone.send(ClientEvent::Closed);
     });
     request["id"] = json!(id);
-    pending.lock().unwrap().insert(id, sender.clone());
+    pending.lock().unwrap().insert(id, PendingClient { sender: sender.clone(), stream: stream.try_clone()? });
     let cancelled = Arc::new(AtomicBool::new(false));
     let abandoned = cancelled.clone();
     thread::spawn(move || {
@@ -447,10 +436,18 @@ fn relay_request<W: Write + Send + 'static>(
             }
         }
     });
-    let answer = match events.recv_timeout(REQUEST) {
-        Ok(ClientEvent::Answer(answer)) => Some(answer),
-        Ok(ClientEvent::Closed) => None,
-        Err(_) => Some(json!({"error": "the connection to the peer ended"})),
+    let deadline = Instant::now() + REQUEST;
+    let mut assembled = multiplex::Answer::default();
+    let answer = loop {
+        match events.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(ClientEvent::Answer(answer)) => match assembled.frame(answer) {
+                Ok(Some(answer)) => break Some(answer),
+                Ok(None) => {}
+                Err(error) => break Some(json!({"error":error.to_string()})),
+            },
+            Ok(ClientEvent::Closed) => break None,
+            Err(_) => break Some(json!({"error": "the connection to the peer ended"})),
+        }
     };
     cancelled.store(true, Ordering::SeqCst);
     pending.lock().unwrap().remove(&id);
@@ -494,16 +491,16 @@ fn broker(config: &Config, alias: &str) -> Result<(), String> {
     let (greeted, hello) = mpsc::channel();
     let reader = thread::spawn(move || {
         let first = read_frame(&mut from_peer);
-        let _ = greeted.send(first.map(|frame| frame.is_some_and(|frame| frame["hello"] == 1)));
+        let _ = greeted.send(first);
         from_peer
     });
-    match hello.recv_timeout(START) {
-        Ok(Ok(true)) => {}
+    let streams = match hello.recv_timeout(START) {
+        Ok(Ok(Some(hello))) if hello["hello"] == 1 => multiplex::streams(&hello),
         _ => {
             let _ = child.child.kill();
             return Err(format!("{alias} did not start its end of the channel"));
         }
-    }
+    };
     let mut from_peer = reader.join().map_err(|_| "channel reader failed")?;
     let _ = std::fs::remove_file(failed_marker(config, alias));
     let listener = match PipeListener::bind(&name, &Identity::current().map_err(|e| e.to_string())?) {
@@ -525,14 +522,25 @@ fn broker(config: &Config, alias: &str) -> Result<(), String> {
         thread::spawn(move || {
             while let Ok(Some(answer)) = read_frame(&mut from_peer) {
                 let id = answer["id"].as_u64().unwrap_or(0);
-                in_flight.lock().unwrap().remove(&id);
-                if let Some(sender) = pending.lock().unwrap().remove(&id) {
-                    let _ = sender.send(ClientEvent::Answer(answer));
+                let done = multiplex::terminal(&answer);
+                if done { in_flight.lock().unwrap().remove(&id); }
+                let mut clients = pending.lock().unwrap();
+                if let Some(client) = clients.get(&id) {
+                    // A stalled client may lose its own connection, never
+                    // the shared peer reader or another watch's frames.
+                    if client.sender.try_send(ClientEvent::Answer(answer)).is_err() {
+                        client.stream.shutdown();
+                        clients.remove(&id);
+                    } else if done {
+                        clients.remove(&id);
+                    }
                 }
             }
             // The connection ended: waiting clients get an error, new ones a fresh broker.
-            for (_, sender) in pending.lock().unwrap().drain() {
-                let _ = sender.send(ClientEvent::Answer(json!({"error": "the connection to the peer ended"})));
+            for (_, client) in pending.lock().unwrap().drain() {
+                if client.sender.try_send(ClientEvent::Answer(json!({"error": "the connection to the peer ended"}))).is_err() {
+                    client.stream.shutdown();
+                }
             }
             in_flight.lock().unwrap().clear();
             listener.close();
@@ -550,13 +558,26 @@ fn broker(config: &Config, alias: &str) -> Result<(), String> {
     }
     let next = Arc::new(AtomicU64::new(1));
     while let Ok(mut stream) = listener.accept() {
+        if active.load(Ordering::SeqCst) >= 64 {
+            stream.shutdown();
+            continue;
+        }
         let (pending, in_flight, to_peer, next, active, last) = (pending.clone(), in_flight.clone(), to_peer.clone(), next.clone(), active.clone(), last.clone());
         active.fetch_add(1, Ordering::SeqCst);
         thread::spawn(move || {
             let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-            if let Ok(Some(request)) = read_frame(&mut stream) {
-                let id = next.fetch_add(1, Ordering::SeqCst);
-                let _ = relay_request(&mut stream, request, id, &pending, in_flight, to_peer);
+            if let Ok(Some(mut request)) = read_frame(&mut stream) {
+                if request["channel"] == "capabilities" {
+                    let _ = write_frame(&mut stream, &json!({"hello":1,"protocol":2,"streams":streams}));
+                } else {
+                    let id = next.fetch_add(1, Ordering::SeqCst);
+                    if request["stream"] == true {
+                        let _ = stream_client::relay(&mut stream, request, id, &pending, in_flight, to_peer, streams);
+                    } else {
+                        request["chunks"] = json!(streams);
+                        let _ = relay_request(&mut stream, request, id, &pending, in_flight, to_peer);
+                    }
+                }
             }
             *last.lock().unwrap() = Instant::now();
             active.fetch_sub(1, Ordering::SeqCst);
