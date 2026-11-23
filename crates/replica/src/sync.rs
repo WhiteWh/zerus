@@ -677,16 +677,19 @@ impl ProjectStore {
             match self.load(uuid) {
                 Ok(mut task) => {
                     let before = task.current_vv();
-                    if !task.import_block(bytes)? {
+                    if let Err(error) = task.apply_checked(bytes) {
+                        if error.kind() == crate::ErrorKind::Busy {
+                            return Err(error.into());
+                        }
                         let shallow = task.is_shallow();
                         return Err(Refusal {
-                            error: Error::new(if shallow {
-                                "the updates could not be applied to the shallow history; \
+                            error: if shallow {
+                                Error::new(format!("the updates could not be applied to the shallow history; \
                                  the local copy is kept and needs a fresh copy covering \
-                                 all its changes"
+                                 all its changes: {error}"))
                             } else {
-                                "the updates could not be applied"
-                            }),
+                                error
+                            },
                             kept: None,
                             refresh: shallow,
                         });
@@ -987,6 +990,47 @@ mod tests {
         Update {
             document: Document::Task(task.uuid().to_owned()),
             bytes,
+        }
+    }
+
+    #[test]
+    fn conflicting_cutover_roots_are_explained_and_both_saved_copies_are_kept() {
+        let base = created().snapshot().unwrap();
+        let roots = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
+        let stores = roots.each_ref().map(|root| ProjectStore::open(root.path(), "project-1").unwrap());
+        let nodes = [ID, "22222222-2222-4222-8222-222222222222"];
+        for (store, node) in stores.iter().zip(nodes) {
+            // Two offline migrations from the same legacy task each write
+            // their own floor, then admit their own immutable seal.
+            let mut task = TaskDoc::from_bytes(&base).unwrap();
+            task.floor().unwrap();
+            store.save_legacy_for_test(&mut task).unwrap();
+            let (capture, bytes) = store.prepare_cutover(task.uuid(), node).unwrap();
+            let mut proposed = TaskDoc::from_bytes(&bytes).unwrap();
+            proposed.seal_cutover(BTreeMap::from([(node.into(), capture.clone())]), BTreeMap::new()).unwrap();
+            store.adopt_cutover(&proposed.snapshot().unwrap(), Some(&capture)).unwrap();
+        }
+        let uuid = TaskDoc::from_bytes(&base).unwrap().uuid().to_owned();
+        let tasks = stores.each_ref().map(|store| store.load(&uuid).unwrap());
+        assert_ne!(tasks[0].cutover_seal().unwrap(), tasks[1].cutover_seal().unwrap());
+        let before = stores.each_ref().map(|store| {
+            ["loro", "updates", "managed", "cutover"].map(|ext| {
+                fs::read(store.dir().join("tasks").join(format!("{uuid}.{ext}"))).ok()
+            })
+        });
+        for (dest, source) in [(0, 1), (1, 0)] {
+            let imported = stores[dest].import_updates(vec![update(&tasks[source], tasks[source].snapshot().unwrap())]).unwrap();
+            assert_eq!(imported.changed, 0);
+            assert_eq!(imported.refused.len(), 1);
+            assert_eq!(imported.refused[0].uuid, uuid);
+            let mut candidate = TaskDoc::from_bytes(&tasks[dest].snapshot().unwrap()).unwrap();
+            let cause = candidate.import(&tasks[source].snapshot().unwrap()).unwrap_err().to_string();
+            assert_eq!(imported.refused[0].error, cause, "keep the historical validation cause in the wire refusal");
+            assert_ne!(cause, "the updates could not be applied");
+            let after = ["loro", "updates", "managed", "cutover"].map(|ext| {
+                fs::read(stores[dest].dir().join("tasks").join(format!("{uuid}.{ext}"))).ok()
+            });
+            assert_eq!(after, before[dest], "a refusal must preserve document and native custody");
         }
     }
 

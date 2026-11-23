@@ -328,6 +328,15 @@ struct Theirs {
     omitted: BTreeSet<String>,
 }
 
+impl Theirs {
+    /// Missing projects are not advertised empty inventories. Exchange them
+    /// once to obtain both inventories and health counts, rather than treating
+    /// two absent digests as agreement with permanently unknown health.
+    fn agrees(&self, local: &Digests, project: &str) -> bool {
+        local.projects.get(project).is_some_and(|digest| self.projects.get(project) == Some(digest))
+    }
+}
+
 fn theirs(remote: &Value) -> Option<Theirs> {
     Some(Theirs {
         projects: serde_json::from_value(remote["projects"].clone()).ok()?,
@@ -462,7 +471,7 @@ pub fn sync_peer(config: &Config, alias: &str, identity: &Value) -> Result<()> {
             // A project gone from the catalog is exchanged only while both still hold it.
             if !held && !alive.contains(project) {
                 Err((Incomplete::Omitted, false))
-            } else if let Some(t) = theirs.as_ref().filter(|t| t.projects.get(project) == local.projects.get(project)) {
+            } else if let Some(t) = theirs.as_ref().filter(|t| t.agrees(&local, project)) {
                 // Equal digests: the readable documents agree, and the project
                 // is complete only when both sides say no task of it is damaged.
                 Shown::agreeing(&local, t, project)
@@ -669,6 +678,11 @@ fn exchange_pages(
             .and_then(|imported| usize::try_from(imported).ok())
             .zip(serde_json::from_value::<Vec<Damaged>>(response["refused"].clone()).ok())
             .filter(|(imported, refused)| imported.checked_add(refused.len()).is_some_and(|count| count <= sent));
+        if let Some((_, refused)) = &import {
+            for document in refused {
+                eprintln!("hgs swarm: {alias}: task {} of {project} was refused by the peer: {}", document.uuid, document.error);
+            }
+        }
         shown.refusals(import.as_ref().map(|(_, refused)| !refused.is_empty()));
         // The member's count after this page, not only before it.
         shown.damage(response["damaged"].as_u64());
@@ -790,6 +804,30 @@ mod tests {
         assert_eq!(bootstrap_source(&json!({"store":STORE}),None),None);
         assert_eq!(bootstrap_source(&json!({"store":NODE}),Some(STORE)),None);
         assert_eq!(bootstrap_source(&json!({"store":STORE}),Some(STORE)),Some(STORE));
+    }
+
+    #[test]
+    fn absent_project_digests_require_an_exchange() {
+        // A catalog project with no tasks has no store/digest on either PC.
+        // None == None used to skip its exchange forever, then report missing
+        // health counts as malformed. Only actual equal digests may skip it.
+        for (ours, theirs, agrees) in [
+            (None, None, false),
+            (Some("empty"), None, false),
+            (None, Some("empty"), false),
+            (Some("a"), Some("b"), false),
+            (Some("empty"), Some("empty"), true),
+        ] {
+            let local = Digests {
+                projects: ours.map(|digest| BTreeMap::from([("p".into(), digest.into())])).unwrap_or_default(),
+                ..Digests::default()
+            };
+            let remote = super::theirs(&json!({
+                "projects": theirs.map(|digest| BTreeMap::from([("p", digest)])).unwrap_or_default(),
+                "damaged": {}, "omitted": [],
+            })).unwrap();
+            assert_eq!(remote.agrees(&local, "p"), agrees, "{ours:?}, {theirs:?}");
+        }
     }
 
     #[test]
