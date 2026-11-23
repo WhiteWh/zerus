@@ -18,6 +18,7 @@ use std::{
 };
 
 pub const MAX_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_ERRORS: usize = 64 * 1024;
 pub fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -134,6 +135,17 @@ fn run_within(
         "swarm exchange is too large"
     );
     let wsl = crate::wsl::profile(config, alias);
+    if wsl.is_none() && crate::windows_peer::is_windows(config, alias) {
+        let args = words.iter().map(|word| (*word).to_owned()).collect::<Vec<_>>();
+        if let Some(answer) = crate::peer_channel::request_until(config, alias, &args, Some(bytes.clone()), deadline) {
+            // A taken request, including an unknown outcome, is never replayed
+            // over another SSH connection. Only None takes the legacy path.
+            let answer = answer.map_err(anyhow::Error::msg)?;
+            let answer = decode_answer(alias, &answer.stdout, &answer.stderr, answer.code == 0, deadline)?;
+            super::session_labels::finish_peer(config, label_attempt, &answer);
+            return Ok(answer);
+        }
+    }
     // WhiteWh fork: a WSL profile runs its own transport; any other peer goes
     // through the command syntax its login shell reads (remote_shell).
     let remote = if wsl.is_some() {
@@ -198,7 +210,7 @@ fn run_within(
     let (errors_sent, errors_read) = std::sync::mpsc::channel();
     thread::spawn(move || {
         let mut bytes = Vec::new();
-        let read = stderr.by_ref().take(65536).read_to_end(&mut bytes).map(|_| bytes);
+        let read = stderr.by_ref().take(MAX_ERRORS as u64).read_to_end(&mut bytes).map(|_| bytes);
         let _ = errors_sent.send(read);
     });
     let status = loop {
@@ -224,11 +236,18 @@ fn run_within(
     };
     let output = drained(&output_read)?;
     let errors = drained(&errors_read)?;
-    // An answer complete only after the deadline is not accepted: a channel
-    // already full answers even a zero wait (review-n on #1452).
-    ensure!(!expired(), "connection to {alias} timed out");
+    let answer = decode_answer(alias, &output, &errors, status.unwrap().success(), deadline)?;
+    super::session_labels::finish_peer(config, label_attempt, &answer);
+    Ok(answer)
+}
+
+/// Both transports keep the same deadline, output limit and response contract.
+fn decode_answer(alias: &str, output: &[u8], errors: &[u8], success: bool, deadline: Instant) -> Result<Value> {
+    // A ready answer is still refused when its original budget has expired.
+    ensure!(Instant::now() < deadline, "connection to {alias} timed out");
+    ensure!(errors.len() <= MAX_ERRORS, "remote catalog error output is too large");
     ensure!(
-        status.unwrap().success(),
+        success,
         "{alias}: {}",
         String::from_utf8_lossy(&errors).trim()
     );
@@ -236,11 +255,10 @@ fn run_within(
         output.len() as u64 <= MAX_BYTES,
         "remote catalog is too large"
     );
-    let answer = serde_json::from_slice(&output)
+    let answer = serde_json::from_slice(output)
         .context("remote HGS does not provide a valid swarm response; update HGS on that machine",
     )?;
-    ensure!(!expired(), "connection to {alias} timed out");
-    super::session_labels::finish_peer(config, label_attempt, &answer);
+    ensure!(Instant::now() < deadline, "connection to {alias} timed out");
     Ok(answer)
 }
 
@@ -1054,6 +1072,17 @@ impl Members for Live<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn channel_and_ssh_answers_share_the_same_response_checks() {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        assert_eq!(decode_answer("example-peer", br#"{"ok":true}"#, b"", true, deadline).unwrap(), json!({"ok":true}));
+        assert!(decode_answer("example-peer", b"invalid", b"", true, deadline).unwrap_err().to_string().contains("valid swarm response"));
+        assert!(decode_answer("example-peer", b"{}", b"refused", false, deadline).unwrap_err().to_string().contains("refused"));
+        assert!(decode_answer("example-peer", b"{}", &vec![b'x'; MAX_ERRORS + 1], false, deadline).unwrap_err().to_string().contains("too large"));
+        assert!(decode_answer("example-peer", b"{}", b"", true, Instant::now()).unwrap_err().to_string().contains("timed out"));
+        assert!(decode_answer("example-peer", &vec![b' '; MAX_BYTES as usize + 1], b"", true, deadline).unwrap_err().to_string().contains("too large"));
+    }
 
     /// Members whose syncs, and a person, change the local digest.
     #[derive(Default)]

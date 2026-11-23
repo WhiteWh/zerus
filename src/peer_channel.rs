@@ -17,12 +17,12 @@ use crate::{config::Config, platform};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{self, Read, Write},
     path::PathBuf,
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc, Arc, Condvar, Mutex,
     },
     thread,
@@ -98,8 +98,11 @@ pub fn routed(command: &str, args: &[String]) -> Option<bool> {
         "ls" | "archives" | "inspect" | "worktrees" | "git-status" | "git-diff" | "dirs" | "project" | "analytics" => Some(false),
         "account" if matches!(args.first().map(String::as_str), Some("ls" | "inspect")) => Some(false),
         "terminal" | "send" | "settings" | "effort" | "history" | "rules" if json => Some(true),
-        // WhiteWh fork: the lead's worker collecting a member's kept reports.
-        "team" if json && args.first().is_some_and(|verb| verb == "outbox") => Some(true),
+        "team" if json && args.first().is_some_and(|verb| matches!(verb.as_str(),
+            "list" | "status" | "inbox" | "events" | "waiting" | "spans" | "profile" | "test" | "builds" | "outbox"
+        ) || verb == "catalog" && args.get(1).is_some_and(|op| op == "get")) => Some(true),
+        // Unlike the team reads, recovery get never consumes stdin.
+        "recovery" if args == ["get"] => Some(false),
         _ => None,
     }
 }
@@ -111,12 +114,71 @@ pub struct Answer {
     pub stderr: Vec<u8>,
 }
 
+/// Each individual pipe operation uses what remains of the same budget;
+/// partial frame reads/writes never restart the caller's deadline.
+#[cfg(windows)]
+struct DeadlineStream<'a> {
+    stream: &'a mut crate::host::pipe::PipeStream,
+    deadline: Instant,
+}
+
+#[cfg(windows)]
+impl DeadlineStream<'_> {
+    fn remaining(&self) -> io::Result<Duration> {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            Err(io::Error::new(io::ErrorKind::TimedOut, "peer request deadline expired"))
+        } else {
+            Ok(remaining)
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Read for DeadlineStream<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.stream.set_read_timeout(Some(self.remaining()?))?;
+        self.stream.read(bytes)
+    }
+}
+
+#[cfg(windows)]
+impl Write for DeadlineStream<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.stream.set_write_timeout(Some(self.remaining()?))?;
+        self.stream.write(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.stream.flush()
+    }
+}
+
 /// Runs `args` (the remote hgs argv) on `alias` through its broker. None when
 /// no broker could take the request, so the caller may use its own ssh; an
 /// error once the request may have reached the peer. The caller checks what
 /// the command needs of the peer first ([`supports`]).
 pub fn request(config: &Config, alias: &str, args: &[String], stdin: Option<Vec<u8>>) -> Option<Result<Answer, String>> {
-    request_with(config, alias, args, stdin, true)
+    request_until(config, alias, args, stdin, Instant::now() + REQUEST)
+}
+
+/// The same submission, sharing the caller's original absolute deadline.
+/// Only None proves that no broker took it; an uncertain write or answer
+/// must never fall back and submit the command again.
+pub fn request_until(config: &Config, alias: &str, args: &[String], stdin: Option<Vec<u8>>, deadline: Instant) -> Option<Result<Answer, String>> {
+    if !listed_input(args, stdin.as_deref()) {
+        return None;
+    }
+    request_with(config, alias, args, stdin, true, deadline)
+}
+
+/// `team test` also submits/runs/settles tests. Only its two read actions
+/// join the new routes; mutation requests retain their original SSH path.
+fn listed_input(args: &[String], input: Option<&[u8]>) -> bool {
+    if args.first().is_some_and(|arg| arg == "team") && args.get(1).is_some_and(|arg| arg == "test") {
+        return input.and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
+            .is_some_and(|value| matches!(value["action"].as_str(), Some("queue" | "results")));
+    }
+    true
 }
 
 /// Whether the peer's hgs lists every marker in its help, asked through the
@@ -130,13 +192,13 @@ pub fn supports(config: &Config, alias: &str, markers: &[(&str, bool)], start: b
     if markers.is_empty() {
         return Some(Ok(true));
     }
-    Some(request_with(config, alias, &["--help".into()], None, start)?.map(|answer| {
+    Some(request_with(config, alias, &["--help".into()], None, start, Instant::now() + REQUEST)?.map(|answer| {
         answer.code == 0 && crate::remote_shell::lists(&String::from_utf8_lossy(&answer.stdout), markers)
     }))
 }
 
 #[cfg(windows)]
-fn request_with(config: &Config, alias: &str, args: &[String], stdin: Option<Vec<u8>>, start: bool) -> Option<Result<Answer, String>> {
+fn request_with(config: &Config, alias: &str, args: &[String], stdin: Option<Vec<u8>>, start: bool, deadline: Instant) -> Option<Result<Answer, String>> {
     if std::env::var_os("HGS_PEER_CHANNEL").is_some_and(|value| value == "0") {
         return None;
     }
@@ -144,16 +206,22 @@ fn request_with(config: &Config, alias: &str, args: &[String], stdin: Option<Vec
         return None;
     }
     let name = pipe_name(config, alias).ok()?;
-    let mut stream = connect(config, &name, alias, start)?;
+    let mut stream = connect(config, &name, alias, start, deadline)?;
     let request = json!({"args": args, "stdin": stdin.map(|input| STANDARD.encode(input))});
-    if write_frame(&mut stream, &request).is_err() {
-        return None;
+    if Instant::now() >= deadline {
+        return Some(Err(format!("connection to {alias} timed out before submission")));
     }
-    let _ = stream.set_read_timeout(Some(REQUEST));
+    let mut stream = DeadlineStream { stream: &mut stream, deadline };
+    if write_frame(&mut stream, &request).is_err() {
+        return Some(Err(format!("link to {alias} dropped while submitting; check the command's result")));
+    }
     let answer = match read_frame(&mut stream) {
         Ok(Some(answer)) => answer,
         Ok(None) | Err(_) => return Some(Err(format!("link to {alias} dropped; check the command's result"))),
     };
+    if Instant::now() >= deadline {
+        return Some(Err(format!("connection to {alias} timed out; check the command's result")));
+    }
     if let Some(error) = answer["error"].as_str() {
         return Some(Err(format!("{alias}: {error}")));
     }
@@ -165,7 +233,7 @@ fn request_with(config: &Config, alias: &str, args: &[String], stdin: Option<Vec
 }
 
 #[cfg(not(windows))]
-fn request_with(_: &Config, _: &str, _: &[String], _: Option<Vec<u8>>, _: bool) -> Option<Result<Answer, String>> {
+fn request_with(_: &Config, _: &str, _: &[String], _: Option<Vec<u8>>, _: bool, _: Instant) -> Option<Result<Answer, String>> {
     None
 }
 
@@ -187,12 +255,18 @@ fn pipe_name(config: &Config, alias: &str) -> io::Result<String> {
 /// A connection to the broker of `alias`, starting one when none runs and
 /// `start` allows it.
 #[cfg(windows)]
-fn connect(config: &Config, name: &str, alias: &str, start: bool) -> Option<crate::host::pipe::PipeStream> {
+fn connect(config: &Config, name: &str, alias: &str, start: bool, deadline: Instant) -> Option<crate::host::pipe::PipeStream> {
     use crate::host::pipe::{connect, ConnectError};
-    match connect(name, Instant::now() + Duration::from_millis(500)) {
+    if Instant::now() >= deadline {
+        return None;
+    }
+    match connect(name, deadline.min(Instant::now() + Duration::from_millis(500))) {
         Ok(stream) => return Some(stream),
         Err(ConnectError::NoHost) if start => {}
         Err(_) => return None,
+    }
+    if Instant::now() >= deadline {
+        return None;
     }
     let program = std::env::current_exe().ok()?;
     let mut command = Command::new(program);
@@ -206,11 +280,11 @@ fn connect(config: &Config, name: &str, alias: &str, start: bool) -> Option<crat
         .stderr(Stdio::null());
     let started = std::time::SystemTime::now();
     platform::spawn_detached(&mut command).ok()?;
-    let deadline = Instant::now() + START;
+    let deadline = deadline.min(Instant::now() + START);
     while Instant::now() < deadline && !failed_recently(config, alias, Some(started)) {
-        match connect(name, Instant::now() + Duration::from_millis(500)) {
+        match connect(name, deadline.min(Instant::now() + Duration::from_millis(500))) {
             Ok(stream) => return Some(stream),
-            Err(ConnectError::NoHost | ConnectError::Busy) => thread::sleep(Duration::from_millis(100)),
+            Err(ConnectError::NoHost | ConnectError::Busy) => thread::sleep(deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(100))),
             Err(_) => return None,
         }
     }
@@ -314,6 +388,70 @@ fn run(program: &PathBuf, request: &Value) -> Value {
     }
 }
 
+#[cfg(windows)]
+enum ClientEvent {
+    Answer(Value),
+    Closed,
+}
+
+#[cfg(windows)]
+type Pending = Arc<Mutex<HashMap<u64, mpsc::Sender<ClientEvent>>>>;
+
+#[cfg(windows)]
+type InFlight = Arc<Mutex<HashSet<u64>>>;
+
+/// A local client's lifetime is independent of the remote operation. When
+/// its pipe closes, release its bookkeeping now and discard any later answer.
+/// Never cancel or replay a command that might already have run on the peer.
+#[cfg(windows)]
+fn relay_request<W: Write + Send + 'static>(
+    stream: &mut crate::host::pipe::PipeStream,
+    mut request: Value,
+    id: u64,
+    pending: &Pending,
+    in_flight: InFlight,
+    to_peer: Arc<Mutex<W>>,
+) -> io::Result<()> {
+    let mut closed = stream.try_clone()?;
+    // The complete request has been read. The only remaining client input
+    // is closure; do not mistake a long operation for a disconnected client.
+    stream.set_read_timeout(None)?;
+    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+    let (sender, events) = mpsc::channel();
+    let gone = sender.clone();
+    thread::spawn(move || {
+        let _ = closed.read(&mut [0]);
+        let _ = gone.send(ClientEvent::Closed);
+    });
+    request["id"] = json!(id);
+    pending.lock().unwrap().insert(id, sender.clone());
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let abandoned = cancelled.clone();
+    thread::spawn(move || {
+        let mut writer = to_peer.lock().unwrap();
+        // A closed client queued behind another write need not be submitted.
+        // Once the write begins its outcome is unknown, so only discard it.
+        if !abandoned.load(Ordering::SeqCst) {
+            // A client can leave without cancelling the remote operation.
+            // Keep the transport alive until its answer or connection EOF.
+            in_flight.lock().unwrap().insert(id);
+            if write_frame(&mut *writer, &request).is_err() {
+                let _ = sender.send(ClientEvent::Answer(json!({"error": "the connection to the peer ended"})));
+            }
+        }
+    });
+    let answer = match events.recv_timeout(REQUEST) {
+        Ok(ClientEvent::Answer(answer)) => Some(answer),
+        Ok(ClientEvent::Closed) => None,
+        Err(_) => Some(json!({"error": "the connection to the peer ended"})),
+    };
+    cancelled.store(true, Ordering::SeqCst);
+    pending.lock().unwrap().remove(&id);
+    let result = answer.map_or(Ok(()), |answer| write_frame(stream, &answer));
+    stream.shutdown(); // wake and release the closure observer after an answer
+    result
+}
+
 /// This computer's end for `alias`: one ssh connection and the pipe its
 /// clients use.
 #[cfg(windows)]
@@ -369,29 +507,35 @@ fn broker(config: &Config, alias: &str) -> Result<(), String> {
             return Ok(());
         }
     };
-    let pending: Arc<Mutex<HashMap<u64, mpsc::Sender<Value>>>> = Arc::default();
+    let pending = Pending::default();
+    let in_flight = InFlight::default();
     let active = Arc::new(AtomicUsize::new(0));
     let last = Arc::new(Mutex::new(Instant::now()));
     {
         let pending = pending.clone();
+        let in_flight = in_flight.clone();
         let listener = listener.clone();
         thread::spawn(move || {
             while let Ok(Some(answer)) = read_frame(&mut from_peer) {
                 let id = answer["id"].as_u64().unwrap_or(0);
+                in_flight.lock().unwrap().remove(&id);
                 if let Some(sender) = pending.lock().unwrap().remove(&id) {
-                    let _ = sender.send(answer);
+                    let _ = sender.send(ClientEvent::Answer(answer));
                 }
             }
             // The connection ended: waiting clients get an error, new ones a fresh broker.
-            pending.lock().unwrap().clear();
+            for (_, sender) in pending.lock().unwrap().drain() {
+                let _ = sender.send(ClientEvent::Answer(json!({"error": "the connection to the peer ended"})));
+            }
+            in_flight.lock().unwrap().clear();
             listener.close();
         });
     }
     {
-        let (active, last, listener) = (active.clone(), last.clone(), listener.clone());
+        let (active, last, listener, in_flight) = (active.clone(), last.clone(), listener.clone(), in_flight.clone());
         thread::spawn(move || loop {
             thread::sleep(Duration::from_secs(15));
-            if active.load(Ordering::SeqCst) == 0 && last.lock().unwrap().elapsed() >= IDLE {
+            if active.load(Ordering::SeqCst) == 0 && in_flight.lock().unwrap().is_empty() && last.lock().unwrap().elapsed() >= IDLE {
                 listener.close();
                 return;
             }
@@ -399,22 +543,13 @@ fn broker(config: &Config, alias: &str) -> Result<(), String> {
     }
     let next = Arc::new(AtomicU64::new(1));
     while let Ok(mut stream) = listener.accept() {
-        let (pending, to_peer, next, active, last) = (pending.clone(), to_peer.clone(), next.clone(), active.clone(), last.clone());
+        let (pending, in_flight, to_peer, next, active, last) = (pending.clone(), in_flight.clone(), to_peer.clone(), next.clone(), active.clone(), last.clone());
         active.fetch_add(1, Ordering::SeqCst);
         thread::spawn(move || {
             let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-            if let Ok(Some(mut request)) = read_frame(&mut stream) {
+            if let Ok(Some(request)) = read_frame(&mut stream) {
                 let id = next.fetch_add(1, Ordering::SeqCst);
-                request["id"] = json!(id);
-                let (sender, answer) = mpsc::channel();
-                pending.lock().unwrap().insert(id, sender);
-                let answer = if write_frame(&mut *to_peer.lock().unwrap(), &request).is_ok() {
-                    answer.recv_timeout(REQUEST).unwrap_or_else(|_| json!({"error": "the connection to the peer ended"}))
-                } else {
-                    json!({"error": "the connection to the peer ended"})
-                };
-                pending.lock().unwrap().remove(&id);
-                let _ = write_frame(&mut stream, &answer);
+                let _ = relay_request(&mut stream, request, id, &pending, in_flight, to_peer);
             }
             *last.lock().unwrap() = Instant::now();
             active.fetch_sub(1, Ordering::SeqCst);
@@ -455,11 +590,159 @@ mod tests {
         assert_eq!(routed("account", &args(&["ls", "--json"])), Some(false));
         assert_eq!(routed("account", &args(&["login", "x"])), None);
         assert_eq!(routed("claude", &args(&["dir", "--new"])), None);
+        for verb in ["list", "status", "inbox", "events", "waiting", "spans", "profile", "test", "builds", "outbox"] {
+            assert_eq!(routed("team", &args(&[verb, "--json"])), Some(true), "{verb}");
+            assert_eq!(routed("team", &args(&[verb])), None, "{verb} without JSON must not consume stdin");
+        }
+        assert_eq!(routed("team", &args(&["catalog", "get", "--json"])), Some(true));
+        for verb in ["set", "propose", "decide", "apply", "discard", "route", "designer"] {
+            assert_eq!(routed("team", &args(&["catalog", verb, "--json"])), None, "catalog {verb}");
+        }
+        for verb in ["run", "report", "ask", "reply", "accept", "stop", "create", "settings", "unknown"] {
+            assert_eq!(routed("team", &args(&[verb, "--json"])), None, "{verb} must keep its original delivery path");
+        }
+        assert_eq!(routed("recovery", &args(&["get"])), Some(false));
+        for verb in ["set", "sync", "action", "worker", "tick"] {
+            assert_eq!(routed("recovery", &args(&[verb])), None);
+        }
     }
 
     #[test]
     fn the_peer_refuses_private_commands() {
         let answer = run(&installed(), &json!({"id": 1, "args": ["__peer", "serve"]}));
         assert!(answer["error"].is_string());
+    }
+
+    #[test]
+    fn test_reads_route_without_routing_test_mutations() {
+        let args = ["team", "test", "--json"].map(String::from);
+        for (action, allowed) in [("queue", true), ("results", true), ("submit", false), ("force", false), ("dismiss", false), ("full-done", false), ("future-action", false)] {
+            let input = serde_json::to_vec(&json!({"action": action})).unwrap();
+            assert_eq!(listed_input(&args, Some(&input)), allowed, "{action}");
+        }
+        for input in [None, Some(b"{}".as_slice()), Some(b"invalid".as_slice())] {
+            assert!(!listed_input(&args, input));
+        }
+    }
+
+    #[cfg(windows)]
+    fn fixture_config(root: &std::path::Path) -> Config {
+        Config {
+            home: root.to_string_lossy().into_owned(), dir: root.join("config"), state: root.join("state"),
+            selves: vec!["example-local".into()], peers: vec!["example-peer".into()], base_peers: vec![],
+            peers_from_environment: false, machines: std::collections::BTreeMap::new(), tab: false, tab_colors: String::new(),
+        }
+    }
+
+    #[cfg(windows)]
+    fn fixture_listener(name: &str) -> Arc<crate::host::pipe::PipeListener> {
+        Arc::new(crate::host::pipe::PipeListener::bind(name, &crate::host::token::Identity::current().unwrap()).unwrap())
+    }
+
+    #[cfg(windows)]
+    fn fixture_accept(listener: &Arc<crate::host::pipe::PipeListener>) -> crate::host::pipe::PipeStream {
+        let owned = listener.clone();
+        let (done, result) = mpsc::channel();
+        let worker = thread::spawn(move || { let _ = done.send(owned.accept()); });
+        let accepted = result.recv_timeout(Duration::from_secs(3));
+        listener.close();
+        worker.join().unwrap();
+        accepted.expect("bounded fixture accept").unwrap()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_taken_request_obeys_its_deadline_and_never_becomes_a_fallback() {
+        for mode in ["answer", "disconnect", "timeout"] {
+            let root = tempfile::tempdir().unwrap();
+            let config = fixture_config(root.path());
+            let name = pipe_name(&config, "example-peer").unwrap();
+            let listener = fixture_listener(&name);
+            let server = thread::spawn(move || {
+                let mut stream = fixture_accept(&listener);
+                let request = read_frame(&mut stream).unwrap().unwrap();
+                assert_eq!(request["args"], json!(["swarm", "hello"]));
+                assert_eq!(bytes(&request["stdin"]), b"{}");
+                if mode == "answer" {
+                    write_frame(&mut stream, &json!({"code": 0, "stdout": STANDARD.encode(b"{}"), "stderr": ""})).unwrap();
+                } else if mode == "timeout" {
+                    // The client must close at its own deadline, waking this
+                    // read without any answer or remote process cancellation.
+                    assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+                }
+            });
+            let started = Instant::now();
+            let answer = request_until(&config, "example-peer", &["swarm".into(), "hello".into()], Some(b"{}".to_vec()), started + Duration::from_millis(300));
+            assert!(started.elapsed() < Duration::from_secs(2), "the 15 minute default must not replace the caller budget");
+            let answer = answer.expect("a submitted request must never authorize fallback");
+            if mode == "answer" {
+                assert_eq!(answer.unwrap().stdout, b"{}");
+            } else {
+                assert!(answer.is_err());
+            }
+            server.join().unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "subprocess fixture for killed_client_releases_local_pending_and_active_slots"]
+    fn pipe_client_fixture() {
+        let name = std::env::var("HGS_PEER_TEST_PIPE").unwrap();
+        let mut stream = crate::host::pipe::connect(&name, Instant::now() + Duration::from_secs(3)).unwrap();
+        write_frame(&mut stream, &json!({"args": ["swarm", "hello"]})).unwrap();
+        let _ = read_frame(&mut stream); // the parent kills only this fixture
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn killed_client_releases_local_pending_and_active_slots() {
+        use std::os::windows::process::CommandExt;
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
+        }
+        struct Writer(Option<mpsc::Sender<()>>);
+        impl Write for Writer {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> { Ok(bytes.len()) }
+            fn flush(&mut self) -> io::Result<()> {
+                if let Some(sent) = self.0.take() { let _ = sent.send(()); }
+                Ok(())
+            }
+        }
+        for busy_writer in [false, true] {
+            let name = format!(r"\\.\pipe\hgs-peer-test-{}", uuid::Uuid::new_v4());
+            let listener = fixture_listener(&name);
+            let mut child = Child(Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "peer_channel::tests::pipe_client_fixture", "--ignored"])
+                .env("HGS_PEER_TEST_PIPE", &name)
+                .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+                .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
+            let mut stream = fixture_accept(&listener);
+            let request = read_frame(&mut stream).unwrap().unwrap();
+            let pending = Pending::default();
+            let in_flight = InFlight::default();
+            let active = Arc::new(AtomicUsize::new(1));
+            let (sent, submitted) = mpsc::channel();
+            let writer = Arc::new(Mutex::new(Writer(Some(sent))));
+            // Also cover a request queued behind a blocked shared write.
+            let held = busy_writer.then(|| writer.lock().unwrap());
+            let (completed, settled) = mpsc::channel();
+            let (own_pending, own_flight, own_active, own_writer) = (pending.clone(), in_flight.clone(), active.clone(), writer.clone());
+            let worker = thread::spawn(move || {
+                let result = relay_request(&mut stream, request, 1, &own_pending, own_flight, own_writer);
+                own_active.fetch_sub(1, Ordering::SeqCst);
+                let _ = completed.send(result);
+            });
+            if !busy_writer { submitted.recv_timeout(Duration::from_secs(3)).unwrap(); }
+            child.0.kill().unwrap();
+            child.0.wait().unwrap();
+            settled.recv_timeout(Duration::from_secs(3)).expect("a killed client must free the broker slot before any remote answer").unwrap();
+            assert!(pending.lock().unwrap().is_empty());
+            assert_eq!(active.load(Ordering::SeqCst), 0);
+            assert_eq!(in_flight.lock().unwrap().contains(&1), !busy_writer, "a submitted remote operation must outlive the local slot");
+            drop(held);
+            worker.join().unwrap();
+        }
     }
 }
