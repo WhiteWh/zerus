@@ -135,6 +135,25 @@ struct Batch {
     changed: bool,
 }
 
+impl Batch {
+    /// Task #6 of team c536f0e5 (P1.4, owner 2026-11-23): whether the batch
+    /// has anything to write: an event, or a team that differs from the copy
+    /// it started from in more than `updated`. A tick whose steps changed
+    /// nothing writes nothing and keeps the revision and `updated`.
+    fn dirty(&mut self) -> bool {
+        if !self.changed {
+            return false;
+        }
+        if self.events.iter().any(|(_, events)| !events.is_empty()) {
+            return true;
+        }
+        let updated = std::mem::replace(&mut self.working.updated, self.base.updated);
+        let same = self.working == self.base;
+        self.working.updated = updated;
+        !same
+    }
+}
+
 /// Task 287: a write transaction whose lock hold is logged (`Hold`).
 pub(crate) struct Write<'a> {
     transaction: rusqlite::Transaction<'a>,
@@ -1413,8 +1432,8 @@ impl Store {
     #[track_caller]
     pub(crate) fn end_batch(&mut self) -> anyhow::Result<bool> {
         let caller = std::panic::Location::caller();
-        let Some(batch) = self.batch.take() else { return Ok(false) };
-        if !batch.changed {
+        let Some(mut batch) = self.batch.take() else { return Ok(false) };
+        if !batch.dirty() {
             return Ok(false);
         }
         self.flush(batch, caller)?;
@@ -1425,8 +1444,8 @@ impl Store {
         if !self.batch.as_ref().is_some_and(|batch| batch.team == team_id) {
             return Ok(None);
         }
-        let batch = self.batch.take().expect("checked");
-        if batch.changed {
+        let mut batch = self.batch.take().expect("checked");
+        if batch.dirty() {
             self.flush(batch, caller)?;
         }
         Ok(Some(team_id.to_owned()))
@@ -1447,13 +1466,19 @@ impl Store {
         let mut receipt = change(&mut team, &mut events)?;
         let at = now();
         after_change(&mut team, &mut events, at);
-        team.updated = at;
-        batch.working = team;
-        batch.events.push((at, events));
-        batch.changed = true;
+        // Task #6 (P1.4): a step that changed nothing and told nothing leaves
+        // the copy, its `updated` and the batch's need to write alone.
+        if !events.is_empty() || team != batch.working {
+            team.updated = at;
+            batch.working = team;
+            if !events.is_empty() {
+                batch.events.push((at, events));
+            }
+            batch.changed = true;
+        }
         if receipt.is_object() {
             receipt["team"] = json!(batch.team);
-            receipt["revision"] = json!(batch.base_revision + 1);
+            receipt["revision"] = json!(batch.base_revision + u64::from(batch.changed));
         }
         Ok(receipt)
     }
@@ -2577,6 +2602,50 @@ mod tests {
         store.end_batch().unwrap();
         let saved = store.load("t1").unwrap().unwrap();
         assert_eq!((saved.goal.as_str(), saved.name.as_str(), saved.stop_reason.as_str()), ("worker", "Checkoutabc+", "later"));
+    }
+
+    /// Task #6 of team c536f0e5 (P1.4, owner 2026-11-23): a tick whose steps
+    /// change nothing and tell nothing writes nothing: the revision and
+    /// `updated` stay. A change put back within the tick is nothing too; an
+    /// event alone is written.
+    #[test]
+    fn a_no_op_tick_keeps_the_revision() {
+        let (_dir, mut store) = store();
+        store.create(REQUEST, &json!({}), team("t1"), vec![]).unwrap();
+        let before = store.load("t1").unwrap().unwrap();
+        take_lock_lines();
+        store.begin_batch("t1").unwrap();
+        for _ in 0..3 {
+            let receipt = store.mutate(None, "t1", None, |team, _| {
+                team.name = "Checkout".into();
+                Ok(json!({}))
+            });
+            assert_eq!(receipt.unwrap()["revision"], before.revision, "the receipt names the kept revision");
+        }
+        assert!(!store.end_batch().unwrap(), "nothing to write");
+        assert!(take_lock_lines().is_empty(), "no transaction");
+        let after = store.load("t1").unwrap().unwrap();
+        assert_eq!((after.revision, after.updated), (before.revision, before.updated));
+        let written: (i64, f64) = store.db.query_row("SELECT revision,updated FROM teams WHERE id='t1'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!(written, (before.revision as i64, before.updated));
+        // Changed and put back in the same tick: nothing either.
+        store.begin_batch("t1").unwrap();
+        store.mutate(None, "t1", None, |team, _| { team.goal = "later".into(); Ok(Value::Null) }).unwrap();
+        store.mutate(None, "t1", None, |team, _| { team.goal = String::new(); Ok(Value::Null) }).unwrap();
+        assert!(!store.end_batch().unwrap());
+        assert_eq!(store.load("t1").unwrap().unwrap().revision, before.revision);
+        // A step's event is written, with a new revision.
+        store.begin_batch("t1").unwrap();
+        store.mutate(None, "t1", None, |_, events| { events.push(Event::new("ran", json!({}))); Ok(Value::Null) }).unwrap();
+        assert!(store.end_batch().unwrap());
+        assert_eq!(store.load("t1").unwrap().unwrap().revision, before.revision + 1);
+        // A request suspends the batch: a batch with nothing to write writes nothing first.
+        store.begin_batch("t1").unwrap();
+        store.mutate(None, "t1", None, |_, _| Ok(Value::Null)).unwrap();
+        take_lock_lines();
+        reassign(&mut store, "22222222-2222-4222-8222-222222222222").unwrap();
+        assert_eq!(take_lock_lines().len(), 1, "only the request's own transaction");
+        assert!(!store.end_batch().unwrap());
     }
 
     /// Task 287: another writer that changed the team during the worker's tick

@@ -1243,7 +1243,12 @@ pub(crate) fn steps_with(team: &Team, seen: &[Seen], now: f64, listed: Option<&B
                 (None, None) => false,
                 (old, new) => new.is_none_or(|at| old.is_none_or(|old| (at - old).abs() >= WATCH_EVENT_EVERY)),
             };
-            if member.seen_phase != found.phase || member.seen_activity != found.activity || moved || member.seen_cold != found.cold {
+            // Task #6 of team c536f0e5 (P1.4): a busy turn flips between
+            // working and tool every few seconds; each flip was a team
+            // revision (most of msi-old's 17 a minute). The stored phase is
+            // the fallback a live listing replaces, so a flip within the same
+            // activity waits for another change or the event time's interval.
+            if !same_turn_phase(&member.seen_phase, &found.phase) || member.seen_activity != found.activity || moved || member.seen_cold != found.cold {
                 steps.push(Step::Watch {
                     member: member.id.clone(),
                     phase: found.phase.clone(),
@@ -6696,6 +6701,12 @@ pub(crate) fn check_context(session: &SessionRef, request: &ContextRequest) -> C
 /// Task #2 (team ede724c4): how often a live member's last event time alone is
 /// written (seconds); a phase or activity change is written at once.
 const WATCH_EVENT_EVERY: f64 = 300.0;
+
+/// Task #6 of team c536f0e5 (P1.4): whether a stored phase still describes a
+/// listed one: the same, or working and tool, the two phases of one busy turn.
+fn same_turn_phase(stored: &str, listed: &str) -> bool {
+    stored == listed || (matches!(stored, "working" | "tool") && matches!(listed, "working" | "tool"))
+}
 
 /// Task 209: how often an active member's native context is read (seconds),
 /// how often one that holds no open attempt is, and how many inspects one tick

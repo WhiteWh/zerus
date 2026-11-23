@@ -5,14 +5,56 @@
 //! moved ([`crate::TeamsModel::heads`]). Until a snapshot is complete, after
 //! a `gap` or a failure, and on a stream without the topic, there are no
 //! heads and the poller polls as before.
+//!
+//! Task #6 of team c536f0e5 (P1.4): a head also keeps a digest of its row
+//! without `revision` and `updated`, so the poller tells a change the list
+//! shows (a name, a status, a mode) from a revision that moved alone.
+use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use serde_json::Value;
 use zerus_watch_protocol::{Delta, Snapshot};
 
-/// A team's revision by its id.
-pub type Heads = BTreeMap<String, i64>;
+/// One team's head: its revision and the digest of the rest of its row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Head {
+    pub revision: i64,
+    /// The row without `revision` and `updated`.
+    pub digest: u64,
+}
+
+impl Head {
+    /// The head of a `team:<id>` row; None without a revision.
+    pub fn of(row: &Value) -> Option<Self> {
+        let revision = row["revision"].as_i64()?;
+        let mut rest = row.clone();
+        if let Some(fields) = rest.as_object_mut() {
+            fields.remove("revision");
+            fields.remove("updated");
+        }
+        let mut hasher = DefaultHasher::new();
+        rest.to_string().hash(&mut hasher);
+        Some(Self {
+            revision,
+            digest: hasher.finish(),
+        })
+    }
+}
+
+/// A team's head by its id.
+pub type Heads = BTreeMap<String, Head>;
+
+/// Whether two sets of heads differ in more than revisions (and `updated`):
+/// a team came or left, or a row's other fields changed.
+pub fn changed_beyond_revisions(old: &Heads, new: &Heads) -> bool {
+    old.len() != new.len()
+        || old
+            .iter()
+            .zip(new)
+            .any(|((old_id, old), (new_id, new))| old_id != new_id || old.digest != new.digest)
+}
 
 /// The team rows of one stream.
 #[derive(Debug, Default)]
@@ -60,16 +102,13 @@ impl TeamHeads {
         self.staged = None;
     }
 
-    /// The revisions by team id; None while the rows are unknown.
+    /// The heads by team id; None while the rows are unknown.
     pub fn heads(&self) -> Option<Arc<Heads>> {
         let rows = self.rows.as_ref()?;
         Some(Arc::new(
             rows.iter()
                 .filter_map(|(key, row)| {
-                    Some((
-                        key.strip_prefix("team:")?.to_owned(),
-                        row["revision"].as_i64()?,
-                    ))
+                    Some((key.strip_prefix("team:")?.to_owned(), Head::of(row)?))
                 })
                 .collect(),
         ))
@@ -98,6 +137,13 @@ mod tests {
         json!({"key": format!("team:{id}"), "row": {"id": id, "revision": revision, "status": "running"}})
     }
 
+    fn revisions(heads: &Heads) -> BTreeMap<String, i64> {
+        heads
+            .iter()
+            .map(|(id, head)| (id.clone(), head.revision))
+            .collect()
+    }
+
     #[test]
     fn a_paged_snapshot_gives_heads_once_complete_then_deltas_change_them() {
         let mut heads = TeamHeads::default();
@@ -117,7 +163,10 @@ mod tests {
                 ],
             ))
             .unwrap();
-        assert_eq!(*first, Heads::from([("a".into(), 3), ("b".into(), 1)]));
+        assert_eq!(
+            revisions(&first),
+            BTreeMap::from([("a".into(), 3), ("b".into(), 1)])
+        );
         let delta = Delta {
             topic: "team".into(),
             upsert: vec![CatalogItem {
@@ -131,8 +180,8 @@ mod tests {
             cursor: 2,
         };
         assert_eq!(
-            *heads.delta(&delta).unwrap(),
-            Heads::from([("a".into(), 4)])
+            revisions(&heads.delta(&delta).unwrap()),
+            BTreeMap::from([("a".into(), 4)])
         );
     }
 
@@ -155,8 +204,29 @@ mod tests {
             "a page without its first"
         );
         assert_eq!(
-            *heads.snapshot(&page(0, true, vec![row("a", 2)])).unwrap(),
-            Heads::from([("a".into(), 2)])
+            revisions(&heads.snapshot(&page(0, true, vec![row("a", 2)])).unwrap()),
+            BTreeMap::from([("a".into(), 2)])
         );
+    }
+
+    /// Task #6 of team c536f0e5 (P1.4): the digest leaves out `revision` and
+    /// `updated` only.
+    #[test]
+    fn a_heads_digest_ignores_its_revision_and_updated_only() {
+        let head = |row: Value| Head::of(&row).unwrap();
+        let a = head(json!({"id":"a","revision":1,"updated":10.0,"status":"running"}));
+        let b = head(json!({"id":"a","revision":2,"updated":13.5,"status":"running"}));
+        let c = head(json!({"id":"a","revision":3,"updated":13.5,"status":"paused"}));
+        assert_eq!((a.revision, b.revision), (1, 2));
+        assert_eq!(a.digest, b.digest);
+        assert_ne!(b.digest, c.digest);
+        assert_eq!(Head::of(&json!({"id":"a"})), None, "a row needs its revision");
+        let set = |heads: &[(&str, Head)]| -> Heads {
+            heads.iter().map(|(id, head)| ((*id).to_owned(), *head)).collect()
+        };
+        assert!(!changed_beyond_revisions(&set(&[("a", a)]), &set(&[("a", b)])));
+        assert!(changed_beyond_revisions(&set(&[("a", b)]), &set(&[("a", c)])));
+        assert!(changed_beyond_revisions(&set(&[("a", a)]), &set(&[("a", a), ("b", a)])));
+        assert!(changed_beyond_revisions(&set(&[("a", a)]), &set(&[("b", a)])));
     }
 }

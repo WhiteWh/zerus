@@ -772,6 +772,14 @@ fn followed_reads_run_every_three_seconds_and_unchanged_replies_send_nothing() {
 }
 
 /// Task 8: the reads a moved revision makes due, in order.
+/// A head whose row is the same but for its revision.
+fn head(revision: i64) -> super::Head {
+    super::Head {
+        revision,
+        digest: 0,
+    }
+}
+
 fn due_reads(model: &mut TeamsModel, now: Instant) -> Vec<String> {
     let mut names = Vec::new();
     while let Some(read) = model.next(now) {
@@ -866,7 +874,7 @@ fn with_heads_the_inbox_and_feed_are_read_within_a_minute_without_a_revision_mov
     use std::sync::Arc;
     let heads = |rev: i64| {
         Some(Arc::new(
-            [(TEAM.to_owned(), rev), ("other".to_owned(), 1)]
+            [(TEAM.to_owned(), head(rev)), ("other".to_owned(), head(1))]
                 .into_iter()
                 .collect::<super::Heads>(),
         ))
@@ -1017,7 +1025,7 @@ fn with_the_streams_team_heads_a_team_is_read_when_its_revision_moved() {
         Some(Arc::new(
             pairs
                 .iter()
-                .map(|(id, rev)| ((*id).to_owned(), *rev))
+                .map(|(id, rev)| ((*id).to_owned(), head(*rev)))
                 .collect::<super::Heads>(),
         ))
     };
@@ -1074,6 +1082,94 @@ fn with_the_streams_team_heads_a_team_is_read_when_its_revision_moved() {
         due_reads(&mut model, at + super::STREAM_POLL * 2 + POLL).len(),
         5,
         "every three seconds"
+    );
+}
+
+/// Task #6 of team c536f0e5 (P1.4, owner 2026-11-23): a peer's team whose
+/// revision moves every second with nothing the list shows (its worker's
+/// observations) makes the list and Waiting due at most every
+/// [`super::REVISION_ONLY`] after their reply, not on every head; a head
+/// whose row changed (a status) makes them due at once; the watched team's
+/// own reads stay immediate.
+#[test]
+fn revision_only_heads_read_the_list_at_most_every_three_seconds() {
+    use std::sync::Arc;
+    let heads = |watched: i64, other: i64, digest: u64| {
+        Some(Arc::new(
+            [
+                (TEAM.to_owned(), head(watched)),
+                (
+                    "other".to_owned(),
+                    super::Head {
+                        revision: other,
+                        digest,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect::<super::Heads>(),
+        ))
+    };
+    let start = Instant::now();
+    let mut model = TeamsModel::default();
+    model.follow(follow_team(), start);
+    model.heads(heads(1, 1, 0), start);
+    assert_eq!(due_reads(&mut model, start).len(), 5);
+    // A minute of revision-only heads, one a second, the reads answered at once
+    // (the watched team's minute-long safety read is due at 60 s).
+    let mut lists = 0;
+    for second in 1..60u64 {
+        let at = start + Duration::from_secs(second);
+        model.heads(heads(1, 1 + second as i64, 0), at);
+        let reads = due_reads(&mut model, at);
+        assert!(!reads.contains(&"status".to_owned()), "{reads:?}");
+        lists += reads.iter().filter(|read| *read == "list").count();
+    }
+    assert_eq!(lists, 19, "once every three seconds instead of 59 times");
+    assert_eq!(
+        due_reads(&mut model, start + Duration::from_secs(60)).len(),
+        5,
+        "the safety read"
+    );
+    // Just after a reply a revision-only head waits; it is read within 3 s.
+    let at = start + Duration::from_millis(60_500);
+    model.heads(heads(1, 100, 0), at);
+    assert!(due_reads(&mut model, at).is_empty());
+    assert_eq!(
+        due_reads(&mut model, start + Duration::from_secs(63)),
+        ["list", "waiting"]
+    );
+    // A change the list shows: at once, right after a reply.
+    let at = start + Duration::from_secs(63) + Duration::from_millis(100);
+    model.heads(heads(1, 101, 7), at);
+    assert_eq!(due_reads(&mut model, at), ["list", "waiting"]);
+    // The watched team's revision moved alone: its reads at once, the list within 3 s.
+    let at = at + Duration::from_millis(100);
+    model.heads(heads(2, 101, 7), at);
+    assert_eq!(due_reads(&mut model, at), ["feed", "inbox", "status"]);
+    assert_eq!(
+        due_reads(&mut model, at + super::REVISION_ONLY),
+        ["list", "waiting"]
+    );
+    // A revision-only head while the list's read runs: read again within 3 s
+    // of the head, not a minute after the reply.
+    let at = at + super::REVISION_ONLY * 2;
+    model.heads(heads(2, 102, 7), at);
+    let mut running = None;
+    while let Some(read) = model.next(at) {
+        if read == TeamRead::List {
+            running = Some(read);
+        } else {
+            model.apply(&read, Ok(replies(&read)), at);
+        }
+    }
+    let running = running.expect("the list is read");
+    model.heads(heads(2, 103, 7), at + Duration::from_secs(1));
+    model.apply(&running, Ok(replies(&running)), at + Duration::from_secs(2));
+    assert!(due_reads(&mut model, at + Duration::from_secs(2)).is_empty());
+    assert_eq!(
+        due_reads(&mut model, at + Duration::from_secs(4)),
+        ["list", "waiting"]
     );
 }
 

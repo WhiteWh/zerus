@@ -32,8 +32,10 @@ pub mod view;
 
 pub use action::{TeamAction, TeamCall, TeamOutcome};
 pub use catalog_edit::{CatalogEdit, CatalogEditor, CatalogEditorView};
-pub use heads::{Heads, TeamHeads};
-pub use model::{TeamsFollow, TeamsModel, TeamsUpdate, FEED_KEPT, POLL, STREAM_POLL};
+pub use heads::{Head, Heads, TeamHeads};
+pub use model::{
+    TeamsFollow, TeamsModel, TeamsUpdate, FEED_KEPT, POLL, REVISION_ONLY, STREAM_POLL,
+};
 pub use poller::{TeamsPoller, WaitingShare};
 pub use read::{read, TeamRead};
 

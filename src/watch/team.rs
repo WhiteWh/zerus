@@ -203,7 +203,8 @@ impl Team {
         }
     }
 
-    /// Takes a finished read; an error is returned for the client.
+    /// Takes a finished read; an error is returned for the client, and the
+    /// next good read is a `gap` and a snapshot.
     pub(super) fn done(&mut self, done: Done) -> Option<String> {
         if !self.subscribed || done.token != self.token {
             return None;
@@ -221,7 +222,14 @@ impl Team {
                 }).collect());
                 None
             }
-            Err(error) => Some(error),
+            Err(error) => {
+                // Task #6 of team c536f0e5 (N3): the client drops its rows on
+                // `team_failed`; the next good read sends `gap` and every row
+                // again, not a delta it cannot apply (or nothing).
+                self.current = None;
+                self.missed();
+                Some(error)
+            }
         }
     }
 
@@ -351,6 +359,27 @@ mod tests {
         team.missed();
         let Some(Plan::Snapshot { gap: true, pages }) = team.plan(1 << 20) else { panic!("gap, then a snapshot") };
         assert_eq!(pages[0][0].1["revision"], 2);
+        team.sent();
+        assert_eq!(team.plan(1 << 20), None);
+    }
+
+    /// Task #6 of team c536f0e5 (N3): a failed read makes the client drop its
+    /// rows, so the next good read is `gap` and a snapshot, even of rows that
+    /// did not change, instead of a delta or nothing.
+    #[test]
+    fn a_failed_read_is_followed_by_a_gap_and_a_snapshot() {
+        let start = Instant::now();
+        let mut team = Team::new();
+        let job = team.subscribe(Vec::new(), 0, start);
+        finish(&mut team, job, vec![head("a", 1, "running")]);
+        team.sent();
+        let job = team.pulse(start + SAFETY, |_| 0).unwrap();
+        assert_eq!(team.done(Done { token: job.token, value: Some(Err("database is locked".into())) }), Some("database is locked".into()));
+        assert_eq!(team.plan(1 << 20), None, "nothing until a good read");
+        let job = team.pulse(start + SAFETY * 2, |_| 0).unwrap();
+        finish(&mut team, job, vec![head("a", 1, "running")]);
+        let Some(Plan::Snapshot { gap: true, pages }) = team.plan(1 << 20) else { panic!("gap, then a snapshot") };
+        assert_eq!(keys(&pages[0]), ["team:a", "teams"]);
         team.sent();
         assert_eq!(team.plan(1 << 20), None);
     }

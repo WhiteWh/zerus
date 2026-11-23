@@ -29,6 +29,10 @@ pub const POLL: Duration = Duration::from_secs(3);
 /// team's revision moved, and otherwise only this often (what a revision
 /// does not show, such as a member's live session).
 pub const STREAM_POLL: Duration = Duration::from_secs(60);
+/// Task #6 of team c536f0e5 (P1.4, owner 2026-11-23): heads that differ only
+/// in revisions (and `updated`) make the list and Waiting due at most this
+/// long after their last reply; any other head change makes them due at once.
+pub const REVISION_ONLY: Duration = Duration::from_secs(3);
 /// Feed events one watched team keeps; Load older stops there.
 pub const FEED_KEPT: usize = 500;
 /// Task #10: while the window is hidden or minimized only Waiting is read,
@@ -169,6 +173,11 @@ pub struct TeamsModel {
     heads: Option<std::sync::Arc<super::heads::Heads>>,
     /// Slots whose head moved while their read ran: due again at its reply.
     again: std::collections::BTreeSet<Slot>,
+    /// Task #6 (P1.4): slots whose heads moved only in revisions while their
+    /// read ran, with the time by which they are read again.
+    again_by: BTreeMap<Slot, Instant>,
+    /// Task #6 (P1.4): when each slot's last reply came.
+    replied: BTreeMap<Slot, Instant>,
     /// Task #10: the window is hidden or minimized: only Waiting is read.
     hidden: bool,
     /// Task #14: the last held views of recently watched teams, newest last,
@@ -486,20 +495,27 @@ impl TeamsModel {
         Some(TeamRead::Status { team })
     }
 
-    /// Task 8: the team heads of the computer's stream, or None. A moved
-    /// revision makes the list and Waiting due at once, and the watched
-    /// team's reads when its own revision moved (or it appeared or left).
+    /// Task 8: the team heads of the computer's stream, or None. A changed
+    /// head makes the list and Waiting due at once, and the watched team's
+    /// reads when its own revision moved (or it appeared or left). Task #6
+    /// (P1.4): heads that moved only in revisions make the list and Waiting
+    /// due within [`REVISION_ONLY`] of their last reply instead.
     /// Losing the heads makes every followed read due within [`POLL`] again.
     pub fn heads(&mut self, heads: Option<std::sync::Arc<super::heads::Heads>>, now: Instant) {
         let previous = std::mem::replace(&mut self.heads, heads);
         let mut moved: Vec<Slot> = Vec::new();
+        let mut revisions: Vec<Slot> = Vec::new();
         match (&previous, &self.heads) {
             (Some(old), Some(new)) => {
-                if old != new {
+                if super::heads::changed_beyond_revisions(old, new) {
                     moved.extend([Slot::List, Slot::Waiting]);
+                } else if old != new {
+                    revisions.extend([Slot::List, Slot::Waiting]);
                 }
                 if let Some(team) = self.watched() {
-                    if old.get(team) != new.get(team) {
+                    if old.get(team).map(|head| head.revision)
+                        != new.get(team).map(|head| head.revision)
+                    {
                         moved.extend([Slot::Status, Slot::Inbox, Slot::Feed]);
                     }
                 }
@@ -523,6 +539,21 @@ impl TeamsModel {
                     self.again.insert(slot);
                 } else {
                     *due = (*due).min(now);
+                }
+            }
+        }
+        for slot in revisions {
+            let by = self
+                .replied
+                .get(&slot)
+                .map_or(now, |replied| (*replied + REVISION_ONLY).max(now));
+            if let Some(due) = self.due.get_mut(&slot) {
+                if *due > now + STREAM_POLL {
+                    // In flight: read again by then, or at its reply if later.
+                    let deadline = self.again_by.entry(slot).or_insert(now + REVISION_ONLY);
+                    *deadline = (*deadline).min(now + REVISION_ONLY);
+                } else {
+                    *due = (*due).min(by);
                 }
             }
         }
@@ -634,8 +665,16 @@ impl TeamsModel {
                 POLL
             };
             let again = self.again.remove(&slot);
+            let again_by = self.again_by.remove(&slot);
+            self.replied.insert(slot, now);
             if let Some(due) = self.due.get_mut(&slot) {
-                *due = if again { now } else { now + every };
+                *due = if again {
+                    now
+                } else if let Some(by) = again_by {
+                    by.max(now).min(now + every)
+                } else {
+                    now + every
+                };
             }
         }
         if stale {

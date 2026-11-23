@@ -1191,7 +1191,7 @@ mod tests {
                 Change::TeamHeads { heads, .. } => Some(
                     heads
                         .as_ref()
-                        .map(|heads| heads.iter().map(|(id, rev)| (id.clone(), *rev)).collect()),
+                        .map(|heads| heads.iter().map(|(id, head)| (id.clone(), head.revision)).collect()),
                 ),
                 _ => None,
             })

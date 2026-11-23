@@ -942,7 +942,12 @@ fn a_busy_members_event_time_alone_is_written_rarely() {
     assert!(!watched(busy(1090.0, "working"), 1090.0), "a minute and a half of events is not written");
     assert!(!watched(busy(1000.0 + super::WATCH_EVENT_EVERY - 1.0, "working"), 1300.0));
     assert!(watched(busy(1000.0 + super::WATCH_EVENT_EVERY, "working"), 1300.0), "the bound is");
-    assert!(watched(busy(1010.0, "tool"), 1010.0), "a phase change is written at once");
+    assert!(watched(busy(1010.0, "question"), 1010.0), "a phase change is written at once");
+    // Task #6 of team c536f0e5 (P1.4): working and tool are one busy turn;
+    // a flip between them waits for the event time's bound.
+    assert!(!watched(busy(1010.0, "tool"), 1010.0), "a working/tool flip is not written");
+    assert!(watched(busy(1000.0 + super::WATCH_EVENT_EVERY, "tool"), 1300.0), "it rides with the event time");
+    assert!(watched(Seen { activity: "idle".into(), ..busy(1010.0, "idle") }, 1010.0), "a turn's end is written at once");
 }
 
 /// Task #2 (team ede724c4): the measurement for the report. A scripted hour of
