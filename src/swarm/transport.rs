@@ -952,9 +952,18 @@ pub fn worker() -> Result<()> {
     if let Err(error) = service::record(&config) {
         eprintln!("hgs swarm: record the worker version: {error:#}");
     }
-    let mut schedule = Schedule::default();
+    // Task #20 of team c536f0e5 (P2.6c): the worker waits for a change to
+    // the catalog or the tasks, or a member's wake file, instead of a 3 s
+    // pass; the periodic sync of each member is then every 5 minutes.
+    let mut wait = super::wait::Wait::start(&config);
+    if let Some(fault) = &wait.fault {
+        eprintln!("hgs swarm: no change notifications ({fault}); every 3 s as before");
+    }
+    let mut schedule = Schedule { period: if wait.listening() { WAITING_PERIOD } else { PERIOD }, ..Schedule::default() };
     let mut placements = crate::state::placement::Scan::default();
     let mut cutover=replica::CutoverScan::default();
+    let mut woke = super::wait::Woke { changed: true, ..Default::default() };
+    let mut local_due = Instant::now();
     loop {
         // An upgrade replaced this program: exit so that the service manager
         // starts the new version. Catalog errors never end the loop.
@@ -962,32 +971,70 @@ pub fn worker() -> Result<()> {
             !executable.as_ref().is_some_and(service::Executable::replaced),
             "the hgs executable was replaced; exiting so that the new version starts"
         );
+        let listening = wait.listening();
         match Config::load()
             .map_err(anyhow::Error::from)
             .and_then(|config| {
-                schedule.round(&mut Live(&config))?;
-                if let Err(error) = placements.advance(&config, |record, intent, end| {
-                    super::infer_project::complete_pending(&config, record, intent, end)
-                }) {
-                    eprintln!("hgs swarm: initial placement remains pending: {error:#}");
+                // A round reads the local digest: on a change, a member's
+                // wake, a member's periodic sync due, or every pass without
+                // notifications.
+                if !listening || woke.changed || !woke.peers.is_empty() || schedule.due(now()) {
+                    schedule.round_with(&mut Live(&config), &woke.peers)?;
                 }
-                if let Err(error)=cutover.advance(&config) {
-                    eprintln!("hgs swarm: the bounded task cutover pass remains pending: {error:#}");
-                }
-                if super::session_labels::due_local(&config) {
-                    let _ = super::session_labels::refresh_local(
-                        &config,
-                        Instant::now() + Duration::from_secs(2),
-                    );
+                // Local work on its own deadline: a placement queued, a task
+                // cutover step, the session labels' 30 s refresh.
+                if !listening || woke.changed || Instant::now() >= local_due {
+                    local_due = Instant::now() + LOCAL_EVERY;
+                    if let Err(error) = placements.advance(&config, |record, intent, end| {
+                        super::infer_project::complete_pending(&config, record, intent, end)
+                    }) {
+                        eprintln!("hgs swarm: initial placement remains pending: {error:#}");
+                    }
+                    // Without the 3 s pass, a pass visits the projects in
+                    // one go (a step that migrated a task ends it).
+                    let started = Instant::now();
+                    for _ in 0..if listening { CUTOVER_STEPS } else { 1 } {
+                        match cutover.advance(&config) {
+                            Ok(false) if started.elapsed() < CUTOVER_BUDGET => continue,
+                            Ok(_) => break,
+                            Err(error) => {
+                                eprintln!("hgs swarm: the bounded task cutover pass remains pending: {error:#}");
+                                break;
+                            }
+                        }
+                    }
+                    if super::session_labels::due_local(&config) {
+                        let _ = super::session_labels::refresh_local(
+                            &config,
+                            Instant::now() + Duration::from_secs(2),
+                        );
+                    }
                 }
                 Ok(())
             }) {
             Ok(()) => {}
             Err(error) => eprintln!("hgs swarm: {error:#}"),
         }
-        thread::sleep(Duration::from_secs(3));
+        woke = if listening {
+            let until = schedule.next_due(now()).map_or(local_due, |at| at.min(local_due));
+            wait.wait(until)
+        } else {
+            thread::sleep(Duration::from_secs(3));
+            super::wait::Woke::default()
+        };
     }
 }
+
+/// The periodic sync of each member without change notifications.
+const PERIOD: u64 = 30;
+/// Task #20 (P2.6c): with them, a change syncs at once, so the periodic sync
+/// is a safety net every 5 minutes.
+const WAITING_PERIOD: u64 = 300;
+/// Task #20: how often the local work runs without a change.
+const LOCAL_EVERY: Duration = Duration::from_secs(30);
+/// Task #20: the task cutover steps of one pass, and their time budget.
+const CUTOVER_STEPS: usize = 32;
+const CUTOVER_BUDGET: Duration = Duration::from_secs(2);
 
 /// When the worker contacts each member.
 #[derive(Default)]
@@ -997,6 +1044,9 @@ struct Schedule {
     members: BTreeMap<String, (u64, u64)>,
     /// The local change digest read at the start of the last complete round.
     last_digest: String,
+    /// Task #20: seconds between a member's periodic syncs ([`PERIOD`] by
+    /// default).
+    period: u64,
 }
 
 /// What a worker round reads and does: this computer and its members in the
@@ -1014,17 +1064,26 @@ trait Members {
 impl Schedule {
     /// One round: syncs each member that is due and, after a local change to
     /// the catalog or to any task, at once each member that is not backing off.
+    #[cfg(test)]
     fn round(&mut self, members: &mut impl Members) -> Result<()> {
+        self.round_with(members, &BTreeSet::new())
+    }
+
+    /// Task #20 (P2.6c): [`Self::round`], also syncing at once each member in
+    /// `woken` (its watch stream showed its catalog or tasks changed), even
+    /// one backing off: it was just seen alive.
+    fn round_with(&mut self, members: &mut impl Members, woken: &BTreeSet<String>) -> Result<()> {
         let (digest, aliases) = members.local()?;
         let changed = digest != self.last_digest;
+        let period = if self.period == 0 { PERIOD } else { self.period };
         for alias in aliases {
             let (due, failures) = self.members.get(&alias).copied().unwrap_or_default();
-            if members.now() < due && !(changed && failures == 0) {
+            if members.now() < due && !(changed && failures == 0) && !woken.contains(&alias) {
                 continue;
             }
             match members.sync(&alias) {
                 Ok(()) => {
-                    self.members.insert(alias, (members.now() + 30, 0));
+                    self.members.insert(alias, (members.now() + period, 0));
                 }
                 Err(error) => {
                     members.failed(&alias, &error)?;
@@ -1043,6 +1102,19 @@ impl Schedule {
         // one round that finds nothing new.
         self.last_digest = digest;
         Ok(())
+    }
+
+    /// Task #20: whether a member's periodic sync (or retry) is due by `now`
+    /// (Unix seconds); a member never synced is due.
+    fn due(&self, now: u64) -> bool {
+        self.members.is_empty() || self.members.values().any(|(due, _)| *due <= now)
+    }
+
+    /// Task #20: when the next member's sync is due, as an instant; None
+    /// without members.
+    fn next_due(&self, now: u64) -> Option<Instant> {
+        let due = self.members.values().map(|(due, _)| *due).min()?;
+        Some(Instant::now() + Duration::from_secs(due.saturating_sub(now)))
     }
 }
 
@@ -1196,5 +1268,26 @@ mod tests {
             [vec!["b", "c"], vec![], vec!["b", "c"], vec!["b"], vec!["b"]]
         );
         assert_eq!(schedule.members["c"].1, 2);
+    }
+    /// Task #20 of team c536f0e5 (P2.6c): waiting on changes, the periodic
+    /// sync is every 5 minutes, and a member whose head moved (its wake file)
+    /// syncs at once, even while it backs off.
+    #[test]
+    fn a_woken_member_syncs_at_once_and_the_periodic_sync_is_five_minutes() {
+        let mut fake = Fake { failing: ["c".to_owned()].into(), ..Fake::default() };
+        let mut schedule = Schedule { period: WAITING_PERIOD, ..Schedule::default() };
+        assert!(schedule.due(fake.clock), "never synced: due");
+        fake.round(&mut schedule);
+        assert!(!schedule.due(fake.clock + 29), "c backs off 30 s, b waits 5 minutes");
+        let woken = BTreeSet::from(["b".to_owned(), "c".to_owned()]);
+        fake.synced.push(Vec::new());
+        schedule.round_with(&mut fake, &woken).unwrap();
+        fake.clock += 60;
+        fake.round(&mut schedule);
+        fake.clock += WAITING_PERIOD;
+        fake.round(&mut schedule);
+        assert_eq!(fake.synced, [vec!["b", "c"], vec!["b", "c"], vec!["c"], vec!["b", "c"]]);
+        assert!(schedule.next_due(fake.clock).is_some());
+        assert!(Schedule::default().next_due(0).is_none(), "no member, no deadline");
     }
 }

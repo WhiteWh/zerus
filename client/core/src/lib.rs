@@ -89,6 +89,7 @@ pub mod send;
 pub mod session_file_reference;
 pub mod session_selector;
 pub mod session_usage;
+pub mod swarm_wake;
 pub mod settings;
 pub mod shell;
 pub mod socraticode;

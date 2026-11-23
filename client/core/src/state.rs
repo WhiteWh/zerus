@@ -165,6 +165,8 @@ pub struct CatalogState {
     team_heads: crate::teams::TeamHeads,
     /// Task #16 of team c536f0e5 (P2.5): the `team.views` rows.
     team_views: crate::teams::TeamViewRows,
+    /// Task #20 of team c536f0e5 (P2.6c): the computer's `swarm` head.
+    swarm_head: crate::swarm_wake::SwarmHead,
     live: bool,
     failed: bool,
     failures: u32,
@@ -212,6 +214,7 @@ impl CatalogState {
                 // stream without the topic keeps the Teams poller polling.
                 self.lose_team_heads(computer, &mut changes);
                 self.lose_team_views(computer, &mut changes);
+                self.swarm_head.reset();
                 // Retain display facts across reconnects, but bind the physical
                 // identity to this hello. An unknown/legacy hello clears it,
                 // including when the new host caption is absent.
@@ -417,6 +420,22 @@ impl CatalogState {
             }
             // Task #16 (P2.5): the views; a gap or a failure reads them with
             // their commands until the next complete snapshot.
+            // Task #20 (P2.6c): the swarm head; the stream wakes the local
+            // swarm worker when it moved (`take_swarm_moved`).
+            Body::Snapshot(snapshot) if snapshot.topic == topic::SWARM => {
+                if let Some(item) = snapshot.items.iter().flatten().find(|item| item["key"] == "swarm") {
+                    self.swarm_head.row(&item["row"]);
+                }
+            }
+            Body::Delta(delta) if delta.topic == topic::SWARM => {
+                if let Some(item) = delta.upsert.iter().find(|item| item.key == "swarm") {
+                    self.swarm_head.row(&item.row);
+                }
+            }
+            Body::Gap(gap) if gap.topic == topic::SWARM => self.swarm_head.reset(),
+            Body::Error(error) if !error.fatal && error.topic.as_deref() == Some(topic::SWARM) => {
+                self.swarm_head.reset()
+            }
             Body::Snapshot(snapshot) if snapshot.topic == topic::TEAM_VIEWS => {
                 if let Some(views) = self.team_views.snapshot(snapshot) {
                     changes.push(Change::TeamViews {
@@ -932,6 +951,19 @@ impl CatalogState {
                 views: None,
             });
         }
+    }
+
+    /// Task #20 of team c536f0e5 (P2.6c): whether the swarm head moved since
+    /// the last call.
+    pub fn take_swarm_moved(&mut self) -> bool {
+        self.swarm_head.take_moved()
+    }
+
+    /// Task #20 (P2.6c): whether the latest `hello` offers the swarm head.
+    pub fn swarm_offered(&self) -> bool {
+        self.hello
+            .as_ref()
+            .is_some_and(|hello| hello.topics.iter().any(|name| name == topic::SWARM))
     }
 
     /// Task #16 (P2.5): whether the latest `hello` offers the team views.

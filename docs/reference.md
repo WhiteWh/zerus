@@ -7076,7 +7076,17 @@ once per process. Explicit initialize still refuses that unknown import state.
 The independent `hgs-swarm` service (`com.hgdev.hgs-swarm` on macOS) makes no network
 requests without members. Local changes normally trigger exchange within three
 seconds; unchanged peers are checked every 30 seconds, backing off to five minutes
-on failure. Zerus reads the local catalog every five seconds without SSH. Offline
+on failure. Zerus reads the local catalog every five seconds without SSH.
+Where change notifications work (Windows and Linux; not macOS yet, and not with
+`HGS_CHANGE_BUS=0`), the worker instead waits for a change to the catalog or
+the session ID files in the configuration's `swarm` folder, or to a stored
+project's changes, tasks or inventory in the state's `replica` folder, and
+exchanges 200 ms after the burst goes quiet. Unchanged peers are then checked
+every five minutes. A file `swarm/wake/<alias>` makes the worker exchange with
+that member at once, even while it backs off, and is removed: the desktop
+touches it when the member's watch stream shows its `swarm` head moved. The
+initial placement, the task cutover step and the session labels' refresh run
+after a change and at least every 30 seconds. Offline
 members catch up later. Independent fields merge; conflicts remain in the Swarm
 review UI. A session's missing/Inbox placement is a fallback: a concurrent choice
 of one known live concrete project wins without review, and identical concrete
@@ -13695,6 +13705,18 @@ up. A read that fails, such as a store held by a writer, sends a non-fatal
 `team_failed`. A peer whose `hello` does not list `team` answers the
 subscription with `unsupported_topic`; read its teams with `hgs team` as
 before.
+
+The `swarm` topic carries the computer's swarm head as one row `swarm`,
+`{"catalog","tasks"}`: the digest of the catalog's operations and the
+fingerprint of the stored tasks, as the swarm worker compares them, so a
+sync's own bookkeeping never moves it. Subscribe with
+`{"op":"subscribe","topic":"swarm"}`. It is read when a stat of the catalog or
+of a stored project changes and at least every 30 s, at most once a second, and
+is sent as a snapshot, then as deltas; a failed read sends a non-fatal
+`swarm_failed`. The desktop subscribes it on each peer's stream; when a peer's
+head moves (and once per new stream), it touches `swarm/wake/<alias>` in the
+hgs configuration folder, so the local swarm worker exchanges with that peer
+at once.
 
 The `team.views` topic carries the Teams views themselves, so the desktop runs
 no `hgs team` read for them: `{"op":"subscribe","topic":"team.views","team":"ID"}`,

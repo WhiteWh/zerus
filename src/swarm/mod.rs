@@ -31,6 +31,7 @@ pub(crate) use service::{Executable, Replacement};
 mod store;
 pub(crate) use store::read_snapshot as read_catalog_snapshot;
 mod transport;
+mod wait;
 
 use crate::{cli, config::Config};
 use anyhow::{bail, ensure, Result};
@@ -216,6 +217,32 @@ pub(crate) fn organization_files(config: &Config) -> Vec<std::path::PathBuf> {
     let mut files = store::snapshot_files(config);
     files.push(config.dir.join("swarm").join(service::MARKER));
     files.extend(adoption::followed_files(&config.dir.join("swarm")));
+    files
+}
+
+/// Task #20 of team c536f0e5 (P2.6c): this computer's swarm head for the
+/// watch stream's `swarm` topic: the digest of the catalog's operations and
+/// the fingerprint of the stored tasks, both as the worker compares them, so
+/// a sync's own bookkeeping never moves it. Read only: nothing is saved.
+pub(crate) fn head(config: &Config) -> anyhow::Result<Value> {
+    let catalog = store::LockedStore::load(config)?.data.catalog.digest();
+    Ok(serde_json::json!({"catalog": catalog, "tasks": replica::fingerprint(config)?}))
+}
+
+/// Task #20: the files whose stat moves with the head: the catalog, the
+/// replica folder and each stored project's changes, tasks and inventory.
+pub(crate) fn head_files(config: &Config) -> Vec<std::path::PathBuf> {
+    let mut files = vec![config.dir.join("swarm/catalog.json")];
+    let replica = config.state.join("replica");
+    files.push(replica.clone());
+    if let Ok(entries) = std::fs::read_dir(&replica) {
+        for entry in entries.flatten().take(512) {
+            let project = entry.path();
+            if project.is_dir() {
+                files.extend(["changes", "tasks", "inventory.json"].map(|name| project.join(name)));
+            }
+        }
+    }
     files
 }
 

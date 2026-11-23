@@ -2020,6 +2020,13 @@ impl Supervisor {
     }
     fn handle(&mut self, frame: &Frame) {
         let changes = self.state.apply(&self.computer, frame);
+        // Task #20 of team c536f0e5 (P2.6c): the peer's catalog or tasks
+        // changed: this computer's swarm worker syncs with it now.
+        if self.state.take_swarm_moved() {
+            if let (Some(alias), Some(configuration)) = (self.computer.alias(), crate::swarm_wake::hgs_configuration()) {
+                crate::swarm_wake::touch(&configuration, alias);
+            }
+        }
         let (controls, git_changes) =
             self.git
                 .frame(&mut self.state, &self.computer, frame, Instant::now());
@@ -2105,6 +2112,14 @@ impl Supervisor {
                 }
                 // Task #16 (P2.5): the followed team views, as rows.
                 self.subscribe_team_views();
+                // Task #20 (P2.6c): a peer's swarm head, which wakes this
+                // computer's swarm worker when it moves.
+                if !self.computer.is_local() && self.state.swarm_offered() {
+                    self.write(&Control::Subscribe(Subscription {
+                        topic: topic::SWARM.into(),
+                        ..Subscription::default()
+                    }));
+                }
             }
             Body::Snapshot(snapshot)
                 if snapshot.topic == topic::CATALOG_META

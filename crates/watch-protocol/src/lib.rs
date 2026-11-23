@@ -82,6 +82,11 @@ pub mod topic {
     /// row (`{"error":{"code":"too_large",...}}`) read with its command. One
     /// per stream; a later subscribe replaces the team.
     pub const TEAM_VIEWS: &str = "team.views";
+    /// Task #20 of team c536f0e5 (P2.6c): the computer's swarm head as one
+    /// row `swarm`, `{catalog, tasks}`: the digest of its catalog operations
+    /// and the fingerprint of its stored tasks. A member whose desktop sees a
+    /// peer's head move asks its swarm worker to sync with that peer at once.
+    pub const SWARM: &str = "swarm";
     /// The separately persisted, capable-only Windows drive-folder projection.
     pub const DRIVE_FOLDERS: &str = "organization.drive_folders";
 }

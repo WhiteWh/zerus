@@ -19,6 +19,7 @@ mod organization;
 mod tasks;
 mod team;
 mod team_views;
+mod swarm_head;
 mod writer;
 
 use crate::cli::{Error, Result};
@@ -157,6 +158,8 @@ enum Input {
     /// A read of the team heads finished on its worker.
     /// Task #16 (P2.5): a read of the team views finished on its worker.
     TeamViews(team_views::Done),
+    /// Task #20 (P2.6c): a read of the swarm head finished on its worker.
+    SwarmHead(swarm_head::Done),
     Team(team::Done),
     /// Task 235: a whole listing finished on its own thread.
     Listing(ListingDone),
@@ -596,6 +599,8 @@ struct Watch<'a> {
     team_pool: Option<team::Pool>,
     team_views: team_views::TeamViews,
     team_views_pool: Option<team_views::Pool>,
+    swarm_head: swarm_head::SwarmHead,
+    swarm_head_pool: Option<swarm_head::Pool>,
     drive_folders: organization::Organization,
     drive_folders_pool: Option<organization::Pool>,
     writers: Writers,
@@ -707,6 +712,8 @@ impl<'a> Watch<'a> {
             team_pool: None,
             team_views: team_views::TeamViews::new(),
             team_views_pool: None,
+            swarm_head: swarm_head::SwarmHead::new(),
+            swarm_head_pool: None,
             drive_folders: organization::Organization::new_drive(),
             drive_folders_pool: None,
             writers: Writers::None,
@@ -776,6 +783,7 @@ impl<'a> Watch<'a> {
             Ok(Input::Organization(done)) => self.organization_done(done),
             Ok(Input::Team(done)) => self.team_done(done),
             Ok(Input::TeamViews(done)) => self.team_views_done(done),
+            Ok(Input::SwarmHead(done)) => self.swarm_head_done(done),
             Ok(Input::Listing(done)) => self.listing_done(done),
             Ok(Input::NativeRows(done)) => self.native_done(done),
             Ok(Input::Rows(done)) => self.rows_done(done),
@@ -836,6 +844,7 @@ impl<'a> Watch<'a> {
         self.flush_organization();
         self.flush_team();
         self.flush_team_views();
+        self.flush_swarm_head();
         self.flush_drive_folders();
         phases.mark("flush");
         phases.finish("watch-loop", "");
@@ -941,7 +950,7 @@ impl<'a> Watch<'a> {
             stream: uuid::Uuid::new_v4().to_string(),
             heartbeat_ms: protocol::HEARTBEAT_MS,
             max_frame_bytes: protocol::MAX_FRAME_BYTES,
-            topics: [topic::CATALOG, topic::CATALOG_META, topic::ACTIVITY, topic::GIT, topic::PROCESSES, topic::TASKS, topic::ORGANIZATION, topic::TEAM, topic::TEAM_VIEWS, topic::DRIVE_FOLDERS]
+            topics: [topic::CATALOG, topic::CATALOG_META, topic::ACTIVITY, topic::GIT, topic::PROCESSES, topic::TASKS, topic::ORGANIZATION, topic::TEAM, topic::TEAM_VIEWS, topic::SWARM, topic::DRIVE_FOLDERS]
                 .map(str::to_owned)
                 .to_vec(),
             limits: protocol::Limits::default(),
@@ -1769,6 +1778,9 @@ impl<'a> Watch<'a> {
         if let Some((job, team)) = self.team_views.pulse(now, stamps::files) {
             self.run_team_views(job, team);
         }
+        if let Some(job) = self.swarm_head.pulse(now, stamps::files) {
+            self.run_swarm_head(job);
+        }
         if let Some(job) = self.drive_folders.pulse(now, stamps::files) {
             self.run_drive_folders(job);
         }
@@ -2504,6 +2516,50 @@ impl<'a> Watch<'a> {
 
     /// Sends the changed views as the team heads are sent: a paged snapshot,
     /// then offered deltas; at most one read, so one frame per key, a second.
+    // ---- Swarm head (task #20 of team c536f0e5, P2.6c) -----------------------
+
+    fn subscribe_swarm_head(&mut self) {
+        let files = crate::swarm::head_files(self.config);
+        let stamp = stamps::files(&files);
+        let job = self.swarm_head.subscribe(files, stamp, Instant::now());
+        self.run_swarm_head(job);
+    }
+
+    fn run_swarm_head(&mut self, job: team::Job) {
+        let pool = self.swarm_head_pool.get_or_insert_with(|| {
+            let results = self.git_results.clone();
+            swarm_head::Pool::spawn(self.config.clone(), move |done| {
+                let _ = results.send(Input::SwarmHead(done));
+            })
+        });
+        match pool.run(job) {
+            Ok(()) => {}
+            Err(mpsc::TrySendError::Full(job)) => self.swarm_head.defer(job, Instant::now()),
+            Err(mpsc::TrySendError::Disconnected(job)) => {
+                self.swarm_head_done(swarm_head::Done { token: job.token, value: Some(Err("Swarm head worker is unavailable".into())) });
+            }
+        }
+    }
+
+    fn swarm_head_done(&mut self, done: swarm_head::Done) {
+        if let Some(error) = self.swarm_head.done(done) {
+            self.out.failure("swarm_failed", &error, Some(topic::SWARM), None);
+        }
+    }
+
+    fn flush_swarm_head(&mut self) {
+        if self.out.writer.backlog() > DEFER_BYTES {
+            return;
+        }
+        let Some(plan) = self.swarm_head.plan(PAGE_LIMIT) else { return };
+        let cursor = self.swarm_head.next_rev();
+        match keyed_frames(&self.out, topic::SWARM, plan, cursor) {
+            Some(true) => self.swarm_head.sent(),
+            Some(false) => self.swarm_head.missed(),
+            None => {}
+        }
+    }
+
     fn flush_team_views(&mut self) {
         if self.out.writer.backlog() > DEFER_BYTES {
             return;
@@ -2615,6 +2671,8 @@ impl<'a> Watch<'a> {
                     self.processes.unsubscribe(&session.key());
                 } else if subscription.topic == topic::TEAM_VIEWS {
                     self.team_views.unsubscribe();
+                } else if subscription.topic == topic::SWARM {
+                    self.swarm_head.unsubscribe();
                 } else if let Some(session) = subscription.session.filter(|_| subscription.topic == topic::ACTIVITY) {
                     let key = session.key();
                     self.subs.retain(|sub| sub.key != key);
@@ -2636,6 +2694,7 @@ impl<'a> Watch<'a> {
             other => {
                 self.out.error(
             topic::TEAM_VIEWS => return self.subscribe_team_views(request.team),
+            topic::SWARM => return self.subscribe_swarm_head(),
                     "unsupported_topic",
                     &format!("watch-v1 does not stream {other}; keep reading it with its command"),
                     Some(other),
@@ -2934,6 +2993,7 @@ mod tests {
                 Input::Rows(_) => "<rows>".into(),
                 Input::Probe(_) => "<probe>".into(),
                 Input::TeamViews(_) => "<team views>".into(),
+                Input::SwarmHead(_) => "<swarm head>".into(),
                 Input::DriveFolders(_) => "<drive_folders>".into(),
                 Input::Inspected(done) => format!("<inspected {}>", done.key),
                 Input::Changed(_) => "<changed>".into(),
