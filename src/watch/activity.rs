@@ -14,7 +14,11 @@ const MESSAGE_IDS: usize = 256;
 /// Sections of an inspection that `state` leaves out: Activity rows travel as
 /// `events`, and process sets belong to a later topic.
 const NOT_STATE: [&str; 6] = ["events", "processes", "process_work", "cursor", "history_truncated", "replace_events"];
-const VOLATILE_STATE: [&[&str]; 2] = [&["goal_observed_at"], &["process_work", "sampled_at"]];
+/// Fields that differ on every inspection without anything having changed.
+/// Task #24: `timings_ms` (the inspection's own phase timings) made every
+/// refresh of a busy session send its whole `state` again, about 180 KB
+/// every 2 s, which held the stream's private memory growing.
+const VOLATILE_STATE: [&[&str]; 3] = [&["goal_observed_at"], &["process_work", "sampled_at"], &["timings_ms"]];
 
 /// One session the client follows.
 pub(super) struct Subscription {
@@ -239,6 +243,8 @@ mod tests {
         assert_eq!(value, json!({"name":"codex/p/t","phase":"idle","activity":"idle","goal_observed_at":5.0,"message_events":[]}));
         let mut later = value.clone();
         later["goal_observed_at"] = json!(6.0);
+        // Task #24: an inspection's own timings are no change either.
+        later["timings_ms"] = json!({"total":912,"summary":400,"questions":380});
         assert_eq!(state_digest(&value), state_digest(&later));
         later["phase"] = json!("working");
         assert_ne!(state_digest(&value), state_digest(&later));
