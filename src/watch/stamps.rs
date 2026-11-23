@@ -129,6 +129,34 @@ impl Scan {
     }
 }
 
+/// Task #11 (P2.1a): whether a change notified at `relative` (to the state
+/// folder) can move a pulse input: the stamped files and folders above, the
+/// journal, the team store and the question route ledger. Everything else
+/// (logs, team ticks, heartbeats, temporary files) never wakes the loop.
+pub(super) fn relevant(relative: &Path) -> bool {
+    let Some(name) = relative.file_name().and_then(|name| name.to_str()) else { return false };
+    // SQLite's shared memory changes on reads, this loop's own included.
+    if name.ends_with("-shm") {
+        return false;
+    }
+    let parent = relative.parent().unwrap_or(Path::new(""));
+    let store = |stem: &str, path: &Path| path.to_str().is_some_and(|path| path.replace('\\', "/").starts_with(stem));
+    if parent.as_os_str().is_empty() {
+        return binding(name)
+            || ROOT_FILES.contains(&name)
+            || FOLDERS.contains(&name)
+            || PATHS.contains(&name)
+            || ["coordination", "dsh", "opencode", "teams", "desktop"].contains(&name)
+            || store("events.sqlite3", relative);
+    }
+    if PATHS.iter().any(|path| store(path, relative)) || store("teams/teams.sqlite3", relative) || store("desktop/state.sqlite3", relative) {
+        return true;
+    }
+    // A stamped folder, or one of its entries (the archives folder counts
+    // as a whole: an entry added or removed changes it).
+    FOLDERS.iter().chain(["archives"].iter()).any(|folder| relative == Path::new(folder) || (parent == Path::new(folder) && ordinary(name)))
+}
+
 /// The stamps of a state folder.
 pub(super) fn scan(root: &Path) -> Scan {
     let mut scan = Scan::default();
@@ -187,6 +215,48 @@ mod tests {
         assert_eq!(scan(root),before,"ordinary Store writes never refresh the catalog");
         db.execute("UPDATE desktop_question_route_outcome_revision SET revision=1",[]).unwrap();
         assert_ne!(scan(root).global,before.global,"a settled failure refreshes the human request");
+    }
+
+    /// Task #11: notifications that can move an input wake the loop; logs,
+    /// team ticks, temporary files and SQLite shared memory never do.
+    #[test]
+    fn only_notified_inputs_are_relevant() {
+        let binding = format!("{}.json", "a".repeat(64));
+        for path in [
+            binding.as_str(),
+            "read-marks.json",
+            "events.sqlite3",
+            "events.sqlite3-wal",
+            "bindings/x.json",
+            r"bindings\x.json",
+            "dsh/bindings/x.json",
+            "launches",
+            "launches/1.json",
+            "labels/l.json",
+            "archives",
+            "archives/a.json",
+            "coordination/waits.sqlite3-wal",
+            "teams/teams.sqlite3",
+            "teams/teams.sqlite3-wal",
+            "desktop/state.sqlite3-wal",
+        ] {
+            assert!(relevant(Path::new(path)), "{path}");
+        }
+        for path in [
+            "logs/slow-calls.log",
+            "teams/abc/tick.json",
+            "teams/worker.heartbeat",
+            ".hgs-next",
+            "launches/.hgs-partial",
+            "bindings/.lock",
+            "events.sqlite3-shm",
+            "teams/teams.sqlite3-shm",
+            "notes.json",
+            "desktop-presence.json",
+            "catalog.meta",
+        ] {
+            assert!(!relevant(Path::new(path)), "{path}");
+        }
     }
 
     /// zerus-ucck P3a: a session in the ID layout, and the label index, are

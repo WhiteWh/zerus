@@ -4,7 +4,9 @@
 //! what `hgs inspect` returns for subscribed sessions, and git what `hgs
 //! git-status --json` returns for subscribed checkout folders. Change detection
 //! is a 250 ms pulse over cheap stamps and the journal's data version, on
-//! `std::thread` only. A changed binding or journal row derives only its
+//! `std::thread` only; on Windows, file notifications under the state folder
+//! run the pulse at once (`crate::state::changes`, off with
+//! `HGS_CHANGE_BUS=0`). A changed binding or journal row derives only its
 //! session's row again; a 5 s probe watches what no file shows and the whole
 //! listing runs every 5 s. See "Event stream" in docs/reference.md.
 mod activity;
@@ -19,6 +21,7 @@ mod writer;
 
 use crate::cli::{Error, Result};
 use crate::config::Config;
+use crate::state::changes;
 use crate::state::watch_source as source;
 use activity::Subscription;
 use catalog::{Digest32, Sent};
@@ -34,6 +37,10 @@ use zerus_watch_protocol::{self as protocol, reason, topic, Body, Control};
 
 /// How often sources are checked.
 const PULSE: Duration = Duration::from_millis(250);
+/// Task #11: a change bus hint runs the pulse at once, but at most this
+/// soon after the previous one, so files that keep changing (the journal of
+/// a working session) cannot run it more often than ten times a second.
+const HINT_GAP: Duration = Duration::from_millis(100);
 /// A listing or a row refresh waits this long after a change, so a burst
 /// derives once.
 const DEBOUNCE: Duration = Duration::from_millis(150);
@@ -101,8 +108,13 @@ enum Input {
     DriveFolders(organization::Done),
     /// P1.5: a subscription's summary was inspected again on a thread.
     Inspected(InspectDone),
+    /// Task #11 (P2.1a): the change bus noticed files under the state folder.
+    Changed(changes::Note),
     End,
 }
+
+/// Task #11: how changed rows are derived; tests use a fake.
+type DeriveFn = fn(&BTreeSet<String>) -> std::result::Result<Option<(Vec<Value>, u64)>, String>;
 
 /// What a summary refresh reads: the inspection and, for a journal session,
 /// its timeline (journal name and conversation).
@@ -232,90 +244,15 @@ pub(crate) fn run(config: &Config, args: &[String], dry: bool) -> Result<i32> {
     watch.hello();
     watch.list(Instant::now());
     watch.emit_catalog();
-    let mut next_pulse = Instant::now() + PULSE;
+    watch.start_bus();
     loop {
-        let now = Instant::now();
-        let deadline = [watch.listing_due, watch.refresh_due, watch.native_due, Some(watch.replacement_due)]
-            .into_iter()
-            .flatten()
-            .fold(next_pulse, Instant::min);
-        let input = received.recv_timeout(deadline.saturating_duration_since(now));
+        let input = received.recv_timeout(watch.deadline().saturating_duration_since(Instant::now()));
         if matches!(input, Ok(Input::Line(_) | Input::TooLong)) {
             pending.fetch_sub(1, Ordering::SeqCst);
         }
-        if watch.out.writer.stopped() {
+        if !watch.turn(input) {
             return Ok(0);
         }
-        // Everything below runs on the loop, and every subscription, control
-        // and Activity frame waits for it: a pass that takes a second or more
-        // leaves a `watch-loop` line naming its steps in the slow-calls log.
-        let mut phases = crate::state::slow_calls::Phases::start();
-        match input {
-            Ok(Input::Line(text)) => watch.control(&text),
-            Ok(Input::TooLong) => watch.out.error(
-                "bad_request",
-                &format!("control operations are at most {} bytes", protocol::CONTROL_LINE_BYTES),
-                None,
-                None,
-            ),
-            Ok(Input::Dropped) => watch.out.error(
-                "bad_request",
-                &format!("more than {PENDING_CONTROLS} control operations were waiting; later ones were dropped"),
-                None,
-                None,
-            ),
-            Ok(Input::Git(done)) => watch.git_done(done),
-            Ok(Input::Processes(done)) => watch.processes_done(done),
-            Ok(Input::Tasks(done)) => watch.tasks_done(done),
-            Ok(Input::Organization(done)) => watch.organization_done(done),
-            Ok(Input::Team(done)) => watch.team_done(done),
-            Ok(Input::Listing(done)) => watch.listing_done(done),
-            Ok(Input::NativeRows(done)) => watch.native_done(done),
-            Ok(Input::Rows(done)) => watch.rows_done(done),
-            Ok(Input::Probe(done)) => watch.probe_done(done),
-            Ok(Input::DriveFolders(done)) => watch.drive_folders_done(done),
-            Ok(Input::Inspected(done)) => watch.inspected(done),
-            Ok(Input::End) | Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(0),
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-        }
-        phases.mark("input");
-        if watch.out.writer.stopped() {
-            return Ok(0);
-        }
-        let now = Instant::now();
-        if now >= next_pulse {
-            next_pulse = now + PULSE;
-            watch.pulse(now, &mut phases);
-        }
-        if watch.listing_due.is_some_and(|due| now >= due) {
-            watch.list(now);
-            phases.mark("list");
-        }
-        if watch.refresh_due.is_some_and(|due| now >= due) {
-            watch.refresh_rows(now);
-            phases.mark("rows");
-        }
-        if watch.native_due.is_some_and(|due| now >= due) {
-            watch.refresh_native(now);
-            phases.mark("native");
-        }
-        if now >= watch.replacement_due && watch.replaced(now) {
-            watch.end_replaced();
-            return Ok(0);
-        }
-        phases.mark("replacement");
-        watch.emit_catalog();
-        phases.mark("catalog");
-        watch.resync_activity();
-        phases.mark("resync");
-        watch.flush_git();
-        watch.flush_processes();
-        watch.flush_tasks();
-        watch.flush_organization();
-        watch.flush_team();
-        watch.flush_drive_folders();
-        phases.mark("flush");
-        phases.finish("watch-loop", "");
     }
 }
 
@@ -530,6 +467,17 @@ struct Watch<'a> {
     executable: Option<crate::swarm::Executable>,
     replacement: Option<crate::swarm::Replacement>,
     replacement_due: Instant,
+    /// When the next pulse runs: every [`PULSE`], and at once on a hint.
+    pulse_due: Instant,
+    pulsed_at: Option<Instant>,
+    /// Task #11 (P2.1a): file notifications under the state folder; None
+    /// when switched off (`HGS_CHANGE_BUS=0`), refused or failed.
+    bus: Option<changes::Bus>,
+    /// The bus asked for this pulse: it debounced the burst already.
+    hinted: bool,
+    /// A bus fault is logged once per stream.
+    bus_reported: bool,
+    derive: DeriveFn,
 }
 
 impl<'a> Watch<'a> {
@@ -597,7 +545,149 @@ impl<'a> Watch<'a> {
             executable: crate::swarm::Executable::current(),
             replacement: None,
             replacement_due: Instant::now() + REPLACEMENT_CHECK,
+            pulse_due: Instant::now() + PULSE,
+            pulsed_at: None,
+            bus: None,
+            hinted: false,
+            bus_reported: false,
+            derive: source::rows,
         }
+    }
+
+    /// When the loop must wake without input.
+    fn deadline(&self) -> Instant {
+        [self.listing_due, self.refresh_due, self.native_due, Some(self.replacement_due)]
+            .into_iter()
+            .flatten()
+            .fold(self.pulse_due, Instant::min)
+    }
+
+    /// One pass of the loop for `input`, or for a deadline when it timed
+    /// out. False when the stream ends.
+    fn turn(&mut self, input: std::result::Result<Input, mpsc::RecvTimeoutError>) -> bool {
+        if self.out.writer.stopped() {
+            return false;
+        }
+        // Everything below runs on the loop, and every subscription, control
+        // and Activity frame waits for it: a pass that takes a second or more
+        // leaves a `watch-loop` line naming its steps in the slow-calls log.
+        let mut phases = crate::state::slow_calls::Phases::start();
+        match input {
+            Ok(Input::Line(text)) => self.control(&text),
+            Ok(Input::TooLong) => self.out.error(
+                "bad_request",
+                &format!("control operations are at most {} bytes", protocol::CONTROL_LINE_BYTES),
+                None,
+                None,
+            ),
+            Ok(Input::Dropped) => self.out.error(
+                "bad_request",
+                &format!("more than {PENDING_CONTROLS} control operations were waiting; later ones were dropped"),
+                None,
+                None,
+            ),
+            Ok(Input::Git(done)) => self.git_done(done),
+            Ok(Input::Processes(done)) => self.processes_done(done),
+            Ok(Input::Tasks(done)) => self.tasks_done(done),
+            Ok(Input::Organization(done)) => self.organization_done(done),
+            Ok(Input::Team(done)) => self.team_done(done),
+            Ok(Input::Listing(done)) => self.listing_done(done),
+            Ok(Input::NativeRows(done)) => self.native_done(done),
+            Ok(Input::Rows(done)) => self.rows_done(done),
+            Ok(Input::Probe(done)) => self.probe_done(done),
+            Ok(Input::DriveFolders(done)) => self.drive_folders_done(done),
+            Ok(Input::Inspected(done)) => self.inspected(done),
+            Ok(Input::Changed(note)) => self.changed(note, Instant::now()),
+            Ok(Input::End) | Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        phases.mark("input");
+        if self.out.writer.stopped() {
+            return false;
+        }
+        let now = Instant::now();
+        if now >= self.pulse_due {
+            self.pulse_due = now + PULSE;
+            self.pulsed_at = Some(now);
+            self.pulse(now, &mut phases);
+        }
+        if self.listing_due.is_some_and(|due| now >= due) {
+            self.list(now);
+            phases.mark("list");
+        }
+        if self.refresh_due.is_some_and(|due| now >= due) {
+            self.refresh_rows(now);
+            phases.mark("rows");
+        }
+        if self.native_due.is_some_and(|due| now >= due) {
+            self.refresh_native(now);
+            phases.mark("native");
+        }
+        if now >= self.replacement_due && self.replaced(now) {
+            self.end_replaced();
+            return false;
+        }
+        phases.mark("replacement");
+        self.emit_catalog();
+        phases.mark("catalog");
+        self.resync_activity();
+        phases.mark("resync");
+        self.flush_git();
+        self.flush_processes();
+        self.flush_tasks();
+        self.flush_organization();
+        self.flush_team();
+        self.flush_drive_folders();
+        phases.mark("flush");
+        phases.finish("watch-loop", "");
+        true
+    }
+
+    // ---- Change bus (task #11, P2.1a) --------------------------------------
+
+    /// Starts the file notifications on the state folder. They only bring
+    /// the next pulse forward; the stamps stay the truth and the 250 ms pulse
+    /// stays, so a refused or failed watcher changes nothing but latency.
+    fn start_bus(&mut self) {
+        if !changes::enabled() {
+            return;
+        }
+        let results = self.git_results.clone();
+        match changes::Bus::start(&self.root, stamps::relevant, move |note| results.send(Input::Changed(note)).is_ok()) {
+            Ok(bus) => self.bus = Some(bus),
+            Err(error) => self.bus_fault(&error),
+        }
+    }
+
+    /// A hint runs the pulse now (at most every [`HINT_GAP`]), without the
+    /// pulse's own debounce: the bus waited for the burst to end. An
+    /// overflow is a hint that names every input, which a pulse scans anyway.
+    fn changed(&mut self, note: changes::Note, now: Instant) {
+        match note {
+            changes::Note::Hint(hint) => {
+                if hint.overflow {
+                    self.bus_fault("notifications overflowed; the stamps were scanned whole");
+                }
+                self.hinted = true;
+                let at = self.pulsed_at.map_or(now, |last| now.max(last + HINT_GAP));
+                self.pulse_due = self.pulse_due.min(at);
+            }
+            changes::Note::Failed(error) => {
+                self.bus = None;
+                self.bus_fault(&error);
+            }
+        }
+    }
+
+    /// One `change-bus` line in the slow-calls log per stream: the pulse
+    /// covers what the bus misses, so a fault is worth knowing, not repeating.
+    fn bus_fault(&mut self, error: &str) {
+        if std::mem::replace(&mut self.bus_reported, true) {
+            return;
+        }
+        let line = json!({"at":crate::state::now(),"command":"change-bus","subject":error.chars().take(200).collect::<String>(),
+            "pid":std::process::id()});
+        let _ = crate::state::slow_calls::append(&crate::state::slow_calls::log_path(), &line.to_string());
     }
 
     /// An update put another ready executable at this stream's path, and
@@ -759,8 +849,9 @@ impl<'a> Watch<'a> {
         self.rows_running = true;
         let results = self.git_results.clone();
         let names = wanted.clone();
+        let derive = self.derive;
         let spawned = std::thread::Builder::new().name("hgs-watch-rows".into()).spawn(move || {
-            let result = source::rows(&names);
+            let result = derive(&names);
             let _ = results.send(Input::Rows(RowsDone { started: now, wanted: names, result }));
         });
         if let Err(error) = spawned {
@@ -1211,11 +1302,13 @@ impl<'a> Watch<'a> {
             }
         }
         self.scan = scan;
+        // A pulse the change bus asked for comes after its own debounce.
+        let debounce = if std::mem::take(&mut self.hinted) { Duration::ZERO } else { DEBOUNCE };
         if whole {
-            self.schedule(now + DEBOUNCE);
+            self.schedule(now + debounce);
         } else if !names.is_empty() {
             self.stale.extend(names);
-            self.schedule_refresh(now + DEBOUNCE);
+            self.schedule_refresh(now + debounce);
         }
         phases.mark("bindings");
         if self.probed_at.is_none_or(|at| now >= at + PROBE) {
@@ -2390,6 +2483,7 @@ mod tests {
                 Input::Probe(_) => "<probe>".into(),
                 Input::DriveFolders(_) => "<drive_folders>".into(),
                 Input::Inspected(done) => format!("<inspected {}>", done.key),
+                Input::Changed(_) => "<changed>".into(),
                 Input::End => "<end>".into(),
             })
             .collect()
@@ -2516,6 +2610,83 @@ mod tests {
         watch.subs[0].inspecting = None;
         watch.inspected(inspected(&received));
         assert_eq!(watch.subs[0].rev, 0, "a restarted subscription's result is dropped");
+    }
+
+    /// Task #11: a hint brings the pulse forward, never closer than
+    /// `HINT_GAP` to the previous pulse; a failed bus is dropped.
+    #[test]
+    fn a_hint_runs_the_pulse_at_once_but_not_closer_than_the_gap() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_config(dir.path());
+        let writer = Writer::spawn(Sink::default(), protocol::QUEUE_BYTES, Duration::from_secs(3600), || {});
+        let (results, _received) = mpsc::channel();
+        let mut watch = Watch::with_root(&config, writer, results, dir.path().to_owned());
+        let hint = || changes::Note::Hint(changes::Hint { paths: [PathBuf::from("read-marks.json")].into(), overflow: false });
+        let now = Instant::now();
+        watch.changed(hint(), now);
+        assert_eq!(watch.pulse_due, now, "after a quiet time, at once");
+        assert!(watch.hinted, "without the pulse's own debounce");
+        (watch.pulsed_at, watch.pulse_due) = (Some(now), now + PULSE);
+        watch.changed(hint(), now + Duration::from_millis(10));
+        assert_eq!(watch.pulse_due, now + HINT_GAP, "not sooner than the gap after the last pulse");
+        // Never log to the real state folder from a test.
+        watch.bus_reported = true;
+        watch.changed(changes::Note::Failed("gone".into()), now);
+        assert!(watch.bus.is_none());
+    }
+
+    fn working_rows(wanted: &BTreeSet<String>) -> std::result::Result<Option<(Vec<Value>, u64)>, String> {
+        Ok(Some((wanted.iter().map(|name| json!({"name":name,"run_id":"r1","status":"working"})).collect(), 7)))
+    }
+
+    /// Task #11 (P2.1a): a binding replaced by rename reaches the client as a
+    /// catalog delta within 300 ms through the change bus alone: the timer
+    /// pulse, the listing and the probe are all far away.
+    #[cfg(windows)]
+    #[test]
+    fn a_binding_written_by_rename_produces_a_catalog_delta_within_300_ms() {
+        if !changes::enabled() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_owned();
+        let name = "claude/p/bus";
+        let binding = root.join(format!("{}.json", "c".repeat(64)));
+        std::fs::write(&binding, json!({"name":name,"status":"idle"}).to_string()).unwrap();
+        let config = test_config(&root);
+        let sink = Sink::default();
+        let writer = Writer::spawn(sink.clone(), protocol::QUEUE_BYTES, Duration::from_secs(3600), || {});
+        let (results, received) = mpsc::channel();
+        let mut watch = Watch::with_root(&config, writer, results, root.clone());
+        watch.derive = working_rows;
+        let row = json!({"name":name,"run_id":"r1","status":"idle"});
+        watch.rows = vec![(catalog::key(&row), row)];
+        watch.digests = watch.rows.iter().map(|(_, row)| catalog::row_digest(row)).collect();
+        (watch.listed, watch.pending, watch.structure) = (true, true, Some(7));
+        let now = Instant::now();
+        (watch.listed_at, watch.probed_at) = (Some(now), Some(now));
+        watch.pulse_due = now + Duration::from_secs(60);
+        watch.emit_catalog();
+        assert!(sink.shows(r#""t":"snapshot""#));
+        watch.start_bus();
+        assert!(watch.bus.is_some(), "the bus watches the state folder");
+
+        let temp = root.join(".hgs-next");
+        std::fs::write(&temp, json!({"name":name,"status":"working"}).to_string()).unwrap();
+        let written = Instant::now();
+        std::fs::rename(&temp, &binding).unwrap();
+        let latency = loop {
+            let wait = watch.deadline().saturating_duration_since(Instant::now()).min(Duration::from_millis(10));
+            assert!(watch.turn(received.recv_timeout(wait)));
+            let text = String::from_utf8_lossy(&sink.0.lock().unwrap()).into_owned();
+            if text.contains(r#""t":"delta""#) {
+                assert!(text.contains("working"), "{text}");
+                break written.elapsed();
+            }
+            assert!(written.elapsed() < Duration::from_secs(3), "no delta: {text}");
+        };
+        // The timer pulse was a minute away: only the hint ran the pulse.
+        assert!(latency < Duration::from_millis(300), "the delta came {latency:?} after the write");
     }
 
     #[test]

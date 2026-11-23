@@ -13729,6 +13729,19 @@ summaries are re-read when their journal rows or catalog row change, at most
 every 500 ms, and otherwise every 2 s while the agent is busy and every 15 s
 while it is idle; DeepSeek and OpenCode every 2 s.
 
+On Windows the stream also watches the state folder with file notifications
+(`ReadDirectoryChangesW`, the folder and its subfolders). A notification of one
+of the inputs above, the journal or the team store runs the check 50 ms after the
+burst began, but at most every 100 ms, and a changed row is derived without the
+150 ms wait;
+logs, team ticks, temporary files and SQLite shared memory never wake it. A
+notification is only a hint: the stamps decide what changed, and the 250 ms
+check stays, so a lost notification costs latency, never a wrong row. A buffer
+overflow runs the check whole; a network folder, a watcher that cannot start or
+one that fails leaves the stream on its 250 ms check. Each such fault leaves one
+`change-bus` line in `logs/slow-calls.log` per stream. `HGS_CHANGE_BUS=0` turns
+the notifications off.
+
 The stream also checks every 5 s whether an update put another file at the path
 of the `hgs` it runs. That file must differ in device, inode, modification time
 or size, and be a regular executable file. A missing path, or a file not yet
