@@ -2948,6 +2948,23 @@ fn private_stores(raw: &mut Value) {
 }
 /// `ls --json --local --no-archives`, which `hgs watch` streams.
 pub(crate) fn local_listing(config: &Config) -> Result<Value> { local_json_archives(config, false) }
+/// Task #7 of team c536f0e5 (P1.6): what `ls --json --no-archives` prints,
+/// read without a process: this computer first, then each peer when `peers`
+/// (without them, `--local`'s object in the same list). The team worker
+/// reads it every tick.
+pub(crate) fn worker_listing(config: &Config, peers: bool) -> Result<Value> {
+    let local = if cfg!(target_os = "linux") {
+        let query = state::ListingQuery { paged: false, cursor: None, page_size: 64 };
+        local_json_archives_with(config, false, Some(&query))?
+    } else {
+        local_json_archives(config, false)?
+    };
+    let mut fleet = vec![local];
+    if peers {
+        fleet.extend(config.peers.iter().map(|peer| peer_json_archives(config, peer, false)));
+    }
+    Ok(json!(fleet))
+}
 fn local_json_archives(config: &Config, archives: bool) -> Result<Value> {
     local_json_archives_with(config, archives, None)
 }

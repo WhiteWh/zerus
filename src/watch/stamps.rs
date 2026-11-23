@@ -58,7 +58,7 @@ fn entry(path: &Path, metadata: &fs::Metadata) -> u64 {
 
 /// One hash of these files' stamps; a missing file counts as missing. The git
 /// topic stats a checkout's Git metadata with it on every pulse.
-pub(super) fn files(paths: &[PathBuf]) -> u64 {
+pub(crate) fn files(paths: &[PathBuf]) -> u64 {
     let mut hasher = DefaultHasher::new();
     for path in paths {
         match fs::metadata(path) {
@@ -150,6 +150,16 @@ pub(super) fn scan(root: &Path) -> Scan {
         scan.global.hash = scan.global.hash.wrapping_add(hash.finish());
     }
     scan
+}
+
+/// Task #7 of team c536f0e5 (P1.6): the whole scan of `root` as one number,
+/// for the team worker's listing reuse: equal numbers, no listing input moved.
+pub(crate) fn digest(root: &Path) -> u64 {
+    let scan = scan(root);
+    let mut hasher = DefaultHasher::new();
+    (scan.global.hash, scan.global.entries).hash(&mut hasher);
+    scan.bindings.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[cfg(test)]

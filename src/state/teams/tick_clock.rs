@@ -132,12 +132,29 @@ pub(crate) fn finish() -> Option<Record> {
     Some(record)
 }
 
+/// Task #7 of team c536f0e5 (P1.6): counts the worker's session listings in
+/// `tick.json` (`listing`): `reused` when a tick acted on an unchanged one,
+/// `derived` when one was read, with the reason (`first`, `inputs`, `probe`,
+/// `time`, `safety`, `peers`, `prefetch`), since the worker started counting.
+pub(crate) fn count_listing(kind: &str, why: &str) {
+    let mut state = read();
+    if !state["listing"].is_object() {
+        state["listing"] = json!({"since":crate::state::now(),"reused":0,"derived":0,"why":{}});
+    }
+    let counts = &mut state["listing"];
+    counts[kind] = json!(counts[kind].as_u64().unwrap_or(0) + 1);
+    if !why.is_empty() {
+        counts["why"][why] = json!(counts["why"][why].as_u64().unwrap_or(0) + 1);
+    }
+    write(&state);
+}
+
 /// What `hgs team status` shows of the worker's ticks: the phase running now
 /// and since when, the last tick and the slowest of the recent ones.
 pub(crate) fn status() -> Value {
     let state = read();
     json!({"running":state["running"],"last":state["last"],"worst":state["worst"],
-        "recent":state["recent"].as_array().map_or(0, Vec::len)})
+        "recent":state["recent"].as_array().map_or(0, Vec::len),"listing":state["listing"]})
 }
 
 /// The phase holding the worker and for how long, once it has held it for

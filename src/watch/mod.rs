@@ -11,7 +11,7 @@ mod activity;
 mod catalog;
 mod git;
 mod processes;
-mod stamps;
+pub(crate) mod stamps;
 mod organization;
 mod tasks;
 mod team;

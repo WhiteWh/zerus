@@ -12020,14 +12020,10 @@ fn tick_teams(store: &mut Store, host: &str) -> anyhow::Result<bool> {
     if teams.is_empty() && super::owner_queue::watched().is_empty() {
         return Ok(false);
     }
-    let output = match super::tick_clock::phase("listing", tick_listing) {
-        Some(result) => result?,
-        // The previous session listing may still run: skip this tick, never
-        // overlap two `hgs ls` children (U2).
-        None => return Ok(true),
-    };
-    anyhow::ensure!(output.status.success(), "hgs ls failed: {}", String::from_utf8_lossy(&output.stderr).trim());
-    let listing: Value = serde_json::from_slice(&output.stdout).context("invalid hgs ls output")?;
+    // Task #7 of team c536f0e5 (P1.6): read in this process, this computer's
+    // rows alone unless a member or watched session is on another computer.
+    let peers = needs_peers(&teams, &super::owner_queue::watched());
+    let listing = super::tick_clock::phase("listing", || tick_listing(peers))?;
     let sessions = seen(&listing);
     let listed = listed_hosts(&listing);
     // Task #406 (owner, 2026-11-09): hand-outs and answers first, for every
@@ -13416,71 +13412,296 @@ impl WorkerFiles {
     }
 }
 
-/// Runs the worker's session listing unless one may still run: a tick is
-/// skipped rather than overlap two `hgs ls` children (U2).
-/// Task #3 (team ede724c4): how old a session listing the tick may use. A
-/// listing takes 1.4 to 3 s; the tick takes the newest one up to this old and
-/// starts the next on a thread of its own, so hand-outs never wait for `hgs
-/// ls`. Without a fresh one the tick lists itself, as before.
-#[cfg_attr(test, allow(dead_code))]
-const LISTING_MAX_AGE: Duration = Duration::from_secs(5);
+/// Task #7 of team c536f0e5 (P1.6, owner 2026-11-23): the session listing a
+/// tick acts on is never older than this. The listing is read in this process
+/// (`cli::worker_listing`, no `hgs ls` child); the next one is read during the
+/// worker's sleep so that it is fresh when the tick starts.
+const LISTING_MAX_AGE: Duration = Duration::from_secs(3);
+/// Task #7 (lead, 2026-11-23): a listing whose inputs did not move is derived
+/// again at least this often, as a safety net.
+const LISTING_REDERIVE: Duration = Duration::from_secs(30);
+/// Task #7: a row whose state changes by time alone before this many seconds
+/// pass (the next tick, with room) keeps the listing from being reused.
+const TIME_HORIZON: f64 = 2.0 * TICK.as_secs_f64();
 
-/// Task #3: the newest listing the worker read, and when it finished.
-#[cfg_attr(test, allow(dead_code))]
-static LAST_LISTING: std::sync::Mutex<Option<(Instant, Output)>> = std::sync::Mutex::new(None);
-
-#[cfg_attr(test, allow(dead_code))]
-fn run_listing() -> anyhow::Result<Output> {
-    let output = hgs("", &["ls", "--json", "--no-archives"], None, LIST_TIMEOUT)?;
-    if output.status.success() {
-        *LAST_LISTING.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((Instant::now(), output.clone()));
-    }
-    Ok(output)
+/// Task #7: what a listing was read from, taken before it starts: the state
+/// folder's stamps (as `hgs watch` scans them, with the build records and the
+/// team store, whose reasons and budgets the rows show), the Activity
+/// journal's `data_version` and the terminal structure. Equal inputs: no file
+/// the listing reads moved.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ListingInputs {
+    pub stamps: u64,
+    pub journal: Option<i64>,
+    pub structure: u64,
 }
 
-/// Task #3: the session listing of this tick: a fresh cached one (and the
-/// next started in the background), else one read now. None while a listing
-/// still runs and none is fresh: the tick is skipped, never two `hgs ls`
-/// children at once (U2). A test lists on its own thread, through its fake.
-fn tick_listing() -> Option<anyhow::Result<Output>> {
+/// Task #7: the newest listing: its value, whether it holds the peers, what
+/// it was read from, when it was derived and when it was last known current.
+#[derive(Clone)]
+struct Listed {
+    value: Value,
+    peers: bool,
+    inputs: Option<ListingInputs>,
+    derived: Instant,
+    current: Instant,
+}
+
+/// Task #7: the listing as the reuse decision sees it.
+pub(crate) struct CachedListing<'a> {
+    pub value: &'a Value,
+    pub peers: bool,
+    pub inputs: Option<&'a ListingInputs>,
+    /// Since the listing was derived (its inputs taken).
+    pub derived_ago: Duration,
+    /// Since it was last known current: derived, or found unchanged.
+    pub current_ago: Duration,
+}
+
+/// Task #7: what a tick does for its listing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ListingChoice {
+    /// Nothing the listing reads moved and no row changes by time alone:
+    /// the listing is current now.
+    Reuse,
+    /// Known current at most `LISTING_MAX_AGE` ago: acted on, and the next
+    /// one is derived.
+    Fresh,
+    /// Derived now, for the reason named.
+    Derive(&'static str),
+}
+
+/// Task #7 (lead, 2026-11-23): whether a tick may act on `cached`. It is
+/// reused only while its inputs and the probe (`probe_clean`: the agent
+/// processes and their work, what no file shows) are unchanged, it holds no
+/// peer (nothing here sees a peer change), no row changes by time alone and it
+/// was derived less than `LISTING_REDERIVE` ago. Otherwise it is acted on
+/// only when known current at most `LISTING_MAX_AGE` ago.
+pub(crate) fn listing_choice(
+    cached: Option<&CachedListing>,
+    inputs: Option<&ListingInputs>,
+    probe_clean: bool,
+    peers: bool,
+    at: f64,
+) -> ListingChoice {
+    let Some(cached) = cached else { return ListingChoice::Derive("first") };
+    if peers && !cached.peers {
+        return ListingChoice::Derive("peers");
+    }
+    let unchanged = inputs.is_some() && cached.inputs == inputs;
+    let why = if cached.peers {
+        "peers"
+    } else if !unchanged {
+        "inputs"
+    } else if !probe_clean {
+        "probe"
+    } else if cached.derived_ago >= LISTING_REDERIVE {
+        "safety"
+    } else if time_driven_rows(cached.value, at, TIME_HORIZON) {
+        "time"
+    } else {
+        return ListingChoice::Reuse;
+    };
+    if cached.current_ago <= LISTING_MAX_AGE {
+        ListingChoice::Fresh
+    } else {
+        ListingChoice::Derive(why)
+    }
+}
+
+/// Task #7: whether any session row of this computer's listing changes its
+/// state by time alone within `horizon` seconds: a busy turn (a tool call
+/// passing the 30 s mark), a build, a job or subagents, Cooling about to turn
+/// Cold, a usage limit about to reset, or a row without a state.
+pub(crate) fn time_driven_rows(listing: &Value, at: f64, horizon: f64) -> bool {
+    listing[0]["sessions"].as_array().into_iter().flatten().any(|row| time_driven(row, at, horizon))
+}
+
+fn time_driven(row: &Value, at: f64, horizon: f64) -> bool {
+    let reason = &row["state_reason"];
+    match row["session_state"].as_str().unwrap_or_default() {
+        "cold" | "stopped" | "offline" | "user" => false,
+        "cooling" => {
+            let ttl = row["cache_ttl"]["seconds"].as_f64().unwrap_or(0.0);
+            row["last_active"].as_f64().unwrap_or(0.0) + ttl < at + horizon
+        }
+        "deps" => match reason["kind"].as_str().unwrap_or_default() {
+            "subagents" | "long_operation" | "job" => true,
+            "usage_limit" => reason["resets_at"].as_f64().is_none_or(|reset| reset < at + horizon),
+            // A team's reason or a coordination wait: the team store and the
+            // waits database are inputs.
+            _ => false,
+        },
+        // Working, Building, and anything this hgs does not know.
+        _ => true,
+    }
+}
+
+/// Task #7: the newest listing the worker read.
+#[cfg_attr(test, allow(dead_code))]
+static LAST_LISTING: std::sync::Mutex<Option<Listed>> = std::sync::Mutex::new(None);
+/// Task #7: whether the last tick's teams (or watched sessions) need the
+/// peers' rows; until a tick says, they do.
+static LISTING_PEERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// Task #7: how long the last listing took, in milliseconds.
+static LISTING_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(2000);
+/// Task #7: the Activity journal connection whose `data_version` the inputs
+/// compare (it moves with commits of other connections, so it is kept).
+#[cfg_attr(test, allow(dead_code))]
+static JOURNAL: std::sync::Mutex<Option<rusqlite::Connection>> = std::sync::Mutex::new(None);
+
+/// Task #7: whether the ticked teams need the peers' rows: a member on
+/// another computer, or a watched session there. Without them the listing is
+/// this computer's alone (`--local`).
+fn needs_peers(teams: &[Team], watched: &[super::owner_queue::Watched]) -> bool {
+    teams.iter().any(|team| {
+        team.members.iter().any(|member| !member.computer.is_empty() || member.session.as_ref().is_some_and(|session| !session.host.is_empty()))
+    }) || watched.iter().any(|item| !item.host.is_empty())
+}
+
+/// Task #7: the listing inputs now; None when one cannot be read (then the
+/// listing is never reused).
+#[cfg_attr(test, allow(dead_code))]
+fn listing_inputs() -> Option<ListingInputs> {
+    let root = crate::state::watch_source::state_root();
+    let mut extra = vec![root.join("builds")];
+    extra.extend(super::store::files(&super::store::path()));
+    let stamps = crate::watch::stamps::digest(&root) ^ crate::watch::stamps::files(&extra).rotate_left(1);
+    let journal = {
+        let mut held = JOURNAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if held.is_none() {
+            *held = crate::state::watch_source::journal();
+        }
+        match held.as_ref() {
+            Some(db) => match crate::state::watch_source::data_version(db) {
+                Ok(version) => Some(version),
+                Err(_) => {
+                    *held = None;
+                    return None;
+                }
+            },
+            None => None,
+        }
+    };
+    let structure = crate::state::watch_source::structure_now().ok()?;
+    Some(ListingInputs { stamps, journal, structure })
+}
+
+/// Task #7: reads the listing in this process, with the inputs taken first,
+/// and keeps it as the newest.
+#[cfg_attr(test, allow(dead_code))]
+fn derive_listing(peers: bool, why: &'static str) -> anyhow::Result<Value> {
+    let started = Instant::now();
+    let inputs = listing_inputs();
+    let config = crate::config::Config::load().map_err(|error| anyhow::anyhow!(error.message))?;
+    let value = crate::cli::worker_listing(&config, peers).map_err(|error| anyhow::anyhow!(error.message))?;
+    LISTING_MS.store(started.elapsed().as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+    super::tick_clock::count_listing("derived", why);
+    *LAST_LISTING.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some(Listed { value: value.clone(), peers, inputs, derived: started, current: started });
+    Ok(value)
+}
+
+/// Task #7: the choice for the newest listing now; `probe` runs the probe
+/// over its rows (the tick does, the sleep's prefetch does not).
+#[cfg_attr(test, allow(dead_code))]
+fn choose_listing(peers: bool, probe: bool) -> (ListingChoice, Option<Value>) {
+    let cached = LAST_LISTING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let inputs = cached.as_ref().filter(|listed| !listed.peers).and_then(|_| listing_inputs());
+    let probe_clean = match (&cached, &inputs) {
+        (Some(listed), Some(inputs)) if probe && listed.inputs.as_ref() == Some(inputs) => {
+            let rows: Vec<&Value> = listed.value[0]["sessions"].as_array().into_iter().flatten().collect();
+            crate::state::watch_source::probe(&rows).is_ok_and(|found| found.stale.is_empty() && found.structure == inputs.structure)
+        }
+        _ => !probe,
+    };
+    let view = cached.as_ref().map(|listed| CachedListing {
+        value: &listed.value,
+        peers: listed.peers,
+        inputs: listed.inputs.as_ref(),
+        derived_ago: listed.derived.elapsed(),
+        current_ago: listed.current.elapsed(),
+    });
+    let choice = listing_choice(view.as_ref(), inputs.as_ref(), probe_clean, peers, now());
+    (choice, cached.map(|listed| listed.value))
+}
+
+/// Task #7: the session listing of this tick: the newest one when it is
+/// current, else one read now (waiting for a listing the sleep started). A
+/// test lists through its fake `hgs`.
+fn tick_listing(peers: bool) -> anyhow::Result<Value> {
     #[cfg(test)]
     {
-        listing(|| hgs("", &["ls", "--json", "--no-archives"], None, LIST_TIMEOUT))
+        let _ = peers;
+        let output = hgs("", &["ls", "--json", "--no-archives"], None, LIST_TIMEOUT)?;
+        anyhow::ensure!(output.status.success(), "hgs ls failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+        serde_json::from_slice(&output.stdout).context("invalid hgs ls output")
     }
     #[cfg(not(test))]
     {
-        let cached = LAST_LISTING
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .filter(|(at, _)| at.elapsed() <= LISTING_MAX_AGE)
-            .map(|(_, output)| output.clone());
-        match cached {
-            Some(output) => {
-                // The next listing runs while this tick works; it is skipped
-                // when one still runs.
-                let _ = std::thread::Builder::new().name("hgs-team-listing".into()).spawn(|| {
-                    if let Some(Err(error)) = listing(run_listing) {
-                        eprintln!("hgs team worker: listing: {error}");
-                    }
-                });
-                Some(Ok(output))
+        LISTING_PEERS.store(peers, std::sync::atomic::Ordering::Relaxed);
+        // A listing the sleep started is waited for: it is the fresh one.
+        let deadline = Instant::now() + LIST_TIMEOUT;
+        while listing_running() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let (choice, value) = choose_listing(peers, true);
+        match (choice, value) {
+            (ListingChoice::Reuse, Some(value)) => {
+                super::tick_clock::count_listing("reused", "");
+                if let Some(listed) = LAST_LISTING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut() {
+                    listed.current = Instant::now();
+                }
+                Ok(value)
             }
-            None => listing(run_listing),
+            (ListingChoice::Fresh, Some(value)) => Ok(value),
+            _ => {
+                let why = if let ListingChoice::Derive(why) = choice { why } else { "first" };
+                listing(|| derive_listing(peers, why)).unwrap_or_else(|| Err(anyhow::anyhow!("a listing still runs")))
+            }
         }
     }
 }
 
+/// Task #7: during the worker's sleep, the listing for the next tick, timed to
+/// end as the tick starts; nothing when the newest one stays current.
+#[cfg_attr(test, allow(dead_code))]
+fn prefetch_listing() {
+    let peers = LISTING_PEERS.load(std::sync::atomic::Ordering::Relaxed);
+    if let (ListingChoice::Reuse, _) = choose_listing(peers, false) {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("hgs-team-listing".into()).spawn(move || {
+        if let Some(Err(error)) = listing(|| derive_listing(peers, "prefetch")) {
+            eprintln!("hgs team worker: listing: {error}");
+        }
+    });
+}
+
+/// Task #7: how long before the next tick its listing starts: as long as the
+/// last one took, with room, within the tick.
+fn prefetch_lead() -> Duration {
+    let took = Duration::from_millis(LISTING_MS.load(std::sync::atomic::Ordering::Relaxed));
+    (took + Duration::from_millis(300)).clamp(Duration::from_millis(500), TICK)
+}
+
+static LISTING_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg_attr(test, allow(dead_code))]
+fn listing_running() -> bool {
+    LISTING_RUNNING.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// One listing at a time (U2): None while another runs.
 fn listing<T>(run: impl FnOnce() -> T) -> Option<T> {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static RUNNING: AtomicBool = AtomicBool::new(false);
+    use std::sync::atomic::Ordering;
     struct Clear;
     impl Drop for Clear {
         fn drop(&mut self) {
-            RUNNING.store(false, Ordering::SeqCst);
+            LISTING_RUNNING.store(false, Ordering::SeqCst);
         }
     }
-    if RUNNING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+    if LISTING_RUNNING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
         return None;
     }
     let clear = Clear;
@@ -13597,6 +13818,7 @@ pub(crate) fn worker() -> Result<i32> {
             WorkerPass::Stop => break WorkerExit::StopRequested,
             WorkerPass::Ticked(result) => result,
         };
+        let ticked = matches!(result, Ok(true));
         match result {
             Ok(true) => {
                 last_work = Instant::now();
@@ -13615,7 +13837,14 @@ pub(crate) fn worker() -> Result<i32> {
             }
             Err(error) => files.log(&format!("error: {error}")),
         }
-        sleep_or_stop(&files, TICK);
+        // Task #7 (P1.6): the next tick's listing is read during the sleep,
+        // timed to end as the tick starts.
+        let lead = prefetch_lead();
+        sleep_or_stop(&files, TICK.saturating_sub(lead));
+        if ticked && !files.stop_requested() {
+            prefetch_listing();
+        }
+        sleep_or_stop(&files, lead);
     };
     ended.store(true, std::sync::atomic::Ordering::SeqCst);
     files.finish(exit.reason());
@@ -13789,6 +14018,10 @@ mod dispatcher_lead;
 #[cfg(test)]
 #[path = "tests/dispatcher_tick_budget.rs"]
 mod dispatcher_tick_budget;
+
+#[cfg(test)]
+#[path = "tests/dispatcher_listing.rs"]
+mod dispatcher_listing;
 
 #[cfg(test)]
 #[path = "tests/dispatcher_outbox.rs"]
