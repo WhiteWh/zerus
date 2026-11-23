@@ -55,6 +55,13 @@ pub(crate) fn keep_swarm(relative: &Path) -> bool {
 
 /// Which notified paths of the replica folder count: a project's changes,
 /// tasks, inventory or identity, never its indexes or locks.
+///
+/// A bare project folder never counts (task #26): on Windows every create or
+/// delete of a file in it (the task index's `-wal` and `-shm`, opened on
+/// every pass) also reports the folder itself, so the worker woke itself
+/// about a hundred times a second. A new project shows through its
+/// `project-id`, inventory, changes or tasks; a removed one through the
+/// removal of those files, and the periodic pass catches anything else.
 pub(crate) fn keep_replica(relative: &Path) -> bool {
     let parts: Vec<String> = relative.components().map(|part| part.as_os_str().to_string_lossy().into_owned()).collect();
     let Some(name) = parts.last() else { return false };
@@ -64,8 +71,6 @@ pub(crate) fn keep_replica(relative: &Path) -> bool {
     match parts.get(1).map(String::as_str) {
         Some("changes" | "tasks") => true,
         Some("inventory.json" | "project-id") => parts.len() == 2,
-        // A project folder added or removed.
-        None => parts.len() == 1 && name != "store-id",
         _ => false,
     }
 }
@@ -196,12 +201,94 @@ mod tests {
         for path in ["catalog.lock", "worker.lock", "worker.json", "task-cutover-cursor", "session-labels-cache/attempt", "membership.json", "backup-before-join-x.json", "sub/catalog.json"] {
             assert!(!keep_swarm(Path::new(path)), "{path}");
         }
-        for path in ["p1/changes/0001.loro", "p1/tasks/t.json", "p1/inventory.json", "p1/project-id", "p2"] {
+        for path in ["p1/changes/0001.loro", "p1/changes", "p1/tasks/t.json", "p1/inventory.json", "p1/project-id"] {
             assert!(keep_replica(Path::new(path)), "{path}");
         }
         for path in ["store-id", "store-id.lock", "p1/task-index-v3.sqlite3", "p1/task-index-v3.sqlite3-wal", "p1/project.lock", "p1/inventory.repaired", "p1/changes/.tmp1"] {
             assert!(!keep_replica(Path::new(path)), "{path}");
         }
+    }
+
+    /// Task #26: on Windows a file created or removed in a project folder
+    /// also reports the folder itself, so a bare project folder never wakes
+    /// the worker, and neither does any file of the task index.
+    #[test]
+    fn a_bare_project_folder_and_the_task_index_never_wake_the_worker() {
+        let project = "0894e8ae31bcda453e537913f4a8557d625836a9c87a316fe04f12093d26bd46";
+        for path in [project.to_owned(), "p2".to_owned(), String::new()] {
+            assert!(!keep_replica(Path::new(&path)), "{path:?}");
+        }
+        for index in ["task-index-v3.sqlite3", "task-index-v3.sqlite3-wal", "task-index-v3.sqlite3-shm", "task-index-v3.sqlite3-journal", "task-index-v2.sqlite3", ".lock"] {
+            let path = format!("{project}/{index}");
+            assert!(!keep_replica(Path::new(&path)), "{path}");
+        }
+        // A project still shows through its own files.
+        assert!(keep_replica(&Path::new(project).join("project-id")));
+        assert!(keep_replica(&Path::new(project).join("tasks").join("t.loro")));
+    }
+
+    #[cfg(windows)]
+    fn config(root: &Path) -> crate::config::Config {
+        crate::config::Config {
+            home: root.to_string_lossy().into_owned(),
+            dir: root.join("config"),
+            state: root.join("state"),
+            selves: vec!["example-local".into()],
+            peers: vec![],
+            base_peers: vec![],
+            peers_from_environment: false,
+            machines: Default::default(),
+            tab: false,
+            tab_colors: String::new(),
+        }
+    }
+
+    /// Task #26's regression: an idle pass reads every stored project's
+    /// tasks through its SQLite index, whose `-wal` and `-shm` are created
+    /// and removed each time. On a real bus that wakes nothing.
+    #[cfg(windows)]
+    #[test]
+    fn an_idle_pass_over_a_project_index_wakes_nothing() {
+        use zerus_replica::{Actor, NewTask, ProjectStore, Stage, Target, TaskDoc};
+        let root = tempfile::tempdir().unwrap();
+        let config = config(root.path());
+        std::fs::create_dir_all(config.dir.join("swarm")).unwrap();
+        let project = "example";
+        let store = ProjectStore::open(&crate::tasks::replica_root(&config).unwrap(), project).unwrap();
+        let mut task = TaskDoc::create(NewTask {
+            project,
+            id: &store.unused_short_id().unwrap(),
+            text: "Add rate limiting",
+            stage: Stage::Todo,
+            target: Target::Any,
+            author: Actor::Person,
+            rank: "V",
+            now: 1,
+        })
+        .unwrap();
+        store.save(&mut task).unwrap();
+        drop(store);
+        let fingerprint = crate::swarm::replica::fingerprint(&config).unwrap();
+        let mut wait = Wait::start(&config);
+        assert!(wait.listening(), "{:?}", wait.fault);
+        // The worker's pass: the local digest and a task cutover step, which
+        // opens the project's task index and rewrites the cursor.
+        let mut cutover = crate::swarm::replica::CutoverScan::default();
+        for _ in 0..2 {
+            assert_eq!(crate::swarm::replica::fingerprint(&config).unwrap(), fingerprint);
+            assert!(!cutover.advance(&config).unwrap(), "no task to cut over");
+        }
+        // Project folders are named by a hash of the project.
+        let folders = std::fs::read_dir(config.state.join("replica")).unwrap().flatten().filter(|entry| entry.path().is_dir());
+        let index = folders.flat_map(|folder| std::fs::read_dir(folder.path()).unwrap().flatten()).any(|entry| entry.file_name().to_string_lossy().starts_with("task-index-"));
+        assert!(index, "the pass read the tasks through the index");
+        assert_eq!(wait.wait(Instant::now() + Duration::from_millis(600)), Woke::default());
+        // A task saved by someone else still wakes it.
+        let store = ProjectStore::open(&crate::tasks::replica_root(&config).unwrap(), project).unwrap();
+        let mut task = store.load(task.uuid()).unwrap();
+        task.comment("Changed", &Actor::Person, 2).unwrap();
+        store.save(&mut task).unwrap();
+        assert!(wait.wait(Instant::now() + Duration::from_secs(5)).changed);
     }
 
     #[test]
@@ -223,18 +310,7 @@ mod tests {
     #[test]
     fn a_catalog_write_wakes_the_worker_after_the_quiet_time() {
         let root = tempfile::tempdir().unwrap();
-        let config = crate::config::Config {
-            home: root.path().to_string_lossy().into_owned(),
-            dir: root.path().join("config"),
-            state: root.path().join("state"),
-            selves: vec!["example-local".into()],
-            peers: vec![],
-            base_peers: vec![],
-            peers_from_environment: false,
-            machines: Default::default(),
-            tab: false,
-            tab_colors: String::new(),
-        };
+        let config = config(root.path());
         std::fs::create_dir_all(config.dir.join("swarm")).unwrap();
         let mut wait = Wait::start(&config);
         assert!(wait.listening(), "{:?}", wait.fault);

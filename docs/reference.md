@@ -7081,7 +7081,10 @@ Where change notifications work (Windows and Linux; not macOS yet, and not with
 `HGS_CHANGE_BUS=0`), the worker instead waits for a change to the catalog or
 the session ID files in the configuration's `swarm` folder, or to a stored
 project's changes, tasks or inventory in the state's `replica` folder, and
-exchanges 200 ms after the burst goes quiet. Unchanged peers are then checked
+exchanges 200 ms after the burst goes quiet. What the worker writes itself on
+a pass never wakes it: task indexes, locks, the cutover cursor and the label
+cache, nor the change notice a project folder gets for a file created in it (a
+new project shows through its `project-id`). Unchanged peers are then checked
 every five minutes. A file `swarm/wake/<alias>` makes the worker exchange with
 that member at once, even while it backs off, and is removed: the desktop
 touches it when the member's watch stream shows its `swarm` head moved. The
