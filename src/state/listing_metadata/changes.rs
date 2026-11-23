@@ -33,12 +33,15 @@ impl Changes {
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
+    // Task #12: the inotify calls and the record parser are shared with the
+    // change bus (`state::changes`); the namespace rules below stay here.
+    use crate::state::changes::linux as native;
     use std::{
         collections::{BTreeMap, BTreeSet},
         ffi::{CString, OsStr},
         fs, io,
         os::{
-            fd::{AsRawFd, FromRawFd, OwnedFd},
+            fd::{AsRawFd, OwnedFd},
             unix::ffi::OsStrExt,
         },
     };
@@ -70,24 +73,13 @@ mod linux {
     }
     impl Changes {
         pub fn new(root: &Path) -> anyhow::Result<Option<Self>> {
-            Self::install(root, |fd, name, mask| {
-                let result = unsafe { libc::inotify_add_watch(fd, name.as_ptr(), mask) };
-                if result < 0 {
-                    Err(io::Error::last_os_error())
-                } else {
-                    Ok(result)
-                }
-            })
+            Self::install(root, native::add_watch)
         }
         fn install(
             root: &Path,
             mut watch: impl FnMut(i32, &CString, u32) -> io::Result<i32>,
         ) -> anyhow::Result<Option<Self>> {
-            let raw = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
-            if raw < 0 {
-                return Err(unavailable(io::Error::last_os_error()));
-            }
-            let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+            let fd = native::init().map_err(unavailable)?;
             let mut namespaces = BTreeSet::new();
             namespaces.insert(root.to_path_buf());
             for folder in
@@ -146,44 +138,18 @@ mod linux {
             };
             let mut keys = BTreeSet::new();
             while batch.entries < limit {
-                if self.offset == self.length {
-                    let read = unsafe {
-                        libc::read(self.fd.as_raw_fd(), self.buffer.as_mut_ptr().cast(), BUFFER)
-                    };
-                    if read < 0 {
-                        let error = io::Error::last_os_error();
-                        if error.kind() == io::ErrorKind::WouldBlock {
-                            batch.caught_up = true;
-                            break;
-                        }
-                        return Err(unavailable(error));
-                    }
-                    anyhow::ensure!(read > 0, "Display change feed ended");
-                    self.offset = 0;
-                    self.length = read as usize;
-                }
-                let size = std::mem::size_of::<libc::inotify_event>();
-                anyhow::ensure!(
-                    self.length - self.offset >= size,
-                    "Truncated display change event"
-                );
-                let event = unsafe {
-                    std::ptr::read_unaligned(
-                        self.buffer
-                            .as_ptr()
-                            .add(self.offset)
-                            .cast::<libc::inotify_event>(),
-                    )
+                let Some(event) = native::next(
+                    self.fd.as_raw_fd(),
+                    &mut self.buffer,
+                    &mut self.offset,
+                    &mut self.length,
+                )
+                .map_err(unavailable)?
+                else {
+                    batch.caught_up = true;
+                    break;
                 };
-                let end = self
-                    .offset
-                    .checked_add(size)
-                    .and_then(|n| n.checked_add(event.len as usize))
-                    .filter(|n| *n <= self.length)
-                    .ok_or_else(|| unavailable("invalid event length"))?;
-                let name = &self.buffer[self.offset + size..end];
-                let name = &name[..name.iter().position(|b| *b == 0).unwrap_or(name.len())];
-                self.offset = end;
+                let name = &self.buffer[event.name.clone()];
                 batch.entries += 1;
                 if event.mask
                     & (libc::IN_Q_OVERFLOW

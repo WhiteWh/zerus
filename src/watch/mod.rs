@@ -4,8 +4,9 @@
 //! what `hgs inspect` returns for subscribed sessions, and git what `hgs
 //! git-status --json` returns for subscribed checkout folders. Change detection
 //! is a 250 ms pulse over cheap stamps and the journal's data version, on
-//! `std::thread` only; on Windows, file notifications under the state folder
-//! run the pulse at once (`crate::state::changes`, off with
+//! `std::thread` only; on Windows and Linux, file notifications under the
+//! state folder run the scan at once and, while they work, the stamps are
+//! otherwise scanned every 2 s (`crate::state::changes`, off with
 //! `HGS_CHANGE_BUS=0`). A changed binding or journal row derives only its
 //! session's row again; a 5 s probe watches what no file shows and the whole
 //! listing runs every 5 s. See "Event stream" in docs/reference.md.
@@ -41,6 +42,13 @@ const PULSE: Duration = Duration::from_millis(250);
 /// soon after the previous one, so files that keep changing (the journal of
 /// a working session) cannot run it more often than ten times a second.
 const HINT_GAP: Duration = Duration::from_millis(100);
+/// Task #12 (P2.1b): while the change bus is healthy, the stamps and the
+/// journal are scanned on its hints and otherwise this often (the safety
+/// scan of design 4.1); the 250 ms pulse keeps the subscriptions' own timers
+/// and the sources outside the state folder (git, processes, tasks, ...).
+const SAFETY_SCAN: Duration = Duration::from_secs(2);
+/// After an overflow the stamps are scanned on every pulse this long.
+const OVERFLOW_HOLD: Duration = Duration::from_secs(300);
 /// A listing or a row refresh waits this long after a change, so a burst
 /// derives once.
 const DEBOUNCE: Duration = Duration::from_millis(150);
@@ -470,6 +478,10 @@ struct Watch<'a> {
     /// When the next pulse runs: every [`PULSE`], and at once on a hint.
     pulse_due: Instant,
     pulsed_at: Option<Instant>,
+    /// Task #12: when a pulse next scans the stamps and the journal: every
+    /// pulse without a healthy bus, else on a hint or after [`SAFETY_SCAN`].
+    scan_due: Instant,
+    overflowed_at: Option<Instant>,
     /// Task #11 (P2.1a): file notifications under the state folder; None
     /// when switched off (`HGS_CHANGE_BUS=0`), refused or failed.
     bus: Option<changes::Bus>,
@@ -547,6 +559,8 @@ impl<'a> Watch<'a> {
             replacement_due: Instant::now() + REPLACEMENT_CHECK,
             pulse_due: Instant::now() + PULSE,
             pulsed_at: None,
+            scan_due: Instant::now() + PULSE,
+            overflowed_at: None,
             bus: None,
             hinted: false,
             bus_reported: false,
@@ -609,7 +623,11 @@ impl<'a> Watch<'a> {
         if now >= self.pulse_due {
             self.pulse_due = now + PULSE;
             self.pulsed_at = Some(now);
-            self.pulse(now, &mut phases);
+            let scan = now >= self.scan_due;
+            if scan {
+                self.scan_due = now + self.scan_interval(now);
+            }
+            self.pulse(now, scan, &mut phases);
         }
         if self.listing_due.is_some_and(|due| now >= due) {
             self.list(now);
@@ -645,11 +663,13 @@ impl<'a> Watch<'a> {
 
     // ---- Change bus (task #11, P2.1a) --------------------------------------
 
-    /// Starts the file notifications on the state folder. They only bring
-    /// the next pulse forward; the stamps stay the truth and the 250 ms pulse
-    /// stays, so a refused or failed watcher changes nothing but latency.
+    /// Starts the file notifications on the state folder. A hint brings the
+    /// next scan forward; the stamps stay the truth. While the bus is healthy
+    /// the stamps are scanned every [`SAFETY_SCAN`] without a hint; a
+    /// refused or failed watcher keeps the scan on every 250 ms pulse.
+    /// macOS keeps the pulse (owner, 2026-11-23).
     fn start_bus(&mut self) {
-        if !changes::enabled() {
+        if !changes::enabled() || !changes::supported() {
             return;
         }
         let results = self.git_results.clone();
@@ -666,16 +686,29 @@ impl<'a> Watch<'a> {
         match note {
             changes::Note::Hint(hint) => {
                 if hint.overflow {
+                    self.overflowed_at = Some(now);
                     self.bus_fault("notifications overflowed; the stamps were scanned whole");
                 }
                 self.hinted = true;
                 let at = self.pulsed_at.map_or(now, |last| now.max(last + HINT_GAP));
                 self.pulse_due = self.pulse_due.min(at);
+                self.scan_due = self.scan_due.min(at);
             }
             changes::Note::Failed(error) => {
                 self.bus = None;
                 self.bus_fault(&error);
             }
+        }
+    }
+
+    /// How long until the next scan without a hint: [`SAFETY_SCAN`] while
+    /// the bus runs and has not overflowed for [`OVERFLOW_HOLD`], else the pulse.
+    fn scan_interval(&self, now: Instant) -> Duration {
+        let healthy = self.bus.is_some() && self.overflowed_at.is_none_or(|at| now >= at + OVERFLOW_HOLD);
+        if healthy {
+            SAFETY_SCAN
+        } else {
+            PULSE
         }
     }
 
@@ -1269,7 +1302,18 @@ impl<'a> Watch<'a> {
 
     // ---- Pulse -------------------------------------------------------------
 
-    fn pulse(&mut self, now: Instant, phases: &mut crate::state::slow_calls::Phases) {
+    /// `scan`: the stamps and the journal are due (task #12: every pulse
+    /// without a healthy change bus, else on a hint or the safety scan).
+    fn pulse(&mut self, now: Instant, scan: bool, phases: &mut crate::state::slow_calls::Phases) {
+        if scan {
+            self.scan_inputs(now, phases);
+        }
+        self.pulse_timers(now, phases);
+    }
+
+    /// What files under the state folder and the journal show: changed
+    /// bindings derive their rows again, other inputs list the whole.
+    fn scan_inputs(&mut self, now: Instant, phases: &mut crate::state::slow_calls::Phases) {
         let journal = self.poll_journal();
         phases.mark("journal");
         let scan = stamps::scan(&self.root);
@@ -1311,6 +1355,10 @@ impl<'a> Watch<'a> {
             self.schedule_refresh(now + debounce);
         }
         phases.mark("bindings");
+    }
+
+    /// The probe, the whole listing and the subscriptions' own timers.
+    fn pulse_timers(&mut self, now: Instant, phases: &mut crate::state::slow_calls::Phases) {
         if self.probed_at.is_none_or(|at| now >= at + PROBE) {
             self.probe(now);
             phases.mark("probe");
@@ -2633,6 +2681,52 @@ mod tests {
         watch.bus_reported = true;
         watch.changed(changes::Note::Failed("gone".into()), now);
         assert!(watch.bus.is_none());
+    }
+
+    /// Task #12 (P2.1b): with a healthy bus the stamps are scanned every 2 s
+    /// while the pulse keeps 250 ms; without one, or for 5 minutes after an
+    /// overflow, on every pulse.
+    #[test]
+    fn the_stamps_are_scanned_every_two_seconds_while_the_bus_is_healthy() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_config(dir.path());
+        let writer = Writer::spawn(Sink::default(), protocol::QUEUE_BYTES, Duration::from_secs(3600), || {});
+        let (results, _received) = mpsc::channel();
+        let mut watch = Watch::with_root(&config, writer, results, dir.path().to_owned());
+        let now = Instant::now();
+        assert_eq!(watch.scan_interval(now), PULSE, "without a bus, every pulse");
+        if !changes::supported() || !changes::enabled() {
+            return;
+        }
+        watch.start_bus();
+        assert!(watch.bus.is_some());
+        assert_eq!(watch.scan_interval(now), SAFETY_SCAN);
+
+        // A pulse with nothing else due: the next scan is 2 s away, the next pulse 250 ms.
+        let now = Instant::now();
+        (watch.listed, watch.listed_at, watch.probed_at) = (true, Some(now), Some(now));
+        (watch.pulse_due, watch.scan_due) = (now, now);
+        assert!(watch.turn(Err(mpsc::RecvTimeoutError::Timeout)));
+        let after = Instant::now();
+        assert!(watch.scan_due >= now + SAFETY_SCAN && watch.scan_due <= after + SAFETY_SCAN);
+        assert!(watch.pulse_due <= after + PULSE);
+        let scanned = watch.scan_due;
+        watch.pulse_due = Instant::now();
+        assert!(watch.turn(Err(mpsc::RecvTimeoutError::Timeout)));
+        assert_eq!(watch.scan_due, scanned, "a pulse between scans does not scan");
+
+        // A hint brings the scan forward.
+        let hint = changes::Note::Hint(changes::Hint { paths: [PathBuf::from("read-marks.json")].into(), overflow: false });
+        watch.pulsed_at = None;
+        let now = Instant::now();
+        watch.changed(hint, now);
+        assert_eq!((watch.scan_due, watch.pulse_due), (now, now));
+
+        // An overflow keeps the scan on every pulse for a while.
+        watch.bus_reported = true;
+        watch.changed(changes::Note::Hint(changes::Hint { paths: BTreeSet::new(), overflow: true }), now);
+        assert_eq!(watch.scan_interval(now + Duration::from_secs(1)), PULSE);
+        assert_eq!(watch.scan_interval(now + OVERFLOW_HOLD), SAFETY_SCAN);
     }
 
     fn working_rows(wanted: &BTreeSet<String>) -> std::result::Result<Option<(Vec<Value>, u64)>, String> {

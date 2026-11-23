@@ -12,12 +12,17 @@
 //! - SQLite stores change inside files whose notifications NTFS may report
 //!   late; [`DataVersion`] tells whether another connection committed.
 //!
-//! Windows uses `ReadDirectoryChangesW` (windows.rs). Other platforms have no
-//! watcher yet (P2.1b): [`Bus::start`] refuses and the caller keeps its pulse.
+//! Windows uses `ReadDirectoryChangesW` on the folder's subtree (windows.rs).
+//! Linux uses inotify on the folder and each kept subfolder (linux.rs, the
+//! calls; inotify.rs, the records and folders, tested on every platform).
+//! macOS keeps its pulse (owner, 2026-11-23): [`supported`] is false there.
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub(crate) mod inotify;
+#[cfg(target_os = "linux")]
+pub(crate) mod linux;
 #[cfg(windows)]
 mod windows;
 
@@ -26,7 +31,7 @@ pub(crate) const DEBOUNCE: Duration = Duration::from_millis(50);
 /// A hint names at most this many paths; more make it an overflow.
 const MAX_PATHS: usize = 512;
 /// The system's notification buffer for one watcher.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 const BUFFER: usize = 64 * 1024;
 
 /// What may have changed, relative to the watched folder.
@@ -49,17 +54,24 @@ pub(crate) fn enabled() -> bool {
     std::env::var_os("HGS_CHANGE_BUS").is_none_or(|value| value != "0")
 }
 
-/// Which notified paths count; the others never wake the caller.
+/// Whether this platform has a watcher; macOS stays on the pulse until its
+/// directory notifications are qualified.
+pub(crate) fn supported() -> bool {
+    cfg!(any(windows, target_os = "linux"))
+}
+
+/// Which notified paths count; the others never wake the caller. On Linux it
+/// also chooses the subfolders that get a watch.
 pub(crate) type Keep = fn(&Path) -> bool;
 
 /// The notifications of one burst, filtered and bounded.
 #[derive(Default)]
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 struct Batch {
     hint: Hint,
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 impl Batch {
     fn add(&mut self, relative: PathBuf, keep: Keep) {
         if self.hint.overflow || !keep(&relative) {
@@ -87,6 +99,8 @@ impl Batch {
 pub(crate) struct Bus {
     #[cfg(windows)]
     _watcher: windows::Watcher,
+    #[cfg(target_os = "linux")]
+    _watcher: linux::Watcher,
 }
 
 impl Bus {
@@ -99,7 +113,11 @@ impl Bus {
         {
             Ok(Self { _watcher: windows::Watcher::start(root, keep, BUFFER, sink)? })
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        {
+            Ok(Self { _watcher: linux::Watcher::start(root, keep, BUFFER, sink)? })
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = (root, keep, sink);
             Err("no change notifications on this platform yet".into())
