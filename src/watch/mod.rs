@@ -156,11 +156,11 @@ enum Input {
     /// An organization read finished on its worker.
     Organization(organization::Done),
     /// A read of the team heads finished on its worker.
+    Team(team::Done),
     /// Task #16 (P2.5): a read of the team views finished on its worker.
     TeamViews(team_views::Done),
     /// Task #20 (P2.6c): a read of the swarm head finished on its worker.
     SwarmHead(swarm_head::Done),
-    Team(team::Done),
     /// Task 235: a whole listing finished on its own thread.
     Listing(ListingDone),
     /// The DeepSeek and OpenCode rows were read from their hosts on a thread.
@@ -2504,10 +2504,6 @@ impl<'a> Watch<'a> {
         }
     }
 
-    fn subscribe_drive_folders(&mut self) {
-        let files = crate::swarm::drive_folders::watch_files(self.config);
-        let stamp = stamps::files(&files);
-        let job = self.drive_folders.subscribe(files, stamp, Instant::now());
     fn team_views_done(&mut self, done: team_views::Done) {
         if let Some(error) = self.team_views.done(done) {
             self.out.failure("team_views_failed", &error, Some(topic::TEAM_VIEWS), None);
@@ -2573,6 +2569,10 @@ impl<'a> Watch<'a> {
         }
     }
 
+    fn subscribe_drive_folders(&mut self) {
+        let files = crate::swarm::drive_folders::watch_files(self.config);
+        let stamp = stamps::files(&files);
+        let job = self.drive_folders.subscribe(files, stamp, Instant::now());
         self.run_drive_folders(job);
     }
 
@@ -2665,14 +2665,14 @@ impl<'a> Watch<'a> {
                     self.organization.unsubscribe();
                 } else if subscription.topic == topic::TEAM {
                     self.team.unsubscribe();
-                } else if subscription.topic == topic::DRIVE_FOLDERS {
-                    self.drive_folders.unsubscribe();
-                } else if let Some(session) = subscription.session.as_ref().filter(|_| subscription.topic == topic::PROCESSES) {
-                    self.processes.unsubscribe(&session.key());
                 } else if subscription.topic == topic::TEAM_VIEWS {
                     self.team_views.unsubscribe();
                 } else if subscription.topic == topic::SWARM {
                     self.swarm_head.unsubscribe();
+                } else if subscription.topic == topic::DRIVE_FOLDERS {
+                    self.drive_folders.unsubscribe();
+                } else if let Some(session) = subscription.session.as_ref().filter(|_| subscription.topic == topic::PROCESSES) {
+                    self.processes.unsubscribe(&session.key());
                 } else if let Some(session) = subscription.session.filter(|_| subscription.topic == topic::ACTIVITY) {
                     let key = session.key();
                     self.subs.retain(|sub| sub.key != key);
@@ -2689,12 +2689,12 @@ impl<'a> Watch<'a> {
             topic::TASKS => return self.subscribe_tasks(request.project.as_deref(), request.window),
             topic::ORGANIZATION => return self.subscribe_organization(),
             topic::TEAM => return self.subscribe_team(),
+            topic::TEAM_VIEWS => return self.subscribe_team_views(request.team),
+            topic::SWARM => return self.subscribe_swarm_head(),
             topic::DRIVE_FOLDERS => return self.subscribe_drive_folders(),
             topic::ACTIVITY => {}
             other => {
                 self.out.error(
-            topic::TEAM_VIEWS => return self.subscribe_team_views(request.team),
-            topic::SWARM => return self.subscribe_swarm_head(),
                     "unsupported_topic",
                     &format!("watch-v1 does not stream {other}; keep reading it with its command"),
                     Some(other),
@@ -2988,12 +2988,12 @@ mod tests {
                 Input::Tasks(done) => format!("<tasks {}>", done.key),
                 Input::Organization(_) => "<organization>".into(),
                 Input::Team(_) => "<team>".into(),
+                Input::TeamViews(_) => "<team views>".into(),
+                Input::SwarmHead(_) => "<swarm head>".into(),
                 Input::Listing(_) => "<listing>".into(),
                 Input::NativeRows(_) => "<native rows>".into(),
                 Input::Rows(_) => "<rows>".into(),
                 Input::Probe(_) => "<probe>".into(),
-                Input::TeamViews(_) => "<team views>".into(),
-                Input::SwarmHead(_) => "<swarm head>".into(),
                 Input::DriveFolders(_) => "<drive_folders>".into(),
                 Input::Inspected(done) => format!("<inspected {}>", done.key),
                 Input::Changed(_) => "<changed>".into(),
