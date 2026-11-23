@@ -99,7 +99,33 @@ enum Input {
     /// A probe of what no file shows finished on a thread.
     Probe(ProbeDone),
     DriveFolders(organization::Done),
+    /// P1.5: a subscription's summary was inspected again on a thread.
+    Inspected(InspectDone),
     End,
+}
+
+/// What a summary refresh reads: the inspection and, for a journal session,
+/// its timeline (journal name and conversation).
+type Inspection = std::result::Result<(Value, Option<source::Timeline>), String>;
+
+/// P1.5: how a summary refresh reads a session; tests use a slow fake.
+type InspectFn = fn(name: &str, after: i64, native: bool) -> Inspection;
+
+fn inspect_session(name: &str, after: i64, native: bool) -> Inspection {
+    let inspection = source::inspect(name, after).map_err(|error| error.to_string())?;
+    let timeline = if native { None } else { source::timeline(name).ok().flatten() };
+    Ok((inspection, timeline))
+}
+
+/// P1.5: a summary refresh that ran on its own thread. It applies only to
+/// the subscription that asked for it (`key` and `token`) under the name it
+/// was read for; a result for an ended, replaced or restarted subscription
+/// is dropped.
+struct InspectDone {
+    key: String,
+    token: u64,
+    name: String,
+    result: Inspection,
 }
 
 /// Rows derived again between listings. Deriving them waits for the session
@@ -248,6 +274,7 @@ pub(crate) fn run(config: &Config, args: &[String], dry: bool) -> Result<i32> {
             Ok(Input::Rows(done)) => watch.rows_done(done),
             Ok(Input::Probe(done)) => watch.probe_done(done),
             Ok(Input::DriveFolders(done)) => watch.drive_folders_done(done),
+            Ok(Input::Inspected(done)) => watch.inspected(done),
             Ok(Input::End) | Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(0),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
@@ -478,6 +505,10 @@ struct Watch<'a> {
     data_version: Option<i64>,
     journal_max: i64,
     subs: Vec<Subscription>,
+    /// P1.5: summary refreshes run on threads through this; each gets a new
+    /// token from `inspect_tokens`.
+    inspect: InspectFn,
+    inspect_tokens: u64,
     // Git.
     git: git::Git,
     /// Started with the first check; its results return as `Input::Git`.
@@ -503,7 +534,10 @@ struct Watch<'a> {
 
 impl<'a> Watch<'a> {
     fn new(config: &'a Config, writer: Writer, git_results: mpsc::Sender<Input>) -> Self {
-        let root = source::state_root();
+        Self::with_root(config, writer, git_results, source::state_root())
+    }
+
+    fn with_root(config: &'a Config, writer: Writer, git_results: mpsc::Sender<Input>, root: PathBuf) -> Self {
         // Stamps are taken before the first listing: a change during it lists again.
         let scan = stamps::scan(&root);
         let identities = scan.bindings.keys().map(|path| (path.clone(), source::binding_identity(path))).collect();
@@ -544,6 +578,8 @@ impl<'a> Watch<'a> {
             data_version: None,
             journal_max: 0,
             subs: Vec::new(),
+            inspect: inspect_session,
+            inspect_tokens: 0,
             git: git::Git::new(),
             git_pool: None,
             git_results,
@@ -1314,6 +1350,11 @@ impl<'a> Watch<'a> {
                 continue;
             }
             let sub = &self.subs[index];
+            // P1.5: one refresh per subscription at a time. A change seen
+            // meanwhile keeps `dirty`, so one more follows the result.
+            if sub.inspecting.is_some() {
+                continue;
+            }
             let interval = if sub.native {
                 NATIVE_REFRESH
             } else if sub.busy {
@@ -1421,15 +1462,47 @@ impl<'a> Watch<'a> {
         }
     }
 
-    /// Re-inspects one session; sends `state` when its summary changed, and
-    /// for DeepSeek and OpenCode a replacement of their event window.
+    /// Re-inspects one session on a thread (P1.5: an inspection takes
+    /// seconds for a large transcript, and on the loop every frame of the
+    /// stream waited for it). The result arrives as [`Input::Inspected`].
     fn refresh(&mut self, index: usize) {
+        // Events after this are not wanted: the journal rows go out as
+        // `events` frames, so the inspection reads only the summary.
         let after = if self.subs[index].native { 0 } else { self.journal_max.max(self.subs[index].cursor) };
+        self.inspect_tokens += 1;
+        let token = self.inspect_tokens;
         let sub = &mut self.subs[index];
         sub.refreshed = Instant::now();
         sub.dirty = false;
-        let inspection = match source::inspect(&sub.name, after) {
-            Ok(inspection) => inspection,
+        sub.inspecting = Some(token);
+        let (key, name, native) = (sub.key.clone(), sub.name.clone(), sub.native);
+        let inspect = self.inspect;
+        let results = self.git_results.clone();
+        let (thread_key, thread_name) = (key.clone(), name.clone());
+        let spawned = std::thread::Builder::new().name("hgs-watch-inspect".into()).spawn(move || {
+            let result = inspect(&thread_name, after, native);
+            let _ = results.send(Input::Inspected(InspectDone { key: thread_key, token, name: thread_name, result }));
+        });
+        if let Err(error) = spawned {
+            self.inspected(InspectDone { key, token, name, result: Err(format!("cannot start the inspection: {error}")) });
+        }
+    }
+
+    /// Applies a refresh: sends `state` when the summary changed, and for
+    /// DeepSeek and OpenCode a replacement of their event window. A result
+    /// whose subscription ended, was replaced or restarted, or was renamed
+    /// meanwhile is dropped; a renamed one is read again.
+    fn inspected(&mut self, done: InspectDone) {
+        let Some(sub) = self.subs.iter_mut().find(|sub| sub.key == done.key && sub.inspecting == Some(done.token)) else {
+            return;
+        };
+        sub.inspecting = None;
+        if sub.name != done.name {
+            sub.dirty = true;
+            return;
+        }
+        let (inspection, timeline) = match done.result {
+            Ok(read) => read,
             Err(error) => {
                 self.out.failure("inspect_failed", &error, Some(topic::ACTIVITY), Some(&sub.key));
                 return;
@@ -1439,7 +1512,7 @@ impl<'a> Watch<'a> {
             return;
         }
         if !sub.native {
-            if let Ok(Some(timeline)) = source::timeline(&sub.name) {
+            if let Some(timeline) = timeline {
                 sub.journal = Some(timeline.journal().to_owned());
                 follow_conversation(sub, &timeline);
             }
@@ -2142,6 +2215,8 @@ impl<'a> Watch<'a> {
     fn start(&mut self, index: usize, after: i64, resumed: bool) -> Started {
         let (minimum, maximum) = self.journal.as_ref().and_then(|db| source::bounds(db).ok()).unwrap_or((0, 0));
         let sub = &mut self.subs[index];
+        // P1.5: a refresh still running read before these first frames.
+        sub.inspecting = None;
         let gap = if resumed || after == 0 || sub.native {
             None
         } else if after > maximum {
@@ -2314,6 +2389,7 @@ mod tests {
                 Input::Rows(_) => "<rows>".into(),
                 Input::Probe(_) => "<probe>".into(),
                 Input::DriveFolders(_) => "<drive_folders>".into(),
+                Input::Inspected(done) => format!("<inspected {}>", done.key),
                 Input::End => "<end>".into(),
             })
             .collect()
@@ -2335,6 +2411,111 @@ mod tests {
 
     fn lines(input: &[u8]) -> Vec<String> {
         read(input, 0)
+    }
+
+    /// The stream's stdout in a test.
+    #[derive(Clone, Default)]
+    struct Sink(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Sink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Sink {
+        /// Waits up to 5 s for `text` in what was written.
+        fn shows(&self, text: &str) -> bool {
+            let until = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < until {
+                if String::from_utf8_lossy(&self.0.lock().unwrap()).contains(text) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            false
+        }
+    }
+
+    const SLOW_INSPECTION: Duration = Duration::from_millis(800);
+
+    fn slow_inspection(name: &str, _after: i64, _native: bool) -> Inspection {
+        std::thread::sleep(SLOW_INSPECTION);
+        Ok((json!({"name":name,"run_id":"r","status":"idle"}), None))
+    }
+
+    fn test_config(dir: &std::path::Path) -> Config {
+        Config {
+            home: dir.to_string_lossy().into_owned(),
+            dir: dir.to_owned(),
+            state: dir.to_owned(),
+            selves: Vec::new(),
+            peers: Vec::new(),
+            base_peers: Vec::new(),
+            peers_from_environment: false,
+            machines: BTreeMap::new(),
+            tab: false,
+            tab_colors: String::new(),
+        }
+    }
+
+    fn inspected(received: &mpsc::Receiver<Input>) -> InspectDone {
+        match received.recv_timeout(Duration::from_secs(10)) {
+            Ok(Input::Inspected(done)) => done,
+            _ => panic!("the inspection did not return"),
+        }
+    }
+
+    /// P1.5: a summary refresh runs on a thread. The loop answers a control
+    /// line while a slow inspection runs; the result applies to the
+    /// subscription that asked for it, and one for a replaced or renamed
+    /// subscription is dropped.
+    #[test]
+    fn a_slow_inspection_leaves_the_loop_free_and_a_stale_result_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_config(dir.path());
+        let sink = Sink::default();
+        let writer = Writer::spawn(sink.clone(), protocol::QUEUE_BYTES, Duration::from_secs(3600), || {});
+        let (results, received) = mpsc::channel();
+        let mut watch = Watch::with_root(&config, writer, results, dir.path().to_owned());
+        watch.inspect = slow_inspection;
+        let subscription = || Subscription::new("run:r".into(), "claude/p/t".into(), Some("r".into()), false, 10);
+        watch.subs.push(subscription());
+
+        let started = Instant::now();
+        watch.refresh(0);
+        assert!(started.elapsed() < SLOW_INSPECTION / 2, "the refresh is handed off");
+        assert!(watch.subs[0].inspecting.is_some());
+        watch.control(r#"{"op":"ping","id":7}"#);
+        assert!(sink.shows(r#""t":"pong""#), "the ping is answered");
+        assert!(started.elapsed() < SLOW_INSPECTION, "while the inspection still runs");
+        assert!(matches!(received.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        watch.inspected(inspected(&received));
+        assert_eq!((watch.subs[0].rev, watch.subs[0].inspecting), (1, None), "its state was sent");
+        assert!(sink.shows(r#""t":"state""#));
+
+        // The subscription is replaced (subscribed again) while one runs.
+        watch.refresh(0);
+        watch.subs[0] = subscription();
+        watch.inspected(inspected(&received));
+        assert_eq!((watch.subs[0].rev, watch.subs[0].state), (0, None), "a replaced subscription's result is dropped");
+
+        // The session is renamed while one runs: dropped, and read again.
+        watch.refresh(0);
+        watch.subs[0].name = "claude/p/renamed".into();
+        watch.inspected(inspected(&received));
+        assert_eq!(watch.subs[0].rev, 0);
+        assert!(watch.subs[0].dirty && watch.subs[0].inspecting.is_none(), "a renamed session is read again");
+
+        // Its first frames restart it: a refresh still running is dropped.
+        watch.refresh(0);
+        watch.subs[0].inspecting = None;
+        watch.inspected(inspected(&received));
+        assert_eq!(watch.subs[0].rev, 0, "a restarted subscription's result is dropped");
     }
 
     #[test]

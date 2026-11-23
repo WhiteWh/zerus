@@ -53,6 +53,9 @@ pub(super) struct Subscription {
     pub transcript_at: Instant,
     /// The `event` revision and digest of each message ID sent, oldest first.
     pub messages: VecDeque<(String, u64, Digest32)>,
+    /// P1.5: the token of the summary refresh running on a thread; only its
+    /// result applies.
+    pub inspecting: Option<u64>,
 }
 
 impl Subscription {
@@ -79,6 +82,7 @@ impl Subscription {
             transcript: None,
             transcript_at: Instant::now(),
             messages: VecDeque::new(),
+            inspecting: None,
         }
     }
 
