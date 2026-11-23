@@ -57,6 +57,7 @@ pub(crate) fn label(condition: &ParkCondition) -> String {
         ParkCondition::Task { task } => format!("task #{task} accepted"),
         ParkCondition::Card { proposal } => format!("the owner's answer on card {proposal}"),
         ParkCondition::Time { at } => local_time(*at).to_string(),
+        ParkCondition::Run { request } => format!("its run {request} finishing"),
     }
 }
 
@@ -88,7 +89,7 @@ pub(crate) fn summary(park: &Park, now: f64) -> String {
 pub(crate) fn condition_of(team: &Team, task: u32, value: &Value) -> anyhow::Result<ParkCondition> {
     let condition: ParkCondition = serde_json::from_value(value.clone()).map_err(|error| {
         anyhow::anyhow!(
-            "A park condition is one of {{\"kind\":\"ci\",\"repo\":\"OWNER/REPO\",\"run\":N}}, {{\"kind\":\"build\",\"version\":\"1.58.0\"|\"build\":N|\"commit\":\"SHA\",\"program\":\"PATH\"}}, {{\"kind\":\"task\",\"task\":N}}, {{\"kind\":\"card\",\"proposal\":\"pN\"}} or {{\"kind\":\"time\",\"at\":UNIX_SECONDS}}: {error}"
+            "A park condition is one of {{\"kind\":\"ci\",\"repo\":\"OWNER/REPO\",\"run\":N}}, {{\"kind\":\"build\",\"version\":\"1.58.0\"|\"build\":N|\"commit\":\"SHA\",\"program\":\"PATH\"}}, {{\"kind\":\"task\",\"task\":N}}, {{\"kind\":\"card\",\"proposal\":\"pN\"}}, {{\"kind\":\"time\",\"at\":UNIX_SECONDS}} or {{\"kind\":\"run\",\"request\":\"RUN_REQUEST_ID\"}}: {error}"
         )
     })?;
     match &condition {
@@ -114,6 +115,9 @@ pub(crate) fn condition_of(team: &Team, task: u32, value: &Value) -> anyhow::Res
         ParkCondition::Time { at } => {
             anyhow::ensure!(*at > 0.0, "A time condition names when, in seconds since 1970");
         }
+        ParkCondition::Run { request } => {
+            anyhow::ensure!(super::store::canonical_uuid(request), "A run condition names the request_id of your hgs team run");
+        }
     }
     Ok(condition)
 }
@@ -132,6 +136,49 @@ pub(crate) trait Probes {
     fn ci(&self, repo: &str, run: u64) -> Result<(String, String), String>;
     /// The installed build of `program` ("" is the hgs this worker runs).
     fn build(&self, program: &str) -> Result<Installed, String>;
+    /// Task #23: a member's run in its outbox folder, read from the files.
+    fn run(&self, folder: &std::path::Path, request: &str) -> RunSeen {
+        run_seen(folder, request)
+    }
+}
+
+/// Task #23: what a member's outbox shows of one run.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum RunSeen {
+    /// Queued or claimed by its runner.
+    Waiting,
+    /// Its result: the worker's outcome as the member reads it.
+    Done(Value),
+    /// Neither a request, a claim nor a result.
+    Gone,
+}
+
+/// Task #23: the run's files, read in the order they follow one another
+/// (request, claim, result), so a run moving on is never seen gone; nothing
+/// seen is read once more before it counts as gone.
+pub(crate) fn run_seen(folder: &std::path::Path, request: &str) -> RunSeen {
+    for _ in 0..2 {
+        if super::outbox::request_path(folder, request).is_file() || super::outbox::running_path(folder, request).is_file() {
+            return RunSeen::Waiting;
+        }
+        if let Some(result) = super::outbox::result(folder, request) {
+            return RunSeen::Done(result);
+        }
+    }
+    RunSeen::Gone
+}
+
+/// Task #23: the park's outcome from what the outbox shows. A finished run is
+/// met whatever its exit code, so the member reads the result.
+fn run_outcome(request: &str, seen: RunSeen) -> Option<Outcome> {
+    match seen {
+        RunSeen::Waiting => None,
+        RunSeen::Done(result) => Some(Outcome::Met(match result["exit"].as_i64() {
+            Some(exit) => format!("run {request} finished with exit code {exit}{}", if result["timed_out"] == true { " (timed out)" } else { "" }),
+            None => format!("run {request} ended without running: {}", result["error"].as_str().filter(|error| !error.is_empty()).unwrap_or("no reason given")),
+        })),
+        RunSeen::Gone => Some(Outcome::Failed(format!("run {request} is gone from the member's outbox without a result"))),
+    }
 }
 
 /// The outcome a check reached.
@@ -177,6 +224,11 @@ pub(crate) fn evaluate(team: &Team, park: &Park, now: f64, last: f64, probes: &d
                 }),
                 _ => None,
             }
+        }
+        ParkCondition::Run { request } => {
+            let member = team.member(&park.member)?;
+            let folder = super::dispatcher::member_folder_path(team, member).ok().filter(|folder| !folder.is_empty())?;
+            run_outcome(request, probes.run(std::path::Path::new(&folder), request))
         }
         ParkCondition::Build { version, build, commit, program } => {
             if now - last < BUILD_EVERY {

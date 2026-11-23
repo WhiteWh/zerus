@@ -2092,6 +2092,9 @@ pub(crate) enum ParkCondition {
     Card { proposal: String },
     /// A time, in seconds since 1970.
     Time { at: f64 },
+    /// Task #23 of team c536f0e5 (owner, 2026-11-23): the member's own run
+    /// (`hgs team run`) finishing: its result in the member's outbox.
+    Run { request: String },
 }
 
 impl Default for ParkCondition {

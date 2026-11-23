@@ -261,7 +261,7 @@ pub(crate) fn park_command(team: &str, task: Option<u32>, attempt: &str) -> Stri
     let task = task.map_or("N".to_owned(), |id| id.to_string());
     let attempt = if attempt.is_empty() { "ATTEMPT" } else { attempt };
     format!(
-        "{{\"team\":\"{team}\",\"task\":{task},\"attempt\":\"{attempt}\",\"condition\":{{\"kind\":\"build\",\"version\":\"1.58.0\"}},\"eta_minutes\":60,\"note\":\"...\"}} | hgs team park --json (conditions: ci, build, task, card, time; hgs guide team-park)"
+        "{{\"team\":\"{team}\",\"task\":{task},\"attempt\":\"{attempt}\",\"condition\":{{\"kind\":\"build\",\"version\":\"1.58.0\"}},\"eta_minutes\":60,\"note\":\"...\"}} | hgs team park --json (conditions: ci, build, task, card, time, run; hgs guide team-park)"
     )
 }
 
@@ -272,7 +272,7 @@ pub(crate) fn lead_refusal(team: &str, task: Option<u32>, attempt: &str, phrase:
     let task = task.map_or("N".to_owned(), |id| id.to_string());
     let attempt = if attempt.is_empty() { "ATTEMPT" } else { attempt };
     format!(
-        "Waiting is a park, never an instruction: \"{phrase}\" tells a member to wait. Park the task on its condition and Zerus watches it, frees the member and tells you the outcome: {{\"team\":\"{team}\",\"task\":{task},\"attempt\":\"{attempt}\",\"condition\":{condition},\"eta_minutes\":60,\"note\":\"...\"}} | hgs team park --json (conditions: ci, build, task, card, time; hgs guide team-park). The condition this phrase names: {what}."
+        "Waiting is a park, never an instruction: \"{phrase}\" tells a member to wait. Park the task on its condition and Zerus watches it, frees the member and tells you the outcome: {{\"team\":\"{team}\",\"task\":{task},\"attempt\":\"{attempt}\",\"condition\":{condition},\"eta_minutes\":60,\"note\":\"...\"}} | hgs team park --json (conditions: ci, build, task, card, time, run; hgs guide team-park). The condition this phrase names: {what}."
     )
 }
 

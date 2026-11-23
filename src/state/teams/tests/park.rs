@@ -151,3 +151,44 @@ fn the_watcher_records_the_outcome_once_and_only_then_writes() {
     // A met park is not checked again.
     assert_eq!(watch(&mut store, std::slice::from_ref(&saved), 2_060.0, &fake, &mut reads).unwrap(), 0);
 }
+
+/// Task #23 of team c536f0e5 (owner, 2026-11-23): a park on the member's own
+/// run. It waits while the run is queued or claimed, is met when its result is
+/// in the member's outbox (with the exit code; a failed exit is still met, so
+/// the member reads it) and fails when the request is gone without a result.
+#[test]
+fn a_park_on_its_own_run_comes_back_with_the_exit_code() {
+    use crate::state::teams::model::Member;
+    let dir = tempfile::tempdir().unwrap();
+    let mut team = team();
+    team.members.push(Member { id: "dev".into(), directory: dir.path().to_string_lossy().into_owned(), ..Default::default() });
+    let request = "11111111-1111-4111-8111-111111111111";
+    let read = |value: Value| condition_of(&team, 1, &value).map(|condition| label(&condition)).map_err(|error| error.to_string());
+    assert_eq!(read(json!({"kind":"run","request":request})).unwrap(), format!("its run {request} finishing"));
+    assert!(read(json!({"kind":"run","request":"cargo-test"})).unwrap_err().contains("request_id of your hgs team run"));
+    assert!(read(json!({"kind":"later"})).unwrap_err().contains("{\"kind\":\"run\",\"request\":\"RUN_REQUEST_ID\"}"), "the error lists it");
+    let fake = Fake::default();
+    let park = parked(ParkCondition::Run { request: request.into() });
+    let folder = dir.path();
+    // Queued, then claimed by its runner: waiting.
+    super::super::outbox::push(folder, &json!({"op":"run","request_id":request,"member":"dev","attempt":"a1","template":"cargo-test"})).unwrap();
+    assert_eq!(evaluate(&team, &park, 2_000.0, 0.0, &fake), None);
+    super::super::outbox::write_running(folder, request, &json!({"request_id":request,"member":"dev","attempt":"a1"})).unwrap();
+    std::fs::remove_file(super::super::outbox::request_path(folder, request)).unwrap();
+    assert_eq!(evaluate(&team, &park, 2_000.0, 0.0, &fake), None);
+    // Finished: met with its exit code, a failed one too.
+    super::super::outbox::settle_running(folder, request, &json!({"status":"ran","request_id":request,"exit":101,"timed_out":false})).unwrap();
+    assert_eq!(evaluate(&team, &park, 2_000.0, 0.0, &fake), Some(Outcome::Met(format!("run {request} finished with exit code 101"))));
+    super::super::outbox::settle_running(folder, request, &json!({"status":"ran","request_id":request,"exit":0,"timed_out":true})).unwrap();
+    assert_eq!(evaluate(&team, &park, 2_000.0, 0.0, &fake), Some(Outcome::Met(format!("run {request} finished with exit code 0 (timed out)"))));
+    super::super::outbox::settle_running(folder, request, &json!({"status":"refused","request_id":request,"error":"the template is not allowed"})).unwrap();
+    assert_eq!(evaluate(&team, &park, 2_000.0, 0.0, &fake), Some(Outcome::Met(format!("run {request} ended without running: the template is not allowed"))));
+    // Gone without a result: failed, for the lead.
+    std::fs::remove_file(super::super::outbox::result_path(folder, request)).unwrap();
+    assert_eq!(evaluate(&team, &park, 2_000.0, 0.0, &fake), Some(Outcome::Failed(format!("run {request} is gone from the member's outbox without a result"))));
+    assert_eq!(*fake.reads.borrow(), 0, "no outside probe");
+    // The resume message carries the exit code.
+    let mut met = park.clone();
+    met.detail = format!("run {request} finished with exit code 101");
+    assert!(resume_text(1, "Install check", &met).contains("exit code 101"));
+}

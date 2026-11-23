@@ -568,13 +568,34 @@ pub(crate) fn snapshot(team: &Team, member: &Member, check: &MemberCheck, now: f
                 "delivered_at":attempt.delivered_at,"activity_at":attempt.activity_at})
         })
     });
+    // Task #23 of team c536f0e5: with no open attempt, its parked one and the
+    // runs it waits for are that task's work, named with it.
+    let task = task.or_else(|| {
+        team.tasks.iter().find_map(|task| {
+            let park = task.park.as_ref().filter(|park| park.member == member.id)?;
+            let attempt = task.attempts.iter().find(|attempt| attempt.id == park.attempt && attempt.state == super::model::AttemptState::Parked)?;
+            Some(json!({"id":task.id,"title":task.title,"status":task.status,"attempt":attempt.n,"attempt_state":attempt.state,
+                "parked":super::park::summary(park, now)}))
+        })
+    });
+    let runs: Vec<Value> = super::dispatcher::member_folder_path(team, member)
+        .ok()
+        .filter(|folder| !folder.is_empty())
+        .map(|folder| super::shadow::own_runs(std::path::Path::new(&folder), &member.id))
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|run| {
+            let task = super::shadow::run_task(team, &member.id, run)?;
+            Some(json!({"request_id":run.request,"task":task,"template":run.label,"state":if run.running { "running" } else { "queued" }}))
+        })
+        .collect();
     let minutes = |at: Option<f64>| at.map(|at| ((now - at).max(0.0) / 60.0).round() as u64);
     json!({"team":team.id,"team_name":team.name,"member":member.id,"role":member.role,"agent":member.agent,
         "session":session.map(|s| s.name.clone()),"host":session.map(|s| s.host.clone()).unwrap_or_default(),
         "state":if check.state == "uncertain" { "uncertain".into() } else if member.unassigned.is_some() { "unassigned_work".into() } else { check_state(check) },
         "uncertain":check.state == "uncertain","settling":check.state == "pending",
         "disagree":check.disagree,"uncertain_since":check.since,"checked_at":check.at,
-        "sources":check.sources,"screen":check.screen,"task":task,
+        "sources":check.sources,"screen":check.screen,"task":task,"runs":runs,
         // Task #232: the request it waits on, named ("Bash: Run this command?").
         "request":recorded_request(member),
         "waiting":check.sources.get("waiting").cloned().unwrap_or(Value::Null),

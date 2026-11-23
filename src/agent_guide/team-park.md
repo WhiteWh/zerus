@@ -15,6 +15,8 @@ A condition is one of:
   {"kind":"task","task":N}                           task N is accepted
   {"kind":"card","proposal":"pN"}                    the owner answers card pN
   {"kind":"time","at":UNIX_SECONDS}                  that time comes
+  {"kind":"run","request":"RUN_REQUEST_ID"}          your own hgs team run
+    finishes (whatever its exit code; the task comes back with it)
 
 The attempt is kept; you are free at once and get your next task. Zerus
 checks the condition itself (bounded) and gives the task back to you at

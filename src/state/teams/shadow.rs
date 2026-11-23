@@ -12,7 +12,11 @@
 //! - A member session building, or working past a short grace, with nothing
 //!   handed to it is flagged to the lead as unassigned work, with what it
 //!   runs, and is never shown as idle.
-use super::model::{Member, MemberState, StageState, Task, Team, TeamStatus, Unassigned};
+//! - Task #23 of team c536f0e5 (owner, 2026-11-23): a member's own run
+//!   (`hgs team run`, queued or running) bound to one of its open or parked
+//!   attempts is that task's work, and so is the rest of the turn in which it
+//!   parked an attempt; neither is unassigned.
+use super::model::{AttemptState, Member, MemberState, StageState, Task, Team, TeamStatus, Unassigned};
 use super::store::{Event, Store};
 use serde_json::{json, Value};
 
@@ -265,10 +269,58 @@ pub(crate) fn job_of(team: &Team, member: &str, named: &str) -> anyhow::Result<B
     Ok(Binding { team: team.id.clone(), task: *task, attempt: attempt.clone(), member: member.to_owned() })
 }
 
+/// Task #23: a template run a member queued (`<id>.json`) or its runner holds
+/// (`<id>.running.json`) in the member's outbox, with the attempt it names.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct OwnRun {
+    pub request: String,
+    pub attempt: String,
+    pub running: bool,
+    pub label: String,
+}
+
+/// Task #23: the runs `member` queued or runs in `folder`, bounded as the
+/// outbox's own reads are.
+pub(crate) fn own_runs(folder: &std::path::Path, member: &str) -> Vec<OwnRun> {
+    let field = |value: &Value, key: &str| value[key].as_str().unwrap_or_default().to_owned();
+    let mut runs: Vec<OwnRun> = super::outbox::queued_runs(folder, member)
+        .into_iter()
+        .map(|(request, _)| OwnRun { request: field(&request, "request_id"), attempt: field(&request, "attempt"), running: false, label: field(&request, "template") })
+        .collect();
+    runs.extend(super::outbox::running_all(folder).into_iter().filter(|(_, claim)| claim["member"].as_str() == Some(member)).map(|(_, claim)| OwnRun {
+        request: field(&claim, "request_id"),
+        attempt: field(&claim, "attempt"),
+        running: true,
+        label: field(&claim, "label"),
+    }));
+    runs
+}
+
+/// Task #23: the task whose open or parked attempt of `member` the run names.
+pub(crate) fn run_task(team: &Team, member: &str, run: &OwnRun) -> Option<u32> {
+    team.tasks
+        .iter()
+        .find(|task| {
+            task.attempts.iter().any(|attempt| {
+                attempt.id == run.attempt && attempt.member == member && (attempt.state.open() || attempt.state == AttemptState::Parked)
+            })
+        })
+        .map(|task| task.id)
+}
+
+/// Task #23: when `member` last parked one of its attempts (0: never).
+fn parked_at(team: &Team, member: &str) -> f64 {
+    team.tasks.iter().filter_map(|task| task.park.as_ref()).filter(|park| park.member == member).map(|park| park.at).fold(0.0, f64::max)
+}
+
 /// What a member works on with nothing handed to it, or None. A build is
 /// unassigned at once; a turn only after `WORK_GRACE` and when it started
 /// after the member's last attempt ended (the rest of a reported turn is not).
-pub(crate) fn unassigned(team: &Team, member: &Member, found: &super::dispatcher::Seen, now: f64) -> Option<String> {
+/// Task #23: `runs` (read only when the member would be flagged) are its own
+/// queued or running runs; one bound to an open or parked attempt of its own
+/// is that task's work, and the rest of the turn in which it parked an
+/// attempt is too.
+pub(crate) fn unassigned(team: &Team, member: &Member, found: &super::dispatcher::Seen, now: f64, runs: impl FnOnce() -> Vec<OwnRun>) -> Option<String> {
     if member.id == team.lead || member.state != MemberState::Active || !found.live || !handed(team, &member.id).is_empty() {
         return None;
     }
@@ -276,7 +328,16 @@ pub(crate) fn unassigned(team: &Team, member: &Member, found: &super::dispatcher
     if team.tasks.iter().any(|task| task.assignee == member.id && task.waits.as_ref().is_some_and(super::model::TaskWait::running)) {
         return None;
     }
+    // Task #23: the turn in which it parked an attempt goes on with that task.
+    let parked = parked_at(team, &member.id);
+    if parked > 0.0 && found.turn_started.is_some_and(|started| parked >= started) {
+        return None;
+    }
+    let owned = |runs: Vec<OwnRun>| runs.iter().any(|run| run_task(team, &member.id, run).is_some());
     if found.building {
+        if owned(runs()) {
+            return None;
+        }
         let label = if found.build_label.is_empty() { "a build".to_owned() } else { found.build_label.clone() };
         return Some(format!("builds {label}"));
     }
@@ -290,8 +351,8 @@ pub(crate) fn unassigned(team: &Team, member: &Member, found: &super::dispatcher
         .flat_map(|task| task.attempts.iter())
         .filter(|attempt| attempt.member == member.id)
         .map(|attempt| attempt.report.as_ref().map_or(0.0, |report| report.at).max(attempt.decided_at.unwrap_or(0.0)).max(attempt.sent_at))
-        .fold(0.0_f64, f64::max);
-    if started <= last_end || now - started < WORK_GRACE {
+        .fold(parked, f64::max);
+    if started <= last_end || now - started < WORK_GRACE || owned(runs()) {
         return None;
     }
     let doing = if found.activity.is_empty() { found.phase.clone() } else { found.activity.clone() };

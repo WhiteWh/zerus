@@ -6028,9 +6028,14 @@ fn team_run_in(folder: &std::path::Path, input: &Value, wait: bool, wait_seconds
             Ok(Value::Null)
         })?;
     }
+    // Task #23 of team c536f0e5 (owner, 2026-11-23): waiting for the run is a
+    // park on it; Zerus gives the task back with its exit code.
+    let park = json!({"team":team.id,"task":task.id,"attempt":attempt_id,"condition":{"kind":"run","request":request_id},
+        "eta_minutes":super::templates::timeout_for(&template).div_ceil(60).max(1),"note":"..."});
     let queued = json!({
         "status":"queued", "request_id":request_id, "path":path.to_string_lossy(),
-        "note":"Zerus runs the template outside your sandbox; ask again with the same request_id (or --wait) to read the exit code."
+        "note":"Zerus runs the template outside your sandbox; ask again with the same request_id (or --wait) to read the exit code.             To wait for it, park the task on it and end your turn: the park below | hgs team park --json gives the task back with the exit code.",
+        "park":park
     });
     if !wait {
         return Ok(queued);

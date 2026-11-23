@@ -1936,13 +1936,19 @@ pub(crate) fn steps_with(team: &Team, seen: &[Seen], now: f64, listed: Option<&B
     if team.status == TeamStatus::Running {
         for member in team.members.iter().filter(|member| member.id != team.lead) {
             let Some(found) = session_of(member, seen) else { continue };
-            match (super::shadow::unassigned(team, member, found, now), member.unassigned.is_some()) {
+            // Task #23 of team c536f0e5: its own queued or running runs, read
+            // from its outbox only when they decide.
+            let runs = || super::shadow::own_runs(&outbox_folder(team, member, &found.cwd), &member.id);
+            match (super::shadow::unassigned(team, member, found, now, runs), member.unassigned.is_some()) {
                 (Some(what), false) => steps.push(Step::Unassigned {
                     member: member.id.clone(),
                     what,
                     task: task_evidence(team, member),
                 }),
-                (None, true) if !found.building && (found.free || !super::shadow::handed(team, &member.id).is_empty()) => {
+                (None, true)
+                    if (!found.building && (found.free || !super::shadow::handed(team, &member.id).is_empty()))
+                        || (found.building && runs().iter().any(|run| super::shadow::run_task(team, &member.id, run).is_some())) =>
+                {
                     steps.push(Step::UnassignedEnded { member: member.id.clone() });
                 }
                 _ => {}
@@ -11921,7 +11927,7 @@ fn run_step(store: &mut Store, team: &Team, step: &Step, host: &str) -> anyhow::
                     let request = json!({"team":team.id,"task":task,"attempt":attempt.id,"condition":condition,"eta_minutes":60,"note":"..."});
                     let _ = send(&session, &uuid::Uuid::new_v4().to_string(), &format!(
                         "[Zerus team] Your turn on task #{task} ended waiting. A wait is a park, never a turn or a loop: {request} | hgs team park --json \
-(a guess: until {what}; conditions ci, build, task, card, time; hgs guide team-park). Zerus watches it, gives the task back to you and tells the lead. \
+(a guess: until {what}; conditions ci, build, task, card, time, run; hgs guide team-park). Zerus watches it, gives the task back to you and tells the lead. \
 Otherwise finish with hgs team report."
                     ));
                     let _ = change(store, &team.id, |_, events| {
