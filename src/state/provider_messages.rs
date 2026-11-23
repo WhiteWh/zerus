@@ -58,6 +58,10 @@ fn line_messages(agent: &str, id: &str, line: &[u8]) -> Vec<Value> {
     let Ok(event) = serde_json::from_slice::<Value>(line) else {
         return vec![];
     };
+    event_messages(agent, id, &event)
+}
+
+fn event_messages(agent: &str, id: &str, event: &Value) -> Vec<Value> {
     if matches!(agent, "claude" | "qwen" | "hermes") && !string(&event, "sessionId").is_empty() && event["sessionId"] != id {
         return vec![];
     }
@@ -79,6 +83,68 @@ fn line_messages(agent: &str, id: &str, line: &[u8]) -> Vec<Value> {
             messages.push(message);
         }
     }
+    messages
+}
+
+/// A parsed line kept by a watch subscription. Blobs retain only their public
+/// message projection, never the request body or private reasoning.
+pub(super) enum Projection {
+    Messages(Vec<Value>),
+    Blob(Vec<Value>),
+    Request(Value),
+}
+
+pub(super) fn project(record: &Value, event: &Value, line: &[u8]) -> Projection {
+    let agent = string(record, "agent");
+    let id = string(record, "conversation_id");
+    if agent == "claude" && line.starts_with(b"{\"type\":\"api-request") {
+        if !string(event,"sessionId").is_empty() && event["sessionId"] != id {
+            return Projection::Messages(Vec::new());
+        }
+        if event["type"] == "api-request" { return Projection::Request(event["timestamp"].clone()); }
+        let mut messages = Vec::new();
+        if event["type"] == "api-request-blob" && event["message"]["role"] == "assistant" {
+            push_blob(&mut messages, agent,id,event.clone(),&Value::Null,0.);
+        }
+        return Projection::Blob(messages);
+    }
+    Projection::Messages(event_messages(agent,id,event))
+}
+
+/// The same ordering, duplicate and byte-window rules as read_activity.
+/// Rebuilding this bounded public window never parses old transcript bytes.
+pub(super) fn projected<'a>(record: &Value, lines: impl Iterator<Item=&'a Projection>) -> Vec<Value> {
+    let since = own_since(record);
+    let mut messages = Vec::new();
+    let mut pending: Vec<Value> = Vec::new();
+    let flush = |messages: &mut Vec<Value>, pending: &mut Vec<Value>, at: &Value| {
+        let at = search::timestamp(at);
+        for mut message in pending.drain(..) {
+            message["at"] = json!(at);
+            if own(&message,since) && !messages.iter().any(|seen|seen["detail"] == message["detail"]) {
+                messages.push(message);
+            }
+        }
+    };
+    for line in lines {
+        match line {
+            Projection::Messages(rows) => for message in rows {
+                if own(message,since) && !repeated(&messages,message) { messages.push(message.clone()); }
+            },
+            Projection::Blob(rows) => pending.extend(rows.iter().cloned()),
+            Projection::Request(at) => flush(&mut messages,&mut pending,at),
+        }
+    }
+    flush(&mut messages,&mut pending,&projection_now());
+    messages.sort_by(|a,b|a["at"].as_f64().unwrap_or(0.).total_cmp(&b["at"].as_f64().unwrap_or(0.)));
+    let (mut bodies,mut replies) = (0,0);
+    messages.reverse();
+    messages.retain(|message| {
+        let count = if message["type"] == "UserMessageBody" { &mut bodies } else { &mut replies };
+        *count += 1;
+        *count <= 100
+    });
+    messages.reverse();
     messages
 }
 
@@ -119,23 +185,42 @@ pub(super) fn read(record: &Value) -> Result<Vec<Value>> {
 }
 
 pub(super) fn read_activity(record: &Value) -> Result<Vec<Value>> {
+    if let Some(messages) = super::watch_index::messages(record) {
+        return Ok(messages);
+    }
     if string(record, "agent") == "kimi" {
         return kimi_messages::read(record);
     }
+    read_snapshot(record,None)
+}
+
+fn projection_now() -> Value {
+    #[cfg(test)]
+    if let Some(at) = PROJECTION_NOW.with(|at|at.borrow().clone()) { return at; }
+    json!(chrono::Utc::now().to_rfc3339())
+}
+
+#[cfg(test)]
+thread_local! { pub(super) static PROJECTION_NOW: std::cell::RefCell<Option<Value>> = const {std::cell::RefCell::new(None)}; }
+
+/// Full scan of a read-only prefix for replay qualification. None preserves
+/// the command-line reader's existing tail behaviour.
+pub(super) fn read_snapshot(record: &Value, boundary: Option<u64>) -> Result<Vec<Value>> {
     let Some((agent, id, path)) = transcript(record) else {
         return Ok(vec![]);
     };
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     first_line(&mut file, agent, id)?;
-    let offset = file
+    let length = file
         .metadata()
         .map_err(|e| e.to_string())?
-        .len()
-        .saturating_sub(8 * 1024 * 1024);
+        .len();
+    let length = boundary.map_or(length,|boundary|boundary.min(length));
+    let offset = length.saturating_sub(8 * 1024 * 1024);
     file.seek(SeekFrom::Start(offset))
         .map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
-    file.take(8 * 1024 * 1024)
+    file.take(boundary.map_or(8 * 1024 * 1024,|_|length-offset))
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     let mut messages: Vec<Value> = Vec::new();
@@ -171,7 +256,7 @@ pub(super) fn read_activity(record: &Value) -> Result<Vec<Value>> {
             }
         }
     }
-    let now = json!(chrono::Utc::now().to_rfc3339());
+    let now = projection_now();
     for blob in pending.drain(..) {
         push_blob(&mut messages, agent, id, blob, &now, since);
     }
@@ -258,6 +343,8 @@ impl Tail {
     pub(crate) fn conversation(&self) -> &str {
         &self.conversation
     }
+
+    pub(crate) fn position(&self) -> u64 { self.offset }
 
     /// Messages written since the previous read, from at most `READ_BYTES`.
     pub(crate) fn read(&mut self) -> TailRead {

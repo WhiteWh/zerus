@@ -129,6 +129,8 @@ const META_INTERVAL: Duration = Duration::from_secs(10);
 const STATE_GAP: Duration = Duration::from_millis(500);
 /// Unchanged summaries are re-inspected after this long: provider messages
 /// between tools exist only in native transcripts.
+const INSPECT_SAFETY: Duration = Duration::from_secs(60);
+/// Providers without this transcript index retain their existing fallback.
 const BUSY_REFRESH: Duration = Duration::from_secs(2);
 const IDLE_REFRESH: Duration = Duration::from_secs(15);
 /// DeepSeek and OpenCode answer from their own hosts.
@@ -238,6 +240,7 @@ struct InspectDone {
     token: u64,
     name: String,
     result: Inspection,
+    index: Option<crate::state::watch_index::Index>,
 }
 
 /// Rows derived again between listings. Deriving them waits for the session
@@ -1896,6 +1899,8 @@ impl<'a> Watch<'a> {
             }
             let interval = if sub.native {
                 NATIVE_REFRESH
+            } else if sub.index.as_ref().is_some_and(crate::state::watch_index::Index::follows_transcript) {
+                INSPECT_SAFETY
             } else if sub.busy {
                 BUSY_REFRESH
             } else {
@@ -1980,14 +1985,18 @@ impl<'a> Watch<'a> {
             }
             return;
         };
+        let before = tail.position();
         let messages = match tail.read() {
             source::TailRead::Messages(messages) => messages,
             source::TailRead::Ended => {
                 sub.transcript = None;
                 sub.transcript_at = now;
+                sub.dirty = true;
                 return;
             }
         };
+        // Usage and question records can append without a public message.
+        sub.dirty |= tail.position() != before;
         for mut message in messages {
             let id = activity::message_id(&message);
             let Some(rev) = sub.message_rev(&id, &message) else { continue };
@@ -2014,16 +2023,17 @@ impl<'a> Watch<'a> {
         sub.refreshed = Instant::now();
         sub.dirty = false;
         sub.inspecting = Some(token);
+        let mut index = sub.index.take().unwrap_or_default();
         let (key, name, native) = (sub.key.clone(), sub.name.clone(), sub.native);
         let inspect = self.inspect;
         let results = self.git_results.clone();
         let (thread_key, thread_name) = (key.clone(), name.clone());
         let spawned = std::thread::Builder::new().name("hgs-watch-inspect".into()).spawn(move || {
-            let result = inspect(&thread_name, after, native);
-            let _ = results.send(Input::Inspected(InspectDone { key: thread_key, token, name: thread_name, result }));
+            let result = index.refresh(&thread_name, after, native, inspect);
+            let _ = results.send(Input::Inspected(InspectDone { key: thread_key, token, name: thread_name, result, index:Some(index) }));
         });
         if let Err(error) = spawned {
-            self.inspected(InspectDone { key, token, name, result: Err(format!("cannot start the inspection: {error}")) });
+            self.inspected(InspectDone { key, token, name, result: Err(format!("cannot start the inspection: {error}")), index:None });
         }
     }
 
@@ -2036,6 +2046,7 @@ impl<'a> Watch<'a> {
             return;
         };
         sub.inspecting = None;
+        sub.index = done.index;
         if sub.name != done.name {
             sub.dirty = true;
             return;

@@ -13785,9 +13785,31 @@ that already reported hooks. Such a sweep is compared with the
 rows the stream kept: each row it lists otherwise leaves one `watch-drift` line
 (its key and the differing fields; at most 20 per sweep) in
 `logs/slow-calls.log`, and the listing wins. Followed
-summaries are re-read when their journal rows or catalog row change, at most
-every 500 ms, and otherwise every 2 s while the agent is busy and every 15 s
-while it is idle; DeepSeek and OpenCode every 2 s.
+summaries are re-read when their journal rows, catalog row or transcript bytes
+change, at most every 500 ms. Indexed Claude and Codex sessions otherwise
+refresh every 60 s; other providers or unavailable transcripts retain 2 s
+while busy and 15 s while idle. DeepSeek and OpenCode still read their hosts
+every 2 s.
+
+Each followed Claude or Codex session owns an in-memory transcript index. Its
+inspection worker reads appended bytes, retaining incomplete lines up to 1 MiB,
+public message projections up to 4 MiB and 8192 records, and usage and question
+state up to 2 MiB each. Public message and metadata windows keep the canonical
+8 MiB tail rules. A complete usage counter cache can seed the index; a cold or
+incomplete cache keeps the canonical bounded usage reader until it catches up.
+Exceeding a memory or line bound uses the canonical scanner, never a truncated
+result presented as complete. Replacement, shrink, a same-size edit, a changed
+prefix/end anchor, or a changed run or conversation resets the index. Dropping
+the subscription drops its index.
+
+Every 60 s its worker also takes a full inspection. With unchanged binding and
+transcript inputs it compares the two, excluding observation timings. A
+difference leaves one `watch-inspect-drift` line in `logs/slow-calls.log`, with
+the hashed subscription key and at most 20 differing top-level field names,
+never message or question text. The full result wins and a mismatch rebuilds
+the index. Native chooser checks and receipt coverage remain live; this
+display index grants no authority to a later answer command. Command-line
+`hgs inspect` keeps its full inspection path.
 
 On Windows and Linux the stream also watches the state folder with file
 notifications: `ReadDirectoryChangesW` on the folder and its subfolders on
@@ -13874,6 +13896,13 @@ Waiting, and the watched team's status, inbox and feed) run when a team's
 revision moved, plus once a minute, instead of every 3 s; until the topic's
 first complete snapshot, after a `gap` or `team_failed`, while the stream is
 down, and on a peer without the topic they are polled every 3 s as before.
+When the stream also offers `team.views`, the desktop subscribes it with the
+watched team while a Teams view is open, and those reads come as its rows
+instead: no `hgs team` runs for them. A row the server could not send is read
+with its command; a newly watched team's status, inbox and feed are read once
+until its rows arrive; after a `gap`, `team_views_failed` or a lost stream they
+are read as above. The desktop service's source (`ZERUS_CLIENT_DESKTOP_SERVICE=1`)
+does not follow `team.views` yet and keeps the reads.
 Listings are applied at most every
 2 s, Activity within 50 ms. A stream that fails or stays silent for 30 s
 restarts after the reconnect schedule (by default 1 s, 2 s, 5 s, then every
@@ -13896,13 +13925,6 @@ HGS_TEST_BIN="$PWD/target/debug/hgs" python3 tests/test_account_lifecycle.py
 ```
 
 On macOS, the last suite can also verify SSH/tmux entry into the graphical security
-When the stream also offers `team.views`, the desktop subscribes it with the
-watched team while a Teams view is open, and those reads come as its rows
-instead: no `hgs team` runs for them. A row the server could not send is read
-with its command; a newly watched team's status, inbox and feed are read once
-until its rows arrive; after a `gap`, `team_views_failed` or a lost stream they
-are read as above. The desktop service's source (`ZERUS_CLIENT_DESKTOP_SERVICE=1`)
-does not follow `team.views` yet and keeps the reads.
 session and needs the installed HGS desktop session service. The Mach protocol
 can be checked without accessing Keychain:
 

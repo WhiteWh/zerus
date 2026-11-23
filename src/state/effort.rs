@@ -54,6 +54,45 @@ struct Settings {
     offset: u64,
 }
 
+/// The transcript-only settings reducer; native screen/chooser checks remain
+/// on their existing paths. Watch keeps only the newest matching event.
+pub(super) fn watch_settings(record: &Value, event: &Value) -> Option<(String,String)> {
+    if string(record,"agent") == "claude" {
+        claude_settings(event,string(record,"conversation_id"),&catalog(record))
+    } else {
+        event_settings(string(record,"agent"),event)
+    }
+}
+
+/// Full-prefix reference used only for read-only replay qualification.
+#[cfg(test)]
+pub(super) fn watch_reference(record: &Value, boundary: u64) -> Result<(String,String,u64)> {
+    let mut file = File::open(string(record,"transcript")).map_err(|error|error.to_string())?;
+    let agent = string(record,"agent");
+    let markers: &[&[u8]] = if agent == "claude" {
+        &[b"\"requestedModel\"",b"Set model to ",b"Model set to "]
+    } else { &[b"turn_context"] };
+    let mut window = 64 * 1024;
+    loop {
+        let start = boundary.saturating_sub(window);
+        file.seek(SeekFrom::Start(start)).map_err(|error|error.to_string())?;
+        let mut bytes = Vec::new();
+        (&mut file).take(window.min(boundary)).read_to_end(&mut bytes).map_err(|error|error.to_string())?;
+        let mut offset = start+bytes.len() as u64;
+        for line in bytes.split_inclusive(|byte|*byte == b'\n').rev() {
+            let end = offset;
+            offset -= line.len() as u64;
+            if (start > 0 && offset == start) || line.len() > 1024*1024 || !line.ends_with(b"\n")
+                || !markers.iter().any(|marker|line.windows(marker.len()).any(|part|part == *marker)) { continue; }
+            if let Ok(event) = serde_json::from_slice::<Value>(line) {
+                if let Some((model,effort)) = watch_settings(record,&event) { return Ok((model,effort,end)); }
+            }
+        }
+        if start == 0 || window == MAX_TAIL { return Ok((String::new(),String::new(),0)); }
+        window = (window*4).min(MAX_TAIL);
+    }
+}
+
 fn agent_home(record: &Value) -> PathBuf {
     if !string(record, "agent_home").is_empty() {
         return PathBuf::from(string(record, "agent_home"));
@@ -372,6 +411,9 @@ fn claude_catalog(record: &Value) -> Vec<ModelOption> {
 }
 
 fn history(record: &Value) -> Settings {
+    if let Some((model,effort,offset)) = super::watch_index::settings(record) {
+        return Settings { model,effort,offset,path:if offset == 0 {String::new()} else {string(record,"transcript").into()} };
+    }
     let agent = string(record, "agent");
     let path = if agent == "kimi" {
         questions::wire_paths(record)

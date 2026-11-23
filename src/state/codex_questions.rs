@@ -215,9 +215,83 @@ fn worked(_: usize, _: usize) {}
 /// both are complete, and an incomplete one is unknown, never empty. None
 /// also when another process holds the cache past the deadline.
 fn index(record: &Value, cache_path: &Path, deadline: Option<Instant>) -> Result<Option<Value>> {
+    if let Some(value) = super::watch_index::questions(record,deadline) {
+        return value;
+    }
     index_with(record, cache_path, deadline, true, absolute_root, |_| {
         Box::new(Locator)
     })
+}
+
+pub(super) fn watch_observe(record: &Value, cache: &mut Value, event: &Value) {
+    observe(record,cache,event);
+}
+
+#[cfg(test)]
+pub(super) fn watch_reference(record: &Value, boundary: u64) -> Result<Value> {
+    let file = File::open(string(record,"transcript")).map_err(|error|error.to_string())?;
+    let mut reader = BufReader::new(file.take(boundary));
+    let mut line = String::new();
+    (&mut reader).take(256*1024).read_line(&mut line).map_err(|error|error.to_string())?;
+    let header: Value = serde_json::from_str(&line).map_err(|error|error.to_string())?;
+    if header["type"] != "session_meta" || header["payload"]["id"] != record["conversation_id"] {
+        return Err("Conversation transcript identity mismatch".into());
+    }
+    let mut state = json!({"items":{}});
+    if !header["payload"]["source"]["subagent"].is_null() { return Ok(state); }
+    loop {
+        line.clear();
+        let count = (&mut reader).take(1024*1024+1).read_line(&mut line).map_err(|error|error.to_string())?;
+        if count == 0 { break; }
+        if !line.ends_with('\n') {
+            if count > 1024*1024 { reader.skip_until(b'\n').map_err(|error|error.to_string())?; continue; }
+            break;
+        }
+        if count <= 1024*1024 {
+            if let Ok(event) = serde_json::from_str::<Value>(&line) { observe(record,&mut state,&event); }
+        }
+    }
+    Ok(state)
+}
+
+/// The in-memory transcript projection still reads local skips and proves
+/// submissions through the canonical receipt locator. It never publishes a
+/// native question cache or grants authority to a later answer command.
+pub(super) fn watch_complete(record: &Value, cache: &mut Value, deadline: Option<Instant>) -> Result<Option<Value>> {
+    let path = cache_path(record)?;
+    let _guard = match deadline {
+        None => lock(Some(&path.with_extension("lock")))?,
+        Some(deadline) => match lock_until(&path.with_extension("lock"),deadline)? {
+            Some(guard) => guard,
+            None => return Ok(None),
+        },
+    };
+    let meta = match fs::metadata(&path) {
+        Ok(meta) => Some(meta),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err("watch question overlay unavailable".into()),
+    };
+    if let Some(meta) = meta {
+        if meta.len() > 2 * 1024 * 1024 {
+            return Err("watch question overlay exceeds its memory bound".into());
+        }
+        let saved = fs::read(&path).map_err(|_|"watch question overlay unavailable")?;
+        let saved = serde_json::from_slice::<Value>(&saved).ok();
+        if let Some(saved) = saved {
+            if let Some(items) = cache["items"].as_object_mut() {
+                for (id,card) in items {
+                    let previous = &saved["items"][id];
+                    if previous["native_question_id"] == card["native_question_id"] && previous["questions"] == card["questions"] {
+                        if previous["skipped"] == true { card["skipped"] = json!(true); }
+                        if !previous["delivery"].is_null() { card["delivery"] = previous["delivery"].clone(); }
+                    }
+                }
+            }
+        }
+    }
+    let root = absolute_root()?;
+    let (complete,_) = recover_submissions(record,cache,&root,&Locator,deadline)?;
+    Ok(complete.then(||cache.clone()))
 }
 fn index_with(
     record: &Value,

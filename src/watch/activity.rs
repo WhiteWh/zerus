@@ -60,6 +60,9 @@ pub(super) struct Subscription {
     /// P1.5: the token of the summary refresh running on a thread; only its
     /// result applies.
     pub inspecting: Option<u64>,
+    /// Moves to the one refresh worker while it runs; dropped with this
+    /// subscription rather than retained in a process-wide transcript cache.
+    pub index: Option<crate::state::watch_index::Index>,
 }
 
 impl Subscription {
@@ -87,6 +90,7 @@ impl Subscription {
             transcript_at: Instant::now(),
             messages: VecDeque::new(),
             inspecting: None,
+            index: Some(Default::default()),
         }
     }
 

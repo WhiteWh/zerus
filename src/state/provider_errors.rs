@@ -335,6 +335,10 @@ fn codex_logs(record: &Value) -> Result<Vec<Value>> {
 }
 
 fn codex_transcript(record: &Value) -> Result<(Vec<Value>, f64)> {
+    codex_transcript_snapshot(record,None)
+}
+
+fn codex_transcript_snapshot(record: &Value, boundary: Option<u64>) -> Result<(Vec<Value>, f64)> {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
     #[cfg(test)]
     TRANSCRIPT_SCANS.with(|count| count.set(count.get() + 1));
@@ -357,15 +361,16 @@ fn codex_transcript(record: &Value) -> Result<(Vec<Value>, f64)> {
     if first["type"] != "session_meta" || first["payload"]["id"] != id {
         return Err("Conversation transcript identity mismatch".into());
     }
-    let offset = file
+    let length = file
         .metadata()
         .map_err(|e| e.to_string())?
-        .len()
-        .saturating_sub(8 * 1024 * 1024);
+        .len();
+    let length = boundary.map_or(length,|boundary|boundary.min(length));
+    let offset = length.saturating_sub(8*1024*1024);
     file.seek(SeekFrom::Start(offset))
         .map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
-    file.take(8 * 1024 * 1024)
+    file.take(boundary.map_or(8*1024*1024,|_|length-offset))
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     let mut errors = Vec::new();
@@ -385,57 +390,46 @@ fn codex_transcript(record: &Value) -> Result<(Vec<Value>, f64)> {
         let Ok(row) = serde_json::from_slice::<Value>(line) else {
             continue;
         };
-        if row["type"] != "event_msg" {
-            continue;
-        }
-        let payload = &row["payload"];
-        let at = search::timestamp(&row["timestamp"]);
-        if at <= 0.0 {
-            continue;
-        }
-        // Current Codex records a failed turn as task_complete with an error;
-        // older versions also emit a dedicated native error event.
-        let failure = match string(payload, "type") {
-            "task_started" => {
-                progress = progress.max(at);
-                continue;
-            }
-            "task_complete" | "turn_complete" => {
-                if payload["error"].is_null() {
-                    // Older Codex completions omit errors even after failure.
-                    // Only an actual final reply confirms successful progress.
-                    if !string(payload, "last_agent_message").trim().is_empty() {
-                        progress = progress.max(at);
-                    }
-                    continue;
-                }
-                &payload["error"]
-            }
-            "error" => payload,
-            _ => continue,
-        };
-        let detail = string(failure, "message");
-        if detail.trim().is_empty() {
-            continue;
-        }
-        let mut error = event(
-            &format!("codex-turn-error-{}-{at}", string(payload, "turn_id")),
-            at,
-            detail,
-            "codex_native_transcript",
-        );
-        error["error_kind"] = json!(category(&format!(
-            "{} {}",
-            failure["codex_error_info"], detail
-        )));
-        if !string(payload, "turn_id").is_empty() { error["turn_id"] = payload["turn_id"].clone(); }
-        error["native_turn_complete"] = json!(matches!(string(payload, "type"), "task_complete" | "turn_complete"));
-        errors.push(error);
+        let (error, advanced) = watch_event(&row);
+        progress = progress.max(advanced);
+        errors.extend(error);
     }
     if errors.len() > 8 {
         errors.drain(..errors.len() - 8);
     }
     Ok((errors, progress))
+}
+
+/// Pure native-event reduction shared by the full scan and watch's append
+/// index. No log correlation or action admission is cached here.
+pub(super) fn watch_event(row: &Value) -> (Option<Value>, f64) {
+    if row["type"] != "event_msg" { return (None,0.); }
+    let payload = &row["payload"];
+    let at = search::timestamp(&row["timestamp"]);
+    if at <= 0. { return (None,0.); }
+    let failure = match string(payload,"type") {
+        "task_started" => return (None,at),
+        "task_complete" | "turn_complete" => {
+            if payload["error"].is_null() {
+                return (None,if !string(payload,"last_agent_message").trim().is_empty() {at} else {0.});
+            }
+            &payload["error"]
+        }
+        "error" => payload,
+        _ => return (None,0.),
+    };
+    let detail = string(failure,"message");
+    if detail.trim().is_empty() { return (None,0.); }
+    let mut error = event(&format!("codex-turn-error-{}-{at}",string(payload,"turn_id")),at,detail,"codex_native_transcript");
+    error["error_kind"] = json!(category(&format!("{} {}",failure["codex_error_info"],detail)));
+    if !string(payload,"turn_id").is_empty() { error["turn_id"] = payload["turn_id"].clone(); }
+    error["native_turn_complete"] = json!(matches!(string(payload,"type"),"task_complete"|"turn_complete"));
+    (Some(error),0.)
+}
+
+#[cfg(test)]
+pub(super) fn watch_reference(record: &Value, boundary: u64) -> Result<(Vec<Value>,f64)> {
+    codex_transcript_snapshot(record,Some(boundary))
 }
 
 #[cfg(test)]
@@ -444,6 +438,7 @@ thread_local! { static TRANSCRIPT_SCANS: std::cell::Cell<usize> = const { std::c
 /// codex_transcript() reads up to 8 MiB of each transcript; stopped and
 /// archived sessions reuse their last scan (one host re-read 129 MB per listing).
 fn codex_transcript_cached(record: &Value) -> Result<(Vec<Value>, f64)> {
+    if let Some(value) = super::watch_index::errors(record) { return Ok(value); }
     let path = PathBuf::from(string(record, "transcript"));
     let mut failure = None;
     let value = scan_cache::cached("codex-provider-errors-v3", &path, string(record, "conversation_id"), || {

@@ -134,6 +134,7 @@ mod prompt_suggestion;
 mod public_listing;
 mod question_terminal;
 mod questions;
+pub(crate) mod watch_index;
 mod codex_questions;
 mod codex_approval;
 mod codex_trust;

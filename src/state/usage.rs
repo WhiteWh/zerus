@@ -643,6 +643,9 @@ fn kimi_capacity(config: &str, model: &str) -> Option<u64> {
 }
 
 pub(super) fn read(record: &Value) -> Value {
+    if let Some(value) = super::watch_index::usage(record) {
+        return value;
+    }
     let provider = string(record, "agent");
     let id = string(record, "conversation_id");
     let read = || -> Result<Value> {
@@ -692,6 +695,58 @@ pub(super) fn read(record: &Value) -> Value {
         Ok(result)
     };
     read().unwrap_or_else(|_| json!({"status":"unavailable","source":provider}))
+}
+
+pub(super) fn watch_observe(state: &mut Value, event: &Value, provider: &str, conversation: &str) {
+    observe(state,event,provider,conversation);
+}
+
+pub(super) fn watch_output(state: &Value, provider: &str, partial: bool) -> Value {
+    output(state,provider,partial)
+}
+
+/// Seed only from a complete canonical counter cache for this exact opened
+/// snapshot. An incomplete/cold cache keeps the normal bounded usage reader
+/// until it catches up; no partial totals are promoted to complete.
+pub(super) fn watch_seed(record: &Value, file: &mut File, identity: crate::platform::FileIdentity, size: u64) -> Option<Value> {
+    let (provider,id,path,_) = transcript(record).ok()?;
+    let key = format!("cache-v2-{:x}", Sha256::digest(json!([provider,id,path]).to_string().as_bytes()));
+    let cache = root().join("usage-cache").join(format!("{key}.json"));
+    if fs::metadata(&cache).ok()?.len() > 2*1024*1024 { return None; }
+    let bytes = fs::read(cache).ok()?;
+    let state: Value = serde_json::from_slice(&bytes).ok()?;
+    file.seek(SeekFrom::Start(0)).ok()?;
+    let mut prefix = vec![0;size.min(256) as usize];
+    file.read_exact(&mut prefix).ok()?;
+    let fingerprint = format!("{}:{}:{:x}",identity.device,identity.inode,Sha256::digest(&prefix));
+    (state["version"] == 6 && state["fingerprint"] == fingerprint && state["offset"] == size
+        && state["size"] == size && state["stamp"] == json!([identity.modified,identity.modified_nanos])
+        && state["skipping"] != true).then_some(state)
+}
+
+#[cfg(test)]
+pub(super) fn watch_reference(record: &Value, boundary: u64) -> Result<Value> {
+    let file = File::open(string(record,"transcript")).map_err(|error|error.to_string())?;
+    let mut reader = BufReader::new(file.take(boundary));
+    let mut state = json!({"totals":{},"seen":{},"context":{},"history":[],"codex_seen":{}});
+    let mut line = Vec::new();
+    let mut partial = false;
+    loop {
+        line.clear();
+        let count = (&mut reader).take(MAX_READ+1).read_until(b'\n',&mut line).map_err(|error|error.to_string())?;
+        if count == 0 { break; }
+        if !line.ends_with(b"\n") {
+            partial = true;
+            if count as u64 > MAX_READ { reader.skip_until(b'\n').map_err(|error|error.to_string())?; continue; }
+            break;
+        }
+        if count as u64 <= MAX_READ {
+            if let Ok(event) = serde_json::from_slice::<Value>(&line) {
+                observe(&mut state,&event,string(record,"agent"),string(record,"conversation_id"));
+            }
+        }
+    }
+    Ok(output(&state,string(record,"agent"),partial))
 }
 
 /// U38: the native transcript and cache a Claude or Codex session reads, with

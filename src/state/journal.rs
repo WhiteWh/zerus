@@ -1324,6 +1324,9 @@ pub(super) fn inspection_with(
     // An approval answered in Terminal sends no hook; settling it takes the lock.
     if archive_id.is_none() && record_path(name).exists() {
         if let Ok(record) = read(name) {
+            // Only watch enters this scope. Prime appended transcript bytes
+            // before the state writer lock, never while holding up hooks.
+            super::watch_index::prepare(&record);
             kimi_completion::reconcile(claude_approval::reconcile(record));
         }
     }
