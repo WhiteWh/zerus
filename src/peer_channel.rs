@@ -108,9 +108,20 @@ fn bytes(value: &Value) -> Vec<u8> {
 pub fn routed(command: &str, args: &[String]) -> Option<bool> {
     let json = args.iter().any(|arg| arg == "--json");
     match command {
-        "ls" | "archives" | "inspect" | "worktrees" | "git-status" | "git-diff" | "dirs" | "project" | "analytics" => Some(false),
+        "ls" | "inspect" | "worktrees" | "git-status" | "git-diff" | "dirs" | "project" => Some(false),
+        // Desktop archive pages and analytics summaries carry their filters
+        // on stdin; plain invocations do not consume an input request.
+        "archives" | "analytics" => Some(json),
+        "reference" | "path-info" => Some(false),
+        "processes" if !args.iter().any(|arg| arg == "--stop") => Some(false),
+        "attachment" if !args.iter().any(|arg| arg == "--stage") => Some(false),
+        // The same verb also has index-maintenance operations. Only the
+        // desktop's content query is a read, with no stdin.
+        "search" if args.first().is_some_and(|arg| arg == "--query") => Some(false),
         "account" if matches!(args.first().map(String::as_str), Some("ls" | "inspect")) => Some(false),
-        "terminal" | "send" | "settings" | "effort" | "history" | "rules" if json => Some(true),
+        // MarkRead is identity-bound and idempotent, like the already listed
+        // JSON sends: once taken, an unknown result must never be replayed.
+        "terminal" | "send" | "settings" | "effort" | "history" | "rules" | "read" if json => Some(true),
         "team" if json && args.first().is_some_and(|verb| matches!(verb.as_str(),
             "list" | "status" | "inbox" | "events" | "waiting" | "spans" | "profile" | "test" | "builds" | "outbox"
         ) || verb == "catalog" && args.get(1).is_some_and(|op| op == "get")) => Some(true),
@@ -618,6 +629,34 @@ mod tests {
         assert_eq!(routed("account", &args(&["ls", "--json"])), Some(false));
         assert_eq!(routed("account", &args(&["login", "x"])), None);
         assert_eq!(routed("claude", &args(&["dir", "--new"])), None);
+        for (verb, words, input) in [
+            ("read", vec!["codex/example/session", "--json"], true),
+            ("reference", vec!["codex/example/session", "--json", "--run", "run", "--conversation", "conversation"], false),
+            ("path-info", vec!["--path", "Z:/reserved-fixture/file.txt"], false),
+            ("processes", vec!["codex/example/session", "--output", "process", "--run", "run", "--conversation", "conversation"], false),
+            ("attachment", vec!["codex/example/session", "--request", "request", "--index", "0", "--conversation", "conversation"], false),
+            ("search", vec!["--query", "example query", "--limit", "100"], false),
+        ] {
+            assert_eq!(routed(verb, &args(&words)), Some(input), "{verb} must use the desktop request's stdin contract");
+        }
+        for verb in ["archives", "analytics"] {
+            assert_eq!(routed(verb, &args(&["--json"])), Some(true), "{verb} JSON filters must not be dropped");
+            assert_eq!(routed(verb, &[]), Some(false));
+        }
+        for (verb, words) in [
+            ("read", vec!["codex/example/session"]),
+            ("processes", vec!["codex/example/session", "--stop", "process"]),
+            ("processes", vec!["codex/example/session", "--output", "process", "--stop", "other"]),
+            ("attachment", vec!["codex/example/session", "--stage", "--json"]),
+            ("search", vec!["--index-step"]),
+            ("search", vec!["--index-discover"]),
+            ("search", vec!["--index-catchup"]),
+            ("interrupt", vec!["codex/example/session", "--json"]),
+            ("terminate", vec!["codex/example/session", "--json"]),
+            ("download", vec!["--path", "Z:/reserved-fixture/file.txt", "--output", "local.txt"]),
+        ] {
+            assert_eq!(routed(verb, &args(&words)), None, "{verb} keeps its original path");
+        }
         for verb in ["list", "status", "inbox", "events", "waiting", "spans", "profile", "test", "builds", "outbox"] {
             assert_eq!(routed("team", &args(&[verb, "--json"])), Some(true), "{verb}");
             assert_eq!(routed("team", &args(&[verb])), None, "{verb} without JSON must not consume stdin");
@@ -676,6 +715,36 @@ mod tests {
         listener.close();
         worker.join().unwrap();
         accepted.expect("bounded fixture accept").unwrap()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn capability_probe_distinguishes_missing_marker_from_lost_answer() {
+        for mode in ["present", "missing", "error"] {
+            let root = tempfile::tempdir().unwrap();
+            let config = fixture_config(root.path());
+            let name = pipe_name(&config, "example-peer").unwrap();
+            let listener = fixture_listener(&name);
+            let server = thread::spawn(move || {
+                let mut stream = fixture_accept(&listener);
+                let request = read_frame(&mut stream).unwrap().unwrap();
+                assert_eq!(request["args"], json!(["--help"]));
+                let reply = match mode {
+                    "present" => json!({"code":0,"stdout":STANDARD.encode(b"  bounded-archives-v1\n"),"stderr":""}),
+                    "missing" => json!({"code":0,"stdout":STANDARD.encode(b"legacy help\n"),"stderr":""}),
+                    _ => json!({"error":"peer answer lost"}),
+                };
+                write_frame(&mut stream, &reply).unwrap();
+            });
+            let result = supports(&config, "example-peer", &[("bounded-archives-v1", true)], false)
+                .expect("a broker answered");
+            match mode {
+                "present" => assert_eq!(result.unwrap(), true),
+                "missing" => assert_eq!(result.unwrap(), false),
+                _ => assert!(result.is_err(), "an error must not silently remove a requested capability"),
+            }
+            server.join().unwrap();
+        }
     }
 
     #[cfg(windows)]

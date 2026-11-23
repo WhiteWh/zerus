@@ -2528,7 +2528,7 @@ fn remote_via(
         }
     }
     flags.extend(crate::machines::ssh_options(config, target));
-    let remote_args: Vec<String> = match machine {
+    let mut remote_args: Vec<String> = match machine {
         Some(machine) => ["--expect-machine".to_owned(), machine.to_owned()].into_iter().chain(remote_args).collect(),
         None => remote_args,
     };
@@ -2711,11 +2711,28 @@ fn remote_via(
         }
         if machine.is_some() { markers.push(("guarded-create-v1", false)); }
         let mut words = remote_args.clone();
-        // A non-POSIX peer runs the words without a shell probe: send --bounded only to one that lists it.
+        // Ask a known Windows peer through its broker before a shell probe.
+        // Only a verified missing marker removes --bounded; lost answers
+        // fail preparation rather than silently changing the requested read.
         let archives = command == "archives" || (command == "--expect-machine" && args.get(1).is_some_and(|inner| inner == "archives"));
-        if archives && has(&args, "--bounded") && crate::remote_shell::windows(config, target).unwrap_or(false)
-            && !crate::remote_shell::supports(config, target, &[(state::archive_catalog::BOUNDED_MARKER, true)]).unwrap_or(false) {
-            words.retain(|arg| arg != "--bounded");
+        if archives && has(&args, "--bounded") {
+            let markers = [(state::archive_catalog::BOUNDED_MARKER, true)];
+            let channel = if crate::windows_peer::is_windows(config, target) {
+                crate::peer_channel::supports(config, target, &markers, true)
+            } else { None };
+            let supported = match channel {
+                Some(Ok(supported)) => Some(supported),
+                Some(Err(error)) => return Err(Error::new(3, not_forwarded(target, &error))),
+                None if crate::remote_shell::windows(config, target).unwrap_or(false) => {
+                    Some(crate::remote_shell::supports(config, target, &markers)
+                        .map_err(|error| Error::new(3, not_forwarded(target, &error.message)))?)
+                }
+                None => None,
+            };
+            if supported == Some(false) {
+                words.retain(|arg| arg != "--bounded");
+                remote_args.retain(|arg| arg != "--bounded");
+            }
         }
         if command == "analytics" { words.push("--read-only".into()); }
         const MISSING: &str = "Update the selected computer before using this command; the required capability is missing";
