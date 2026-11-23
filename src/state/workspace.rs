@@ -66,7 +66,15 @@ fn empty(state: &str) -> Value {
         "git_worktree_name":"","git_detached":false,"git_common_dir":"","git_metadata_state":state})
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many git processes this thread asked for (P1.1 tests).
+    static GIT_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn git(cwd: &str, args: &[&str], deadline: Instant) -> Option<(bool, String)> {
+    #[cfg(test)]
+    GIT_CALLS.with(|calls| calls.set(calls.get() + 1));
     let until = (Instant::now() + Duration::from_millis(200)).min(deadline);
     if Instant::now() >= until {
         return None;
@@ -212,13 +220,33 @@ pub(super) fn search_scopes(cwd: &str, deadline: Instant) -> Option<Value> {
         return None;
     }
     let canonical = crate::platform::canonical(Path::new(cwd)).ok();
+    // P1.1: `git -C` in a folder that does not exist only fails.
+    if !Path::new(cwd).is_dir() {
+        return Some(json!({"cwd_canonical":canonical,"git_root":""}));
+    }
     let (ok, root) = git(cwd, &["rev-parse", "--show-toplevel"], deadline)?;
     Some(json!({"cwd_canonical":canonical,"git_root":if ok { root.trim() } else { "" }}))
+}
+
+/// A kept entry written back after a check ran out of time: the same entry
+/// with a new time, so the next listings trust it for its fresh window
+/// instead of spawning git again on a slow machine.
+fn kept_entry(cache: &Value, now: f64) -> Value {
+    let mut entry = cache.clone();
+    entry["at"] = json!(now);
+    entry
 }
 
 fn cached(cwd: &str, deadline: Instant) -> Value {
     if !valid_path(cwd) {
         return empty("unavailable");
+    }
+    // P1.1: a folder that does not exist is no repository. `git -C` fails
+    // there with the same row fields; deleted team and worktree folders made
+    // every listing spawn it once their 15 s window passed. Nothing is
+    // cached, so a folder that appears again is checked by the next listing.
+    if !Path::new(cwd).is_dir() {
+        return empty("not_repo");
     }
     let path = root()
         .join("metadata-cache")
@@ -244,7 +272,8 @@ fn cached(cwd: &str, deadline: Instant) -> Value {
     }
     let (data, git_dir) = inspect_git_dir(cwd, deadline);
     if string(&data, "git_metadata_state") == "unavailable" {
-        if let Some(known) = known {
+        if let (Some(known), Some(cache)) = (known, cached.as_ref()) {
+            let _ = atomic(&path, &kept_entry(cache, now()).to_string());
             return known;
         }
     }
@@ -314,5 +343,33 @@ mod metadata_cache_tests {
         assert!(!metadata_fresh(&entry, &cwd, 1000.0 + METADATA_NOT_REPO_SECONDS));
         let unavailable = json!({"cwd":cwd,"at":1000.0,"data":{"git_metadata_state":"unavailable"}});
         assert!(!metadata_fresh(&unavailable, &cwd, 1020.0), "a failed read is retried");
+    }
+
+    #[test]
+    fn a_missing_folder_never_calls_git() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("deleted-worktree").to_string_lossy().into_owned();
+        GIT_CALLS.with(|calls| calls.set(0));
+        let far = Instant::now() + Duration::from_secs(60);
+        for _ in 0..3 {
+            assert_eq!(cached(&missing, far), empty("not_repo"));
+        }
+        assert_eq!(GIT_CALLS.with(|calls| calls.get()), 0);
+        // An entry an older build wrote for it does not hold past 15 s either.
+        let entry = json!({"cwd":missing,"at":1000.0,"data":{"git_metadata_state":"not_repo"}});
+        assert!(!metadata_fresh(&entry, &missing, 1000.0 + METADATA_FRESH_SECONDS));
+    }
+
+    #[test]
+    fn an_entry_kept_after_a_timeout_is_written_back_with_a_new_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let stale = json!({"cwd":cwd,"at":1000.0,"data":{"git_metadata_state":"not_repo"}});
+        let now = 1000.0 + METADATA_NOT_REPO_SECONDS + 5.0;
+        assert!(!metadata_fresh(&stale, &cwd, now));
+        let kept = kept_entry(&stale, now);
+        assert_eq!(kept["data"], stale["data"]);
+        assert!(metadata_fresh(&kept, &cwd, now + METADATA_NOT_REPO_SECONDS - 1.0));
+        assert!(!metadata_fresh(&kept, &cwd, now + METADATA_NOT_REPO_SECONDS));
     }
 }
