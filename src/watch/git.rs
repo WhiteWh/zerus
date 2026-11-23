@@ -21,6 +21,12 @@ pub(super) const SAFETY: Duration = Duration::from_secs(30);
 /// Checks of one folder start at least this far apart, so a burst of changes
 /// checks it once.
 pub(super) const GAP: Duration = Duration::from_secs(1);
+/// P1.7: a folder whose check is slow waits this many times its last
+/// check's duration between starts: a large checkout that a session edits
+/// all the time ran `git status` back to back.
+const COST_FACTOR: u32 = 3;
+/// The longest gap a slow check earns; the safety interval is no longer.
+const MAX_GAP: Duration = SAFETY;
 /// `git-status` reuses a remote check for this many seconds, and the desktop
 /// shows a remote as verified as long. A folder is checked again when its
 /// remote check expires, so a verified remote stays verified.
@@ -238,6 +244,8 @@ struct Folder {
     again: bool,
     /// When the latest check started.
     started: Instant,
+    /// How long the last finished check took, from its start to its result.
+    cost: Duration,
     due: Option<Instant>,
     /// When the latest change not yet checked happened (Unix time): only a
     /// check that started after it is current.
@@ -339,6 +347,19 @@ fn scope(path: &str, value: &Value) -> Vec<PathBuf> {
     scope
 }
 
+/// P1.7: how far apart a folder's checks start after one that took `cost`:
+/// `max(GAP, COST_FACTOR x cost)`, at most `MAX_GAP`.
+fn gap(cost: Duration) -> Duration {
+    cost.saturating_mul(COST_FACTOR).clamp(GAP, MAX_GAP)
+}
+
+impl Folder {
+    /// The earliest start of the next check.
+    fn earliest(&self) -> Instant {
+        self.started + gap(self.cost)
+    }
+}
+
 /// A change at `at` (Unix time; when it was seen if unknown) makes the folder
 /// due; only a check that started after it is current.
 fn trigger(folder: &mut Folder, at: Option<f64>, now: Instant) {
@@ -349,7 +370,7 @@ fn trigger(folder: &mut Folder, at: Option<f64>, now: Instant) {
         folder.again = true;
         return;
     }
-    let at = now.max(folder.started + GAP);
+    let at = now.max(folder.earliest());
     folder.due = Some(folder.due.map_or(at, |due| due.min(at)));
 }
 
@@ -385,6 +406,7 @@ impl Git {
                 running: false,
                 again: false,
                 started: now,
+                cost: Duration::ZERO,
                 due: Some(now),
                 // A new subscription takes no earlier check.
                 trigger_at: Some(unix_now()),
@@ -470,6 +492,7 @@ impl Git {
         self.queued = self.queued.saturating_sub(1);
         let folder = self.folders.get_mut(&done.path).filter(|folder| folder.token == done.token)?;
         folder.running = false;
+        folder.cost = now.saturating_duration_since(folder.started);
         // A shared check sets the schedule: the next one is due a second
         // after the stream that ran it checks again.
         let mut next = match done.cached_at {
@@ -483,7 +506,7 @@ impl Git {
         let value = match done.value {
             Some(Ok(value)) => value,
             outcome => {
-                folder.due = Some(if again { now.max(folder.started + GAP) } else { next });
+                folder.due = Some(if again { now.max(folder.earliest()) } else { next });
                 return outcome.and_then(Result::err);
             }
         };
@@ -506,7 +529,7 @@ impl Git {
         if again {
             next = next.min(now);
         }
-        folder.due = Some(next.max(folder.started + GAP));
+        folder.due = Some(next.max(folder.earliest()));
         let digest = catalog::digest(&catalog::masked(&value, &VOLATILE));
         folder.unsent = (folder.sent != Some(digest)).then_some((value, digest));
         None
@@ -660,6 +683,36 @@ mod tests {
         finish(&mut git, jobs.into_iter().next().unwrap(), status(&folder("sample"), "main", 1), now + 5 * SECOND);
         git.touch_all(now + 7 * SECOND);
         assert_eq!(git.pulse(now + 7 * SECOND, |_| 7).len(), 1);
+    }
+
+    /// P1.7: a folder's checks start `max(1 s, 3 x the last check's
+    /// duration)` apart, at most 30 s.
+    #[test]
+    fn a_slow_check_spaces_the_next_by_three_times_its_cost_up_to_thirty_seconds() {
+        assert_eq!(gap(Duration::ZERO), SECOND);
+        assert_eq!(gap(SECOND / 4), SECOND);
+        assert_eq!(gap(2 * SECOND), 6 * SECOND);
+        assert_eq!(gap(20 * SECOND), Duration::from_secs(30));
+        let now = Instant::now();
+        let mut git = Git::new();
+        let large = folder("large");
+        let job = git.subscribe(&large, now).unwrap().unwrap();
+        // The check took 4 s: a change waits until 12 s after it started.
+        finish(&mut git, job, status(&large, "main", 0), now + 4 * SECOND);
+        sent(&mut git);
+        git.touch(&[PathBuf::from(&large)], None, now + 5 * SECOND);
+        assert!(git.pulse(now + 11 * SECOND, |_| 7).is_empty(), "within three times its cost");
+        let job = git.pulse(now + 12 * SECOND, |_| 7).pop().expect("three times its cost after it started");
+        // A quick check brings the gap back to one second.
+        finish(&mut git, job, status(&large, "main", 1), now + 12 * SECOND + SECOND / 10);
+        git.touch(&[PathBuf::from(&large)], None, now + 12 * SECOND + SECOND / 5);
+        assert!(git.pulse(now + 12 * SECOND + SECOND / 2, |_| 7).is_empty());
+        let job = git.pulse(now + 13 * SECOND, |_| 7).pop().expect("one second after a quick check");
+        // A check of 15 s waits the 30 s cap, the safety interval.
+        finish(&mut git, job, status(&large, "main", 1), now + 28 * SECOND);
+        git.touch(&[PathBuf::from(&large)], None, now + 29 * SECOND);
+        assert!(git.pulse(now + 42 * SECOND, |_| 7).is_empty());
+        assert_eq!(git.pulse(now + 43 * SECOND, |_| 7).len(), 1, "capped at 30 s after it started");
     }
 
     #[test]
