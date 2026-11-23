@@ -44,11 +44,18 @@ const READS_AT_ONCE: usize = 2;
 /// (and, hidden, at the watcher's own pace) the watcher reuses this reply
 /// instead of starting another `hgs team waiting`.
 #[derive(Clone, Default)]
-pub struct WaitingShare(Arc<Mutex<Option<(Instant, Value)>>>);
+pub struct WaitingShare(Arc<Mutex<Option<(Instant, Value)>>>, Arc<std::sync::atomic::AtomicBool>);
 
 impl WaitingShare {
     fn lock(&self) -> MutexGuard<'_, Option<(Instant, Value)>> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Task #16 of team c536f0e5 (P2.5): while the stream's team views bring
+    /// Waiting, the kept reply is current however old it is (an unchanged
+    /// view sends nothing); otherwise it ages as a read one.
+    pub fn set_streamed(&self, streamed: bool) {
+        self.1.store(streamed, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Keeps a successful first-page Waiting reply read at `at`.
@@ -58,9 +65,10 @@ impl WaitingShare {
 
     /// The kept reply when it is at most `max_age` old at `now`.
     pub fn fresh(&self, max_age: Duration, now: Instant) -> Option<Value> {
+        let streamed = self.1.load(std::sync::atomic::Ordering::SeqCst);
         self.lock()
             .as_ref()
-            .filter(|(at, _)| now.saturating_duration_since(*at) <= max_age)
+            .filter(|(at, _)| streamed || now.saturating_duration_since(*at) <= max_age)
             .map(|(_, reply)| reply.clone())
     }
 
@@ -191,7 +199,19 @@ impl TeamsPoller {
     pub fn views(&self, rows: Option<crate::teams::ViewRows>) {
         let updates = {
             let mut state = self.shared.lock();
-            state.model.views(rows.as_deref().map(Vec::as_slice), Instant::now())
+            let now = Instant::now();
+            // The always-on Waiting watcher reuses a streamed first page as
+            // it reuses a read one, so it starts no `hgs team waiting`.
+            if let (Some(share), Some(rows)) = (&state.share, &rows) {
+                if let Some((_, waiting)) = rows.iter().find(|(key, row)| key == "waiting" && row.get("error").is_none()) {
+                    share.put(waiting, now);
+                }
+            }
+            let updates = state.model.views(rows.as_deref().map(Vec::as_slice), now);
+            if let Some(share) = &state.share {
+                share.set_streamed(state.model.waiting_streamed());
+            }
+            updates
         };
         self.shared.wake.notify_all();
         for sent in updates {
@@ -210,12 +230,20 @@ impl TeamsPoller {
     /// Task #10: where its first-page Waiting replies go (this computer's
     /// poller only), or None.
     pub fn share_waiting(&self, share: Option<WaitingShare>) {
-        self.shared.lock().share = share;
+        let mut state = self.shared.lock();
+        if let Some(share) = &share {
+            share.set_streamed(state.model.waiting_streamed());
+        }
+        state.share = share;
     }
 }
 
 impl Drop for TeamsPoller {
     fn drop(&mut self) {
+        // Task #16: no stream brings Waiting for the watcher any more.
+        if let Some(share) = &self.shared.lock().share {
+            share.set_streamed(false);
+        }
         self.shared.lock().stop = true;
         self.shared.wake.notify_all();
     }

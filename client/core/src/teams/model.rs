@@ -574,6 +574,11 @@ impl TeamsModel {
         self.heads.is_some()
     }
 
+    /// Task #16 (P2.5): whether Waiting's first page comes from the stream.
+    pub fn waiting_streamed(&self) -> bool {
+        self.streamed.contains(&Slot::Waiting)
+    }
+
     /// Task #16 of team c536f0e5 (P2.5): rows of the stream's `team.views`
     /// topic, each the reply of one followed read (`list`, `waiting`,
     /// `status:<id>`, `inbox:<id>`, `feed:<id>`), applied exactly as that

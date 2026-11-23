@@ -2330,3 +2330,23 @@ fn task_16_a_lost_stream_or_an_error_row_returns_those_reads_to_the_poller() {
     }
     assert_eq!(reads.len(), 5, "list, Waiting, status, inbox and feed: {reads:?}");
 }
+
+#[test]
+fn task_16_a_streamed_waiting_page_keeps_the_watcher_from_reading() {
+    let share = super::poller::WaitingShare::default();
+    let start = Instant::now();
+    share.put(&json!({"items":[]}), start);
+    let later = start + Duration::from_secs(120);
+    assert!(share.fresh(Duration::from_secs(35), later).is_none(), "a read reply ages");
+    share.set_streamed(true);
+    assert!(share.fresh(Duration::from_secs(35), later).is_some(), "an unchanged streamed view sends nothing and stays current");
+    share.set_streamed(false);
+    assert!(share.fresh(Duration::from_secs(35), later).is_none());
+    let mut model = TeamsModel::default();
+    model.follow(follow_team(), start);
+    assert!(!model.waiting_streamed());
+    model.views(Some(&view_rows()), start);
+    assert!(model.waiting_streamed());
+    model.views(None, start);
+    assert!(!model.waiting_streamed());
+}
