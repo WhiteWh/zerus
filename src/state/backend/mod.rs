@@ -143,6 +143,16 @@ pub(crate) struct SessionRow {
     pub launch_id: String,
 }
 
+/// Task #14 (P2.4): what changed in the terminal, as counters a reader
+/// compares with the last ones it saw: `structure` moves when a session
+/// starts, ends or is renamed, `output` per session name when its pane wrote
+/// output or its process exited.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Counters {
+    pub(crate) structure: u64,
+    pub(crate) output: std::collections::BTreeMap<String, u64>,
+}
+
 /// The `hgs ls --json` view of the terminal: clients, then sessions.
 pub(crate) struct Listing {
     pub clients: Vec<ClientRow>,
@@ -401,6 +411,11 @@ pub(crate) trait TerminalBackend: Sync {
             clients: Vec::new(),
             sessions: Vec::new(),
         })
+    }
+    /// Task #14 (P2.4): the terminal's change counters in one round trip;
+    /// None where it has none (tmux, a session host that predates them).
+    fn counters(&self) -> Result<Option<Counters>> {
+        Ok(None)
     }
     /// `(name, attached clients)` for `hgs ls`; None without sessions.
     fn attached_counts(&self) -> Result<Option<Vec<(String, String)>>> {

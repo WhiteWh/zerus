@@ -835,6 +835,11 @@ pub struct PaneEntry {
     /// The host reports the directory the session started in: it does not
     /// read another process's current directory.
     pub current_path: String,
+    /// Task #14 (P2.4): raised by every output of the pane and when its
+    /// process exits. None from a host that predates it; an older client
+    /// ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<u64>,
 }
 
 /// An attached client.
@@ -853,6 +858,11 @@ pub struct Listed {
     pub sessions: Vec<SessionEntry>,
     pub panes: Vec<PaneEntry>,
     pub clients: Vec<ClientEntry>,
+    /// Task #14 (P2.4): raised when a session starts, ends, is renamed or a
+    /// client attaches or leaves.
+    /// None from a host that predates it; an older client ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structure: Option<u64>,
 }
 
 /// `resolve_target`.
@@ -1574,6 +1584,7 @@ mod tests {
             dead: false,
             run_marker: "run-1".into(),
             current_path: r"C:\src\p".into(),
+            output: None,
         };
         let client = || ClientEntry {
             id: "c1".into(),
@@ -1601,6 +1612,7 @@ mod tests {
                         sessions: vec![session()],
                         panes: vec![pane()],
                         clients: vec![client()],
+                        structure: None,
                     },
                 ),
                 r#"{"id":2,"ok":{"sessions":[{"id":"$2","name":"claude/p/a","attached":1,"created":1760000000,"launch_id":"launch-1"}],"panes":[{"session":"claude/p/a","session_id":"$2","pane":"%3","pid":77,"dead":false,"run_marker":"run-1","current_path":"C:\\src\\p"}],"clients":[{"id":"c1","session":"claude/p/a","pid":90}]}}"#,
@@ -1733,12 +1745,51 @@ mod tests {
         }
     }
 
+    /// Task #14 (P2.4): the change counters are optional both ways: a reply
+    /// of a host that predates them reads as None, and a client that
+    /// predates them (its own copy of the entries without the fields) reads
+    /// a newer host's reply as before.
+    #[test]
+    fn change_counters_are_optional_for_old_hosts_and_old_clients() {
+        let newer = r#"{"sessions":[],"panes":[{"session":"claude/p/a","session_id":"$2","pane":"%3","pid":77,"dead":false,"run_marker":"run-1","current_path":"C:\\src\\p","output":41}],"clients":[],"structure":7}"#;
+        let listed: Listed = serde_json::from_str(newer).unwrap();
+        assert_eq!((listed.structure, listed.panes[0].output), (Some(7), Some(41)));
+        assert_eq!(serde_json::to_string(&listed).unwrap(), newer, "the fields round-trip");
+
+        let older = r#"{"sessions":[],"panes":[{"session":"claude/p/a","session_id":"$2","pane":"%3","pid":77,"dead":false,"run_marker":"run-1","current_path":"C:\\src\\p"}],"clients":[]}"#;
+        let listed: Listed = serde_json::from_str(older).unwrap();
+        assert_eq!((listed.structure, listed.panes[0].output), (None, None));
+        assert_eq!(serde_json::to_string(&listed).unwrap(), older, "an older host's reply is unchanged");
+
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct OldPane {
+            session: String,
+            session_id: String,
+            pane: String,
+            pid: u32,
+            dead: bool,
+            run_marker: String,
+            current_path: String,
+        }
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct OldListed {
+            sessions: Vec<SessionEntry>,
+            panes: Vec<OldPane>,
+            clients: Vec<ClientEntry>,
+        }
+        let old: OldListed = serde_json::from_str(newer).expect("an older client ignores the counters");
+        assert_eq!(old.panes[0].run_marker, "run-1");
+    }
+
     #[test]
     fn responses_decode_into_payloads_and_tolerate_newer_hosts() {
         let listed = Listed {
             sessions: Vec::new(),
             panes: Vec::new(),
             clients: Vec::new(),
+            structure: None,
         };
         let response = Response::ok(2, &listed);
         assert_eq!(response.clone().payload::<Listed>(), Ok(listed));

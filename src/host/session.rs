@@ -254,6 +254,9 @@ pub(crate) struct Session {
     screen: Mutex<Screen>,
     input: Mutex<Option<Sender<Input>>>,
     drained: (Mutex<bool>, Condvar),
+    /// Task #14 (P2.4): raised by every output the console writes and when
+    /// the root process exits; `list` reports it per pane.
+    output_count: std::sync::atomic::AtomicU64,
 }
 
 fn exited(pane: &str) -> ErrorBody {
@@ -301,6 +304,7 @@ impl Session {
             }),
             input: Mutex::new(Some(sender)),
             drained: (Mutex::new(false), Condvar::new()),
+            output_count: std::sync::atomic::AtomicU64::new(0),
         });
         let started = thread::Builder::new()
             .name(format!("hgs-pane-{pane}-input"))
@@ -349,6 +353,11 @@ impl Session {
 
     pub(crate) fn dead(&self) -> bool {
         lock(&self.meta).dead
+    }
+
+    /// How often the pane changed: its output, and its root process's exit.
+    pub(crate) fn output_count(&self) -> u64 {
+        self.output_count.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub(crate) fn info(&self) -> Info {
@@ -569,6 +578,7 @@ impl Session {
             ..
         } = &mut *screen;
         model.process(bytes);
+        self.output_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let replies = model.take_replies();
         if !replies.is_empty() {
             self.send(Input::Host(replies));
@@ -623,6 +633,7 @@ impl Session {
             meta.dead = true;
             meta.stopping = true;
         }
+        self.output_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.console.hang_up();
         let deadline = Instant::now() + DRAIN;
         let mut drained = lock(&self.drained.0);

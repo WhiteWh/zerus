@@ -195,6 +195,10 @@ pub(crate) struct Host<L: Launcher> {
     enabled: fn() -> bool,
     registry: Mutex<Registry>,
     changed: Condvar,
+    /// Task #14 (P2.4): raised when a session starts, ends, is renamed or a
+    /// client attaches or leaves; `list` reports it, so a reader sees the structure move without
+    /// comparing every entry.
+    structure: std::sync::atomic::AtomicU64,
     /// Creates run one at a time, so names and launch IDs are checked once.
     creating: Mutex<()>,
     recovery: Mutex<Recovery>,
@@ -287,6 +291,7 @@ impl<L: Launcher> Host<L> {
                 supervisors: HashMap::new(),
             }),
             changed: Condvar::new(),
+            structure: std::sync::atomic::AtomicU64::new(0),
             creating: Mutex::new(()),
             recovery: Mutex::default(),
             launch_reports: OnceLock::new(),
@@ -352,6 +357,13 @@ impl<L: Launcher> Host<L> {
 
     fn changed(&self) {
         self.changed.notify_all();
+    }
+
+    /// Task #14: `changed`, when a session started, ended, was renamed or
+    /// gained or lost a client: `list`'s structure counter moves.
+    fn restructured(&self) {
+        self.structure.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.changed();
     }
 
     /// The session `target` names.
@@ -622,10 +634,10 @@ impl<L: Launcher> Host<L> {
             drop(registry);
             session.kill();
             session.finish(None);
-            self.changed();
+            self.restructured();
             return Err(error);
         }
-        self.changed();
+        self.restructured();
         Ok(Created {
             session: session.session_id(),
             pane: session.pane_id(),
@@ -758,12 +770,15 @@ impl<L: Launcher> Host<L> {
             channel.close();
         }
         session.finish(code);
-        self.changed();
+        self.restructured();
     }
 
     fn list(&self) -> Listed {
         let sessions: Vec<_> = self.registry().sessions.values().cloned().collect();
-        let mut listed = Listed::default();
+        let mut listed = Listed {
+            structure: Some(self.structure.load(std::sync::atomic::Ordering::SeqCst)),
+            ..Listed::default()
+        };
         for session in &sessions {
             let name = session.name();
             let clients = clients_of(session);
@@ -786,6 +801,7 @@ impl<L: Launcher> Host<L> {
                 // (platform::current_directories), so a program that changes
                 // directory is still listed where it started.
                 current_path: session.cwd.clone(),
+                output: Some(session.output_count()),
             });
             listed.clients.extend(clients);
         }
@@ -830,6 +846,8 @@ impl<L: Launcher> Host<L> {
             ));
         }
         session.set_name(name);
+        drop(registry);
+        self.restructured();
         Ok(())
     }
 
@@ -951,14 +969,14 @@ impl<L: Launcher> Host<L> {
             name: session.name(),
             pane: session.pane_id(),
         };
-        self.changed();
+        self.restructured();
         Ok((session, client, attached))
     }
 
     /// A client left its session.
     pub(crate) fn detached(&self, session: &Session, client: &Attachment) {
         session.detach(client.id);
-        self.changed();
+        self.restructured();
     }
 
     /// Task #33: the session whose root process or job holds `client_pid`,

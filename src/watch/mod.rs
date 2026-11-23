@@ -168,7 +168,43 @@ enum Input {
     Inspected(InspectDone),
     /// Task #11 (P2.1a): the change bus noticed files under the state folder.
     Changed(changes::Note),
+    /// Task #14 (P2.4): the terminal's change counters moved; None when it
+    /// has none (tmux, a session host that predates them).
+    Counters(Option<crate::state::backend::Counters>),
     End,
+}
+
+/// Task #14 (P2.4): how often the counters thread asks the session host's
+/// `list` (one pipe round trip, no process sample).
+const COUNTERS_POLL: Duration = Duration::from_millis(100);
+/// A pane whose output counter moved is derived again once it stood still
+/// this long, so a chooser drawn in pieces derives once...
+const SETTLE: Duration = Duration::from_millis(300);
+/// ...and at most this often while it keeps moving (a busy screen).
+const BUSY_EVERY: Duration = Duration::from_secs(2);
+/// Without counters (tmux, an older session host) the sweep stays at the
+/// earlier 5 s, for choosers and status lines no file shows.
+const LEGACY_FULL: Duration = Duration::from_secs(5);
+
+/// Task #14: what the terminal's counters say so far.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Counted {
+    /// Not answered yet.
+    Unknown,
+    /// The terminal has none: the 5 s sweep stays.
+    Unsupported,
+    /// The last structure counter.
+    Live(u64),
+}
+
+/// Task #14: one pane's output counter and its settling.
+#[derive(Debug)]
+struct Screen {
+    count: u64,
+    /// The last change seen that no derivation covered yet.
+    changed: Option<Instant>,
+    /// Since when it has kept moving without a derivation.
+    moving_since: Option<Instant>,
 }
 
 /// Task #11: how changed rows are derived; tests use a fake.
@@ -303,6 +339,7 @@ pub(crate) fn run(config: &Config, args: &[String], dry: bool) -> Result<i32> {
     watch.list(Instant::now());
     watch.emit_catalog();
     watch.start_bus();
+    watch.start_counters();
     loop {
         let input = received.recv_timeout(watch.deadline().saturating_duration_since(Instant::now()));
         if matches!(input, Ok(Input::Line(_) | Input::TooLong)) {
@@ -558,6 +595,13 @@ struct Watch<'a> {
     lister: ListFn,
     structure_of: StructureFn,
     drift_log: DriftFn,
+    /// Task #14 (P2.4): `HGS_WATCH_FULL_SECONDS` was given, so it holds even
+    /// without counters.
+    full_explicit: bool,
+    counted: Counted,
+    screens: BTreeMap<String, Screen>,
+    /// When the next screen settles or is due as busy.
+    screens_due: Option<Instant>,
 }
 
 impl<'a> Watch<'a> {
@@ -643,12 +687,16 @@ impl<'a> Watch<'a> {
             lister: list_local,
             structure_of: structure_now,
             drift_log: log_drift,
+            full_explicit: std::env::var_os("HGS_WATCH_FULL_SECONDS").is_some(),
+            counted: Counted::Unknown,
+            screens: BTreeMap::new(),
+            screens_due: None,
         }
     }
 
     /// When the loop must wake without input.
     fn deadline(&self) -> Instant {
-        [self.listing_due, self.refresh_due, self.native_due, self.time_due, Some(self.replacement_due)]
+        [self.listing_due, self.refresh_due, self.native_due, self.time_due, self.screens_due, Some(self.replacement_due)]
             .into_iter()
             .flatten()
             .fold(self.pulse_due, Instant::min)
@@ -690,6 +738,7 @@ impl<'a> Watch<'a> {
             Ok(Input::DriveFolders(done)) => self.drive_folders_done(done),
             Ok(Input::Inspected(done)) => self.inspected(done),
             Ok(Input::Changed(note)) => self.changed(note, Instant::now()),
+            Ok(Input::Counters(counters)) => self.counted(counters, Instant::now()),
             Ok(Input::End) | Err(mpsc::RecvTimeoutError::Disconnected) => return false,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
@@ -710,6 +759,10 @@ impl<'a> Watch<'a> {
         if self.time_due.is_some_and(|due| now >= due) {
             self.timed(now);
             phases.mark("timed");
+        }
+        if self.screens_due.is_some_and(|due| now >= due) {
+            self.settle(now);
+            phases.mark("screens");
         }
         if self.listing_due.is_some_and(|due| now >= due) {
             self.list(now);
@@ -1107,6 +1160,113 @@ impl<'a> Watch<'a> {
         self.time_due = self.deadlines.values().copied().reduce(f64::min).map(|until| {
             Instant::now() + Duration::from_secs_f64((until - wall).max(0.0)) + Duration::from_millis(20)
         });
+    }
+
+    // ---- Session host change counters (task #14, P2.4) ----------------------
+
+    /// The sweep's interval: `HGS_WATCH_FULL_SECONDS` or 60 s, but the
+    /// earlier 5 s while the terminal is known to have no counters (tmux, a
+    /// session host that predates them) and no interval was given.
+    fn sweep_interval(&self) -> Duration {
+        if self.counted == Counted::Unsupported && !self.full_explicit {
+            self.full.min(LEGACY_FULL)
+        } else {
+            self.full
+        }
+    }
+
+    /// Asks the terminal's counters on a thread of its own every
+    /// [`COUNTERS_POLL`], sending them only when they moved. A terminal
+    /// without counters is said once and the thread ends; a host that does
+    /// not answer for now is asked again later.
+    fn start_counters(&mut self) {
+        let results = self.git_results.clone();
+        let _ = std::thread::Builder::new().name("hgs-watch-counters".into()).spawn(move || {
+            let mut last = None;
+            loop {
+                match source::counters() {
+                    Ok(None) => {
+                        let _ = results.send(Input::Counters(None));
+                        return;
+                    }
+                    Ok(Some(counters)) => {
+                        if last.as_ref() != Some(&counters) {
+                            if results.send(Input::Counters(Some(counters.clone()))).is_err() {
+                                return;
+                            }
+                            last = Some(counters);
+                        }
+                    }
+                    Err(_) => std::thread::sleep(PROBE),
+                }
+                std::thread::sleep(COUNTERS_POLL);
+            }
+        });
+    }
+
+    /// New counters: a moved structure lists every row (a session started,
+    /// ended or was renamed); a moved pane waits to settle (`settle`).
+    fn counted(&mut self, counters: Option<crate::state::backend::Counters>, now: Instant) {
+        let Some(counters) = counters else {
+            self.counted = Counted::Unsupported;
+            self.screens.clear();
+            self.screens_due = None;
+            return;
+        };
+        let first = self.counted == Counted::Unknown || self.counted == Counted::Unsupported;
+        if self.counted != Counted::Live(counters.structure) && !first {
+            self.schedule(now + DEBOUNCE);
+        }
+        self.counted = Counted::Live(counters.structure);
+        self.screens.retain(|name, _| counters.output.contains_key(name));
+        for (name, count) in counters.output {
+            let screen = self.screens.entry(name).or_insert(Screen { count, changed: None, moving_since: None });
+            if screen.count != count {
+                screen.count = count;
+                screen.changed = Some(now);
+                screen.moving_since.get_or_insert(now);
+            }
+        }
+        self.settle(now);
+    }
+
+    /// Derives again the tracked rows whose pane stood still for [`SETTLE`]
+    /// after it moved, or kept moving for [`BUSY_EVERY`]; notes when the
+    /// next is due.
+    fn settle(&mut self, now: Instant) {
+        let mut names = BTreeSet::new();
+        for (name, screen) in &mut self.screens {
+            let Some(changed) = screen.changed else { continue };
+            let settled = now >= changed + SETTLE;
+            let busy = screen.moving_since.is_some_and(|since| now >= since + BUSY_EVERY);
+            if settled || busy {
+                names.insert(name.clone());
+                screen.moving_since = if settled { None } else { Some(now) };
+                if settled {
+                    screen.changed = None;
+                }
+            }
+        }
+        self.screens_due = self
+            .screens
+            .values()
+            .filter_map(|screen| {
+                let changed = screen.changed?;
+                Some(screen.moving_since.map_or(changed + SETTLE, |since| (changed + SETTLE).min(since + BUSY_EVERY)))
+            })
+            .min();
+        let tracked: BTreeSet<String> = self
+            .rows
+            .iter()
+            .filter(|(_, row)| row["tracked"] == true)
+            .filter_map(|(_, row)| row["name"].as_str())
+            .filter(|name| names.contains(*name))
+            .map(str::to_owned)
+            .collect();
+        if !tracked.is_empty() {
+            self.stale.extend(tracked);
+            self.schedule_refresh(now);
+        }
     }
 
     /// Logs the rows a sweep found otherwise than they were kept: one
@@ -1540,7 +1700,7 @@ impl<'a> Watch<'a> {
             self.probe(now);
             phases.mark("probe");
         }
-        if self.listed_at.is_none_or(|at| now >= at + self.full) {
+        if self.listed_at.is_none_or(|at| now >= at + self.sweep_interval()) {
             self.schedule_sweep(now);
         }
         self.activity(now);
@@ -2709,6 +2869,7 @@ mod tests {
                 Input::DriveFolders(_) => "<drive_folders>".into(),
                 Input::Inspected(done) => format!("<inspected {}>", done.key),
                 Input::Changed(_) => "<changed>".into(),
+                Input::Counters(_) => "<counters>".into(),
                 Input::End => "<end>".into(),
             })
             .collect()
@@ -3068,6 +3229,87 @@ mod tests {
         assert_eq!(DRIFTS.load(Ordering::SeqCst), 0, "a sweep found drift");
         assert_eq!(masked(&watch.rows), masked(&catalog::split(json!({"sessions": model_rows(None)})).0));
         *MODEL.lock().unwrap() = None;
+    }
+
+    static CHOOSER_DERIVES: AtomicUsize = AtomicUsize::new(0);
+
+    fn chooser_rows(wanted: &BTreeSet<String>) -> std::result::Result<Option<(Vec<Value>, u64)>, String> {
+        CHOOSER_DERIVES.fetch_add(1, Ordering::SeqCst);
+        Ok(Some((wanted.iter().map(|name| json!({"name":name,"run_id":"r1","tracked":true,"phase":"input"})).collect(), 7)))
+    }
+
+    /// Task #14 (P2.4): a chooser the pane draws moves its output counter;
+    /// once the counter stood still for 300 ms the row is derived once and
+    /// reaches the client in under 0.5 s. A screen that keeps moving derives
+    /// every 2 s, a moved structure lists every row, and a terminal without
+    /// counters keeps the 5 s sweep.
+    #[test]
+    fn a_chooser_reaches_the_stream_in_under_half_a_second() {
+        use crate::state::backend::Counters;
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_config(dir.path());
+        let sink = Sink::default();
+        let writer = Writer::spawn(sink.clone(), protocol::QUEUE_BYTES, Duration::from_secs(3600), || {});
+        let (results, received) = mpsc::channel();
+        let mut watch = Watch::with_root(&config, writer, results, dir.path().to_owned());
+        watch.derive = chooser_rows;
+        let row = json!({"name":"claude/p/t","run_id":"r1","tracked":true,"phase":"idle"});
+        watch.rows = vec![(catalog::key(&row), row)];
+        watch.digests = watch.rows.iter().map(|(_, row)| catalog::row_digest(row)).collect();
+        (watch.listed, watch.pending, watch.structure) = (true, true, Some(7));
+        let now = Instant::now();
+        (watch.listed_at, watch.probed_at) = (Some(now), Some(now));
+        watch.pulse_due = now + Duration::from_secs(60);
+        watch.emit_catalog();
+        assert!(sink.shows(r#""t":"snapshot""#));
+        let counters = |structure: u64, count: u64| Some(Counters { structure, output: BTreeMap::from([("claude/p/t".to_string(), count)]) });
+
+        assert_eq!(watch.sweep_interval(), FULL_DEFAULT, "nothing known yet");
+        watch.counted(counters(1, 10), Instant::now());
+        assert!(watch.stale.is_empty() && watch.screens_due.is_none(), "the first counters derive nothing");
+        assert_eq!(watch.sweep_interval(), FULL_DEFAULT);
+
+        // The chooser is drawn in three pieces.
+        let drawn = Instant::now();
+        for count in [11, 12, 13] {
+            assert!(watch.turn(Ok(Input::Counters(counters(1, count)))));
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        let latency = loop {
+            let wait = watch.deadline().saturating_duration_since(Instant::now()).min(Duration::from_millis(5));
+            assert!(watch.turn(received.recv_timeout(wait)));
+            if String::from_utf8_lossy(&sink.0.lock().unwrap()).contains(r#""t":"delta""#) {
+                break drawn.elapsed();
+            }
+            assert!(drawn.elapsed() < Duration::from_secs(3), "no delta");
+        };
+        assert!(latency >= SETTLE && latency < Duration::from_millis(500), "the chooser came after {latency:?}");
+        assert_eq!(CHOOSER_DERIVES.load(Ordering::SeqCst), 1, "a chooser drawn in pieces derives once");
+
+        // A screen that keeps moving for 2.5 s derives once, at 2 s.
+        CHOOSER_DERIVES.store(0, Ordering::SeqCst);
+        let moving = Instant::now();
+        let mut count = 20;
+        while moving.elapsed() < Duration::from_millis(2500) {
+            count += 1;
+            assert!(watch.turn(Ok(Input::Counters(counters(1, count)))));
+            let until = Instant::now() + Duration::from_millis(100);
+            while Instant::now() < until {
+                let wait = watch.deadline().min(until).saturating_duration_since(Instant::now()).min(Duration::from_millis(5));
+                assert!(watch.turn(received.recv_timeout(wait)));
+            }
+        }
+        assert_eq!(CHOOSER_DERIVES.load(Ordering::SeqCst), 1, "a busy screen derives every 2 s");
+
+        // A moved structure (a session started, ended or was renamed) lists every row.
+        assert!(watch.listing_due.is_none());
+        watch.counted(counters(2, count), Instant::now());
+        assert!(watch.listing_due.is_some());
+
+        // A terminal without counters keeps the earlier 5 s sweep.
+        watch.counted(None, Instant::now());
+        assert_eq!(watch.sweep_interval(), LEGACY_FULL);
+        assert!(watch.screens.is_empty() && watch.screens_due.is_none());
     }
 
     fn working_rows(wanted: &BTreeSet<String>) -> std::result::Result<Option<(Vec<Value>, u64)>, String> {

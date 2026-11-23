@@ -13727,10 +13727,19 @@ DeepSeek and OpenCode hosts. A changed binding derives its session's row
 alone whether the session is live or saved (stopped or paused), and a row is
 derived again when its state changes by time alone: Cooling turns Cold when the
 cache TTL runs out, a tool call becomes a long operation at 30 s, and a "so far"
-text moves to its next minute. All rows are listed again every 60 s
-(`HGS_WATCH_FULL_SECONDS`, whole seconds; 5 restores the earlier 5 s), for
-terminal choosers and status lines of sessions that already reported hooks,
-which until then can show up to that late. Such a sweep is compared with the
+text moves to its next minute. On Windows the session host's `list` carries
+change counters, optional fields an older client ignores: `structure`, which
+moves when a session starts, ends, is renamed or a client attaches or leaves, and `output` per pane, which
+moves on its every output and when its process exits. The stream reads them
+every 100 ms on a thread of its own; a moved structure lists all rows, and a
+pane whose counter moved derives its row again once the counter stood still
+for 300 ms, or every 2 s while it keeps moving, so a terminal chooser or status
+line shows within about half a second. All rows are listed again every 60 s
+(`HGS_WATCH_FULL_SECONDS`, whole seconds; 5 restores the earlier 5 s). Where
+the terminal has no counters (tmux on Linux and macOS, a session host started
+by an older build, which is never restarted for this) and no interval is set,
+they are listed every 5 s as before, for choosers and status lines of sessions
+that already reported hooks. Such a sweep is compared with the
 rows the stream kept: each row it lists otherwise leaves one `watch-drift` line
 (its key and the differing fields; at most 20 per sweep) in
 `logs/slow-calls.log`, and the listing wins. Followed

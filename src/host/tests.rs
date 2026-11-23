@@ -1107,6 +1107,58 @@ fn variables_names_and_kills() {
     );
 }
 
+/// Task #14 (P2.4): `list` carries a structure counter that moves when a
+/// session starts, is renamed or ends, and a per-pane output counter that
+/// moves on every output of the pane and nothing else.
+#[test]
+fn list_counters_move_on_output_structure_and_exit() {
+    let (host, launcher) = new_host();
+    let mut client = connect(&host);
+    let list = |client: &mut Connection| client.call::<Listed>(Op::List).unwrap();
+    let empty = list(&mut client).structure.expect("a current host reports the structure");
+    client.call::<Created>(create("l", "claude/p/a")).unwrap();
+    client.call::<Created>(create("m", "claude/p/b")).unwrap();
+    let created = list(&mut client);
+    let structure = created.structure.unwrap();
+    assert!(structure > empty, "a new session moves the structure");
+    let output = |listed: &Listed, name: &str| listed.panes.iter().find(|pane| pane.session == name).and_then(|pane| pane.output);
+    let (a, b) = (output(&created, "claude/p/a").unwrap(), output(&created, "claude/p/b").unwrap());
+
+    // Output moves its own pane's counter, not the other's, nor the structure.
+    launcher.program(0).write(b"Do you trust this folder? 1. Yes 2. No\r\n");
+    eventually("the output counter", || output(&list(&mut client), "claude/p/a").unwrap() > a);
+    let written = list(&mut client);
+    assert_eq!(output(&written, "claude/p/b"), Some(b));
+    assert_eq!(written.structure, Some(structure));
+    // A variable is no structure change and no output.
+    client
+        .call::<Done>(Op::SetEnvironment { target: pane("claude/p/b"), name: RUN_MARKER.into(), value: Some("run-b".into()) })
+        .unwrap();
+    let marked = list(&mut client);
+    assert_eq!((marked.structure, output(&marked, "claude/p/b")), (Some(structure), Some(b)));
+
+    // A rename moves the structure.
+    client.call::<Done>(Op::Rename { target: Target::Session("$1".into()), name: "claude/p/c".into() }).unwrap();
+    let renamed = list(&mut client).structure.unwrap();
+    assert!(renamed > structure);
+
+    // The exit of its process: the pane is listed dead with a moved counter
+    // or has left the listing, which moves the structure.
+    let before = output(&list(&mut client), "claude/p/a").unwrap();
+    launcher.program(0).exit(0);
+    eventually("the exit", || {
+        let listed = list(&mut client);
+        match listed.panes.iter().find(|pane| pane.session == "claude/p/a") {
+            Some(pane) => pane.dead && pane.output.unwrap() > before,
+            None => listed.structure.unwrap() > renamed,
+        }
+    });
+    eventually("the end", || {
+        let listed = list(&mut client);
+        listed.sessions.len() == 1 && listed.structure.unwrap() > renamed
+    });
+}
+
 /// A supervisor on its own connection, answering with `evidence`.
 fn supervise(
     host: &Arc<Host<FakeLauncher>>,

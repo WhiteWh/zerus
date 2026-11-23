@@ -743,6 +743,15 @@ impl<C: Connector> TerminalBackend for HostBackend<C> {
     fn listing(&self) -> Result<Listing> {
         self.list().map(listing)
     }
+    /// A host that predates the counters (or none at all) has none; it is
+    /// never restarted for them.
+    fn counters(&self) -> Result<Option<super::Counters>> {
+        let listed = self.list()?;
+        Ok(listed.structure.map(|structure| super::Counters {
+            structure,
+            output: listed.panes.into_iter().filter_map(|pane| Some((pane.session, pane.output?))).collect(),
+        }))
+    }
     fn attached_counts(&self) -> Result<Option<Vec<(String, String)>>> {
         let listed = self.list()?;
         Ok((!listed.sessions.is_empty()).then(|| {
@@ -1528,6 +1537,7 @@ mod tests {
                     dead: false,
                     run_marker: "run-a".into(),
                     current_path: String::new(),
+                    output: Some(3),
                 },
                 PaneEntry {
                     session: "fake_agent/p/b".into(),
@@ -1537,6 +1547,7 @@ mod tests {
                     dead: true,
                     run_marker: String::new(),
                     current_path: r"C:\work\p".into(),
+                    output: Some(9),
                 },
             ],
             clients: vec![ClientEntry {
@@ -1544,6 +1555,7 @@ mod tests {
                 session: "claude/p/a".into(),
                 pid: 99,
             }],
+            structure: Some(5),
         }
     }
 
@@ -1702,8 +1714,25 @@ mod tests {
             ])
         );
         assert!(calls(&backend).iter().all(|op| *op == Op::List));
+        // Task #14: the counters ride in the same `list`.
+        assert_eq!(
+            backend.counters().unwrap(),
+            Some(super::super::Counters {
+                structure: 5,
+                output: BTreeMap::from([("claude/p/a".to_string(), 3), ("fake_agent/p/b".to_string(), 9)]),
+            })
+        );
+        let mut older = serde_json::to_value(listed()).unwrap();
+        older.as_object_mut().unwrap().remove("structure");
+        for pane in older["panes"].as_array_mut().unwrap() {
+            pane.as_object_mut().unwrap().remove("output");
+        }
+        let old = HostBackend::new(Fake::new(move |_| Ok(older.clone())));
+        assert_eq!(old.counters().unwrap(), None, "a host that predates the counters has none");
+        assert_eq!(old.listing().unwrap().sessions.len(), 2, "and lists as before");
 
         let none = HostBackend::new(Fake::new(|_| Err(Failure::NoHost)));
+        assert_eq!(none.counters().unwrap(), None);
         let listing = none.listing().unwrap();
         assert!(listing.sessions.is_empty() && listing.clients.is_empty());
         assert!(none.panes().unwrap().is_empty() && none.pane_paths().unwrap().is_empty());

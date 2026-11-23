@@ -252,6 +252,13 @@ pub(crate) fn structure_now() -> Result<u64> {
     Ok(structure(&sessions, &ids, &snapshot, &names))
 }
 
+/// Task #14 (P2.4): the terminal's change counters; None where it has none
+/// (tmux, a session host that predates them).
+pub(crate) fn counters() -> Result<Option<backend::Counters>> {
+    local_sessions()?;
+    backend::current().counters()
+}
+
 /// The rows `ls --json --local --no-archives` lists now for the tracked
 /// sessions in `wanted`, live or saved (task #13), with the terminal structure
 /// they saw. None when only a whole listing can tell: the panes no longer
