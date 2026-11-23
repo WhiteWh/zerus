@@ -181,6 +181,13 @@ fn listed_input(args: &[String], input: Option<&[u8]>) -> bool {
     true
 }
 
+/// A `watch --json` stream carried by the lasting channel (#19). None means
+/// neither endpoint took the stream, and the caller keeps its own ssh.
+/// Protocol 2 is not wired yet, so every call keeps that fallback.
+pub fn watch(_config: &Config, _alias: &str, _args: &[String]) -> Option<Result<i32, String>> {
+    None
+}
+
 /// Whether the peer's hgs lists every marker in its help, asked through the
 /// channel: no ssh connection of its own, which to a Windows computer costs
 /// seconds and, twice within the six seconds a command's preparation gets,

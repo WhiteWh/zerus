@@ -2728,11 +2728,21 @@ fn remote_via(
         let mut verified = false;
         if crate::windows_peer::is_windows(config, target) {
             let listed = crate::peer_channel::routed(command, &args);
-            match crate::peer_channel::supports(config, target, &markers, listed.is_some()) {
+            let watch_stream = command == "watch" && has(&args, "--json");
+            match crate::peer_channel::supports(config, target, &markers, listed.is_some() || watch_stream) {
                 Some(Ok(true)) => verified = true,
                 Some(Ok(false)) => return Err(Error::new(1, MISSING)),
                 // No broker, or its answer was lost: this command's own ssh asks.
                 Some(Err(_)) | None => {}
+            }
+            if verified && watch_stream {
+                match crate::peer_channel::watch(config, target, &remote_args) {
+                    Some(Ok(code)) => return Ok(code),
+                    Some(Err(error)) => return Err(Error::new(3, error)),
+                    // Neither endpoint took the stream. Keep the byte-client
+                    // SSH path for an existing protocol 1 broker or peer.
+                    None => {}
+                }
             }
             if let (true, Some(reads_stdin)) = (verified, listed) {
                 let input = channel_stdin(reads_stdin)?;
