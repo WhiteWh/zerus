@@ -13771,6 +13771,21 @@ of them moved; a full tick, which also loads ended teams, runs at least every
 the wakes and the ticks by reason (`wakes`, shown by `hgs team status`), and
 `worker.heartbeat` is written on every tick.
 
+A team with a member or a watched session on another computer no longer lists
+that computer every tick. The worker keeps one `hgs @PEER watch --json` per
+configured peer (over the lasting channel where the peer has one) and composes
+the peer's listing from its `catalog` rows and `catalog.meta`, which are what
+`hgs @PEER ls --json --local --no-archives` prints. A delta that changes a
+session's state (a turn ending, a session starting, stopping or going away)
+wakes the worker at once; a change of a busy session's times only updates the
+row. That computer's member outbox (reports kept there when the member cannot
+reach this computer) is then asked at once instead of after the 15 s gap, at
+most once a second. A peer whose stream is connecting, has ended, sent a `gap`
+or was silent for 25 s is listed as before, at most every 3 s and on every wake,
+while its stream starts again after 1 s, doubling to at most 60 s. The streams
+end with the worker; a worker that dies closes their stdin, which ends the watch
+on the peer too.
+
 The stream also checks every 5 s whether an update put another file at the path
 of the `hgs` it runs. That file must differ in device, inode, modification time
 or size, and be a regular executable file. A missing path, or a file not yet

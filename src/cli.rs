@@ -2975,6 +2975,13 @@ fn private_stores(raw: &mut Value) {
 }
 /// `ls --json --local --no-archives`, which `hgs watch` streams.
 pub(crate) fn local_listing(config: &Config) -> Result<Value> { local_json_archives(config, false) }
+/// Task #18 of team c536f0e5 (P2.6b): one peer's object of `ls --json
+/// --no-archives`, listed as `ls` lists it; the team worker's fallback for a
+/// peer whose catalog stream does not follow it.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn worker_peer_listing(config: &Config, peer: &str) -> Value {
+    peer_json_archives(config, peer, false)
+}
 /// Task #7 of team c536f0e5 (P1.6): what `ls --json --no-archives` prints,
 /// read without a process: this computer first, then each peer when `peers`
 /// (without them, `--local`'s object in the same list). The team worker

@@ -48,6 +48,9 @@ pub(crate) enum Event {
     Executable,
     /// Notifications were lost or a watcher failed: anything may have changed.
     Overflow,
+    /// Task #18 (P2.6b): a member computer's catalog stream showed a
+    /// session's state change.
+    Remote,
 }
 
 impl Event {
@@ -59,6 +62,7 @@ impl Event {
             Event::Stop => "stop",
             Event::Executable => "executable",
             Event::Overflow => "overflow",
+            Event::Remote => "remote",
         }
     }
 }
@@ -67,6 +71,7 @@ enum Signal {
     Root(Hint),
     Outbox,
     Executable,
+    Remote,
     Failed { outbox: Option<PathBuf>, error: String },
 }
 
@@ -152,6 +157,12 @@ impl Waker {
         waker
     }
 
+    /// Task #18 (P2.6b): what a member computer's catalog stream wakes the
+    /// worker with; it works with or without the file notifications.
+    pub(crate) fn notifier(&self) -> Notifier {
+        Notifier(self.tx.clone())
+    }
+
     /// Whether events wake the worker; otherwise every wake is a full tick.
     pub(crate) fn listening(&self) -> bool {
         self.root.is_some() && self.fault.is_none()
@@ -203,6 +214,9 @@ impl Waker {
                 Signal::Executable => {
                     events.insert(Event::Executable);
                 }
+                Signal::Remote => {
+                    events.insert(Event::Remote);
+                }
                 Signal::Failed { outbox: Some(dir), .. } => {
                     self.outboxes.remove(&dir);
                     events.insert(Event::Overflow);
@@ -216,6 +230,17 @@ impl Waker {
             }
         }
         events
+    }
+}
+
+/// Task #18 (P2.6b): wakes the worker from another thread.
+#[derive(Clone)]
+pub(crate) struct Notifier(mpsc::Sender<Signal>);
+
+impl Notifier {
+    /// False once the worker no longer listens.
+    pub(crate) fn remote(&self) -> bool {
+        self.0.send(Signal::Remote).is_ok()
     }
 }
 
@@ -245,10 +270,15 @@ where
     O: FnOnce() -> bool,
     L: FnOnce() -> bool,
 {
+    // Task #18: a member computer's stream works without the file
+    // notifications too.
+    if events.contains(&Event::Remote) && !check.listening {
+        return Some(Event::Remote.name());
+    }
     if !check.listening {
         return Some("no bus");
     }
-    for event in [Event::Overflow, Event::Store, Event::Outbox, Event::Session] {
+    for event in [Event::Overflow, Event::Store, Event::Outbox, Event::Session, Event::Remote] {
         if events.contains(&event) {
             return Some(event.name());
         }

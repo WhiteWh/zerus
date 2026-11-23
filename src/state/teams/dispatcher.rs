@@ -12058,6 +12058,11 @@ fn tick_teams(store: &mut Store, host: &str, full: bool) -> anyhow::Result<bool>
     }
     // WhiteWh fork: reports and questions members on other computers kept
     // while this computer was out of their reach (outbox.rs).
+    // Task #18 of team c536f0e5 (P2.6b): a member computer whose catalog
+    // changed (a turn ended there) is asked at once, not after the gap.
+    for computer in super::remote_catalog::take_changed() {
+        super::member_outbox::hurry(&computer);
+    }
     super::tick_clock::phase("member outboxes", || super::member_outbox::collect(&teams));
     sample_usage(&teams, &sessions);
     for team in &teams {
@@ -13563,9 +13568,6 @@ fn time_driven(row: &Value, at: f64, horizon: f64) -> bool {
 /// Task #7: the newest listing the worker read.
 #[cfg_attr(test, allow(dead_code))]
 static LAST_LISTING: std::sync::Mutex<Option<Listed>> = std::sync::Mutex::new(None);
-/// Task #7: whether the last tick's teams (or watched sessions) need the
-/// peers' rows; until a tick says, they do.
-static LISTING_PEERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 /// Task #7: how long the last listing took, in milliseconds.
 static LISTING_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(2000);
 /// Task #7: the Activity journal connection whose `data_version` the inputs
@@ -13662,7 +13664,29 @@ fn tick_listing(peers: bool) -> anyhow::Result<Value> {
     }
     #[cfg(not(test))]
     {
-        LISTING_PEERS.store(peers, std::sync::atomic::Ordering::Relaxed);
+        // Task #18 of team c536f0e5 (P2.6b): this computer's listing is read
+        // and reused as before; a peer's comes from its catalog stream, or is
+        // listed when the stream does not follow it.
+        let mut fleet = local_tick_listing()?;
+        let names = if peers { crate::config::Config::load().map(|config| config.peers).unwrap_or_default() } else { Vec::new() };
+        super::remote_catalog::follow(&names);
+        if !names.is_empty() {
+            let config = crate::config::Config::load().map_err(|error| anyhow::anyhow!(error.message))?;
+            let remote = super::remote_catalog::listings(&names, |peer| crate::cli::worker_peer_listing(&config, peer));
+            if let Some(list) = fleet.as_array_mut() {
+                list.extend(remote);
+            }
+        }
+        Ok(fleet)
+    }
+}
+
+/// Task #7: this computer's part of the listing: the newest one when it is
+/// current, else one read now (waiting for a listing the wait started).
+#[cfg(not(test))]
+fn local_tick_listing() -> anyhow::Result<Value> {
+    {
+        let peers = false;
         // A listing the sleep started is waited for: it is the fresh one.
         let deadline = Instant::now() + LIST_TIMEOUT;
         while listing_running() && Instant::now() < deadline {
@@ -13690,7 +13714,9 @@ fn tick_listing(peers: bool) -> anyhow::Result<Value> {
 /// end as the tick starts; nothing when the newest one stays current.
 #[cfg_attr(test, allow(dead_code))]
 fn prefetch_listing() {
-    let peers = LISTING_PEERS.load(std::sync::atomic::Ordering::Relaxed);
+    // Task #18 of team c536f0e5: the kept listing is this computer's alone;
+    // the peers' come from their catalog streams.
+    let peers = false;
     if let (ListingChoice::Reuse, _) = choose_listing(peers, false) {
         return;
     }
@@ -13889,7 +13915,7 @@ fn outbox_stamps(folders: &BTreeSet<PathBuf>) -> u64 {
 /// when it is, it counts as confirmed now, so a tick an event starts within
 /// `LISTING_MAX_AGE` acts on it without reading it again.
 fn listing_current() -> bool {
-    let peers = LISTING_PEERS.load(std::sync::atomic::Ordering::Relaxed);
+    let peers = false;
     if listing_running() || !matches!(choose_listing(peers, true).0, ListingChoice::Reuse) {
         return false;
     }
@@ -13997,6 +14023,8 @@ pub(crate) fn worker() -> Result<i32> {
     if let Some(fault) = &waker.fault {
         files.log(&format!("change bus: {fault}; every wake is a tick"));
     }
+    // Task #18 (P2.6b): a member computer's catalog stream wakes it too.
+    super::remote_catalog::set_notifier(Some(waker.notifier()));
     let mut counts = super::wake::Counts::new(now());
     let mut state = WaitState::default();
     let mut events = BTreeSet::new();
@@ -14018,7 +14046,7 @@ pub(crate) fn worker() -> Result<i32> {
                     last_tick_quiet: state.quiet,
                     since_tick: state.ticked.map_or(super::wake::SAFETY, |at| at.elapsed()),
                     store_moved: || super::wake::data_version(store.connection()) != state.version,
-                    in_flight: || state.again.or_else(in_flight),
+                    in_flight: || state.again.or_else(in_flight).or_else(super::remote_catalog::unfollowed),
                     outboxes_moved: || outbox_stamps(&outbox_folders()) != state.outboxes,
                     listing_current,
                 },
@@ -14070,6 +14098,9 @@ pub(crate) fn worker() -> Result<i32> {
         events = wait_for_change(&mut waker, store.connection(), &mut counts, state.version, ticked && !files.stop_requested());
     };
     ended.store(true, std::sync::atomic::Ordering::SeqCst);
+    // Task #18: the catalog streams end with the worker.
+    super::remote_catalog::set_notifier(None);
+    super::remote_catalog::follow(&[]);
     files.finish(exit.reason());
     drop(lock);
     if exit == WorkerExit::Updated {

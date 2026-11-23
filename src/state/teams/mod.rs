@@ -57,6 +57,7 @@ pub(crate) mod timing;
 pub(crate) mod usage_sampler;
 pub(crate) mod waiting;
 pub(crate) mod wake;
+pub(crate) mod remote_catalog;
 pub(crate) mod working;
 pub(crate) mod working_mode;
 pub(crate) mod playbook;

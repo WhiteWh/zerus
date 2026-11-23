@@ -138,11 +138,29 @@ fn ack(input: &Value) -> anyhow::Result<Value> {
 /// each item is applied here as the member's own call, and removed there once
 /// applied. A computer whose hgs predates this, or that cannot be reached,
 /// is asked again later.
+/// When the lead's worker last asked each member computer.
+static ASKED: std::sync::Mutex<Option<std::collections::HashMap<String, std::time::Instant>>> = std::sync::Mutex::new(None);
+/// Task #18 of team c536f0e5 (P2.6b): the least time between two asks of one
+/// computer, also when its catalog keeps changing.
+const HURRIED: Duration = Duration::from_secs(1);
+
+/// Task #18: the computer's catalog showed a member's turn change, which a
+/// kept report usually comes with: the next collection asks it at once (at
+/// most every `HURRIED`).
+pub(crate) fn hurry(computer: &str) {
+    let mut asked = ASKED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(at) = asked.as_mut().and_then(|asked| asked.get_mut(computer)) {
+        if let Some(earlier) = std::time::Instant::now().checked_sub(COLLECT) {
+            if at.elapsed() >= HURRIED {
+                *at = earlier;
+            }
+        }
+    }
+}
+
 pub(crate) fn collect(teams: &[super::model::Team]) {
     use std::collections::{BTreeMap, HashMap};
-    use std::sync::Mutex;
     use std::time::Instant;
-    static ASKED: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
     let mut computers: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for team in teams {
         for member in team.members.iter().filter(|member| !member.computer.is_empty()) {
