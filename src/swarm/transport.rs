@@ -265,7 +265,7 @@ fn decode_answer(alias: &str, output: &[u8], errors: &[u8], success: bool, deadl
 pub fn hello(config: &Config, inventory: bool) -> Result<Value> {
     let mut store = LockedStore::load(config)?;
     store.save()?;
-    let mut result = json!({"schema":1,"node_id":store.data.node_id,"swarm_id":store.data.catalog.swarm_id,"digest":store.data.catalog.digest(),"initialized":store.data.imported,"kinds":catalog::advertised(),
+    let mut result = json!({"schema":1,"version":env!("CARGO_PKG_VERSION"),"node_id":store.data.node_id,"swarm_id":store.data.catalog.swarm_id,"digest":store.data.catalog.digest(),"initialized":store.data.imported,"kinds":catalog::advertised(),
         "twins":store.data.twins.digest()});
     result["kinds"].as_array_mut().unwrap().push(json!(super::drive_folders::CAPABILITY));
     result["drive_folders"] = serde_json::to_value(super::drive_folders::inventory_locked(&store)?)?;
@@ -395,6 +395,11 @@ pub fn exchange(config: &Config, request: Exchange) -> Result<Value> {
 }
 
 pub fn sync_peer(config: &Config, alias: &str) -> Result<Value> {
+    // Explicit/manual and targeted adoption syncs always retry documents.
+    sync_peer_mode(config, alias, true)
+}
+
+fn sync_peer_mode(config: &Config, alias: &str, force: bool) -> Result<Value> {
     // Information only: with no verified hello, or no catalog sync after
     // it, every project known here is incomplete for the member.
     let identity = match catalog_sync(config, alias) {
@@ -404,7 +409,7 @@ pub fn sync_peer(config: &Config, alias: &str) -> Result<Value> {
             return Err(error);
         }
     };
-    replica::sync_peer(config, alias, &identity)?;
+    replica::sync_peer(config, alias, &identity, force)?;
     let mut local = LockedStore::load(config)?;
     if let Some(peer) = local.data.peers.get_mut(alias) {
         peer.last_sync = now();
@@ -1058,7 +1063,7 @@ impl Members for Live<'_> {
         now()
     }
     fn sync(&mut self, alias: &str) -> Result<()> {
-        sync_peer(self.0, alias).map(|_| ())
+        sync_peer_mode(self.0, alias, false).map(|_| ())
     }
     fn failed(&mut self, alias: &str, error: &anyhow::Error) -> Result<()> {
         let mut store = LockedStore::load(self.0)?;
@@ -1072,6 +1077,17 @@ impl Members for Live<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hello_advertises_the_version_that_invalidates_divergence_memos() {
+        let root = tempfile::tempdir().unwrap();
+        let config = Config {
+            home: root.path().to_string_lossy().into_owned(), dir: root.path().join("config"), state: root.path().join("state"),
+            selves: vec!["example-local".into()], peers: vec![], base_peers: vec![], peers_from_environment: false,
+            machines: BTreeMap::new(), tab: false, tab_colors: String::new(),
+        };
+        assert_eq!(hello(&config, true).unwrap()["version"], env!("CARGO_PKG_VERSION"));
+    }
 
     #[test]
     fn channel_and_ssh_answers_share_the_same_response_checks() {

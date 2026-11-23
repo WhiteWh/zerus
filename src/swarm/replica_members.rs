@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 pub const FILE: &str = "replica-members.json";
 /// A file larger than this is damaged and read as empty.
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// Even unchanged document failures are tried again after one hour.
+pub const DIVERGENCE_RETRY_MS: u64 = 60 * 60 * 1000;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
@@ -60,6 +62,52 @@ pub struct Exchanged {
     pub at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<Incomplete>,
+    /// A failed exchange's exact digest pair. The enclosing Member binds it
+    /// to the verified node/store/protocol/task schema; older hgs ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub divergence: Option<Divergence>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Divergence {
+    pub local_digest: String,
+    pub peer_digest: String,
+    /// None when an older peer does not advertise its executable version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hgs_version: Option<String>,
+}
+
+impl Divergence {
+    pub fn of(local: Option<&String>, peer: Option<&String>, version: Option<&str>) -> Option<Self> {
+        let version = version.filter(|version| !version.is_empty() && version.len() <= 128)?;
+        let (local, peer) = (local?, peer?);
+        if ![local, peer].iter().all(|digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())) {
+            return None;
+        }
+        Some(Self {
+            local_digest: local.clone(),
+            peer_digest: peer.clone(),
+            hgs_version: Some(version.to_owned()),
+        })
+    }
+}
+
+/// A memo can postpone only the exact document failure already observed.
+/// Missing evidence, another identity/digest/version, clock rollback or the
+/// retry deadline always makes another exchange due. Its original at stays.
+pub fn deferred(member: Option<&Member>, observed: &Observed, project: &str, current: &Divergence, at: u64) -> bool {
+    let Some(member) = member.filter(|member| observed.holds(member)) else { return false };
+    // Without a known store incarnation we cannot establish the same peer.
+    if observed.store.as_deref().is_none_or(|store| !zerus_replica::ids::is_uuid(store))
+        || current.hgs_version.as_deref().is_none_or(str::is_empty) {
+        return false;
+    }
+    member.projects.get(project).is_some_and(|exchange| {
+        !exchange.complete
+            && matches!(exchange.reason, Some(Incomplete::RefusedDocuments | Incomplete::Malformed))
+            && exchange.divergence.as_ref() == Some(current)
+            && at.checked_sub(exchange.at).is_some_and(|elapsed| elapsed < DIVERGENCE_RETRY_MS)
+    })
 }
 
 /// Why an exchange did not complete.
@@ -313,6 +361,21 @@ pub fn exchanged(
     projects: &BTreeSet<String>,
     at: u64,
 ) -> Result<bool> {
+    exchanged_with_memos(config, alias, observed, outcomes, projects, &BTreeMap::new(), at)
+}
+
+/// Store an attempted exchange and its optional divergence memo atomically,
+/// under the same observation guard as the outcome. Skipped projects are not
+/// present in outcomes, so neither their status nor retry time is rewritten.
+pub fn exchanged_with_memos(
+    config: &Config,
+    alias: &str,
+    observed: &Observed,
+    outcomes: &[(String, Outcome)],
+    projects: &BTreeSet<String>,
+    memos: &BTreeMap<String, Divergence>,
+    at: u64,
+) -> Result<bool> {
     if outcomes.is_empty() {
         return Ok(false);
     }
@@ -332,6 +395,7 @@ pub fn exchanged(
                     exchanged,
                     at,
                     reason,
+                    divergence: memos.get(project).filter(|_| matches!(reason, Some(Incomplete::RefusedDocuments | Incomplete::Malformed))).cloned(),
                 },
             );
         }
@@ -366,6 +430,7 @@ pub fn unreachable(
                     exchanged: false,
                     at,
                     reason: Some(reason),
+                    divergence: None,
                 },
             );
         }
@@ -428,6 +493,49 @@ mod tests {
 
     fn record(config: &Config) -> Option<Member> {
         read(config).remove("peer")
+    }
+
+    #[test]
+    fn divergence_memos_are_optional_and_bound_to_the_complete_observation() {
+        let (_dir, config) = fixture();
+        let observed = observed("node-a", A);
+        let local = "a".repeat(64);
+        let peer = "b".repeat(64);
+        let memo = Divergence::of(Some(&local), Some(&peer), Some("1.58.0")).unwrap();
+        assert!(Divergence::of(Some(&local), Some(&peer), None).is_none());
+        assert!(Divergence::of(Some(&local), None, Some("1.58.0")).is_none());
+        let legacy: Exchanged = serde_json::from_value(json!({"complete":false,"at":10,"reason":"refused_documents"})).unwrap();
+        assert!(legacy.divergence.is_none(), "older records never establish an unchanged digest pair");
+        seen(&config, "peer", &observed, 10).unwrap();
+        let projects = BTreeSet::from(["p".into()]);
+        let memos = BTreeMap::from([("p".into(), memo.clone())]);
+        exchanged_with_memos(&config, "peer", &observed, &[("p".into(), Err((Incomplete::RefusedDocuments, false)))], &projects, &memos, 10).unwrap();
+        let current = record(&config).unwrap();
+        assert!(deferred(Some(&current), &observed, "p", &memo, 11));
+        for change in [
+            Observed { node: "node-b".into(), ..observed.clone() },
+            Observed { store: Some(B.into()), ..observed.clone() },
+            Observed { protocol: Some(2), ..observed.clone() },
+            Observed { task_schema: Some(8), ..observed.clone() },
+            Observed { no_replica: true, ..observed.clone() },
+        ] {
+            assert!(!deferred(Some(&current), &change, "p", &memo, 11), "{change:?}");
+        }
+        assert!(!deferred(Some(&current), &observed, "p", &Divergence { hgs_version: Some("1.58.1".into()), ..memo.clone() }, 11));
+        assert!(!deferred(Some(&current), &observed, "p", &memo, 10 + DIVERGENCE_RETRY_MS));
+        assert!(!deferred(Some(&current), &observed, "p", &memo, 9));
+        // Neither an outage, a transient failure nor success preserves a
+        // prior document-failure memo. Its next exchange must be attempted.
+        unreachable(&config, "peer", Incomplete::Unreachable, &projects, 12).unwrap();
+        assert!(record(&config).unwrap().projects["p"].divergence.is_none());
+        for outcome in [Err((Incomplete::Busy, false)), Ok(())] {
+            exchanged_with_memos(&config, "peer", &observed, &[("p".into(), outcome)], &projects, &memos, 13).unwrap();
+            assert!(record(&config).unwrap().projects["p"].divergence.is_none());
+        }
+        let changed = Observed { store: Some(B.into()), ..observed.clone() };
+        seen(&config, "peer", &changed, 14).unwrap();
+        assert!(!exchanged_with_memos(&config, "peer", &observed, &[("p".into(), Err((Incomplete::Malformed, false)))], &projects, &memos, 15).unwrap());
+        assert!(record(&config).unwrap().projects.is_empty(), "a late memo cannot cross store incarnations");
     }
 
     /// review-win-c on #1471: no read of the records waits on what is at

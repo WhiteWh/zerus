@@ -8821,7 +8821,19 @@ count that is missing or in a form this does not read is `malformed`, never
 taken for an empty one. An exchange reply whose pages do not read stops the
 exchange; a reply whose evidence does not read (a member before this one sends
 no damaged counts) still exchanges documents and stays `malformed`. Every
-project this computer stores or knows alive gets an outcome on each sync.
+project this computer stores or knows alive has a recorded outcome.
+
+Background sync may keep a prior `refused_documents` or `malformed` outcome
+without repeating its exchange while both inventory digests and the verified
+member's node, replica store, protocol, task schema and advertised hgs version
+remain unchanged. Its optional `divergence` entry in `replica-members.json`
+records the digest pair and version; the outcome and its original attempt
+time stay unchanged. This never establishes completion. A changed digest or
+identity, an hourly retry, or an explicit `hgs swarm sync` makes the postponed
+exchange due again. Busy, unreachable and other transient outcomes are never
+postponed. Peers that do not advertise their version keep the existing exchange
+behavior; the optional top-level `version` in `swarm hello` lets newer peers
+invalidate this memo after an upgrade. Older readers ignore these added fields.
 
 `task cutover --project P` shows the project's cutover to execution attempts
 as this computer knows it, read only and bounded by its members: `phase`

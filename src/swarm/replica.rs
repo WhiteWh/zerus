@@ -414,7 +414,20 @@ impl Shown {
 /// `alias`, whose `hello` answered `identity` (verified to come from its
 /// node), and records an outcome for every project known here under that
 /// exact observation.
-pub fn sync_peer(config: &Config, alias: &str, identity: &Value) -> Result<()> {
+pub fn sync_peer(config: &Config, alias: &str, identity: &Value, force: bool) -> Result<()> {
+    sync_peer_with(config, alias, identity, force, replica_members::now(), |project, observed| {
+        exchange_pages(config, alias, project, observed, Some(PROJECT_WAIT))
+    })
+}
+
+fn sync_peer_with(
+    config: &Config,
+    alias: &str,
+    identity: &Value,
+    force: bool,
+    at: u64,
+    mut exchange: impl FnMut(&str, Option<&str>) -> std::result::Result<Outcome, Failed>,
+) -> Result<()> {
     let remote = &identity["replica"];
     let supported = remote["protocol"] == PROTOCOL;
     let node = identity["node_id"].as_str().unwrap_or_default().to_owned();
@@ -429,7 +442,7 @@ pub fn sync_peer(config: &Config, alias: &str, identity: &Value) -> Result<()> {
     drop(store);
     // Information only: what the member advertised, once verified.
     let observed = Observed::of(&node, identity);
-    if let Err(error) = replica_members::seen(config, alias, &observed, replica_members::now()) {
+    if let Err(error) = replica_members::seen(config, alias, &observed, at) {
         eprintln!("hgs swarm: {alias}: its replica could not be recorded: {error:#}");
     }
     if !supported {
@@ -449,6 +462,8 @@ pub fn sync_peer(config: &Config, alias: &str, identity: &Value) -> Result<()> {
         }
     };
     let theirs = theirs(remote);
+    let previous = (!force).then(|| replica_members::read(config).remove(alias)).flatten();
+    let version = identity["version"].as_str();
     let mut projects = known(config);
     projects.extend(local.projects.keys().cloned());
     projects.extend(local.omitted.iter().cloned());
@@ -460,7 +475,14 @@ pub fn sync_peer(config: &Config, alias: &str, identity: &Value) -> Result<()> {
     // A project that fails never keeps the others from their exchange.
     let mut failed = None;
     let mut outcomes = Vec::new();
+    let mut memos = BTreeMap::new();
     for project in &projects {
+        let pair = replica_members::Divergence::of(
+            local.projects.get(project),
+            theirs.as_ref().and_then(|theirs| theirs.projects.get(project)),
+            version,
+        );
+        let mut attempted = false;
         let outcome = if local.omitted.contains(project) {
             Err((Incomplete::Busy, false))
         } else if theirs.as_ref().is_some_and(|t| t.omitted.contains(project)) {
@@ -476,7 +498,13 @@ pub fn sync_peer(config: &Config, alias: &str, identity: &Value) -> Result<()> {
                 // is complete only when both sides say no task of it is damaged.
                 Shown::agreeing(&local, t, project)
             } else {
-                match exchange_pages(config, alias, project, observed.store.as_deref(), Some(PROJECT_WAIT)) {
+                if pair.as_ref().is_some_and(|pair| replica_members::deferred(previous.as_ref(), &observed, project, pair, at)) {
+                    // Keep the exact outcome and its attempt time. A skip is
+                    // not new evidence and must not postpone the hourly retry.
+                    continue;
+                }
+                attempted = true;
+                match exchange(project, observed.store.as_deref()) {
                     Ok(outcome) => outcome,
                     Err((reason, error)) => {
                         failed.get_or_insert(error);
@@ -492,10 +520,13 @@ pub fn sync_peer(config: &Config, alias: &str, identity: &Value) -> Result<()> {
             (outcome, _) => outcome,
         };
         if known.contains(project) {
+            if attempted && matches!(outcome, Err((Incomplete::RefusedDocuments | Incomplete::Malformed, _))) {
+                if let Some(pair) = pair { memos.insert(project.clone(), pair); }
+            }
             outcomes.push((project.clone(), outcome));
         }
     }
-    record(config, alias, &observed, &outcomes);
+    record_with_memos(config, alias, &observed, &outcomes, &memos, at);
     failed.map_or(Ok(()), Err)
 }
 
@@ -503,8 +534,18 @@ pub fn sync_peer(config: &Config, alias: &str, identity: &Value) -> Result<()> {
 /// (information only); a failure to record is named in the log and never
 /// fails the sync.
 fn record(config: &Config, alias: &str, observed: &Observed, outcomes: &[(String, Outcome)]) {
+    record_with_memos(config, alias, observed, outcomes, &BTreeMap::new(), replica_members::now())
+}
+
+fn record_with_memos(config: &Config, alias: &str, observed: &Observed, outcomes: &[(String, Outcome)], memos: &BTreeMap<String, replica_members::Divergence>, at: u64) {
+    if outcomes.is_empty() { return; }
     let known = known(config);
-    match replica_members::exchanged(config, alias, observed, outcomes, &known, replica_members::now()) {
+    let saved = if memos.is_empty() {
+        replica_members::exchanged(config, alias, observed, outcomes, &known, at)
+    } else {
+        replica_members::exchanged_with_memos(config, alias, observed, outcomes, &known, memos, at)
+    };
+    match saved {
         Ok(true) => {}
         Ok(false) => eprintln!("hgs swarm: {alias}: its exchanges belong to an earlier hello; they are not recorded"),
         Err(error) => eprintln!("hgs swarm: {alias}: its exchanges could not be recorded: {error:#}"),
@@ -831,6 +872,158 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_document_failures_wait_until_hourly_or_explicit_retry() {
+        for reason in [Incomplete::RefusedDocuments, Incomplete::Malformed] {
+            let (_dir, config) = fixture();
+            add(&config, "p");
+            let mut remote = hello(json!({"p": "a".repeat(64)}));
+            remote["version"] = json!("1.58.0");
+            let calls = std::cell::Cell::new(0);
+            let mut member = |project: &str, _: Option<&str>| {
+                assert_eq!(project, "p");
+                calls.set(calls.get() + 1);
+                Ok(Err((reason, false)))
+            };
+            sync_peer_with(&config, "peer", &remote, false, 1_000, &mut member).unwrap();
+            assert_eq!(calls.get(), 1);
+            let first = outcome(&config, "p");
+            assert!(first.divergence.is_some());
+            // Frequent skipped rounds keep the actual attempt time, rather
+            // than extending the retry forever or claiming another exchange.
+            for at in [1_001, 2_000, 1_000 + replica_members::DIVERGENCE_RETRY_MS - 1] {
+                sync_peer_with(&config, "peer", &remote, false, at, &mut member).unwrap();
+                assert_eq!(calls.get(), 1);
+                assert_eq!(outcome(&config, "p"), first);
+            }
+            let due = 1_000 + replica_members::DIVERGENCE_RETRY_MS;
+            sync_peer_with(&config, "peer", &remote, false, due, &mut member).unwrap();
+            assert_eq!(calls.get(), 2);
+            sync_peer_with(&config, "peer", &remote, true, due + 1, &mut member).unwrap();
+            assert_eq!(calls.get(), 3, "manual sync never waits for the hourly retry");
+            sync_peer_with(&config, "peer", &remote, false, due, &mut member).unwrap();
+            assert_eq!(calls.get(), 4, "clock rollback cannot extend a cached failure");
+        }
+    }
+
+    #[test]
+    fn a_changed_digest_or_member_observation_retries_at_once() {
+        for change in ["local", "peer", "store", "node", "schema", "version"] {
+            let (_dir, config) = fixture();
+            let uuid = add(&config, "p");
+            let mut remote = hello(json!({"p": "a".repeat(64)}));
+            remote["version"] = json!("1.58.0");
+            let calls = std::cell::Cell::new(0);
+            let mut member = |_: &str, _: Option<&str>| {
+                calls.set(calls.get() + 1);
+                Ok(Err((Incomplete::RefusedDocuments, false)))
+            };
+            sync_peer_with(&config, "peer", &remote, false, 1_000, &mut member).unwrap();
+            sync_peer_with(&config, "peer", &remote, false, 1_001, &mut member).unwrap();
+            assert_eq!(calls.get(), 1, "{change}");
+            match change {
+                "local" => {
+                    let store = ProjectStore::open(&root(&config), "p").unwrap();
+                    let mut task = store.load(&uuid).unwrap();
+                    task.comment("Changed", &Actor::Person, 2).unwrap();
+                    store.save(&mut task).unwrap();
+                }
+                "peer" => remote["replica"]["projects"]["p"] = json!("b".repeat(64)),
+                "store" => remote["replica"]["store"] = json!("22222222-2222-4222-8222-222222222222"),
+                "node" => {
+                    let mut catalog = LockedStore::load(&config).unwrap();
+                    catalog.data.peers.get_mut("peer").unwrap().node = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into();
+                    remote["node_id"] = json!("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+                    catalog.save().unwrap();
+                }
+                "schema" => remote["replica"]["task_schema"] = json!(TASK_SCHEMA + 1),
+                "version" => remote["version"] = json!("1.58.1"),
+                _ => unreachable!(),
+            }
+            sync_peer_with(&config, "peer", &remote, false, 1_002, &mut member).unwrap();
+            assert_eq!(calls.get(), 2, "{change} must invalidate the memo");
+        }
+    }
+
+    #[test]
+    fn transient_failures_and_older_peers_never_defer_an_exchange() {
+        for reason in [Incomplete::Busy, Incomplete::Unreachable, Incomplete::PageBudget,
+            Incomplete::ChangedIdentity, Incomplete::DamagedTasks, Incomplete::Omitted] {
+            let (_dir, config) = fixture();
+            add(&config, "p");
+            let mut remote = hello(json!({"p": "a".repeat(64)}));
+            remote["version"] = json!("1.58.0");
+            let calls = std::cell::Cell::new(0);
+            let mut member = |_: &str, _: Option<&str>| {
+                calls.set(calls.get() + 1);
+                Ok(Err((reason, false)))
+            };
+            for at in [1_000, 1_001] {
+                sync_peer_with(&config, "peer", &remote, false, at, &mut member).unwrap();
+            }
+            assert_eq!(calls.get(), 2, "{reason:?}");
+            assert!(outcome(&config, "p").divergence.is_none());
+        }
+        for missing in ["version", "store", "digest"] {
+            let (_dir, config) = fixture();
+            add(&config, "p");
+            let mut remote = hello(json!({"p": "a".repeat(64)}));
+            remote["version"] = json!("1.58.0");
+            match missing {
+                "version" => { remote.as_object_mut().unwrap().remove("version"); }
+                "store" => remote["replica"]["store"] = Value::Null,
+                "digest" => remote["replica"]["projects"]["p"] = json!("unknown"),
+                _ => unreachable!(),
+            }
+            let calls = std::cell::Cell::new(0);
+            let mut member = |_: &str, _: Option<&str>| {
+                calls.set(calls.get() + 1);
+                Ok(Err((Incomplete::RefusedDocuments, false)))
+            };
+            for at in [1_000, 1_001] {
+                sync_peer_with(&config, "peer", &remote, false, at, &mut member).unwrap();
+            }
+            assert_eq!(calls.get(), 2, "unknown {missing} cannot establish an unchanged failure");
+        }
+    }
+
+    #[test]
+    fn six_settled_divergences_make_no_exchange_calls_in_100_seconds() {
+        let (_dir, config) = fixture();
+        let projects: BTreeMap<String, String> = (0..6).map(|n| {
+            let project = format!("p{n}");
+            add(&config, &project);
+            (project, "a".repeat(64))
+        }).collect();
+        let mut remote = hello(json!(projects));
+        remote["version"] = json!("1.58.0");
+        let calls = std::cell::Cell::new(0);
+        let mut member = |_: &str, _: Option<&str>| {
+            calls.set(calls.get() + 1);
+            Ok(Err((Incomplete::RefusedDocuments, false)))
+        };
+        sync_peer_with(&config, "peer", &remote, false, 0, &mut member).unwrap();
+        assert_eq!(calls.get(), 6, "one initial exchange per conflicting project");
+        // The worker's 30 second cadence plus an extra wake at the end of a
+        // 100 second steady window.
+        // Each callback represents its inventory + exchange RPC pair.
+        for at in [30_000, 60_000, 90_000, 100_000] {
+            sync_peer_with(&config, "peer", &remote, false, at, &mut member).unwrap();
+            assert_eq!(calls.get(), 6);
+            for project in projects.keys() {
+                let saved = outcome(&config, project);
+                assert_eq!(saved.at, 0);
+                assert!(!saved.complete);
+            }
+        }
+        // Postponing those six never prevents a different project advancing.
+        add(&config, "new-project");
+        remote["replica"]["projects"]["new-project"] = json!("b".repeat(64));
+        remote["replica"]["damaged"]["new-project"] = json!(0);
+        sync_peer_with(&config, "peer", &remote, false, 101_000, &mut member).unwrap();
+        assert_eq!(calls.get(), 7);
+    }
+
+    #[test]
     fn the_protocol_only_worker_rotates_projects_even_when_none_can_advance() {
         let (_dir,config)=fixture();
         for project in ["a","b","c"] {add(&config,project);}
@@ -940,7 +1133,7 @@ mod tests {
         add(&config, "p");
         complete_before(&config, "p");
         let _held = ProjectStore::open(&root(&config), "p").unwrap();
-        sync_peer(&config, "peer", &hello(json!({}))).unwrap();
+        sync_peer(&config, "peer", &hello(json!({})), true).unwrap();
         let after = outcome(&config, "p");
         assert!(!after.complete && !after.exchanged);
         assert_eq!(after.reason, Some(Incomplete::Busy));
@@ -960,7 +1153,7 @@ mod tests {
         let digest = store.inventory().unwrap().0.digest();
         drop(store);
         complete_before(&config, "p");
-        sync_peer(&config, "peer", &hello(json!({"p": digest}))).unwrap();
+        sync_peer(&config, "peer", &hello(json!({"p": digest})), true).unwrap();
         let after = outcome(&config, "p");
         assert!(!after.complete && after.exchanged, "the readable subset agrees, the project is not complete");
         assert_eq!(after.reason, Some(Incomplete::DamagedTasks));
@@ -971,7 +1164,7 @@ mod tests {
         complete_before(&config, "p");
         let mut remote = hello(json!({"p": digest}));
         remote["replica"]["damaged"] = json!({"p": 1});
-        sync_peer(&config, "peer", &remote).unwrap();
+        sync_peer(&config, "peer", &remote, true).unwrap();
         assert_eq!(outcome(&config, "p").reason, Some(Incomplete::DamagedTasks));
     }
 
@@ -988,7 +1181,7 @@ mod tests {
             complete_before(&config, "p");
             let mut remote = hello(json!({"p": digest}));
             remote["replica"]["damaged"] = damaged.clone();
-            sync_peer(&config, "peer", &remote).unwrap();
+            sync_peer(&config, "peer", &remote, true).unwrap();
             let after = outcome(&config, "p");
             if damaged == json!({"p": 0}) {
                 assert!(after.complete, "{after:?}");
@@ -1046,7 +1239,7 @@ mod tests {
         let path = root(&config);
         fs::rename(&path, config.state.join("replica-kept")).unwrap();
         fs::write(&path, b"not a directory").unwrap();
-        assert!(sync_peer(&config, "peer", &hello(json!({}))).is_err());
+        assert!(sync_peer(&config, "peer", &hello(json!({})), true).is_err());
         let after = outcome(&config, "p");
         assert!(!after.complete && !after.exchanged, "{after:?}");
         assert_eq!(after.reason, Some(Incomplete::Busy));
@@ -1058,7 +1251,7 @@ mod tests {
             let (_dir, config) = fixture();
             add(&config, "p");
             complete_before(&config, "p");
-            sync_peer(&config, "peer", &hello(projects.clone())).unwrap();
+            sync_peer(&config, "peer", &hello(projects.clone()), true).unwrap();
             let after = outcome(&config, "p");
             assert!(!after.complete, "{projects}");
             assert_eq!(after.reason, Some(Incomplete::Malformed), "{projects}");
@@ -1071,7 +1264,7 @@ mod tests {
             complete_before(&config, "p");
             let mut remote = hello(json!({"p": digest}));
             remote["replica"]["damaged"] = damaged.clone();
-            sync_peer(&config, "peer", &remote).unwrap();
+            sync_peer(&config, "peer", &remote, true).unwrap();
             let after = outcome(&config, "p");
             assert!(!after.complete, "{damaged}");
             assert_eq!(after.reason, Some(Incomplete::Malformed), "{damaged}");
