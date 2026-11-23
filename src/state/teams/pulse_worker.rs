@@ -142,6 +142,13 @@ impl Worker {
         state.built.drain(..take).collect()
     }
 
+    /// Task #17 of team c536f0e5 (P2.6a): a turn end's build is queued, being
+    /// built or waiting for the tick to store it, so the worker ticks again.
+    pub(super) fn busy(&self) -> bool {
+        let state = self.lock();
+        !state.queue.is_empty() || state.running || !state.built.is_empty()
+    }
+
     /// Whether nothing is queued or being built (for tests).
     #[cfg(test)]
     pub(super) fn idle(&self) -> bool {

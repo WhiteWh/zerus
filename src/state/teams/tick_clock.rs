@@ -149,12 +149,21 @@ pub(crate) fn count_listing(kind: &str, why: &str) {
     write(&state);
 }
 
+/// Task #17 of team c536f0e5 (P2.6a): the waiting worker's wakes by reason
+/// (an event, its own commit, the deadline) and its ticks by reason, since
+/// it started (`wakes` in `tick.json`; `wake::Counts`).
+pub(crate) fn set_wakes(counts: Value) {
+    let mut state = read();
+    state["wakes"] = counts;
+    write(&state);
+}
+
 /// What `hgs team status` shows of the worker's ticks: the phase running now
 /// and since when, the last tick and the slowest of the recent ones.
 pub(crate) fn status() -> Value {
     let state = read();
     json!({"running":state["running"],"last":state["last"],"worst":state["worst"],
-        "recent":state["recent"].as_array().map_or(0, Vec::len),"listing":state["listing"]})
+        "recent":state["recent"].as_array().map_or(0, Vec::len),"listing":state["listing"],"wakes":state["wakes"]})
 }
 
 /// The phase holding the worker and for how long, once it has held it for

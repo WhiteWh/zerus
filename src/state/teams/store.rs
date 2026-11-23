@@ -1088,6 +1088,22 @@ impl Store {
         self.decoded(found)
     }
 
+    /// Task #17 of team c536f0e5 (P2.6a): the teams an ordinary worker tick
+    /// looks at: the active ones and the drafts (a draft starts and briefs its
+    /// lead), by the (status, updated) index. An ended team whose members
+    /// still wait for a usage-limit reset is reached by the full tick.
+    pub(crate) fn ticked_teams(&self, limit: i64) -> anyhow::Result<Vec<Team>> {
+        let mut statement = self.db.prepare(&format!(
+            "SELECT {} FROM teams WHERE status IN ('draft','planning','running','paused') ORDER BY updated DESC LIMIT ?1",
+            self.listed()?
+        ))?;
+        let found = statement
+            .query_map(params![limit], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
+        self.decoded(found)
+    }
+
     /// The sum of the active teams' revisions, without reading their payloads:
     /// U43's read-time default keys its cache by it, so a member added and one
     /// removed between two equal-length writes still refreshes the set.

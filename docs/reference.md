@@ -13756,6 +13756,21 @@ folder, a watcher that cannot start or one that fails leaves the stream on its
 `logs/slow-calls.log` per stream. `HGS_CHANGE_BUS=0` turns the notifications
 off.
 
+The team worker (`hgs team worker`) waits on the same notifications instead of
+a fixed 3 s tick. A commit to the team store by another connection (a member's
+report, a lead's command), one of the session inputs above, a file in a local
+member's outbox folder, the stop request and a replaced `hgs` wake it within
+about 100 ms; its own commits do not, since `PRAGMA data_version` on its own
+store connection moves only for other connections. At least every 3 s it checks
+the store's data version, whether its session listing is still current (no
+input moved and no row changes by time alone), the members' outbox folders and
+work its last tick left in flight (a hand-out being delivered, a notice to send,
+a phase it skipped, context reads, a test queue), and runs a tick only when one
+of them moved; a full tick, which also loads ended teams, runs at least every
+15 s. Without notifications every wake is a tick, as before. `tick.json` keeps
+the wakes and the ticks by reason (`wakes`, shown by `hgs team status`), and
+`worker.heartbeat` is written on every tick.
+
 The stream also checks every 5 s whether an update put another file at the path
 of the `hgs` it runs. That file must differ in device, inode, modification time
 or size, and be a regular executable file. A missing path, or a file not yet

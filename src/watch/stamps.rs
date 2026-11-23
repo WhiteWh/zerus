@@ -133,7 +133,7 @@ impl Scan {
 /// folder) can move a pulse input: the stamped files and folders above, the
 /// journal, the team store and the question route ledger. Everything else
 /// (logs, team ticks, heartbeats, temporary files) never wakes the loop.
-pub(super) fn relevant(relative: &Path) -> bool {
+pub(crate) fn relevant(relative: &Path) -> bool {
     let Some(name) = relative.file_name().and_then(|name| name.to_str()) else { return false };
     // SQLite's shared memory changes on reads, this loop's own included.
     if name.ends_with("-shm") {

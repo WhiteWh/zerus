@@ -11989,9 +11989,13 @@ fn recover(store: &mut Store) -> anyhow::Result<()> {
 /// One pass over every running team. Returns whether any team is active.
 /// Task #406: the tick is measured (`tick_clock`); a slow one names its
 /// slowest phase in the worker's log.
-pub(crate) fn tick(store: &mut Store, host: &str) -> anyhow::Result<bool> {
+/// Task #17 of team c536f0e5 (P2.6a): a `full` tick loads every team (an
+/// ended team whose members wait for a usage-limit reset, the pulses of
+/// finished teams); an ordinary one only the teams that can be ticked
+/// (`Store::ticked_teams`).
+pub(crate) fn tick(store: &mut Store, host: &str, full: bool) -> anyhow::Result<bool> {
     super::tick_clock::begin();
-    let result = tick_teams(store, host);
+    let result = tick_teams(store, host, full);
     if let Some(record) = super::tick_clock::finish() {
         if record.ms >= super::tick_clock::SLOW_TICK.as_millis() {
             eprintln!("hgs team worker: tick took {} ms; slowest: {} ({} ms)", record.ms, record.slowest, record.slowest_ms);
@@ -12000,8 +12004,8 @@ pub(crate) fn tick(store: &mut Store, host: &str) -> anyhow::Result<bool> {
     result
 }
 
-fn tick_teams(store: &mut Store, host: &str) -> anyhow::Result<bool> {
-    let loaded: Vec<Team> = store.teams(false, 10_000)?;
+fn tick_teams(store: &mut Store, host: &str, full: bool) -> anyhow::Result<bool> {
+    let loaded: Vec<Team> = if full { store.teams(false, 10_000)? } else { store.ticked_teams(10_000)? };
     // Task 185: the pulses built on the worker since the last tick, and one
     // loaded team's expired pulses, retired here rather than at a turn end. A
     // finished team's rows are still reached: the worker keeps ticking for a
@@ -12021,6 +12025,11 @@ fn tick_teams(store: &mut Store, host: &str) -> anyhow::Result<bool> {
                 || team.members.iter().any(|member| member.limit_resume)
         })
         .collect();
+    // Task #17 of team c536f0e5: an ordinary tick that finds nothing to tick
+    // looks at every team before it says no team is active.
+    if teams.is_empty() && !full {
+        return tick_teams(store, host, true);
+    }
     // Task 97: an ordinary session the owner turned the queue on for keeps the
     // worker reading it.
     if teams.is_empty() && super::owner_queue::watched().is_empty() {
@@ -12066,6 +12075,12 @@ fn tick_teams(store: &mut Store, host: &str) -> anyhow::Result<bool> {
     super::tick_clock::phase("contexts", || sample_contexts(store, &teams, &sessions, now()));
     let teams: Vec<Team> = teams.iter().filter_map(|t| store.load(&t.id).ok().flatten()).collect();
     defer_watched(&teams, &sessions);
+    // Task #17 of team c536f0e5 (P2.6a): what the waiting worker watches and
+    // what makes it tick again without an event.
+    note_outbox_folders(&teams);
+    if let Some(why) = teams.iter().find_map(unsettled) {
+        again(why);
+    }
     for (index, team) in teams.iter().enumerate() {
         // Task 287: a member's call waiting for the store gets it between two
         // teams (SQLite's busy wait queues nobody).
@@ -12165,6 +12180,8 @@ fn within_budget(kind: &str, team: &str, budget: Duration) -> bool {
         true
     } else {
         skips.insert(key, skipped + 1);
+        // Task #17 of team c536f0e5: the skipped phase runs at the next wake.
+        again("deferred");
         false
     }
 }
@@ -13741,9 +13758,18 @@ const STOP_GRACE: Duration = Duration::from_secs(4);
 /// worker once a stop request has waited `STOP_GRACE` for the tick: whatever
 /// the tick was sending stays unconfirmed, and the next start recovers it
 /// (`recover`), so nothing is sent twice.
+///
+/// Task #17 of team c536f0e5 (P2.6a): the watchdog wakes on the stop
+/// request's file notification (and at its grace's end); without the change
+/// bus it looks every 200 ms, as before.
 fn stop_watchdog(dir: PathBuf, ended: std::sync::Arc<std::sync::atomic::AtomicBool>) {
     std::thread::spawn(move || {
-        let files = WorkerFiles::new(dir);
+        let files = WorkerFiles::new(dir.clone());
+        let (sender, notified) = std::sync::mpsc::channel::<()>();
+        let bus = crate::state::changes::enabled()
+            .then(|| crate::state::changes::Bus::start(&dir, is_stop_file, move |_| sender.send(()).is_ok()).ok())
+            .flatten();
+        let look = if bus.is_some() { STOP_LOOK } else { Duration::from_millis(200) };
         let mut requested: Option<Instant> = None;
         loop {
             if ended.load(std::sync::atomic::Ordering::SeqCst) {
@@ -13756,9 +13782,24 @@ fn stop_watchdog(dir: PathBuf, ended: std::sync::Arc<std::sync::atomic::AtomicBo
                 files.finish("stop requested");
                 std::process::exit(0);
             }
-            std::thread::sleep(Duration::from_millis(200));
+            let wait = match requested {
+                Some(at) => (at + STOP_GRACE).saturating_duration_since(Instant::now()).min(look),
+                None => look,
+            };
+            if notified.recv_timeout(wait).is_ok() {
+                while notified.try_recv().is_ok() {}
+            }
         }
     });
+}
+
+/// Task #17 of team c536f0e5: with notifications the watchdog still looks
+/// this often, in case one was lost.
+const STOP_LOOK: Duration = Duration::from_secs(30);
+
+/// Task #17: the stop request in the worker's folder.
+fn is_stop_file(relative: &Path) -> bool {
+    relative == Path::new("worker.stop")
 }
 
 /// Task #406: a stop request that has waited the grace for the tick.
@@ -13766,15 +13807,96 @@ fn stop_overdue(requested: Option<Instant>, now: Instant) -> bool {
     requested.is_some_and(|at| now.duration_since(at) >= STOP_GRACE)
 }
 
-/// Sleeps a tick in small slices, so a stop request ends the worker promptly.
-fn sleep_or_stop(files: &WorkerFiles, duration: Duration) {
-    let started = Instant::now();
-    while started.elapsed() < duration {
-        if files.stop_requested() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(100));
+/// Task #17 of team c536f0e5 (P2.6a): why the last tick wants the next wake
+/// to tick again although no event came (a phase it skipped, a hand-out
+/// being delivered, a notice to send).
+static AGAIN: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+
+fn again(why: &'static str) {
+    let mut again = AGAIN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    again.get_or_insert(why);
+}
+
+fn take_again() -> Option<&'static str> {
+    AGAIN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+}
+
+/// Task #17: a team with something under way that later ticks finish
+/// without an event: a hand-out being delivered, a notice queued or being
+/// sent.
+fn unsettled(team: &Team) -> Option<&'static str> {
+    let sending = |notice: &Notice| matches!(notice, Notice::Pending | Notice::Sending);
+    if sending(&team.brief) || sending(&team.idle) {
+        return Some("notice");
     }
+    team.tasks.iter().flat_map(|task| &task.attempts).find_map(|attempt| {
+        if attempt.state == AttemptState::Delivering {
+            Some("delivering")
+        } else if sending(&attempt.notice) {
+            Some("notice")
+        } else {
+            None
+        }
+    })
+}
+
+/// Task #17: work of this process that a later tick takes up: context
+/// reads, a test queue, turn-end pulses being built.
+fn in_flight() -> Option<&'static str> {
+    let busy = |set: &std::sync::Mutex<BTreeSet<(String, String)>>| set.lock().map(|set| !set.is_empty()).unwrap_or(true);
+    if busy(&CONTEXT_IN_FLIGHT) || CONTEXT_DONE.lock().map(|done| !done.is_empty()).unwrap_or(true) {
+        return Some("context reads");
+    }
+    if TEST_QUEUES.lock().map(|queues| !queues.is_empty()).unwrap_or(true) {
+        return Some("test queue");
+    }
+    if super::pulse_worker::SAMPLER.busy() {
+        return Some("pulses");
+    }
+    None
+}
+
+/// Task #17: the folders of this computer's members, whose outboxes the
+/// worker watches.
+static OUTBOX_FOLDERS: std::sync::Mutex<BTreeSet<PathBuf>> = std::sync::Mutex::new(BTreeSet::new());
+
+fn note_outbox_folders(teams: &[Team]) {
+    let folders: BTreeSet<PathBuf> = teams
+        .iter()
+        .flat_map(|team| {
+            team.members
+                .iter()
+                .filter(|member| member.state != MemberState::Removed && member.computer.is_empty())
+                .filter_map(|member| member_folder_path(team, member).ok().filter(|folder| !folder.is_empty()))
+                .map(PathBuf::from)
+        })
+        .collect();
+    *OUTBOX_FOLDERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = folders;
+}
+
+fn outbox_folders() -> BTreeSet<PathBuf> {
+    OUTBOX_FOLDERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+}
+
+/// Task #17: the stamps of the members' outbox folders: a request, a claim
+/// or a result added or removed changes its folder.
+fn outbox_stamps(folders: &BTreeSet<PathBuf>) -> u64 {
+    let dirs: Vec<PathBuf> = folders.iter().map(|folder| super::outbox::dir(folder)).collect();
+    crate::watch::stamps::files(&dirs)
+}
+
+/// Task #17: whether the newest listing is current (the P1.6 reuse rule);
+/// when it is, it counts as confirmed now, so a tick an event starts within
+/// `LISTING_MAX_AGE` acts on it without reading it again.
+fn listing_current() -> bool {
+    let peers = LISTING_PEERS.load(std::sync::atomic::Ordering::Relaxed);
+    if listing_running() || !matches!(choose_listing(peers, true).0, ListingChoice::Reuse) {
+        return false;
+    }
+    if let Some(listed) = LAST_LISTING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut() {
+        listed.current = Instant::now();
+    }
+    true
 }
 
 /// What keeps the worker alive, for its heartbeat and log (U2).
@@ -13784,6 +13906,60 @@ fn worker_reason(store: &Store) -> (usize, String) {
     let paused = active.iter().filter(|team| team.status == TeamStatus::Paused).count();
     let planning = active.len().saturating_sub(running + paused);
     (active.len(), format!("{running} running, {paused} paused, {planning} planning"))
+}
+
+/// Task #17 of team c536f0e5 (P2.6a): what the waiting worker knows of its
+/// last tick.
+#[derive(Default)]
+struct WaitState {
+    /// When it ended; None before the first.
+    ticked: Option<Instant>,
+    /// The store's `data_version` as the tick started.
+    version: Option<i64>,
+    /// It changed no active team (their revisions stayed) and did not fail.
+    quiet: bool,
+    /// Why it wants another tick without an event.
+    again: Option<&'static str>,
+    /// The members' outbox folders' stamps after it.
+    outboxes: u64,
+}
+
+/// Task #17: waits until the next wake: an event, or `wake::WAKE` from now.
+/// A notification of the team store that no other connection's commit
+/// explains (the worker's own commit) is counted and waited past. With
+/// `prefetch`, the next listing starts as long before the wake as it takes.
+fn wait_for_change(
+    waker: &mut super::wake::Waker,
+    store: &rusqlite::Connection,
+    counts: &mut super::wake::Counts,
+    version: Option<i64>,
+    prefetch: bool,
+) -> BTreeSet<super::wake::Event> {
+    use super::wake::Event;
+    let deadline = Instant::now() + super::wake::WAKE;
+    let mut prefetch_at = prefetch.then(|| deadline.checked_sub(prefetch_lead()).unwrap_or_else(Instant::now));
+    loop {
+        let mut events = waker.wait(prefetch_at.unwrap_or(deadline));
+        if events.is_empty() {
+            if prefetch_at.take().is_some() {
+                prefetch_listing();
+                continue;
+            }
+            counts.wake("timer");
+            return events;
+        }
+        if events.contains(&Event::Store) && super::wake::data_version(store) == version {
+            events.remove(&Event::Store);
+            counts.wake("own commit");
+        }
+        if events.is_empty() {
+            continue;
+        }
+        for event in &events {
+            counts.wake(event.name());
+        }
+        return events;
+    }
 }
 
 pub(crate) fn worker() -> Result<i32> {
@@ -13815,42 +13991,83 @@ pub(crate) fn worker() -> Result<i32> {
     super::lore_sync::start_background(|line| eprintln!("hgs team worker: {line}"));
     // Task 160: the park watcher, beside the ticks too.
     super::park::start_background(|line| eprintln!("hgs team worker: {line}"));
+    // Task #17 of team c536f0e5 (P2.6a): the worker waits on the change bus,
+    // at most `wake::WAKE` between wakes, and ticks when something moved.
+    let mut waker = super::wake::Waker::start(&root(), Some(&executable));
+    if let Some(fault) = &waker.fault {
+        files.log(&format!("change bus: {fault}; every wake is a tick"));
+    }
+    let mut counts = super::wake::Counts::new(now());
+    let mut state = WaitState::default();
+    let mut events = BTreeSet::new();
     let exit = loop {
         if fs::metadata(&executable).and_then(|m| m.modified()).ok() != started {
             // An update replaced hgs: the new one carries on with the teams.
             break WorkerExit::Updated;
         }
-        let result = match worker_pass(&files, || tick(&mut store, host)) {
-            WorkerPass::Stop => break WorkerExit::StopRequested,
-            WorkerPass::Ticked(result) => result,
+        if files.stop_requested() {
+            break WorkerExit::StopRequested;
+        }
+        let reason = if state.ticked.is_none() {
+            Some("start")
+        } else {
+            super::wake::tick_reason(
+                &events,
+                super::wake::Check {
+                    listening: waker.listening(),
+                    last_tick_quiet: state.quiet,
+                    since_tick: state.ticked.map_or(super::wake::SAFETY, |at| at.elapsed()),
+                    store_moved: || super::wake::data_version(store.connection()) != state.version,
+                    in_flight: || state.again.or_else(in_flight),
+                    outboxes_moved: || outbox_stamps(&outbox_folders()) != state.outboxes,
+                    listing_current,
+                },
+            )
         };
-        let ticked = matches!(result, Ok(true));
-        match result {
-            Ok(true) => {
-                last_work = Instant::now();
-                let (teams, reason) = worker_reason(&store);
-                files.beat(teams, &reason);
-                if reason != last_reason {
-                    files.log(&format!("staying: {reason}"));
-                    last_reason = reason;
+        let mut ticked = false;
+        if let Some(why) = reason {
+            counts.tick(why);
+            // A full tick at the start, on the safety net and without the bus.
+            let full = matches!(why, "start" | "safety" | "no bus");
+            let version = super::wake::data_version(store.connection());
+            let revision = store.active_revision().ok();
+            let result = match worker_pass(&files, || tick(&mut store, host, full)) {
+                WorkerPass::Stop => break WorkerExit::StopRequested,
+                WorkerPass::Ticked(result) => result,
+            };
+            // Commits by other connections during the tick move the version
+            // past this one, so the next check ticks again.
+            state.version = version;
+            state.quiet = result.is_ok() && revision.is_some() && store.active_revision().ok() == revision;
+            state.again = take_again();
+            state.ticked = Some(Instant::now());
+            let folders = outbox_folders();
+            state.outboxes = outbox_stamps(&folders);
+            waker.watch_outboxes(&folders);
+            ticked = matches!(result, Ok(true));
+            match result {
+                Ok(true) => {
+                    last_work = Instant::now();
+                    let (teams, reason) = worker_reason(&store);
+                    files.beat(teams, &reason);
+                    if reason != last_reason {
+                        files.log(&format!("staying: {reason}"));
+                        last_reason = reason;
+                    }
                 }
-            }
-            Ok(false) => {
-                files.beat(0, "no active team");
-                if last_work.elapsed() >= IDLE_EXIT {
-                    break WorkerExit::Idle;
+                Ok(false) => {
+                    files.beat(0, "no active team");
+                    if last_work.elapsed() >= IDLE_EXIT {
+                        break WorkerExit::Idle;
+                    }
                 }
+                Err(error) => files.log(&format!("error: {error}")),
             }
-            Err(error) => files.log(&format!("error: {error}")),
+            super::tick_clock::set_wakes(counts.value(waker.listening()));
         }
-        // Task #7 (P1.6): the next tick's listing is read during the sleep,
-        // timed to end as the tick starts.
-        let lead = prefetch_lead();
-        sleep_or_stop(&files, TICK.saturating_sub(lead));
-        if ticked && !files.stop_requested() {
-            prefetch_listing();
-        }
-        sleep_or_stop(&files, lead);
+        // Task #7 (P1.6): the next tick's listing is read during the wait,
+        // timed to end as the next wake comes (nothing when it stays current).
+        events = wait_for_change(&mut waker, store.connection(), &mut counts, state.version, ticked && !files.stop_requested());
     };
     ended.store(true, std::sync::atomic::Ordering::SeqCst);
     files.finish(exit.reason());
@@ -14028,6 +14245,9 @@ mod dispatcher_tick_budget;
 #[cfg(test)]
 #[path = "tests/dispatcher_listing.rs"]
 mod dispatcher_listing;
+#[cfg(test)]
+#[path = "tests/dispatcher_wake.rs"]
+mod dispatcher_wake;
 
 #[cfg(test)]
 #[path = "tests/dispatcher_outbox.rs"]
