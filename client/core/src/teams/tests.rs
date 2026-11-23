@@ -2229,3 +2229,104 @@ fn the_poller_never_holds_a_tab_behind_another_teams_read() {
     assert!(took < Duration::from_secs(2), "the tab waited {took:?} behind the other team's read");
     drop(poller);
 }
+
+/// Task #16 of team c536f0e5 (P2.5): the frames of the stream's `team.views`
+/// topic carrying `rows`, through the client's own frame path.
+fn view_frames(state: &mut crate::CatalogState, rows: &[(String, Value)], seq: u64) -> Vec<Change> {
+    let items: Vec<Value> = rows.iter().map(|(key, row)| json!({"key": key, "row": row})).collect();
+    let frame = serde_json::from_value(json!({"v":1,"seq":seq,"t":"snapshot","topic":"team.views","page":0,"last":true,"cursor":seq,"items":items})).unwrap();
+    state.apply(&ComputerId::local(), &frame)
+}
+
+fn hello_with_views(state: &mut crate::CatalogState) {
+    let hello = serde_json::from_value(json!({"v":1,"seq":1,"t":"hello","host":"h","hgs_version":"1","stream":"s",
+        "heartbeat_ms":10000,"max_frame_bytes":1048576,"topics":["catalog","team","team.views"],"limits":{"activity_subscriptions":16,"page_bytes":524288,
+        "queue_bytes":4194304,"activity_tail":100,"activity_read":200,"control_line_bytes":65536}})).unwrap();
+    state.apply(&ComputerId::local(), &hello);
+    assert!(state.team_views_offered());
+}
+
+/// The rows a `team.views` server sends for the followed team.
+fn view_rows() -> Vec<(String, Value)> {
+    vec![
+        ("list".into(), replies(&TeamRead::List)),
+        ("waiting".into(), replies(&TeamRead::Waiting { before: None })),
+        (format!("status:{TEAM}"), replies(&status())),
+        (format!("inbox:{TEAM}"), replies(&TeamRead::Inbox { team: TEAM.into() })),
+        (format!("feed:{TEAM}"), replies(&TeamRead::Events { team: TEAM.into(), before: None })),
+    ]
+}
+
+fn streamed_views(changes: Vec<Change>) -> Option<crate::teams::ViewRows> {
+    changes.into_iter().find_map(|change| match change {
+        Change::TeamViews { views, .. } => views,
+        _ => None,
+    })
+}
+
+#[test]
+fn task_16_the_same_replies_through_team_views_frames_give_the_same_updates_and_no_reads() {
+    let start = Instant::now();
+    let mut polled = TeamsModel::default();
+    polled.follow(follow_team(), start);
+    let mut expected = poll_once(&mut polled, start, replies);
+    expected.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut state = crate::CatalogState::new();
+    hello_with_views(&mut state);
+    let rows = streamed_views(view_frames(&mut state, &view_rows(), 2)).expect("a complete snapshot gives the rows");
+    let mut streamed = TeamsModel::default();
+    streamed.follow(follow_team(), start);
+    let mut got: Vec<(String, TeamsUpdate)> = streamed.views(Some(&rows), start).into_iter().map(|sent| (sent.key, sent.update)).collect();
+    got.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(got, expected, "the frame path gives exactly the polled updates");
+    // Nothing is read with `hgs team` any more, now or later.
+    assert_eq!(streamed.next(start), None);
+    assert_eq!(streamed.next(start + POLL * 100), None);
+    // The same rows again change nothing; a changed inbox sends only it.
+    assert!(streamed.views(Some(&rows), start).is_empty());
+    let mut inbox = replies(&TeamRead::Inbox { team: TEAM.into() });
+    inbox["items"] = json!([]);
+    let delta = serde_json::from_value(json!({"v":1,"seq":3,"t":"delta","topic":"team.views","cursor":3,
+        "upsert":[{"key":format!("inbox:{TEAM}"),"row":inbox}],"remove":[]})).unwrap();
+    let changed = streamed_views(state.apply(&ComputerId::local(), &delta)).unwrap();
+    let keys: Vec<String> = streamed.views(Some(&changed), start).into_iter().map(|sent| sent.key).collect();
+    assert_eq!(keys, [team_key("inbox", TEAM)]);
+}
+
+#[test]
+fn task_16_a_lost_stream_or_an_error_row_returns_those_reads_to_the_poller() {
+    let start = Instant::now();
+    let mut state = crate::CatalogState::new();
+    hello_with_views(&mut state);
+    let mut rows = view_rows();
+    // The status was too large for a frame: read with its command.
+    rows[2].1 = json!({"error":{"code":"too_large","bytes":600000,"message":"read it with hgs team status"}});
+    let rows = streamed_views(view_frames(&mut state, &rows, 2)).unwrap();
+    let mut model = TeamsModel::default();
+    model.follow(follow_team(), start);
+    model.views(Some(&rows), start);
+    assert_eq!(model.next(start), Some(status()), "only the status is read");
+    assert_eq!(model.next(start), None);
+    // Another team is opened: its views are read until its rows arrive.
+    model.follow(TeamsFollow { team: Some("other".into()), ..follow_team() }, start);
+    let mut reads = Vec::new();
+    while let Some(read) = model.next(start) {
+        reads.push(read);
+    }
+    assert_eq!(reads.len(), 3, "status, inbox and feed of the new team: {reads:?}");
+    // The stream drops (a gap): every followed read is polled again.
+    let gap = serde_json::from_value(json!({"v":1,"seq":3,"t":"gap","topic":"team.views","reason":"overflow"})).unwrap();
+    let changes = state.apply(&ComputerId::local(), &gap);
+    assert!(changes.iter().any(|change| matches!(change, Change::TeamViews { views: None, .. })));
+    let mut model = TeamsModel::default();
+    model.follow(follow_team(), start);
+    model.views(Some(&view_rows().into_iter().collect::<Vec<_>>()), start);
+    assert_eq!(model.next(start), None);
+    model.views(None, start);
+    let mut reads = Vec::new();
+    while let Some(read) = model.next(start) {
+        reads.push(read);
+    }
+    assert_eq!(reads.len(), 5, "list, Waiting, status, inbox and feed: {reads:?}");
+}

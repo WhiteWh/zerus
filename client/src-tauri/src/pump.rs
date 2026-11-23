@@ -52,6 +52,8 @@ struct Inner {
     tap: Option<Tap>,
     /// Task 8: where a computer's stream team heads go (the Teams pollers).
     team_heads: Option<TeamHeadsHook>,
+    /// Task #16 of team c536f0e5 (P2.5): where a stream's team views go.
+    team_views: Option<TeamViewsHook>,
     terminations: terminations::Terminations,
     service: Option<service::Cached>,
     service_changed: bool,
@@ -76,6 +78,10 @@ struct Inner {
 /// Task 8: receives a computer's stream team heads (None: poll).
 pub type TeamHeadsHook =
     Arc<dyn Fn(&ComputerId, Option<Arc<zerus_client_core::teams::Heads>>) + Send + Sync>;
+/// Task #16 of team c536f0e5 (P2.5): receives a computer's stream team
+/// views (None: its poller reads them).
+pub type TeamViewsHook =
+    Arc<dyn Fn(&ComputerId, Option<zerus_client_core::teams::ViewRows>) + Send + Sync>;
 
 /// Shared by the drain thread and the commands.
 #[derive(Clone, Default)]
@@ -216,6 +222,12 @@ impl Pump {
         self.lock().team_heads = Some(hook);
     }
 
+    /// Task #16 of team c536f0e5 (P2.5): hands each computer's stream team
+    /// views to `hook` (the Teams pollers); they never reach the webview.
+    pub fn on_team_views(&self, hook: TeamViewsHook) {
+        self.lock().team_views = Some(hook);
+    }
+
     /// Queues one change and wakes a parked `take`.
     pub fn push(&self, change: Change) {
         if let Change::TeamHeads { computer, heads } = change {
@@ -223,6 +235,13 @@ impl Pump {
             let hook = self.lock().team_heads.clone();
             if let Some(hook) = hook {
                 hook(&computer, heads);
+            }
+            return;
+        }
+        if let Change::TeamViews { computer, views } = change {
+            let hook = self.lock().team_views.clone();
+            if let Some(hook) = hook {
+                hook(&computer, views);
             }
             return;
         }
@@ -1419,7 +1438,8 @@ impl Mirror {
             | Change::Tasks { .. }
             | Change::Git { .. }
             | Change::Teams { .. }
-            | Change::TeamHeads { .. } => {}
+            | Change::TeamHeads { .. }
+            | Change::TeamViews { .. } => {}
         }
     }
 

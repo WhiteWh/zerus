@@ -183,6 +183,10 @@ pub struct TeamsModel {
     /// Task #14: the last held views of recently watched teams, newest last,
     /// at most [`HELD_TEAMS`] teams.
     held: VecDeque<(String, BTreeMap<String, TeamsUpdate>)>,
+    /// Task #16 of team c536f0e5 (P2.5): the followed reads whose replies the
+    /// stream's `team.views` rows bring; they are not polled. Empty while the
+    /// stream gives none (no topic, a gap, a lost stream).
+    streamed: std::collections::BTreeSet<Slot>,
 }
 
 /// An update as the model sends it (task #9): its payload is computed once
@@ -260,6 +264,8 @@ impl TeamsModel {
             self.queued.retain(|read| read.team().is_none());
             for slot in [Slot::Status, Slot::Inbox, Slot::Feed] {
                 self.due.remove(&slot);
+                // Task #16: the new team's rows have not come yet.
+                self.streamed.remove(&slot);
             }
             // Task #14: the tab shows the views held for its team at once;
             // the fresh reads (due now) replace them, and an unchanged one
@@ -431,9 +437,10 @@ impl TeamsModel {
         self.hidden
     }
 
-    /// Whether a followed slot may be read now: hidden, only Waiting.
+    /// Whether a followed slot may be read now: hidden, only Waiting; never
+    /// one the stream's team views bring (task #16).
     fn eligible(&self, slot: Slot) -> bool {
-        !self.hidden || slot == Slot::Waiting
+        (!self.hidden || slot == Slot::Waiting) && !self.streamed.contains(&slot)
     }
 
     /// The next read to run now, if any: an asked-for read first, then the
@@ -486,6 +493,9 @@ impl TeamsModel {
     /// None. The poller also runs it beside a read still in flight for a team
     /// no longer watched, so a newly opened tab never waits behind that.
     pub fn next_status(&mut self, now: Instant) -> Option<TeamRead> {
+        if self.streamed.contains(&Slot::Status) {
+            return None;
+        }
         let team = self.watched()?.to_owned();
         let due = *self.due.get(&Slot::Status)?;
         if due > now || !self.eligible(Slot::Status) {
@@ -562,6 +572,55 @@ impl TeamsModel {
     /// Whether the stream's team heads drive the reads (task 8).
     pub fn streamed(&self) -> bool {
         self.heads.is_some()
+    }
+
+    /// Task #16 of team c536f0e5 (P2.5): rows of the stream's `team.views`
+    /// topic, each the reply of one followed read (`list`, `waiting`,
+    /// `status:<id>`, `inbox:<id>`, `feed:<id>`), applied exactly as that
+    /// read's reply; that read is no longer polled. A row the server could
+    /// not send (`{"error":{"code":"too_large"|"failed"}}`) leaves its read
+    /// to the poller, due now. None: the stream gives no views any more, so
+    /// every followed read is polled again, due now.
+    pub fn views(&mut self, rows: Option<&[(String, Value)]>, now: Instant) -> Vec<Sent> {
+        let mut out = Vec::new();
+        let Some(rows) = rows else {
+            for slot in std::mem::take(&mut self.streamed) {
+                if let Some(due) = self.due.get_mut(&slot) {
+                    *due = (*due).min(now);
+                }
+            }
+            return out;
+        };
+        for (key, row) in rows {
+            let read = match key.split_once(':') {
+                None if key == "list" => TeamRead::List,
+                None if key == "waiting" => TeamRead::Waiting { before: None },
+                Some(("status", team)) => TeamRead::Status { team: team.to_owned() },
+                Some(("inbox", team)) => TeamRead::Inbox { team: team.to_owned() },
+                Some(("feed", team)) => TeamRead::Events { team: team.to_owned(), before: None },
+                _ => continue,
+            };
+            // A row of a team no longer watched is not this tab's.
+            if read.team().is_some_and(|team| Some(team) != self.watched()) {
+                continue;
+            }
+            let Some(slot) = Self::slot(&read) else { continue };
+            if row.get("error").is_some_and(|error| error.get("code").is_some()) && row.as_object().is_some_and(|row| row.len() == 1) {
+                // Read with its command, now.
+                self.streamed.remove(&slot);
+                if let Some(due) = self.due.get_mut(&slot) {
+                    if *due <= now + STREAM_POLL {
+                        *due = now;
+                    }
+                }
+                continue;
+            }
+            // The row is the read's reply: Waiting's first page, the newest
+            // feed page, as the polled reads are.
+            out.extend(self.apply_sent(&read, Ok(row.clone()), now));
+            self.streamed.insert(slot);
+        }
+        out
     }
 
     /// How long until a read is due, at most [`POLL`].

@@ -426,6 +426,8 @@ impl Coalescer {
             }
             // Task 8: the stream's team heads go to the Teams pollers, never the webview.
             Change::TeamHeads { .. } => {}
+            // Task #16 (P2.5): the stream's team views go to the pollers too.
+            Change::TeamViews { .. } => {}
             Change::Teams {
                 computer,
                 key,

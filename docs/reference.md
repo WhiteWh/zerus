@@ -13696,6 +13696,26 @@ up. A read that fails, such as a store held by a writer, sends a non-fatal
 subscription with `unsupported_topic`; read its teams with `hgs team` as
 before.
 
+The `team.views` topic carries the Teams views themselves, so the desktop runs
+no `hgs team` read for them: `{"op":"subscribe","topic":"team.views","team":"ID"}`,
+one per stream, `team` optional; a later subscribe replaces the team. Each row
+is exactly what its read returns: `list` is `hgs team list --json` with
+`{"include_cancelled":true,"limit":200}`, `waiting` is `team waiting` with
+`{"limit":100}`, and for the named team `status:<id>` is `team status` with
+`{"team","include_cancelled":true}`, `inbox:<id>` is `team inbox` with
+`{"team"}` and `feed:<id>` is the newest `team events` page with
+`{"team","limit":50}`. The rows are read in the watch process on the `team`
+topic's schedule (a changed store stat, at least every 30 s, at most once a
+second), so each key changes at most once a second, and are sent like the
+heads: a paged `snapshot`, then `delta`s of the changed rows, `gap` and a
+snapshot for a client that fell behind. A read that fails is the row
+`{"error":{"code":"failed","message"}}`, and a row over 508 KiB is
+`{"error":{"code":"too_large","bytes","message"}}`; the client reads that view
+with its command. Older feed and Waiting pages, spans, the profile and the
+catalog stay commands. A failed read of the whole set sends a non-fatal
+`team_views_failed`. A peer whose `hello` does not list the topic answers
+`unsupported_topic`.
+
 The separately negotiated `organization.drive_folders` topic follows the capable
 Windows drive-folder projection with `{"op":"subscribe","topic":"organization.drive_folders"}`.
 It never initializes, saves or repairs the catalog or either drive file. The
@@ -13854,6 +13874,13 @@ HGS_TEST_BIN="$PWD/target/debug/hgs" python3 tests/test_account_lifecycle.py
 ```
 
 On macOS, the last suite can also verify SSH/tmux entry into the graphical security
+When the stream also offers `team.views`, the desktop subscribes it with the
+watched team while a Teams view is open, and those reads come as its rows
+instead: no `hgs team` runs for them. A row the server could not send is read
+with its command; a newly watched team's status, inbox and feed are read once
+until its rows arrive; after a `gap`, `team_views_failed` or a lost stream they
+are read as above. The desktop service's source (`ZERUS_CLIENT_DESKTOP_SERVICE=1`)
+does not follow `team.views` yet and keeps the reads.
 session and needs the installed HGS desktop session service. The Mach protocol
 can be checked without accessing Keychain:
 

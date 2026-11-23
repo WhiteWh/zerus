@@ -27,12 +27,14 @@ pub mod plan_edit;
 pub mod poller;
 pub mod read;
 pub mod role_models;
+pub mod stream_views;
 pub mod timeline;
 pub mod view;
 
 pub use action::{TeamAction, TeamCall, TeamOutcome};
 pub use catalog_edit::{CatalogEdit, CatalogEditor, CatalogEditorView};
 pub use heads::{Head, Heads, TeamHeads};
+pub use stream_views::{TeamViewRows, ViewRows};
 pub use model::{
     TeamsFollow, TeamsModel, TeamsUpdate, FEED_KEPT, POLL, REVISION_ONLY, STREAM_POLL,
 };

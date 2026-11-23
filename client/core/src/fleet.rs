@@ -389,6 +389,16 @@ impl Fleet {
             .is_some_and(|handle| handle.apply_notifications(target.clone(), preferences))
     }
 
+    /// Task #16 of team c536f0e5 (P2.5): follows one computer's team views
+    /// (`Some`, with the watched team) or stops (`None`); see
+    /// [`crate::stream::StreamHandle::follow_team_views`]. False for a
+    /// computer without a stream.
+    pub fn follow_team_views(&self, computer: &ComputerId, follow: Option<Option<String>>) -> bool {
+        guard(&self.shared.streams)
+            .get(computer)
+            .is_some_and(|handle| handle.follow_team_views(follow))
+    }
+
     /// Stops following a project's task list; false when it was not followed.
     pub fn unfollow_tasks(&self, computer: &ComputerId, project: &str) -> bool {
         guard(&self.shared.streams)

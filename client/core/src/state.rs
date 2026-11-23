@@ -163,6 +163,8 @@ pub struct CatalogState {
     organization: crate::OrganizationState,
     /// Task 8: the `team` topic's rows.
     team_heads: crate::teams::TeamHeads,
+    /// Task #16 of team c536f0e5 (P2.5): the `team.views` rows.
+    team_views: crate::teams::TeamViewRows,
     live: bool,
     failed: bool,
     failures: u32,
@@ -209,6 +211,7 @@ impl CatalogState {
                 // Task 8: no team heads until this stream's snapshot; a
                 // stream without the topic keeps the Teams poller polling.
                 self.lose_team_heads(computer, &mut changes);
+                self.lose_team_views(computer, &mut changes);
                 // Retain display facts across reconnects, but bind the physical
                 // identity to this hello. An unknown/legacy hello clears it,
                 // including when the new host caption is absent.
@@ -411,6 +414,30 @@ impl CatalogState {
             // A gap or a failed read: poll until the next complete snapshot.
             Body::Gap(gap) if gap.topic == topic::TEAM => {
                 self.lose_team_heads(computer, &mut changes)
+            }
+            // Task #16 (P2.5): the views; a gap or a failure reads them with
+            // their commands until the next complete snapshot.
+            Body::Snapshot(snapshot) if snapshot.topic == topic::TEAM_VIEWS => {
+                if let Some(views) = self.team_views.snapshot(snapshot) {
+                    changes.push(Change::TeamViews {
+                        computer: computer.clone(),
+                        views: Some(views),
+                    });
+                }
+            }
+            Body::Delta(delta) if delta.topic == topic::TEAM_VIEWS => {
+                if let Some(views) = self.team_views.delta(delta) {
+                    changes.push(Change::TeamViews {
+                        computer: computer.clone(),
+                        views: Some(views),
+                    });
+                }
+            }
+            Body::Gap(gap) if gap.topic == topic::TEAM_VIEWS => {
+                self.lose_team_views(computer, &mut changes)
+            }
+            Body::Error(error) if !error.fatal && error.topic.as_deref() == Some(topic::TEAM_VIEWS) => {
+                self.lose_team_views(computer, &mut changes);
             }
             Body::Error(error) if !error.fatal && error.topic.as_deref() == Some(topic::TEAM) => {
                 self.lose_team_heads(computer, &mut changes);
@@ -767,6 +794,7 @@ impl CatalogState {
         }];
         // Task 8: the Teams poller polls while the stream is down.
         self.lose_team_heads(computer, &mut changes);
+        self.lose_team_views(computer, &mut changes);
         let keys: Vec<String> = self.tasks.keys().cloned().collect();
         for key in keys {
             changes.extend(self.tasks.unavailable(
@@ -893,6 +921,24 @@ impl CatalogState {
                 heads: None,
             });
         }
+    }
+
+    /// Task #16 of team c536f0e5 (P2.5): forgets the team views; views that
+    /// were followed become None, so the Teams poller reads them itself.
+    pub fn lose_team_views(&mut self, computer: &ComputerId, changes: &mut Vec<Change>) {
+        if self.team_views.reset() {
+            changes.push(Change::TeamViews {
+                computer: computer.clone(),
+                views: None,
+            });
+        }
+    }
+
+    /// Task #16 (P2.5): whether the latest `hello` offers the team views.
+    pub fn team_views_offered(&self) -> bool {
+        self.hello
+            .as_ref()
+            .is_some_and(|hello| hello.topics.iter().any(|name| name == topic::TEAM_VIEWS))
     }
 
     /// Task 8: whether the latest `hello` offers the team topic.

@@ -17,7 +17,7 @@ use zerus_client_core::teams::catalog_edit::{
 };
 use zerus_client_core::teams::read::TeamRead;
 use zerus_client_core::teams::view::{builds as builds_view, tests as tests_view, BuildsView, TestsView};
-use zerus_client_core::teams::{Heads, WaitingShare};
+use zerus_client_core::teams::{Heads, ViewRows, WaitingShare};
 use zerus_client_core::{default_hgs, ComputerId, TeamCall, TeamOutcome, TeamsFollow, TeamsPoller};
 
 use crate::commands::AppState;
@@ -33,6 +33,9 @@ pub struct Teams {
     /// Task 8: each computer's latest stream team heads, for a poller that
     /// starts later; None or absent: it polls.
     heads: Mutex<BTreeMap<ComputerId, Arc<Heads>>>,
+    /// Task #16 of team c536f0e5 (P2.5): each computer's stream team views
+    /// so far, for a poller that starts later; absent: it reads them.
+    views: Mutex<BTreeMap<ComputerId, BTreeMap<String, serde_json::Value>>>,
     /// Task #10: the window is hidden or minimized: the pollers read only
     /// Waiting, at the always-on watcher's pace.
     hidden: AtomicBool,
@@ -51,6 +54,7 @@ impl Teams {
             pollers: Mutex::new(BTreeMap::new()),
             editors: Arc::new(Mutex::new(BTreeMap::new())),
             heads: Mutex::new(BTreeMap::new()),
+            views: Mutex::new(BTreeMap::new()),
             hidden: AtomicBool::new(false),
             waiting: WaitingShare::default(),
             replay,
@@ -116,6 +120,9 @@ impl Teams {
             {
                 poller.heads(Some(Arc::clone(heads)));
             }
+            if let Some(rows) = self.views.lock().unwrap_or_else(PoisonError::into_inner).get(&computer) {
+                poller.views(Some(Arc::new(rows.iter().map(|(key, row)| (key.clone(), row.clone())).collect())));
+            }
             if self.hidden.load(Ordering::SeqCst) {
                 poller.hidden(true);
             }
@@ -128,6 +135,29 @@ impl Teams {
             poller.follow(follow);
         }
         Ok(())
+    }
+
+    /// Task #16 of team c536f0e5 (P2.5): rows of a computer's stream
+    /// `team.views` topic, or None when it stopped giving them; its poller
+    /// applies them instead of reading those views.
+    pub fn views(&self, computer: &ComputerId, views: Option<ViewRows>) {
+        {
+            let mut known = self.views.lock().unwrap_or_else(PoisonError::into_inner);
+            match &views {
+                Some(rows) => {
+                    let held = known.entry(computer.clone()).or_default();
+                    for (key, row) in rows.iter() {
+                        held.insert(key.clone(), row.clone());
+                    }
+                }
+                None => {
+                    known.remove(computer);
+                }
+            }
+        }
+        if let Some(poller) = self.lock().get(computer) {
+            poller.views(views);
+        }
     }
 
     /// Task 8: the team heads of a computer's watch stream (its `team`
@@ -186,6 +216,13 @@ pub fn teams_follow(
         return Err("Not a team id.".into());
     }
     let target = self::computer(&computer)?;
+    // Task #16 of team c536f0e5 (P2.5): the computer's stream sends the
+    // followed views as rows (a stream without the topic: they are read).
+    let views = (list || waiting || team.is_some()).then(|| team.clone());
+    if views.is_none() {
+        teams.views(&target, None);
+    }
+    state.follow_team_views(&target, views);
     teams.follow(
         &state.pump(),
         target,

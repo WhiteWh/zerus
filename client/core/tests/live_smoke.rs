@@ -56,6 +56,7 @@ fn live_smoke() {
                 Change::Organization { .. } => "organization",
                 Change::Teams { .. } => "teams",
                 Change::TeamHeads { .. } => "team_heads",
+                Change::TeamViews { .. } => "team_views",
             };
             *kinds.entry(kind).or_default() += 1;
             coalescer.push(change);

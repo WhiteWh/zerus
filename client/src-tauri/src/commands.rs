@@ -46,6 +46,11 @@ impl AppState {
     pub fn reconnect(&self, computer: &str) -> bool {
         self.live.reconnect(computer)
     }
+    /// Task #16 of team c536f0e5 (P2.5): the Teams views a computer's stream
+    /// sends as rows; see [`live::Live::follow_team_views`].
+    pub fn follow_team_views(&self, computer: &zerus_client_core::ComputerId, follow: Option<Option<String>>) -> bool {
+        self.live.follow_team_views(computer, follow)
+    }
     /// One visible Refresh: one shared service subscription, or the legacy
     /// Fleet's existing offline sources. Display choices never multiply it.
     pub fn refresh(&self) -> usize {
@@ -482,6 +487,19 @@ mod live {
             match service.reload_retry_delays().await {
                 Ok(retry_delays) => serde_json::json!({"by":"service","retry_delays":retry_delays}),
                 Err(code) => serde_json::json!({"by":"service","error":code}),
+            }
+        }
+
+        /// Task #16 of team c536f0e5 (P2.5): follows a computer's team views
+        /// on the Fleet source. The desktop service's source keeps the
+        /// Teams poller's reads (its details path has no team views yet).
+        pub fn follow_team_views(&self, computer: &ComputerId, follow: Option<Option<String>>) -> bool {
+            let Ok(_admission) = self.admit() else {
+                return false;
+            };
+            match self.source.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+                Some(Source::Fleet(fleet)) => fleet.follow_team_views(computer, follow),
+                Some(Source::Service(_)) | Some(Source::Replay(_)) | None => false,
             }
         }
 

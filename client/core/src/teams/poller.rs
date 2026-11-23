@@ -94,6 +94,9 @@ impl Shared {
 /// The Teams reads of one computer.
 pub struct TeamsPoller {
     shared: Arc<Shared>,
+    /// Task #16 (P2.5): where the stream's views' updates go.
+    computer: ComputerId,
+    emit: SharedEmit,
 }
 
 impl TeamsPoller {
@@ -119,10 +122,11 @@ impl TeamsPoller {
         });
         let thread_shared = Arc::clone(&shared);
         let (runner, emit): (Arc<Runner>, SharedEmit) = (Arc::new(runner), Arc::new(Mutex::new(emit)));
+        let (own_computer, own_emit) = (computer.clone(), Arc::clone(&emit));
         thread::Builder::new()
             .name("hgs-team-poll".into())
             .spawn(move || run(&thread_shared, &computer, &runner, &emit))?;
-        Ok(Self { shared })
+        Ok(Self { shared, computer: own_computer, emit: own_emit })
     }
 
     /// Follows `follow` from now on.
@@ -179,6 +183,20 @@ impl TeamsPoller {
     pub fn heads(&self, heads: Option<Arc<super::heads::Heads>>) {
         self.shared.lock().model.heads(heads, Instant::now());
         self.shared.wake.notify_all();
+    }
+
+    /// Task #16 of team c536f0e5 (P2.5): rows of the computer's stream
+    /// `team.views` topic, or None when it stopped giving them; the views
+    /// they carry are sent at once and no longer read with `hgs team`.
+    pub fn views(&self, rows: Option<crate::teams::ViewRows>) {
+        let updates = {
+            let mut state = self.shared.lock();
+            state.model.views(rows.as_deref().map(Vec::as_slice), Instant::now())
+        };
+        self.shared.wake.notify_all();
+        for sent in updates {
+            emit_to(&self.emit, change(&self.computer, sent));
+        }
     }
 
     /// Task #10: the window is hidden or minimized, or shown again. Hidden,

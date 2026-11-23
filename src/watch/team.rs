@@ -36,6 +36,14 @@ pub(super) struct Job {
     cancelled: Arc<AtomicBool>,
 }
 
+impl Job {
+    /// Task #16 of team c536f0e5: the subscription ended before the read
+    /// started (the team views' worker checks it too).
+    pub(super) fn cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
 /// A finished read: the heads and whether more exist, an error, or None when
 /// the subscription ended before the read started.
 pub(super) struct Done {
@@ -206,16 +214,22 @@ impl Team {
     /// Takes a finished read; an error is returned for the client, and the
     /// next good read is a `gap` and a snapshot.
     pub(super) fn done(&mut self, done: Done) -> Option<String> {
-        if !self.subscribed || done.token != self.token {
+        let value = done.value.map(|value| value.map(|(heads, truncated)| rows(&heads, truncated)));
+        self.done_rows(done.token, value)
+    }
+
+    /// Task #16 of team c536f0e5: [`Self::done`] with the rows already keyed
+    /// (the team views' rows).
+    pub(super) fn done_rows(&mut self, token: u64, value: Option<Result<BTreeMap<String, Value>, String>>) -> Option<String> {
+        if !self.subscribed || token != self.token {
             return None;
         }
         self.running = false;
         if std::mem::take(&mut self.again) {
             self.due = Some(self.started + GAP);
         }
-        match done.value? {
-            Ok((heads, truncated)) => {
-                let rows = rows(&heads, truncated);
+        match value? {
+            Ok(rows) => {
                 self.current = Some(rows.into_iter().map(|(key, row)| {
                     let digest = catalog::digest(&row);
                     (key, (row, digest))

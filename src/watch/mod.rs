@@ -18,6 +18,7 @@ pub(crate) mod stamps;
 mod organization;
 mod tasks;
 mod team;
+mod team_views;
 mod writer;
 
 use crate::cli::{Error, Result};
@@ -154,6 +155,8 @@ enum Input {
     /// An organization read finished on its worker.
     Organization(organization::Done),
     /// A read of the team heads finished on its worker.
+    /// Task #16 (P2.5): a read of the team views finished on its worker.
+    TeamViews(team_views::Done),
     Team(team::Done),
     /// Task 235: a whole listing finished on its own thread.
     Listing(ListingDone),
@@ -428,6 +431,43 @@ enum Journal {
     Unknown,
 }
 
+/// The frames of a keyed team topic (`team`, and `team.views` since task #16
+/// of team c536f0e5): a paged snapshot, `gap` first when the client missed a
+/// delta, or one offered delta. Some(true) when the client holds the plan's
+/// rows now, Some(false) when it missed them (it was behind), None when the
+/// `gap` could not be queued.
+fn keyed_frames(out: &Out, name: &str, plan: team::Plan, cursor: i64) -> Option<bool> {
+    let item = |(key, row): (String, Value)| json!({"key": key, "row": row});
+    match plan {
+        team::Plan::Snapshot { gap, pages } => {
+            if gap && !out.put(&Body::Gap(protocol::Gap { topic: name.into(), key: None, reason: reason::OVERFLOW.into() })) {
+                return None;
+            }
+            let count = pages.len();
+            Some(pages.into_iter().enumerate().all(|(page, rows)| {
+                out.put(&Body::Snapshot(protocol::Snapshot {
+                    topic: name.into(),
+                    key: None,
+                    items: Some(rows.into_iter().map(item).collect()),
+                    value: None,
+                    page: page as u32,
+                    last: page + 1 == count,
+                    cursor,
+                }))
+            }))
+        }
+        team::Plan::Delta { upsert, remove } => {
+            let body = Body::Delta(protocol::Delta {
+                topic: name.into(),
+                upsert: upsert.into_iter().map(|(key, row)| protocol::CatalogItem { key, row }).collect(),
+                remove: remove.into_iter().map(|key| protocol::Removal { key, reason: None }).collect(),
+                cursor,
+            });
+            Some(out.offer(&body, None))
+        }
+    }
+}
+
 /// Frames out, with repeated source failures limited.
 struct Out {
     writer: Writer,
@@ -554,6 +594,8 @@ struct Watch<'a> {
     organization_pool: Option<organization::Pool>,
     team: team::Team,
     team_pool: Option<team::Pool>,
+    team_views: team_views::TeamViews,
+    team_views_pool: Option<team_views::Pool>,
     drive_folders: organization::Organization,
     drive_folders_pool: Option<organization::Pool>,
     writers: Writers,
@@ -663,6 +705,8 @@ impl<'a> Watch<'a> {
             organization_pool: None,
             team: team::Team::new(),
             team_pool: None,
+            team_views: team_views::TeamViews::new(),
+            team_views_pool: None,
             drive_folders: organization::Organization::new_drive(),
             drive_folders_pool: None,
             writers: Writers::None,
@@ -731,6 +775,7 @@ impl<'a> Watch<'a> {
             Ok(Input::Tasks(done)) => self.tasks_done(done),
             Ok(Input::Organization(done)) => self.organization_done(done),
             Ok(Input::Team(done)) => self.team_done(done),
+            Ok(Input::TeamViews(done)) => self.team_views_done(done),
             Ok(Input::Listing(done)) => self.listing_done(done),
             Ok(Input::NativeRows(done)) => self.native_done(done),
             Ok(Input::Rows(done)) => self.rows_done(done),
@@ -790,6 +835,7 @@ impl<'a> Watch<'a> {
         self.flush_tasks();
         self.flush_organization();
         self.flush_team();
+        self.flush_team_views();
         self.flush_drive_folders();
         phases.mark("flush");
         phases.finish("watch-loop", "");
@@ -895,7 +941,7 @@ impl<'a> Watch<'a> {
             stream: uuid::Uuid::new_v4().to_string(),
             heartbeat_ms: protocol::HEARTBEAT_MS,
             max_frame_bytes: protocol::MAX_FRAME_BYTES,
-            topics: [topic::CATALOG, topic::CATALOG_META, topic::ACTIVITY, topic::GIT, topic::PROCESSES, topic::TASKS, topic::ORGANIZATION, topic::TEAM, topic::DRIVE_FOLDERS]
+            topics: [topic::CATALOG, topic::CATALOG_META, topic::ACTIVITY, topic::GIT, topic::PROCESSES, topic::TASKS, topic::ORGANIZATION, topic::TEAM, topic::TEAM_VIEWS, topic::DRIVE_FOLDERS]
                 .map(str::to_owned)
                 .to_vec(),
             limits: protocol::Limits::default(),
@@ -1720,6 +1766,9 @@ impl<'a> Watch<'a> {
         if let Some(job) = self.team.pulse(now, stamps::files) {
             self.run_team(job);
         }
+        if let Some((job, team)) = self.team_views.pulse(now, stamps::files) {
+            self.run_team_views(job, team);
+        }
         if let Some(job) = self.drive_folders.pulse(now, stamps::files) {
             self.run_drive_folders(job);
         }
@@ -2409,42 +2458,36 @@ impl<'a> Watch<'a> {
         }
         let Some(plan) = self.team.plan(PAGE_LIMIT) else { return };
         let cursor = self.team.next_rev();
-        let item = |(key, row): (String, Value)| json!({"key": key, "row": row});
-        match plan {
-            team::Plan::Snapshot { gap, pages } => {
-                if gap && !self.out.put(&Body::Gap(protocol::Gap { topic: topic::TEAM.into(), key: None, reason: reason::OVERFLOW.into() })) {
-                    return;
-                }
-                let count = pages.len();
-                let delivered = pages.into_iter().enumerate().all(|(page, rows)| {
-                    self.out.put(&Body::Snapshot(protocol::Snapshot {
-                        topic: topic::TEAM.into(),
-                        key: None,
-                        items: Some(rows.into_iter().map(item).collect()),
-                        value: None,
-                        page: page as u32,
-                        last: page + 1 == count,
-                        cursor,
-                    }))
-                });
-                if delivered {
-                    self.team.sent();
-                } else {
-                    self.team.missed();
-                }
-            }
-            team::Plan::Delta { upsert, remove } => {
-                let body = Body::Delta(protocol::Delta {
-                    topic: topic::TEAM.into(),
-                    upsert: upsert.into_iter().map(|(key, row)| protocol::CatalogItem { key, row }).collect(),
-                    remove: remove.into_iter().map(|key| protocol::Removal { key, reason: None }).collect(),
-                    cursor,
-                });
-                if self.out.offer(&body, None) {
-                    self.team.sent();
-                } else {
-                    self.team.missed();
-                }
+        match keyed_frames(&self.out, topic::TEAM, plan, cursor) {
+            Some(true) => self.team.sent(),
+            Some(false) => self.team.missed(),
+            None => {}
+        }
+    }
+
+    // ---- Team views (task #16 of team c536f0e5, P2.5) -----------------------
+
+    fn subscribe_team_views(&mut self, team: Option<String>) {
+        let store = crate::state::teams::store::path();
+        let files = crate::state::teams::store::files(&store);
+        let stamp = stamps::files(&files);
+        let (job, team) = self.team_views.subscribe(team, files, stamp, Instant::now());
+        self.run_team_views(job, team);
+    }
+
+    /// Hands a read to the team views' worker, started with the first one.
+    fn run_team_views(&mut self, job: team::Job, team: Option<String>) {
+        let pool = self.team_views_pool.get_or_insert_with(|| {
+            let results = self.git_results.clone();
+            team_views::Pool::spawn(move |done| {
+                let _ = results.send(Input::TeamViews(done));
+            })
+        });
+        match pool.run(job, team) {
+            Ok(()) => {}
+            Err(mpsc::TrySendError::Full((job, _))) => self.team_views.defer(job, Instant::now()),
+            Err(mpsc::TrySendError::Disconnected((job, _))) => {
+                self.team_views_done(team_views::Done { token: job.token, value: Some(Err("Team views worker is unavailable".into())) });
             }
         }
     }
@@ -2453,6 +2496,27 @@ impl<'a> Watch<'a> {
         let files = crate::swarm::drive_folders::watch_files(self.config);
         let stamp = stamps::files(&files);
         let job = self.drive_folders.subscribe(files, stamp, Instant::now());
+    fn team_views_done(&mut self, done: team_views::Done) {
+        if let Some(error) = self.team_views.done(done) {
+            self.out.failure("team_views_failed", &error, Some(topic::TEAM_VIEWS), None);
+        }
+    }
+
+    /// Sends the changed views as the team heads are sent: a paged snapshot,
+    /// then offered deltas; at most one read, so one frame per key, a second.
+    fn flush_team_views(&mut self) {
+        if self.out.writer.backlog() > DEFER_BYTES {
+            return;
+        }
+        let Some(plan) = self.team_views.plan(PAGE_LIMIT) else { return };
+        let cursor = self.team_views.next_rev();
+        match keyed_frames(&self.out, topic::TEAM_VIEWS, plan, cursor) {
+            Some(true) => self.team_views.sent(),
+            Some(false) => self.team_views.missed(),
+            None => {}
+        }
+    }
+
         self.run_drive_folders(job);
     }
 
@@ -2549,6 +2613,8 @@ impl<'a> Watch<'a> {
                     self.drive_folders.unsubscribe();
                 } else if let Some(session) = subscription.session.as_ref().filter(|_| subscription.topic == topic::PROCESSES) {
                     self.processes.unsubscribe(&session.key());
+                } else if subscription.topic == topic::TEAM_VIEWS {
+                    self.team_views.unsubscribe();
                 } else if let Some(session) = subscription.session.filter(|_| subscription.topic == topic::ACTIVITY) {
                     let key = session.key();
                     self.subs.retain(|sub| sub.key != key);
@@ -2569,6 +2635,7 @@ impl<'a> Watch<'a> {
             topic::ACTIVITY => {}
             other => {
                 self.out.error(
+            topic::TEAM_VIEWS => return self.subscribe_team_views(request.team),
                     "unsupported_topic",
                     &format!("watch-v1 does not stream {other}; keep reading it with its command"),
                     Some(other),
@@ -2866,6 +2933,7 @@ mod tests {
                 Input::NativeRows(_) => "<native rows>".into(),
                 Input::Rows(_) => "<rows>".into(),
                 Input::Probe(_) => "<probe>".into(),
+                Input::TeamViews(_) => "<team views>".into(),
                 Input::DriveFolders(_) => "<drive_folders>".into(),
                 Input::Inspected(done) => format!("<inspected {}>", done.key),
                 Input::Changed(_) => "<changed>".into(),

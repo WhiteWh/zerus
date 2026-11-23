@@ -525,6 +525,8 @@ enum Input {
     },
     SubscribeOrganization,
     UnsubscribeOrganization,
+    /// Task #16 (P2.5): the team views' follow changed.
+    TeamViews,
     /// A `swarm get` of the organization poll.
     OrganizationPolled(Result<Value, crate::ReadError>),
     /// A read of the polling of a computer without the stream.
@@ -619,6 +621,9 @@ struct ProcessFollow {
 type ProcessFollows = Arc<Mutex<BTreeMap<String, ProcessFollow>>>;
 /// Projects whose task lists are followed.
 type TaskFollows = Arc<Mutex<BTreeSet<String>>>;
+/// Task #16 of team c536f0e5 (P2.5): the team views followed, and the team
+/// whose status, inbox and feed they add; None while no Teams view is open.
+type TeamViewsFollow = Arc<Mutex<Option<Option<String>>>>;
 
 fn lock<T>(follows: &Mutex<T>) -> MutexGuard<'_, T> {
     follows
@@ -650,6 +655,7 @@ pub struct StreamHandle {
     computer: ComputerId,
     tx: SyncSender<Input>,
     follows: Follows,
+    team_views: TeamViewsFollow,
     processes: ProcessFollows,
     /// The processes follows the latest stream accepts.
     processes_limit: Arc<AtomicUsize>,
@@ -915,6 +921,25 @@ impl StreamHandle {
         true
     }
 
+    /// Task #16 of team c536f0e5 (P2.5): follows the team views (`Some`),
+    /// with the team whose status, inbox and feed they add, or stops (`None`).
+    /// A stream that offers `team.views` then sends them as rows
+    /// ([`crate::Change::TeamViews`]); one without it changes nothing, and
+    /// the Teams poller reads them. Kept across reconnects.
+    pub fn follow_team_views(&self, follow: Option<Option<String>>) -> bool {
+        if self.stopped() {
+            return false;
+        }
+        {
+            let mut current = lock(&self.team_views);
+            if *current == follow {
+                return true;
+            }
+            *current = follow;
+        }
+        self.tx.send(Input::TeamViews).is_ok()
+    }
+
     /// The projects whose task lists are followed.
     pub fn followed_tasks(&self) -> Vec<String> {
         lock(&self.tasks).iter().cloned().collect()
@@ -1090,6 +1115,7 @@ fn spawn_with(
     let processes = ProcessFollows::default();
     let processes_limit = Arc::new(AtomicUsize::new(PROCESSES_SUBSCRIPTIONS));
     let tasks = TaskFollows::default();
+    let team_views = TeamViewsFollow::default();
     let tasks_limit = Arc::new(AtomicUsize::new(TASKS_SUBSCRIPTIONS));
     let activity_older = Arc::new(AtomicUsize::new(0));
     let organization = Arc::new(AtomicBool::new(false));
@@ -1120,6 +1146,7 @@ fn spawn_with(
         processes: processes.clone(),
         processes_limit: processes_limit.clone(),
         tasks: tasks.clone(),
+        team_views: team_views.clone(),
         tasks_limit: tasks_limit.clone(),
         activity_older: activity_older.clone(),
         organization_snapshot: organization_snapshot.clone(),
@@ -1158,6 +1185,7 @@ fn spawn_with(
         processes_limit,
         tasks,
         tasks_limit,
+        team_views,
         activity_older,
         organization,
         organization_snapshot,
@@ -1192,6 +1220,7 @@ struct Supervisor {
     processes_limit: Arc<AtomicUsize>,
     tasks: TaskFollows,
     tasks_limit: Arc<AtomicUsize>,
+    team_views: TeamViewsFollow,
     activity_older: Arc<AtomicUsize>,
     organization_snapshot: OrganizationShared,
     /// Polls `swarm get` while no stream offers the organization.
@@ -1466,6 +1495,7 @@ impl Supervisor {
                 Ok(Input::UnsubscribeTasks { key }) => self.state.tasks_mut().unfollow(&key),
                 Ok(Input::SubscribeOrganization) => self.subscribe_organization(),
                 Ok(Input::UnsubscribeOrganization) => self.unsubscribe_organization(),
+                Ok(Input::TeamViews) => self.subscribe_team_views(),
                 Ok(Input::OrganizationPolled(result)) => self.organization_polled(result),
                 Ok(Input::Notifications {
                     target,
@@ -1563,6 +1593,7 @@ impl Supervisor {
                 Ok(Input::UnsubscribeTasks { key }) => self.state.tasks_mut().unfollow(&key),
                 Ok(Input::SubscribeOrganization) => self.subscribe_organization(),
                 Ok(Input::UnsubscribeOrganization) => self.unsubscribe_organization(),
+                Ok(Input::TeamViews) => self.subscribe_team_views(),
                 Ok(Input::OrganizationPolled(result)) => self.organization_polled(result),
                 Ok(Input::Legacy { read, result }) => self.legacy_reply(read, result),
                 Ok(Input::Notifications {
@@ -1877,6 +1908,7 @@ impl Supervisor {
                 }
                 Ok(Input::SubscribeOrganization) => self.subscribe_organization(),
                 Ok(Input::UnsubscribeOrganization) => self.unsubscribe_organization(),
+                Ok(Input::TeamViews) => self.subscribe_team_views(),
                 Ok(Input::OrganizationPolled(result)) => self.organization_polled(result),
                 // A polling read that finished after the stream started.
                 Ok(Input::Legacy { .. }) => {}
@@ -2071,6 +2103,8 @@ impl Supervisor {
                         ..Subscription::default()
                     }));
                 }
+                // Task #16 (P2.5): the followed team views, as rows.
+                self.subscribe_team_views();
             }
             Body::Snapshot(snapshot)
                 if snapshot.topic == topic::CATALOG_META
@@ -2234,6 +2268,34 @@ impl Supervisor {
 
     /// Follows the organization from the running stream when it offers the
     /// topic, otherwise by polling.
+    /// Task #16 of team c536f0e5 (P2.5): subscribes the followed team views
+    /// (again, with another team) or unsubscribes them, on a greeted stream
+    /// that offers the topic.
+    fn subscribe_team_views(&mut self) {
+        if !self.greeted || !self.state.team_views_offered() {
+            return;
+        }
+        let follow = lock(&self.team_views).clone();
+        match follow {
+            Some(team) => self.write(&Control::Subscribe(Subscription {
+                topic: topic::TEAM_VIEWS.into(),
+                team,
+                ..Subscription::default()
+            })),
+            None => {
+                self.write(&Control::Unsubscribe(Subscription {
+                    topic: topic::TEAM_VIEWS.into(),
+                    ..Subscription::default()
+                }));
+                let mut changes = Vec::new();
+                self.state.lose_team_views(&self.computer, &mut changes);
+                for change in changes {
+                    self.emit(change);
+                }
+            }
+        }
+    }
+
     fn subscribe_organization(&mut self) {
         self.state.organization_mut().follow();
         if self.streams_organization() {

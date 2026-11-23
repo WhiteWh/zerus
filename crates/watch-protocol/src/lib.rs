@@ -75,6 +75,13 @@ pub mod topic {
     /// rows: a client reads a team again with `hgs team` when its revision
     /// changes, instead of polling. One per stream.
     pub const TEAM: &str = "team";
+    /// Task #16 of team c536f0e5 (P2.5): the Teams views as keyed rows, each
+    /// exactly what its `hgs team <read> --json` returns: `list`, `waiting`
+    /// and, for the team a subscription names (`team`), `status:<id>`,
+    /// `inbox:<id>` and `feed:<id>`. A row too large for a frame is an error
+    /// row (`{"error":{"code":"too_large",...}}`) read with its command. One
+    /// per stream; a later subscribe replaces the team.
+    pub const TEAM_VIEWS: &str = "team.views";
     /// The separately persisted, capable-only Windows drive-folder projection.
     pub const DRIVE_FOLDERS: &str = "organization.drive_folders";
 }
@@ -370,6 +377,10 @@ pub struct Subscription {
     /// whole list. Servers without it ignore this additive field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<u32>,
+    /// Team views (task #16, P2.5): the team whose status, inbox and feed
+    /// rows the subscription adds. Servers without the topic ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
 }
 
 /// The exact session a subscription follows.

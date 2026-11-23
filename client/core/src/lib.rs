@@ -398,6 +398,13 @@ pub enum Change {
         computer: ComputerId,
         heads: Option<std::sync::Arc<teams::Heads>>,
     },
+    /// Task #16 of team c536f0e5 (P2.5): rows of the stream's `team.views`
+    /// topic for the computer's Teams poller (never the webview); None when
+    /// the stream stopped giving them, so the poller reads them itself.
+    TeamViews {
+        computer: ComputerId,
+        views: Option<teams::ViewRows>,
+    },
 }
 
 impl Change {
@@ -426,7 +433,8 @@ impl Change {
             | Self::Organization { computer, .. }
             | Self::Git { computer, .. }
             | Self::Teams { computer, .. }
-            | Self::TeamHeads { computer, .. } => computer,
+            | Self::TeamHeads { computer, .. }
+            | Self::TeamViews { computer, .. } => computer,
         }
     }
 }

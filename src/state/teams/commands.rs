@@ -6447,6 +6447,14 @@ fn run(op: &str, input: &Value, wait: bool) -> anyhow::Result<Value> {
 /// locals are not part of `run`'s frame (debug builds keep every arm's locals
 /// in one frame, and `run`'s reached 683 KB of the 1 MB main stack).
 #[inline(never)]
+/// Task #16 of team c536f0e5 (P2.5): a Teams view read in this process,
+/// exactly as `hgs team <op> --json` returns it, for the watch stream's
+/// `team.views` topic. Only the reads the desktop follows.
+pub(crate) fn view(op: &str, input: &Value) -> anyhow::Result<Value> {
+    anyhow::ensure!(matches!(op, "list" | "waiting" | "status" | "inbox" | "events"), "{op} is not a Teams view");
+    run(op, input, false)
+}
+
 fn status_command(input: &Value) -> anyhow::Result<Value> {
     // Task #5 (team ede724c4): where a status's time goes; over SLOW_MS
     // it is one slow-calls line naming its phases.

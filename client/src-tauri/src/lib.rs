@@ -984,6 +984,11 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                 app.state::<commands::AppState>().pump().on_team_heads(std::sync::Arc::new(move |computer, heads| {
                     heads_app.state::<teams::Teams>().heads(computer, heads);
                 }));
+                // Task #16 of team c536f0e5 (P2.5): a stream's team views too.
+                let views_app = app.handle().clone();
+                app.state::<commands::AppState>().pump().on_team_views(std::sync::Arc::new(move |computer, views| {
+                    views_app.state::<teams::Teams>().views(computer, views);
+                }));
                 app.manage(termination_cleanup::TerminationCleanup::default());
                 app.manage(worktree_cleanup::WorktreeCleanup::default());
                 app.manage(recovery::start(app.handle()));
