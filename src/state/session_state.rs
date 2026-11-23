@@ -289,6 +289,43 @@ pub(crate) fn compute(session: &Value, team: Option<(bool, Option<&Value>)>, at:
     }
 }
 
+/// Task #13 (P2.2): the earliest moment after `at` at which a decorated row
+/// (`session_state`, `state_reason`, `last_active`, `cache_ttl`) reads
+/// otherwise by time alone: Cooling turns Cold when the cache TTL runs out, a
+/// tool call becomes a long operation at 30 s, and a "so far" text moves to
+/// its next minute. None when only an input can change it. `hgs watch`
+/// derives the row again then instead of listing every row on a timer.
+pub(crate) fn valid_until(session: &Value, at: f64) -> Option<f64> {
+    let mut next: Option<f64> = None;
+    let mut consider = |moment: f64| {
+        if moment > at {
+            next = Some(next.map_or(moment, |earlier: f64| earlier.min(moment)));
+        }
+    };
+    match text(session, "session_state") {
+        "working" => {
+            let started = session["tool_started"].as_f64().unwrap_or(0.0);
+            if !text(session, "current_tool").is_empty() && started > 0.0 {
+                consider(started + LONG_OPERATION_SECONDS);
+            }
+        }
+        "cooling" => {
+            let ttl = session["cache_ttl"]["seconds"].as_f64().unwrap_or(DEFAULT_TTL as f64);
+            consider(session["last_active"].as_f64().unwrap_or(0.0) + ttl);
+        }
+        _ => {}
+    }
+    let reason = &session["state_reason"];
+    if matches!(text(reason, "kind"), "long_operation" | "build" | "job") {
+        if let Some(since) = reason["since"].as_f64().filter(|since| *since > 0.0) {
+            // `minutes` shows whole minutes: the text moves at the next one.
+            let whole = ((at - since).max(0.0) / 60.0).floor();
+            consider(since + (whole + 1.0) * 60.0);
+        }
+    }
+    next
+}
+
 /// Task 115: a team member's session state from this contract, for
 /// `hgs team status` and its member card. A native question or permission the
 /// member waits on is Waiting for you even while the last tick still saw it
@@ -466,6 +503,51 @@ pub(super) fn observe_ttl(account: &str, usage: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task #13 (P2.2): until `valid_until` a row's state and reason text do
+    /// not change by time alone, and at it they do; a row without a time
+    /// transition has none.
+    #[test]
+    fn valid_until_is_the_next_time_driven_change() {
+        let at = 1_000_000.0;
+        let decorated = |mut session: Value| {
+            let (state, reason) = compute(&session, None, at);
+            session["session_state"] = json!(state);
+            session["state_reason"] = reason.unwrap_or(Value::Null);
+            session
+        };
+        let seen = |session: &Value, moment: f64| {
+            let (state, reason) = compute(session, None, moment);
+            (state, reason.map(|reason| reason["text"].clone()))
+        };
+        let ttl = json!({"seconds":300});
+        let cases = [
+            json!({"state":"running","activity":"busy","phase":"tool","current_tool":"Bash","tool_started":at - 12.5,"last_active":at,"cache_ttl":ttl}),
+            json!({"state":"running","activity":"busy","phase":"tool","current_tool":"Bash","tool_detail":"cargo build","tool_started":at - 95.0,"last_active":at,"cache_ttl":ttl}),
+            json!({"state":"running","activity":"idle","phase":"idle","build":{"label":"tests","since":at - 30.0},"last_active":at - 10.0,"cache_ttl":ttl}),
+            json!({"state":"running","activity":"idle","phase":"idle","process_work":{"count":1,"command":"npm run dev","started_at":at - 200.0},"last_active":at - 10.0,"cache_ttl":ttl}),
+            json!({"state":"running","activity":"idle","phase":"idle","last_active":at - 290.0,"cache_ttl":ttl}),
+        ];
+        for case in cases {
+            let row = decorated(case.clone());
+            let until = valid_until(&row, at).unwrap_or_else(|| panic!("no deadline for {row}"));
+            let before = seen(&case, at);
+            let mut moment = at;
+            while moment < until {
+                assert_eq!(seen(&case, moment), before, "{case} at +{}", moment - at);
+                moment += 0.25;
+            }
+            assert_ne!(seen(&case, until), before, "{case} changes at +{}", until - at);
+        }
+        for quiet in [
+            json!({"state":"stopped","last_active":at,"cache_ttl":ttl}),
+            json!({"state":"running","activity":"idle","phase":"idle","last_active":at - 400.0,"cache_ttl":ttl}),
+            json!({"state":"running","activity":"idle","phase":"approval","last_active":at,"cache_ttl":ttl}),
+            json!({"state":"running","activity":"busy","phase":"thinking","last_active":at,"cache_ttl":ttl}),
+        ] {
+            assert_eq!(valid_until(&decorated(quiet.clone()), at), None, "{quiet}");
+        }
+    }
 
     const CONTRACT: &str = include_str!("../../mobile/android/app/src/test/resources/session-state-contract.json");
 

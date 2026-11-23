@@ -67,10 +67,60 @@ const REPLACEMENT_CHECK: Duration = PROBE;
 const END_DRAIN: Duration = Duration::from_secs(2);
 /// The whole listing runs at least this often, for what neither a file nor
 /// the probe shows: terminal choosers and status lines of sessions that have
-/// reported hooks, and native transcripts between hook events. 15 s would
-/// cut the watcher's CPU on a busy computer but show such a chooser up to 15 s
-/// late; the owner chose 5 s (2026-10-27, zerus-604d).
-const FULL: Duration = Duration::from_secs(5);
+/// reported hooks, and native transcripts between hook events. The owner
+/// chose 5 s (2026-10-27, zerus-604d) and, for task #13 (P2.2, 2026-11-23),
+/// to try 60 s with rows derived on change and at their time deadlines:
+/// `HGS_WATCH_FULL_SECONDS` sets it, 5 restores the old behaviour.
+const FULL_DEFAULT: Duration = Duration::from_secs(60);
+/// Drift lines a sweep writes at most.
+const DRIFT_LINES: usize = 20;
+
+/// `HGS_WATCH_FULL_SECONDS`: whole seconds from 1; anything else is the default.
+fn full_interval(value: Option<&str>) -> Duration {
+    value
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|seconds| *seconds >= 1)
+        .map_or(FULL_DEFAULT, Duration::from_secs)
+}
+
+/// Task #13: how the whole listing is read; tests use a fake.
+type ListFn = fn(&Config) -> std::result::Result<Value, String>;
+/// Task #13: the terminal's structure when a listing starts; tests use a fake.
+type StructureFn = fn() -> Option<u64>;
+/// Task #13: where a drift line goes; tests count instead of logging.
+type DriftFn = fn(&Value);
+
+fn list_local(config: &Config) -> std::result::Result<Value, String> {
+    crate::cli::local_listing(config).map_err(|error| error.message)
+}
+
+fn structure_now() -> Option<u64> {
+    source::structure_now().ok()
+}
+
+fn log_drift(line: &Value) {
+    let _ = crate::state::slow_calls::append(&crate::state::slow_calls::log_path(), &line.to_string());
+}
+
+/// Task #13 (P2.2): rows a sweep listed otherwise than the loop kept them,
+/// with the top-level fields that differ (volatile fields aside). Rows in
+/// `skip` were changing while the listing ran, and only keys both hold count:
+/// an added or removed row is a structure change, which lists anyway.
+fn drift(kept: &[(String, Value)], listed: &[(String, Value)], skip: &BTreeSet<String>) -> Vec<(String, Vec<String>)> {
+    let kept: BTreeMap<&str, &Value> = kept.iter().map(|(key, row)| (key.as_str(), row)).collect();
+    let mut found = Vec::new();
+    for (key, row) in listed {
+        let Some(old) = kept.get(key.as_str()) else { continue };
+        if row["name"].as_str().is_some_and(|name| skip.contains(name)) || catalog::row_digest(old) == catalog::row_digest(row) {
+            continue;
+        }
+        let (old, new) = (catalog::masked(old, &catalog::VOLATILE_ROW), catalog::masked(row, &catalog::VOLATILE_ROW));
+        let names: BTreeSet<&String> = old.as_object().into_iter().chain(new.as_object()).flat_map(|fields| fields.keys()).collect();
+        let fields = names.into_iter().filter(|field| old.get(field.as_str()) != new.get(field.as_str())).cloned().collect();
+        found.push((key.clone(), fields));
+    }
+    found
+}
 /// `catalog.meta` with only fresh metrics or presence goes out this rarely.
 const META_INTERVAL: Duration = Duration::from_secs(10);
 /// A changed session's summary is re-inspected at most this often.
@@ -490,6 +540,24 @@ struct Watch<'a> {
     /// A bus fault is logged once per stream.
     bus_reported: bool,
     derive: DeriveFn,
+    /// Task #13 (P2.2): the whole listing's interval (`HGS_WATCH_FULL_SECONDS`).
+    full: Duration,
+    /// A change asked for the next listing; without one it is a sweep, whose
+    /// rows are compared with the kept ones (the drift check).
+    asked: bool,
+    /// The running listing is a sweep, and the names that were changing when
+    /// it started (pending or in flight), which the drift check skips.
+    sweeping: bool,
+    drift_skip: BTreeSet<String>,
+    /// Names a row derivation in flight is deriving.
+    deriving: BTreeSet<String>,
+    /// Each row's next time-driven change (`session_state::valid_until`), by
+    /// key, in wall-clock seconds, and when the earliest is due.
+    deadlines: BTreeMap<String, f64>,
+    time_due: Option<Instant>,
+    lister: ListFn,
+    structure_of: StructureFn,
+    drift_log: DriftFn,
 }
 
 impl<'a> Watch<'a> {
@@ -565,12 +633,22 @@ impl<'a> Watch<'a> {
             hinted: false,
             bus_reported: false,
             derive: source::rows,
+            full: full_interval(std::env::var("HGS_WATCH_FULL_SECONDS").ok().as_deref()),
+            asked: false,
+            sweeping: false,
+            drift_skip: BTreeSet::new(),
+            deriving: BTreeSet::new(),
+            deadlines: BTreeMap::new(),
+            time_due: None,
+            lister: list_local,
+            structure_of: structure_now,
+            drift_log: log_drift,
         }
     }
 
     /// When the loop must wake without input.
     fn deadline(&self) -> Instant {
-        [self.listing_due, self.refresh_due, self.native_due, Some(self.replacement_due)]
+        [self.listing_due, self.refresh_due, self.native_due, self.time_due, Some(self.replacement_due)]
             .into_iter()
             .flatten()
             .fold(self.pulse_due, Instant::min)
@@ -628,6 +706,10 @@ impl<'a> Watch<'a> {
                 self.scan_due = now + self.scan_interval(now);
             }
             self.pulse(now, scan, &mut phases);
+        }
+        if self.time_due.is_some_and(|due| now >= due) {
+            self.timed(now);
+            phases.mark("timed");
         }
         if self.listing_due.is_some_and(|due| now >= due) {
             self.list(now);
@@ -771,7 +853,19 @@ impl<'a> Watch<'a> {
 
     // ---- Catalog -----------------------------------------------------------
 
+    /// A change asks for a whole listing.
     fn schedule(&mut self, at: Instant) {
+        self.asked = true;
+        self.schedule_listing(at);
+    }
+
+    /// Task #13: the periodic sweep; unless a change asks for the same
+    /// listing, its rows are compared with the kept ones.
+    fn schedule_sweep(&mut self, at: Instant) {
+        self.schedule_listing(at);
+    }
+
+    fn schedule_listing(&mut self, at: Instant) {
         let gap = LISTING_GAP.max(self.listing_cost * 4);
         let due = self.listed_at.map_or(at, |started| at.max(started + gap));
         self.listing_due = Some(self.listing_due.map_or(due, |current| current.min(due)));
@@ -801,15 +895,18 @@ impl<'a> Watch<'a> {
         self.listed_at = Some(now);
         // The listing covers every row refresh and probe asked for so far.
         self.probed_at = Some(now);
-        self.stale.clear();
+        self.sweeping = !std::mem::take(&mut self.asked);
+        self.drift_skip = std::mem::take(&mut self.stale);
+        self.drift_skip.extend(self.deriving.iter().cloned());
         self.refresh_due = None;
         self.native_due = None;
         // The structure is taken first: a change during the listing lists again.
-        self.structure = source::structure_now().ok();
+        self.structure = (self.structure_of)();
         let config = self.config.clone();
         let results = self.git_results.clone();
+        let lister = self.lister;
         let spawned = std::thread::Builder::new().name("hgs-watch-listing".into()).spawn(move || {
-            let result = crate::cli::local_listing(&config).map_err(|error| error.message);
+            let result = lister(&config);
             let _ = results.send(Input::Listing(ListingDone { started: now, result }));
         });
         if let Err(error) = spawned {
@@ -827,6 +924,9 @@ impl<'a> Watch<'a> {
                 // than the listing's and stays, so an answered approval or a
                 // finished turn does not come back. It is derived once more.
                 let again = std::mem::take(&mut self.relisted);
+                if std::mem::take(&mut self.sweeping) && self.listed {
+                    self.check_drift(&rows, &again);
+                }
                 if !again.is_empty() {
                     let newer: BTreeMap<&str, &Value> = self
                         .rows
@@ -847,8 +947,12 @@ impl<'a> Watch<'a> {
                 self.meta = meta;
                 self.listed = true;
                 self.pending = true;
+                self.deadlines.clear();
+                let keys: Vec<String> = self.rows.iter().map(|(key, _)| key.clone()).collect();
+                self.note_deadlines(keys);
             }
             Err(error) => {
+                self.sweeping = false;
                 self.relisted.clear();
                 self.out.failure("listing_failed", &error, Some(topic::CATALOG), None);
             }
@@ -880,6 +984,7 @@ impl<'a> Watch<'a> {
             self.relisted.extend(wanted.iter().cloned());
         }
         self.rows_running = true;
+        self.deriving = wanted.clone();
         let results = self.git_results.clone();
         let names = wanted.clone();
         let derive = self.derive;
@@ -898,6 +1003,7 @@ impl<'a> Watch<'a> {
     /// change its key or its place.
     fn rows_done(&mut self, done: RowsDone) {
         self.rows_running = false;
+        self.deriving.clear();
         self.refresh_cost = done.started.elapsed();
         let now = Instant::now();
         match done.result {
@@ -941,7 +1047,78 @@ impl<'a> Watch<'a> {
         }
         catalog::redecorate(&mut self.rows, &mut self.digests, &updated);
         self.pending = true;
+        let keys: Vec<String> = updated.iter().map(|index| self.rows[*index].0.clone()).collect();
+        self.note_deadlines(keys);
         true
+    }
+
+    // ---- Time-driven rows and the drift check (task #13, P2.2) -------------
+
+    /// Notes the next time-driven change of the rows under `keys`, derived
+    /// just now, and when the earliest of all rows is due.
+    fn note_deadlines(&mut self, keys: Vec<String>) {
+        let wall = crate::state::now();
+        for key in keys {
+            let until = self.rows.iter().find(|(listed, _)| *listed == key).and_then(|(_, row)| crate::state::session_state::valid_until(row, wall));
+            match until {
+                Some(until) => self.deadlines.insert(key, until),
+                None => self.deadlines.remove(&key),
+            };
+        }
+        self.deadlines.retain(|key, _| self.rows.iter().any(|(listed, _)| listed == key));
+        self.time_due = self.deadlines.values().copied().reduce(f64::min).map(|until| {
+            // A little after the moment, so the derivation reads past it.
+            Instant::now() + Duration::from_secs_f64((until - wall).max(0.0)) + Duration::from_millis(20)
+        });
+    }
+
+    /// Rows whose time-driven change came are derived again: tracked rows
+    /// alone, DeepSeek and OpenCode rows from their hosts, any other row by
+    /// a whole listing.
+    fn timed(&mut self, now: Instant) {
+        self.time_due = None;
+        let wall = crate::state::now();
+        let due: Vec<String> = self.deadlines.iter().filter(|(_, until)| **until <= wall).map(|(key, _)| key.clone()).collect();
+        let (mut names, mut native, mut whole) = (BTreeSet::new(), false, false);
+        for key in &due {
+            self.deadlines.remove(key);
+            let Some((_, row)) = self.rows.iter().find(|(listed, _)| listed == key) else { continue };
+            let name = row["name"].as_str().unwrap_or("");
+            if source::native(name) {
+                native = true;
+            } else if row["tracked"] == true && !name.is_empty() {
+                names.insert(name.to_owned());
+            } else {
+                whole = true;
+            }
+        }
+        if whole {
+            self.schedule(now);
+        }
+        if native {
+            self.schedule_native(now);
+        }
+        if !names.is_empty() {
+            self.stale.extend(names);
+            self.schedule_refresh(now);
+        }
+        // The rest, once their rows come back or their moment comes.
+        let wall = crate::state::now();
+        self.time_due = self.deadlines.values().copied().reduce(f64::min).map(|until| {
+            Instant::now() + Duration::from_secs_f64((until - wall).max(0.0)) + Duration::from_millis(20)
+        });
+    }
+
+    /// Logs the rows a sweep found otherwise than they were kept: one
+    /// `watch-drift` line per row (at most [`DRIFT_LINES`]) naming the fields.
+    /// The listing wins either way.
+    fn check_drift(&mut self, listed: &[(String, Value)], again: &BTreeSet<String>) {
+        let mut skip = std::mem::take(&mut self.drift_skip);
+        skip.extend(again.iter().cloned());
+        skip.extend(self.rows.iter().filter_map(|(_, row)| row["name"].as_str()).filter(|name| source::native(name)).map(str::to_owned));
+        for (key, fields) in drift(&self.rows, listed, &skip).into_iter().take(DRIFT_LINES) {
+            (self.drift_log)(&json!({"at":crate::state::now(),"command":"watch-drift","subject":key,"pid":std::process::id(),"fields":fields}));
+        }
     }
 
     /// Reads the DeepSeek and OpenCode rows again on their own thread; the
@@ -1363,8 +1540,8 @@ impl<'a> Watch<'a> {
             self.probe(now);
             phases.mark("probe");
         }
-        if self.listed_at.is_none_or(|at| now >= at + FULL) {
-            self.schedule(now);
+        if self.listed_at.is_none_or(|at| now >= at + self.full) {
+            self.schedule_sweep(now);
         }
         self.activity(now);
         phases.mark("activity");
@@ -2727,6 +2904,170 @@ mod tests {
         watch.changed(changes::Note::Hint(changes::Hint { paths: BTreeSet::new(), overflow: true }), now);
         assert_eq!(watch.scan_interval(now + Duration::from_secs(1)), PULSE);
         assert_eq!(watch.scan_interval(now + OVERFLOW_HOLD), SAFETY_SCAN);
+    }
+
+    /// Task #13: `HGS_WATCH_FULL_SECONDS` takes whole seconds from 1; 5 is
+    /// the old behaviour; anything else is the 60 s default.
+    #[test]
+    fn the_sweep_interval_is_switchable() {
+        assert_eq!(full_interval(None), Duration::from_secs(60));
+        assert_eq!(full_interval(Some("5")), Duration::from_secs(5));
+        assert_eq!(full_interval(Some(" 300 ")), Duration::from_secs(300));
+        for wrong in ["0", "-5", "1.5", "", "soon"] {
+            assert_eq!(full_interval(Some(wrong)), FULL_DEFAULT, "{wrong:?}");
+        }
+    }
+
+    /// Task #13: the drift check names the rows a sweep listed otherwise, and
+    /// their fields, but not volatile fields, rows that were changing, or
+    /// rows only one side holds.
+    #[test]
+    fn drift_names_changed_rows_and_their_fields() {
+        let row = |name: &str, run: &str, state: &str, sampled: f64| {
+            json!({"name":name,"run_id":run,"session_state":state,"process_work":{"count":0,"sampled_at":sampled}})
+        };
+        let keyed = |rows: Vec<Value>| catalog::split(json!({"sessions":rows})).0;
+        let kept = keyed(vec![row("c/p/a", "1", "cooling", 1.0), row("c/p/b", "2", "working", 1.0), row("c/p/c", "3", "cold", 1.0), row("c/p/d", "4", "cold", 1.0)]);
+        let listed = keyed(vec![row("c/p/a", "1", "cooling", 9.0), row("c/p/b", "2", "user", 9.0), row("c/p/c", "3", "cooling", 9.0), row("c/p/e", "5", "cold", 9.0)]);
+        let skip = BTreeSet::from(["c/p/c".to_owned()]);
+        assert_eq!(drift(&kept, &listed, &skip), vec![(catalog::key(&listed[1].1), vec!["session_state".to_owned()])]);
+        assert!(drift(&kept, &kept, &BTreeSet::new()).is_empty());
+    }
+
+    /// Task #13: the model state of the property test, read by the fake
+    /// listing and derivation (function pointers cannot hold it).
+    static MODEL: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+    static LISTINGS: AtomicUsize = AtomicUsize::new(0);
+    static DERIVED: AtomicUsize = AtomicUsize::new(0);
+    static DRIFTS: AtomicUsize = AtomicUsize::new(0);
+
+    /// The rows of the model's bindings as a listing makes them now: Cooling
+    /// until `ttl` after `last_active`, Cold after.
+    fn model_rows(wanted: Option<&BTreeSet<String>>) -> Vec<Value> {
+        let root = MODEL.lock().unwrap().clone().expect("the model's folder");
+        let wall = crate::state::now();
+        let mut rows = Vec::new();
+        for entry in std::fs::read_dir(&root).unwrap().flatten() {
+            let file = entry.file_name().to_string_lossy().into_owned();
+            if file.starts_with(".hgs-") || !file.ends_with(".json") {
+                continue;
+            }
+            let Ok(record) = serde_json::from_slice::<Value>(&std::fs::read(entry.path()).unwrap_or_default()) else { continue };
+            let name = record["name"].as_str().unwrap_or("").to_owned();
+            if wanted.is_some_and(|wanted| !wanted.contains(&name)) {
+                continue;
+            }
+            let (ttl, last) = (record["ttl"].as_f64().unwrap(), record["last_active"].as_f64().unwrap());
+            let state = if wall - last < ttl { "cooling" } else { "cold" };
+            rows.push(json!({"name":name,"run_id":record["run"],"tracked":true,"status":record["status"],
+                "session_state":state,"last_active":last,"cache_ttl":{"seconds":ttl}}));
+        }
+        rows.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        rows
+    }
+
+    fn model_listing(_: &Config) -> std::result::Result<Value, String> {
+        LISTINGS.fetch_add(1, Ordering::SeqCst);
+        Ok(json!({"sessions": model_rows(None)}))
+    }
+
+    fn model_derive(wanted: &BTreeSet<String>) -> std::result::Result<Option<(Vec<Value>, u64)>, String> {
+        DERIVED.fetch_add(1, Ordering::SeqCst);
+        Ok(Some((model_rows(Some(wanted)), 7)))
+    }
+
+    fn model_structure() -> Option<u64> {
+        Some(7)
+    }
+
+    fn count_drift(_: &Value) {
+        DRIFTS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Runs the loop as `run` does for `span`.
+    fn drive(watch: &mut Watch, received: &mpsc::Receiver<Input>, span: Duration) {
+        let until = Instant::now() + span;
+        while Instant::now() < until {
+            let wait = watch.deadline().min(until).saturating_duration_since(Instant::now()).min(Duration::from_millis(20));
+            assert!(watch.turn(received.recv_timeout(wait)));
+        }
+    }
+
+    /// Task #13 (P2.2), the property: whatever sequence of binding changes,
+    /// new sessions and time passing, the rows the loop keeps by deriving
+    /// only what changed (and what its time moved) equal a whole listing
+    /// made from scratch, and a sweep then finds no drift.
+    #[test]
+    fn rows_kept_incrementally_equal_a_listing_from_scratch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_owned();
+        *MODEL.lock().unwrap() = Some(root.clone());
+        let write = |index: usize, status: &str, last: f64, ttl: f64| {
+            let path = root.join(format!("{index:064x}.json"));
+            let temp = root.join(format!(".hgs-{index}"));
+            let record = json!({"name":format!("claude/p/s{index}"),"run":format!("r{index}"),"status":status,"last_active":last,"ttl":ttl});
+            std::fs::write(&temp, record.to_string()).unwrap();
+            std::fs::rename(&temp, &path).unwrap();
+        };
+        let wall = crate::state::now();
+        for index in 0..6 {
+            // Half are Cooling and turn Cold during the test.
+            if index % 2 == 0 { write(index, "idle", wall - 1000.0, 300.0) } else { write(index, "idle", wall, 1.2) }
+        }
+        let config = test_config(&root);
+        let writer = Writer::spawn(Sink::default(), protocol::QUEUE_BYTES, Duration::from_secs(3600), || {});
+        let (results, received) = mpsc::channel();
+        let mut watch = Watch::with_root(&config, writer, results, root.clone());
+        watch.lister = model_listing;
+        watch.derive = model_derive;
+        watch.structure_of = model_structure;
+        watch.drift_log = count_drift;
+        watch.full = Duration::from_secs(3600);
+        watch.list(Instant::now());
+        drive(&mut watch, &received, Duration::from_millis(600));
+        assert!(watch.listed);
+        let first = LISTINGS.load(Ordering::SeqCst);
+
+        // A fixed pseudo-random sequence: changed bindings, sessions turning
+        // Cooling again, and two new sessions.
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut sessions = 6;
+        for step in 0..14 {
+            let pick = (next() % sessions as u64) as usize;
+            match (next() % 4, step) {
+                (_, 5 | 10) => {
+                    write(sessions, "new", crate::state::now(), 300.0);
+                    sessions += 1;
+                }
+                (0 | 1, _) => write(pick, &format!("step-{step}"), wall - 1000.0, 300.0),
+                _ => write(pick, "again", crate::state::now(), 0.9),
+            }
+            drive(&mut watch, &received, Duration::from_millis(350));
+        }
+        // Every Cooling row turns Cold within its TTL; let the loop follow.
+        drive(&mut watch, &received, Duration::from_millis(2500));
+
+        let scratch = catalog::split(json!({"sessions": model_rows(None)})).0;
+        let masked = |rows: &[(String, Value)]| -> Vec<(String, Value)> {
+            rows.iter().map(|(key, row)| (key.clone(), catalog::masked(row, &catalog::VOLATILE_ROW))).collect()
+        };
+        assert_eq!(masked(&watch.rows), masked(&scratch), "incremental rows differ from a listing from scratch");
+        assert!(DERIVED.load(Ordering::SeqCst) > 0, "changed rows were derived alone");
+        assert!(LISTINGS.load(Ordering::SeqCst) - first < 14, "not every change listed every row");
+
+        // A sweep finds nothing to report.
+        DRIFTS.store(0, Ordering::SeqCst);
+        watch.schedule_sweep(Instant::now());
+        drive(&mut watch, &received, Duration::from_millis(600));
+        assert_eq!(DRIFTS.load(Ordering::SeqCst), 0, "a sweep found drift");
+        assert_eq!(masked(&watch.rows), masked(&catalog::split(json!({"sessions": model_rows(None)})).0));
+        *MODEL.lock().unwrap() = None;
     }
 
     fn working_rows(wanted: &BTreeSet<String>) -> std::result::Result<Option<(Vec<Value>, u64)>, String> {

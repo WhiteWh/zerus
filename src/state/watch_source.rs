@@ -252,11 +252,13 @@ pub(crate) fn structure_now() -> Result<u64> {
     Ok(structure(&sessions, &ids, &snapshot, &names))
 }
 
-/// The rows `ls --json --local --no-archives` lists now for the live tracked
-/// sessions in `wanted`, with the terminal structure they saw. None when only
-/// a whole listing can tell: the panes no longer show exactly the listed
-/// sessions under their listed names (one started, ended or was renamed), or
-/// a wanted session does not run its saved binding in its pane.
+/// The rows `ls --json --local --no-archives` lists now for the tracked
+/// sessions in `wanted`, live or saved (task #13), with the terminal structure
+/// they saw. None when only a whole listing can tell: the panes no longer
+/// show exactly the listed sessions under their listed names (one started,
+/// ended or was renamed), a wanted session's terminal does not run its saved
+/// binding, or a saved session lists no row (no conversation yet, or its
+/// launch still starting).
 pub(crate) fn rows(wanted: &BTreeSet<String>) -> Result<Option<(Vec<Value>, u64)>> {
     local_sessions()?;
     if !root().exists() {
@@ -301,7 +303,15 @@ pub(crate) fn rows(wanted: &BTreeSet<String>) -> Result<Option<(Vec<Value>, u64)
         // Its row is its own terminal's (P3b), listed under its label.
         let terminal = terminal_name(&record);
         let Some(session) = sessions.iter().find(|session| string(session, "name") == terminal) else {
-            return Ok(None);
+            // Task #13 (P2.2): no terminal under its name, so the listing
+            // lists its saved row, as derived here. A session without a
+            // conversation, or whose launch is still starting, lists no row:
+            // only a whole listing can tell.
+            if string(&record, "conversation_id").is_empty() || terminal_live(&snapshot, &record).unwrap_or(false) {
+                return Ok(None);
+            }
+            rows.push(saved_row(&record, &shared));
+            continue;
         };
         if !matches(&record, panes_of(&snapshot, &record)) {
             return Ok(None);

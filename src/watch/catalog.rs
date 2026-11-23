@@ -7,7 +7,7 @@ use zerus_watch_protocol::{self as protocol, reason};
 
 /// Observation timestamps that change on every listing without any change in
 /// the session. Change detection ignores them; the rows still carry them.
-const VOLATILE_ROW: [&[&str]; 2] = [&["goal_observed_at"], &["process_work", "sampled_at"]];
+pub(super) const VOLATILE_ROW: [&[&str]; 2] = [&["goal_observed_at"], &["process_work", "sampled_at"]];
 /// Meta fields that change on every listing; sent at most every 10 s.
 pub(super) const VOLATILE_META: [&[&str]; 2] = [&["metrics"], &["desktop_presence"]];
 

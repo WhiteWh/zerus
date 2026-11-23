@@ -13723,8 +13723,17 @@ change and start at most every 500 ms and at most once per four durations of
 the previous one. Every 5 s the stream probes what no file shows: tmux sessions
 that start, end, are renamed, attached or detached, exited agent processes,
 ended background work, sessions that have not reported a hook event yet and the
-DeepSeek and OpenCode hosts. All rows are listed again every 5 s, for terminal
-choosers and status lines of sessions that already reported hooks. Followed
+DeepSeek and OpenCode hosts. A changed binding derives its session's row
+alone whether the session is live or saved (stopped or paused), and a row is
+derived again when its state changes by time alone: Cooling turns Cold when the
+cache TTL runs out, a tool call becomes a long operation at 30 s, and a "so far"
+text moves to its next minute. All rows are listed again every 60 s
+(`HGS_WATCH_FULL_SECONDS`, whole seconds; 5 restores the earlier 5 s), for
+terminal choosers and status lines of sessions that already reported hooks,
+which until then can show up to that late. Such a sweep is compared with the
+rows the stream kept: each row it lists otherwise leaves one `watch-drift` line
+(its key and the differing fields; at most 20 per sweep) in
+`logs/slow-calls.log`, and the listing wins. Followed
 summaries are re-read when their journal rows or catalog row change, at most
 every 500 ms, and otherwise every 2 s while the agent is busy and every 15 s
 while it is idle; DeepSeek and OpenCode every 2 s.

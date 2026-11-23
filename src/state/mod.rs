@@ -165,7 +165,7 @@ pub(crate) mod task_reconcile;
 mod subagents;
 mod subagents_confirm;
 mod session_upload;
-mod session_state;
+pub(crate) mod session_state;
 pub(crate) mod slow_calls;
 mod switch_account;
 mod switch_provider;
@@ -774,22 +774,7 @@ pub fn merge_listing_archives(mut box_value: Value, ids: &BTreeMap<String, Strin
             continue;
         }
         let at = std::time::Instant::now();
-        let parts: Vec<&str> = name.splitn(3, '/').collect();
-        let mut session = json!({"name": name, "cmd": record["agent"],
-            "project": parts.get(1), "tag": parts.get(2), "attached": 0, "clients": [],
-            "created": record["created"], "state": if record["paused"].as_bool().unwrap_or(false) {"paused"} else {"stopped"},
-            "resumable": true});
-        session.as_object_mut().unwrap().extend(
-            journal::summary(&record, false)
-                .as_object()
-                .unwrap()
-                .clone(),
-        );
-        read_marks::enrich_listing(&mut session, &marks, journal::journal_name(&record), Ok(Some(Vec::new())));
-        notifications::enrich(&mut session, notification_preferences.as_ref(), journal::journal_name(&record));
-        keep_warm::enrich(&mut session, keep_warm_settings.as_ref(), &record);
-        question_routing::enrich(&mut session, question_routing.as_ref());
-        sessions.push(session);
+        sessions.push(saved_row(&record, &shared));
         saved_ms += ms(at);
         saved_rows += 1;
     }
@@ -823,6 +808,29 @@ struct Shared<'a> {
     route_outcomes: Option<&'a question_route_outcomes::Reader>,
     /// Bounds question indexing for the whole listing.
     budget: std::time::Instant,
+}
+
+/// The row of a saved session that is not live: stopped, or paused. Task
+/// #13 (P2.2): `hgs watch` derives such a row alone through this same step
+/// (`watch_source::rows`) when its binding changes.
+fn saved_row(record: &Value, shared: &Shared) -> Value {
+    let name = string(record, "name");
+    let parts: Vec<&str> = name.splitn(3, '/').collect();
+    let mut session = json!({"name": name, "cmd": record["agent"],
+        "project": parts.get(1), "tag": parts.get(2), "attached": 0, "clients": [],
+        "created": record["created"], "state": if record["paused"].as_bool().unwrap_or(false) {"paused"} else {"stopped"},
+        "resumable": true});
+    session.as_object_mut().unwrap().extend(
+        journal::summary(record, false)
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    read_marks::enrich_listing(&mut session, shared.marks, journal::journal_name(record), Ok(Some(Vec::new())));
+    notifications::enrich(&mut session, shared.preferences, journal::journal_name(record));
+    keep_warm::enrich(&mut session, shared.keep_warm, record);
+    question_routing::enrich(&mut session, shared.question_routing);
+    session
 }
 
 /// The row of a live session whose pane runs its saved binding `record`.
