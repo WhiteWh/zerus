@@ -31,6 +31,7 @@ once, after all its parts. The lead plans each task's tests this way.
 A split keeps every test, counted before and after. A test that repeats
 another becomes a case of a table test; a test that guards nothing (it
 cannot fail, or its code is gone) is removed, with the reason in the report.
+Never weaken a test or criterion to pass.
 
 
 A performance run looks at the machine first: a perf suite (a `performance = true`

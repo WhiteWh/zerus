@@ -385,7 +385,14 @@ fn a_stage_hand_off_names_the_change_the_folder_and_the_verdict() {
     // A test stage says what to run and that the folder is held.
     let test = StageRun { kind: "test".into(), ..review.clone() };
     let text = stage_hand_off_text(&t, &task, &test);
-    for part in ["stage: test", "only the suites of the files", "take the criteria's shots", "folder is held"] {
+    for part in [
+        "stage: test",
+        "only the suites of the files",
+        "take the criteria's shots",
+        "folder is held",
+        "Judge each acceptance criterion on its own line",
+        "deletes, skips or narrows a test",
+    ] {
         assert!(text.contains(part), "{part} missing in\n{text}");
     }
     // A shared folder says which files are the task's, and no commits names

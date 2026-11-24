@@ -3517,7 +3517,10 @@ pub(crate) fn stage_hand_off_text(team: &Team, task: &Task, run: &StageRun) -> S
     if reported.is_empty() {
         text += &format!("\nThe implementer ({implementer_role}) reported attempt {} without a text.\n", run.attempt);
     } else {
-        text += &format!("\nThe implementer ({implementer_role}) reported attempt {}:\n{reported}\n", run.attempt);
+        text += &format!(
+            "\nThe implementer ({implementer_role}) reported attempt {} (claims to check, not evidence):\n{reported}\n",
+            run.attempt
+        );
     }
     // U36: what changed comes from the attempt - its commits in a Git checkout,
     // otherwise the report's changed files; both are read in the task's folder.
@@ -3540,6 +3543,7 @@ pub(crate) fn stage_hand_off_text(team: &Team, task: &Task, run: &StageRun) -> S
     } else {
         text += "\nThis is a review stage: read the change against the criteria and name what is wrong by file and line.\n";
     }
+    text += super::stages::STAGE_RULES;
     text += "Change nothing in the task's files: a stage reads, builds and tests only, writes only build output and its own \
              temporary folder, and never edits, commits or reverts the task's files.\n";
     let verdict = json!({"request_id":uuid::Uuid::new_v4().to_string(),"team":team.id,"task":task.id,"attempt":run.id,

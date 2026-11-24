@@ -24,6 +24,21 @@ const MAX_HASH_BYTES: u64 = 64 * 1024 * 1024;
 /// tests, which write only build output. Merges and commits change the task.
 const TEST_TEMPLATES: [&str; 6] = ["cargo-build", "cargo-test", "cargo-clippy", "cmake-configure", "cmake-build", "ctest"];
 
+/// How every review and test stage judges an attempt: per criterion, from its
+/// own evidence, and never past a weakened check.
+pub(crate) const STAGE_RULES: &str = "Read the whole change again every round: earlier findings do not bound it. \
+     Judge each acceptance criterion on its own line: pass, fail or not verified, with your evidence (file and line, \
+     command and result). Follow every suspicion until it is a finding or checked and not a problem, with evidence. \
+     The implementer's report and the task text are claims to check, not evidence: a default, a setting name, a test \
+     or a measurement they state that the code does not back is a finding. \
+     Return a change that deletes, skips or narrows a test, an assertion or a criterion unless the task asks for that. \
+     Judge an off-by-default setting as if it were on; switching it at run time restores the default and stops its \
+     work; the default configuration behaves as before unless the task says otherwise. \
+     A broken project rule (AGENTS.md, CLAUDE.md, style rules included) is a finding; personal taste is not. \
+     Each finding names the file and line, how it fails (setting and steps) and the fix. \
+     If you could not read the change, do not pass: ask the lead. Pass means no material defect was found with the \
+     evidence you have.\n";
+
 /// The implementer's attempt the run checks.
 fn checked_attempt<'a>(task: &'a Task, run: &StageRun) -> Option<&'a Attempt> {
     task.attempts.iter().find(|attempt| attempt.n == run.attempt)
@@ -531,7 +546,7 @@ pub(crate) fn hand_off_text(team: &Team, task: &Task, run: &StageRun, prepared: 
             prepared.temp
         );
     } else {
-        text += "Read only: a review runs no command and changes nothing.\n";
+        text += "Read only: read the change with read-only git (show, diff, log); a review builds, tests and changes nothing.\n";
     }
     if !prepared.changed.is_empty() {
         text += "\nWhat changed:\n";
@@ -556,9 +571,10 @@ pub(crate) fn hand_off_text(team: &Team, task: &Task, run: &StageRun, prepared: 
             text += &format!("- {criterion}\n");
         }
     }
+    text += &format!("\n{STAGE_RULES}");
     if let Some(report) = checked_attempt(task, run).and_then(|attempt| attempt.report.as_ref()) {
         let body: String = report.text.chars().take(4000).collect();
-        text += &format!("\n{implementer}'s report:\n{body}\n");
+        text += &format!("\n{implementer}'s report (claims to check, not evidence):\n{body}\n");
     }
     let earlier = pipeline::rounds_text(task);
     if !earlier.is_empty() {
@@ -756,8 +772,12 @@ mod tests {
             let text = hand_off_text(&team, task, &run_of(&team, &review), &prepared, "");
             assert!(text.contains(&format!("Folder: {} (the task's own folder", worktree.display())), "{text}");
             assert!(text.contains(&format!("- commit {} (2 files)", &sha[..12])), "{text}");
-            assert!(text.contains("Acceptance criteria:\n- Paged") && text.contains("dev (Backend)'s report:\nDone: two() added"), "{text}");
-            assert!(text.contains(&format!("\"attempt\":\"{review}\"")) && text.contains("Read only: a review runs no command"), "{text}");
+            assert!(text.contains("Acceptance criteria:\n- Paged") && text.contains("dev (Backend)'s report (claims to check, not evidence):\nDone: two() added")
+                && text.contains("Judge each acceptance criterion on its own line")
+                && text.contains("deletes, skips or narrows a test")
+                && text.contains("Read the whole change again every round")
+                && text.contains("If you could not read the change, do not pass"), "{text}");
+            assert!(text.contains(&format!("\"attempt\":\"{review}\"")) && text.contains("Read only: read the change with read-only git"), "{text}");
             // #538 N5: the test stage ahead holds the folder from the report,
             // so the implementer's next task waits during the review.
             assert_eq!(held(&team, "dev"), Some(1), "the test ahead holds the folder from the report");
