@@ -126,6 +126,7 @@ mod inventory {
         ("refusal_fallback_preference", NotACard),
         ("resume", NotACard),
         ("saved_binding", NotACard),
+        ("shared", NotACard),
         ("snapshot", NotACard),
         ("startup", NotACard),
         ("subagent_summary", NotACard),
