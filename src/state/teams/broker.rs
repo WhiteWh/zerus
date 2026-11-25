@@ -1156,7 +1156,7 @@ pub(crate) fn builds_view(team: &Team, now: f64) -> Value {
     }
     // Task 261: the shared sccache server's health: whether it runs, its pid
     // and integrity (a restricted one breaks every build).
-    json!({"team":team.id,"enabled":team.settings.build_broker,"folders":folders,"members":states,
+    json!({"team":team.id,"enabled":team.settings.build_broker,"folders":folders,"members":states,"deliveries":super::artifacts::view(&team.id),
         "cache_server":super::super::build_cache_server::health()})
 }
 

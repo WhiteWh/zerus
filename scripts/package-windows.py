@@ -6,6 +6,7 @@ binaries. WebView2 uses the installed Evergreen runtime; Qt is never deployed.
 """
 import argparse
 import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -66,6 +67,47 @@ def copy(source, destination):
     shutil.copyfile(source, destination)
 
 
+# WhiteWh fork (zerus-y0cj): the standalone executor package that
+# scripts/build-artifact-executor.py writes, unpacked beside hgs.exe.
+EXECUTOR_TOP = "hgs-executor-windows-x86_64/"
+EXECUTOR_LIMIT = 256 * 1024 * 1024
+
+
+def add_executor(package, stage):
+    """hgs-executor.exe next to hgs.exe, its linked notices under licenses/executor
+    and its README and examples under executor/; returns its build identity."""
+    require(package.is_file() and not package.is_symlink(), f"Missing executor package: {package}")
+    placed = {}
+    with zipfile.ZipFile(package) as archive:
+        entries = archive.infolist()
+        require(0 < len(entries) <= 1000 and sum(e.file_size for e in entries) <= EXECUTOR_LIMIT,
+                "Unexpected executor package size")
+        for entry in entries:
+            name = entry.filename
+            require(name.startswith(EXECUTOR_TOP) and not entry.is_dir() and ".." not in name.split("/")
+                    and "\\" not in name, f"Unsafe executor package entry: {name!r}")
+            relative = name[len(EXECUTOR_TOP):]
+            if relative == "hgs-executor.exe":
+                target = stage / "hgs-executor.exe"
+            elif relative.startswith("licenses/"):
+                target = stage / "licenses/executor" / relative[len("licenses/"):]
+            elif relative == "README.md" or relative.startswith("examples/"):
+                target = stage / "executor" / relative
+            else:
+                raise ValueError(f"Unexpected executor package entry: {name!r}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            data = archive.read(entry)
+            target.write_bytes(data)
+            placed[relative] = hashlib.sha256(data).hexdigest()
+    attestation = json.loads((stage / "licenses/executor/build.json").read_text(encoding="utf-8"))
+    require(placed.get("hgs-executor.exe") == attestation.get("binary_sha256"),
+            "hgs-executor.exe differs from its build attestation")
+    require(placed.get("licenses/inventory.json") == attestation.get("inventory_sha256"),
+            "The executor's license inventory differs from its build attestation")
+    return {"binary": "hgs-executor.exe", "binary_sha256": attestation["binary_sha256"],
+            "source_sha256": attestation["source_sha256"], "desync_revision": attestation["desync_revision"]}
+
+
 def source_commit():
     return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
 
@@ -122,6 +164,8 @@ def main():
                         help="the fork build number [default: $ZERUS_FORK_BUILD; empty for an experimental build]")
     parser.add_argument("--fork-feed", default=os.environ.get("ZERUS_FORK_FEED_URL", ""),
                         help="the fork feed [default: $ZERUS_FORK_FEED_URL]")
+    parser.add_argument("--executor", type=Path,
+                        help="fork only: the standalone hgs-executor-windows-x86_64.zip to ship beside hgs.exe")
     args = parser.parse_args()
     require(args.output.suffix == ".zip", "The output must be a .zip file.")
     crt = args.crt_dir or crt_directory(visual_studio())
@@ -138,6 +182,7 @@ def main():
         require(feed == "" or feed.startswith(FORK_RELEASES), f"The fork feed is a release asset of {FORK_REPOSITORY}.")
         require(bool(build) == bool(feed), "A fork build has both a build number and a feed, or neither (experimental).")
         manifest["fork"] = {"repository": FORK_REPOSITORY, "build": int(build) if build else None, "feed": feed}
+    require(not args.executor or args.fork, "Only a fork zip ships the artifact executor.")
     output = args.output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="zerus-windows-") as temporary:
@@ -156,6 +201,8 @@ def main():
         copy(args.connector, stage / "zerus-mobile-connector.exe")
         if args.mobile_relay:
             copy(args.mobile_relay, stage / "zerus-relay.exe")
+        if args.executor:
+            manifest["artifact_executor"] = add_executor(args.executor.resolve(), stage)
         for dll in sorted(crt.glob("*.dll")):
             copy(dll, stage / dll.name)
         missing = [name for name in CRT_REQUIRED if not (stage / name).is_file()]

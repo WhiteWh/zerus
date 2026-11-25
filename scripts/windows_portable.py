@@ -1,4 +1,5 @@
 """Inspect the Windows portable zip without extracting or executing anything."""
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -67,6 +68,11 @@ CONPTY_NAMES = {name.casefold() for name in conpty_pair.NAMES}
 WINDOWS_INVALID = re.compile(r'[\x00-\x1f\x7f<>:"|?*\\]')
 WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{n}" for n in range(1, 10)), *(f"LPT{n}" for n in range(1, 10))}
 VERSION = re.compile(r"\d+\.\d+\.\d+")
+# WhiteWh fork (zerus-y0cj): the model-free artifact executor and its notices.
+EXECUTOR = "hgs-executor.exe"
+EXECUTOR_REQUIRED = (EXECUTOR, "licenses/executor/build.json", "licenses/executor/inventory.json",
+                     "licenses/executor/NOTICES.md", "executor/README.md")
+EXECUTOR_LIMIT = 128 * 1024 * 1024
 
 
 def asset_name(version):
@@ -144,6 +150,15 @@ def inspect(path, required=None):
         require(info.file_size <= MANIFEST_LIMIT, "Windows portable build-info.json is too large.")
         with archive.open(info) as stream:
             raw = stream.read(MANIFEST_LIMIT + 1)
+        executor_sha256 = None
+        if f"{TOP}/{EXECUTOR}" in names:
+            entry = archive.getinfo(f"{TOP}/{EXECUTOR}")
+            require(entry.file_size <= EXECUTOR_LIMIT, "Windows portable hgs-executor.exe is too large.")
+            hasher = hashlib.sha256()
+            with archive.open(entry) as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    hasher.update(block)
+            executor_sha256 = hasher.hexdigest()
     require(len(raw) <= MANIFEST_LIMIT, "Windows portable build-info.json is too large.")
     try:
         manifest = json.loads(raw.decode("utf-8"))
@@ -168,6 +183,18 @@ def inspect(path, required=None):
                 "Tauri portable bundle must not contain Qt deployment files.")
         require(not any(MODEL_FORBIDDEN.search(name) for name in names),
                 "lore model weights must be fetched at runtime, never shipped")
+    executor = manifest.get("artifact_executor")
+    if executor is None:
+        require(executor_sha256 is None, "Windows portable hgs-executor.exe needs its artifact_executor declaration.")
+    else:
+        require(isinstance(executor, dict) and manifest.get("fork") is not None,
+                "Only a fork bundle declares the artifact executor.")
+        missing = sorted(item for item in EXECUTOR_REQUIRED if f"{TOP}/{item}" not in names)
+        require(not missing, "Windows portable artifact executor lacks: " + ", ".join(missing))
+        require(executor.get("binary") == EXECUTOR and executor.get("binary_sha256") == executor_sha256 and
+                all(isinstance(executor.get(key), str) and re.fullmatch(r"[0-9a-f]{40,64}", executor[key])
+                    for key in ("source_sha256", "desync_revision")),
+                "Windows portable hgs-executor.exe differs from its declared identity.")
     wanted = required if required is not None else (NEXT_REQUIRED if desktop == "tauri" else REQUIRED)
     missing = sorted(item for item in wanted if f"{TOP}/{item}" not in names)
     require(not missing, "Windows portable bundle lacks: " + ", ".join(missing))

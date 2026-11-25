@@ -78,6 +78,7 @@ pub(crate) fn removed(id: &str) -> Option<String> {
 }
 
 pub(crate) const BUILTIN: &[Template] = &[
+    Template { id: "artifact-test", summary: "Deliver a build with desync and execute its pinned scenario on an explicitly paired model-free executor", program: "hgs-executor", args: &[], params: &[param("profile", Kind::Identifier), param("job", Kind::Identifier)], timeout_secs: 604800 },
     Template {
         id: "cargo-build",
         summary: "cargo build --locked in your folder (optional package and toolchain)",
@@ -949,6 +950,11 @@ pub(crate) fn plan(id: &str, args: &Value, folder: &Path) -> anyhow::Result<Plan
     // Task 85: the CMake, MSBuild, Unreal and Python templates build their own
     // argv.
     match template.id {
+        "artifact-test" => {
+            let profile=one(template,args,"profile",folder)?.context("Name an executor profile")?;
+            let job=one(template,args,"job",folder)?.context("Name a stable artifact job")?;
+            return super::artifacts::plan(&profile,&job);
+        }
         "ue-build" | "ue-test" => return unreal(template, args, folder),
         "cmake-configure" => return cmake_configure(template, args, folder),
         "cmake-build" => return cmake_build(template, args, folder),
@@ -1890,6 +1896,9 @@ pub(crate) fn execute(plan: &Plan, folder: &Path, timeout: Duration, env: &[(&st
 
 /// `execute` with the person's own folders given, as a test gives synthetic ones.
 pub(crate) fn execute_as(plan: &Plan, folder: &Path, timeout: Duration, env: &[(&str, String)], person: &super::isolation::Person) -> Outcome {
+    if plan.template=="artifact-test" && plan.argv.first().is_some_and(|value|value=="zerus-profile") {
+        return match super::artifacts::standalone(&plan.argv[1],&plan.argv[2],folder,timeout){Ok(outcome)=>outcome,Err(error)=>Outcome{error:error.to_string(),..Default::default()}};
+    }
     let temp = folder.join(".zerus-team").join("tmp");
     let _ = std::fs::create_dir_all(&temp);
     // U62 (#720): a test runs with its own home, data, temporary and XDG
@@ -2319,7 +2328,7 @@ mod tests {
         // The set the owner asked for, by id.
         let ids: Vec<&str> = BUILTIN.iter().map(|template| template.id).collect();
         // Task 85: the CMake and MSBuild templates of any project after them; task 86: the Python and Cython ones; task 87: Unreal.
-        assert_eq!(ids, ["cargo-build", "cargo-test", "cargo-clippy", "py-test", "cython-build", "tauri-build", "tauri-dev", "tauri-launch", "android-test", "release-candidate",
+        assert_eq!(ids, ["artifact-test", "cargo-build", "cargo-test", "cargo-clippy", "py-test", "cython-build", "tauri-build", "tauri-dev", "tauri-launch", "android-test", "release-candidate",
                          "clean-build", "git-merge-lead", "git-commit", "ue-build", "ue-test", "cmake-configure", "cmake-build", "ctest", "msbuild-build", "vstest", "web-test"]);
     }
 

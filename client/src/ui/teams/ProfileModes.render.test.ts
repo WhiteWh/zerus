@@ -2,7 +2,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
-import type { TeamBuildsView, TeamProfileView, TeamTimelineView, TeamView } from "../../types";
+import type { TeamBuildsView, TeamProfileView, TeamTimelineView, TeamView, TeamTestsView } from "../../types";
 
 // Task #462 (owner, package 168): the plan's Profile view keeps Qt's four modes
 // (Time, Tokens, Members, Compare) and the build queue is its own Builds tab.
@@ -152,6 +152,24 @@ describe("the plan's Profile modes (task #462)", () => {
 });
 
 describe("the Builds tab (task #462)", () => {
+  it("labels executor capacity and activity separately and refuses missing load values", async () => {
+    const { TestsPanel } = await import("./plan-panels");
+    const tests: TeamTestsView = { team: "t1", queue: [], next: null, runs: [{ id: "remote-perf", suite: "smoke", status: "passed", asked_by: "qa", task: 1, at: 1, duration_ms: 100, recorded_ms: 100, runner: "executor:stand", excerpt: "", flags: ["loaded"], reused_from: "", due: false, over_budget: false, executor_load: { valid: true, loaded: true, sample_kind: "during_peak", cpu_percent: 70, disk_percent: 80, disk_busy_percent: 20, waited_ms: 2000 } }, { id: "no-measurement", suite: "unavailable", status: "not_run", asked_by: "qa", task: 1, at: 2, duration_ms: 0, recorded_ms: 0, runner: "executor:stand", excerpt: "", flags: [], reused_from: "", due: false, over_budget: false, executor_load: { valid: false, loaded: false, sample_kind: "before", cpu_percent: null, disk_percent: null, disk_busy_percent: null, waited_ms: 0 } }] };
+    dispose = render(() => createComponent(TestsPanel, { tests }), host); await settle();
+    const measured = host.querySelector('[data-executor-load="remote-perf"]')!.textContent;
+    expect(measured).toContain("Disk busy 20%"); expect(measured).toContain("Disk used 80%");
+    expect(host.querySelector('[data-executor-load="no-measurement"]')!.textContent).toContain("unavailable");
+    expect(host.querySelector('[data-executor-load="no-measurement"]')!.textContent).not.toContain("CPU 0%");
+  });
+  it("shows remote devices and unresolved execution without claiming success", async () => {
+    const { BuildsPanel } = await import("./plan-panels");
+    const remote = { ...builds, deliveries: [{ job: "synthetic-job", profile: "weak-stand", executor: "synthetic-executor", device: "host", phase: "unknown", updated: 1 }] };
+    dispose = render(() => createComponent(BuildsPanel, { builds: remote }), host);
+    await settle();
+    expect(host.querySelector("[data-artifact-deliveries]")!.textContent).toContain("weak-stand");
+    expect(host.querySelector('[data-artifact-job="synthetic-job"]')!.textContent).toContain("unknown");
+    expect(host.textContent).toContain("review before starting a new job");
+  });
   it("is its own plan mode beside Tests", async () => {
     const { PlanModeBar } = await import("./plan-panels");
     dispose = render(() => createComponent(PlanModeBar, { mode: "tests", onMode: () => {} }), host);

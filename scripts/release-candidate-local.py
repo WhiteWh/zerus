@@ -93,6 +93,11 @@ def main() -> int:
         dry=args.dry_run,
     )
     run(["python", "client/scripts/collect-notices.py", "artifacts/windows-frontend-licenses"], dry=args.dry_run)
+    # WhiteWh fork (zerus-y0cj): the model-free artifact executor from pinned Go
+    # and desync, with its linked-license notices, shipped beside hgs.exe and as
+    # the standalone consumer package (scripts/build-artifact-executor.py).
+    run(["python", "scripts/build-artifact-executor.py", "--output", "artifacts/hgs-executor-windows-x86_64.zip"],
+        dry=args.dry_run)
     run(["python", "scripts/package-windows.py", "--fork",
          "--fork-build", fork_build, "--fork-feed", fork_feed,
          "--cli", "target/release/hgs.exe", "--lore", "target/lore/release/lore.exe",
@@ -100,6 +105,7 @@ def main() -> int:
          "--connector", "services/mobile/connector/target/release/zerus-mobile-connector.exe",
          "--mobile-relay", "services/mobile/relay/target/release/zerus-relay.exe",
          "--frontend-licenses", "artifacts/windows-frontend-licenses",
+         "--executor", "artifacts/hgs-executor-windows-x86_64.zip",
          "--conpty", str(Path(os.environ.get("RUNNER_TEMP", ROOT / ".zerus-team/tmp")) / "conpty"),
          "--output", "artifacts/zerus-windows-x86_64.zip"], dry=args.dry_run)
     run(["python", "scripts/check-windows-portable.py", "artifacts/zerus-windows-x86_64.zip",

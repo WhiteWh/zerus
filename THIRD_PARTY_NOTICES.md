@@ -54,6 +54,30 @@ contains static markup generated from the installed `lucide-solid` package (ISC)
 
 ## Dependencies obtained during build
 
+### Desync artifact delivery and standalone executor
+
+The Windows artifact implementation in `scripts/experiments/desync-artifact` uses desync
+revision `717d63b1756554abc470671ea591ad6d25e6059d`, under BSD-3-Clause,
+Copyright (c) 2017, folbricht. Its unchanged license text is retained in
+`docs/licenses/desync-LICENSE.txt`. The experiment applies a local patch exposing
+an explicit displacement-buffer limit, adds synthetic metadata-only planner
+instrumentation and uses delete-on-close for Windows null-seed scratch files;
+the upstream copyright and license
+remain in effect. Zerus original code remains MIT. The author's name is not
+used to imply endorsement.
+
+Offline builds collect reviewed notices for the actual linked Go modules and
+runtime beside their binary. `services/artifact-executor/package.py` verifies
+the binary, inventory and notice hashes and includes the complete texts in the
+standalone executor package's licenses directory. It includes no SDK, runtime
+configuration or proprietary payload. The WhiteWh fork's Windows zip ships the
+same verified `hgs-executor.exe` beside `hgs.exe`, with those notices under
+`licenses/executor` (`scripts/build-artifact-executor.py`,
+`scripts/package-windows.py --executor`); a root project notice alone is not a
+substitute for the linked dependency inventory.
+
+### Rust dependencies
+
 Rust dependencies and versions are locked in `Cargo.lock` and, for the mobile
 connector that Linux packages also ship, `services/mobile/connector/Cargo.lock`.
 hgs links Loro (MIT) through `crates/replica`; Loro in turn links `im`,

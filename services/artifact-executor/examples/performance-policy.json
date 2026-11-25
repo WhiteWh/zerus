@@ -1,0 +1,7 @@
+{
+  "cpu_percent": 70,
+  "disk_percent": 90,
+  "disk_busy_percent": 20,
+  "wait_seconds": 600,
+  "on_busy": "not_run"
+}

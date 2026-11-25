@@ -640,7 +640,7 @@ pub(crate) fn tick(
     // #732: a suite of a class this computer is not goes only to a runner of
     // that class (or waits with the reason); the rest runs here as before.
     let (here, elsewhere): (Vec<Request>, Vec<Request>) =
-        queued.into_iter().partition(|request| super::test_runners::runs_here(&request.platforms, &places.host));
+        queued.into_iter().partition(|request| super::artifacts::profile_of(&request.command).is_some() || super::test_runners::runs_here(&request.platforms, &places.host));
     let mut records = Vec::new();
     if !here.is_empty() {
         let mut load = read_load();
@@ -829,6 +829,12 @@ fn preparation_not_run(suite: &str, reason: &str) -> (Outcome, Option<Preparatio
 /// Only local merge requests prepare CTest. All stages and retries share the
 /// suite deadline; no new queue metadata or team-record read is needed.
 fn run_request(request: &Request, project: &Path, limit: Duration, deadline: Instant, loaded: Option<&Result<config::Loaded, String>>) -> (Outcome, Option<PreparationFailure>) {
+    if let Some(profile)=super::artifacts::profile_of(&request.command) {
+        return match super::artifacts::queued(project,profile,request,limit) {
+            Ok(outcome)=>(outcome,None),
+            Err(error)=>(Outcome{error:error.to_string(),tail:error.to_string(),..Default::default()},Some(PreparationFailure::NotRun)),
+        };
+    }
     let loaded = match loaded {
         None => return (run_tree(&mut queued_shell(project, &request.command_for(project), project), limit, None), None),
         Some(Ok(loaded)) => loaded,
@@ -894,7 +900,7 @@ pub(crate) fn run_due(store: &TestStore, project: &Path, requests: &[Request], n
         let at = now + began.elapsed().as_secs_f64();
         let mut loaded = false;
         let mut before = None;
-        if request.performance {
+        if request.performance && super::artifacts::profile_of(&request.command).is_none() {
             let sample = perf_load(project);
             match perf_gate(&sample, &performance, request.at, at) {
                 PerfGate::Wait => {
@@ -914,7 +920,7 @@ pub(crate) fn run_due(store: &TestStore, project: &Path, requests: &[Request], n
         store.start(&request.id, at)?;
         // Task 88: the provider's report, removed first so an older one is
         // never read as this run's.
-        let report = report_of(project, &request.team, &request.suite);
+        let report = if super::artifacts::profile_of(&request.command).is_some(){None}else{report_of(project, &request.team, &request.suite)};
         if let Some((path, _)) = &report {
             let _ = std::fs::remove_file(path);
         }
@@ -927,12 +933,13 @@ pub(crate) fn run_due(store: &TestStore, project: &Path, requests: &[Request], n
         // run it already failed that way is not retried.
         let command = request.command_for(project);
         let temp = std::env::temp_dir();
-        let refused = super::environment::preflight(&super::environment::build_folders(project, &command, ""), Some(&temp));
+        let refused = if super::artifacts::profile_of(&request.command).is_some(){None}else{super::environment::preflight(&super::environment::build_folders(project, &command, ""), Some(&temp))};
         let (mut outcome, preparation) = match &refused {
             Some(text) => (Outcome { exit: Some(1), tail: text.clone(), ..Default::default() }, None),
             None => run_request(request, project, limit, deadline, config_loaded.as_ref()),
         };
         let environment = refused.or_else(|| {
+            if super::artifacts::profile_of(&request.command).is_some() {return None;}
             (outcome.exit != Some(0) && !outcome.timed_out && preparation != Some(PreparationFailure::NotRun))
                 .then(|| {
                     let text = format!("{}\n{}\n{}", outcome.tail, outcome.excerpt, outcome.error);
@@ -967,7 +974,12 @@ pub(crate) fn run_due(store: &TestStore, project: &Path, requests: &[Request], n
         let first = outcome.clone();
         // Build failures, crashes and timeouts are not flaky test evidence.
         let mut retries = 0;
-        while status == "failed" && environment.is_none() && preparation != Some(PreparationFailure::Build) && retries < policy.retries {
+        if super::artifacts::profile_of(&request.command).is_some() {
+            if let Some(remote)=super::artifacts::result_status(&format!("{}:{}",request.team,request.id)) {
+                status=match remote.as_str(){"passed"|"failed"|"timeout"|"unknown"|"infrastructure_error"|"not_run"=>remote,_=>"unknown".into()};
+            } else { status="not_run".into(); }
+        }
+        while status == "failed" && super::artifacts::profile_of(&request.command).is_none() && environment.is_none() && preparation != Some(PreparationFailure::Build) && retries < policy.retries {
             retries += 1;
             let (again, preparation) = run_request(request, project, limit, deadline, config_loaded.as_ref());
             if preparation == Some(PreparationFailure::NotRun) {
@@ -994,7 +1006,11 @@ pub(crate) fn run_due(store: &TestStore, project: &Path, requests: &[Request], n
             }
             outcome = again;
         }
-        let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let remote_performance=request.performance&&super::artifacts::profile_of(&request.command).is_some();
+        let remote_load=remote_performance.then(||super::artifacts::result_load(&format!("{}:{}",request.team,request.id))).flatten();
+        let duration_ms = if remote_performance{
+            match remote_load.as_ref().filter(|load|load["valid"]==true).and_then(|load|load["execution_ms"].as_u64()).filter(|ms|*ms>0){Some(ms)=>ms,None=>{flags.push("measurement_unavailable".into());0}}
+        }else{u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)};
         let ran_ms = if status == "flaky" { duration_ms / u64::from(retries + 1) } else { duration_ms };
         if request.seconds > 0.0 && policy.grow_percent > 0 && ran_ms as f64 > request.seconds * 1000.0 * (1.0 + f64::from(policy.grow_percent) / 100.0) {
             flags.push("slower".to_owned());
@@ -1006,7 +1022,10 @@ pub(crate) fn run_due(store: &TestStore, project: &Path, requests: &[Request], n
         let shown = if status == "flaky" { &first } else { &outcome };
         let excerpt = if shown.excerpt.is_empty() { last_chars(&shown.tail, EXCERPT_BYTES) } else { shown.excerpt.clone() };
         // Task #281: the load after the run too, so the result carries both.
-        let load = if request.performance {
+        let load = if remote_performance{
+            if remote_load.as_ref().is_some_and(|load|load["loaded"]==true){flags.push("loaded".into());}
+            remote_load
+        }else if request.performance {
             let during = perf_load(project);
             if !during.quiet(&performance) {
                 loaded = true;
@@ -1041,7 +1060,7 @@ pub(crate) fn run_due(store: &TestStore, project: &Path, requests: &[Request], n
             flags,
             due: false,
             recorded_ms: (request.seconds * 1000.0) as u64,
-            runner: String::new(),
+            runner: super::artifacts::profile_of(&request.command).map(|profile|format!("executor:{profile}")).unwrap_or_default(),
             task: request.task,
             report: report.map(|(path, format)| super::run_results::read(&path, format)),
             performance: request.performance,
@@ -1130,6 +1149,16 @@ pub(crate) fn suite_platforms(provider: &crate::test_discipline::config::Provide
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artifact_route_never_falls_back_to_shell_or_platform_runner() {
+        let dir=tempfile::tempdir().unwrap();let store=TestStore::open_at(&dir.path().join("tests.sqlite3"),false).unwrap();
+        let mut queued=request("synthetic-artifact-routing","remote",1.0,true,"small");
+        queued.command="zerus-artifact:invalid; echo wrong > wrong.txt".into();queued.platforms=vec!["console-only".into()];store.enqueue(&queued).unwrap();
+        let (records,_)=tick(&store,dir.path(),"t",&Classes::new(),&config::Schedule::default(),12,0.0,100.0,||Load{cpu_free:8,ram_free_mb:8000,gpu_free:true,at_night:false},&Default::default(),&Places::here(),None).unwrap();
+        assert_eq!(records.len(),1,"explicit artifact route must reach its own admission even on a different platform");
+        assert_eq!(records[0].status,"not_run");assert!(records[0].flags.iter().all(|flag|flag!="retried"));assert!(!dir.path().join("wrong.txt").exists());
+    }
 
     fn request(id: &str, suite: &str, seconds: f64, forced: bool, resources: &str) -> Request {
         Request {

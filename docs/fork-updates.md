@@ -98,6 +98,20 @@ A failing step publishes nothing. The release build is embedded in `hgs-tray.exe
 desktop; every build since is the Tauri app, and task #28 removed the Qt
 sources and their packager.
 
+### Artifact executor (zerus-y0cj)
+
+The fork zip also ships the model-free artifact executor `hgs-executor.exe`
+beside `hgs.exe`, with `executor\README.md`, placeholder examples and the
+linked-license notices under `licenses\executor\`. The release candidate
+builds it with `scripts/build-artifact-executor.py` from Go 1.27.4 (checked
+against its SHA-256) and desync fetched by its pinned commit; Go modules come
+from proxy.golang.org, verified by sum.golang.org, during compilation only.
+The binary records only a relative desync path, so builds of the same source
+are comparable. `build-info.json` declares `artifact_executor` (binary and
+source SHA-256, desync revision) and the portable check verifies the shipped
+binary against it. A numbered release also publishes the same package as
+`hgs-executor-windows-x86_64.zip`. See `services/artifact-executor/README.md`.
+
 ## Feed
 
 `https://github.com/WhiteWh/zerus/releases/latest/download/zerus-fork-feed.json`,

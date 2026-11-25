@@ -1,0 +1,114 @@
+// Zerus experiment instrumentation, original adapter code under Zerus's MIT license.
+// Copied into the separately prepared desync package; never executes payload I/O.
+package desync
+
+import (
+	"crypto/sha256"
+	"encoding/binary"
+	"errors"
+	"runtime"
+	"time"
+)
+
+// ZerusProbePlan exercises the real planner with synthetic metadata only.
+// It bypasses file validation and chunk discovery, not move/graph planning.
+// Its results are metadata stress evidence, never full-build correctness evidence.
+func ZerusProbePlan(count int, average uint64, scenario string, stash int64, progress func(map[string]any) error) (map[string]any, error) {
+	if count < 2 || count > 8_000_000 || average < 4096 || average > 4*1024*1024 || stash < 0 {
+		return nil, errors.New("invalid metadata probe bounds")
+	}
+	switch scenario {
+	case "rotate", "reverse", "full_changed", "same":
+	default:
+		return nil, errors.New("unsupported metadata probe")
+	}
+	result := map[string]any{"synthetic_only": true, "chunks": count,
+		"logical_bytes": uint64(count) * average, "scenario": scenario}
+	start := time.Now()
+	snapshot := func(name string) error {
+		var mem runtime.MemStats
+		runtime.ReadMemStats(&mem)
+		result[name] = map[string]any{"heap_bytes": mem.HeapAlloc, "sys_bytes": mem.Sys,
+			"total_allocated_bytes": mem.TotalAlloc, "seconds": time.Since(start).Seconds()}
+		result["last_stage"] = name
+		if progress != nil {
+			return progress(result)
+		}
+		return nil
+	}
+	old := Index{Index: FormatIndex{ChunkSizeMin: average / 4, ChunkSizeAvg: average, ChunkSizeMax: average * 4},
+		Chunks: make([]IndexChunk, count)}
+	target := Index{Index: old.Index, Chunks: make([]IndexChunk, count)}
+	for i := range old.Chunks {
+		var raw [8]byte
+		binary.LittleEndian.PutUint64(raw[:], uint64(i))
+		old.Chunks[i] = IndexChunk{ID: sha256.Sum256(raw[:]), Start: uint64(i) * average, Size: average}
+	}
+	for i := range target.Chunks {
+		j := i
+		switch scenario {
+		case "rotate":
+			j = (i + 1) % count
+		case "reverse":
+			j = count - 1 - i
+		}
+		target.Chunks[i] = old.Chunks[j]
+		target.Chunks[i].Start = uint64(i) * average
+		if scenario == "full_changed" {
+			var raw [8]byte
+			binary.LittleEndian.PutUint64(raw[:], uint64(count+i))
+			target.Chunks[i].ID = sha256.Sum256(raw[:])
+		}
+	}
+	if err := snapshot("indexes"); err != nil {
+		return nil, err
+	}
+	seed := &FileSeed{seedIndex: newSeedIndex(old, false)}
+	// Model the publisher's lookup too: the current experiment hosts both sides
+	// in one process. Keep it alive through planning so RSS includes both sides.
+	publisher := make(map[ChunkID]IndexChunk, count)
+	for _, c := range target.Chunks {
+		publisher[c.ID] = c
+	}
+	if err := snapshot("seed_and_publisher"); err != nil {
+		return nil, err
+	}
+	// Construct the same planning state as newPlan, with explicit block size,
+	// no filesystem probing and verified skip positions supplied synthetically.
+	p := &assemblePlan{idx: target, concurrency: 1, target: "synthetic-no-file",
+		inPlaceSeed: seed, blocksize: 4096, stashLimit: stash,
+		placements: make([]*placement, count), skips: make([]*skipInPlace, count)}
+	p.selfSeed = &selfSeed{file: p.target, seedIndex: newSeedIndex(target, false), blocksize: 4096}
+	delete(p.selfSeed.pos, NewNullChunk(target.Index.ChunkSizeMax).ID)
+	if scenario == "same" {
+		run := &skipInPlace{start: 0, end: uint64(count) * average}
+		for i := range p.skips {
+			p.skips[i] = run
+		}
+	}
+	p.selfSeed.useInPlace(p.skips)
+	if err := snapshot("lookup_tables"); err != nil {
+		return nil, err
+	}
+	p.generate()
+	if err := snapshot("placements"); err != nil {
+		return nil, err
+	}
+	steps := p.Steps()
+	if err := snapshot("dependency_graph"); err != nil {
+		return nil, err
+	}
+	edges := 0
+	for _, step := range steps {
+		edges += len(step.dependencies)
+	}
+	result["steps"], result["edges"] = len(steps), edges
+	result["ok"] = len(p.placements) == count && len(steps) > 0
+	runtime.KeepAlive(publisher)
+	runtime.KeepAlive(old)
+	runtime.KeepAlive(target)
+	runtime.KeepAlive(seed)
+	runtime.KeepAlive(p)
+	runtime.KeepAlive(steps)
+	return result, nil
+}

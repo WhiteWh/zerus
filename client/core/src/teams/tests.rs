@@ -2096,8 +2096,12 @@ fn task_199_builds_are_read_and_bounded() {
     assert_eq!((group.queue[0].coalesced_with.as_str(), group.queue[0].waiting_for.clone()), ("api", vec!["qa".to_owned()]));
     assert_eq!(group.recent.len(), 20, "recent builds are bounded");
     assert!(group.recent[0].hit && group.recent[0].by == "ui");
+    let deliveries=vec![json!({"job":"synthetic-job","profile":"synthetic-stand","executor":"synthetic-executor","device":"host","phase":"unknown","updated":1000});30];
+    let remote=view::builds("t1",&json!({"deliveries":deliveries}));
+    assert_eq!(remote.deliveries.len(),20);
+    assert_eq!(remote.deliveries[0].phase,"unknown");
     let empty = view::builds("t1", &json!({"folders":[]}));
-    assert!(!empty.enabled && empty.folders.is_empty());
+    assert!(!empty.enabled && empty.folders.is_empty() && empty.deliveries.is_empty());
 }
 
 const OTHER: &str = "2b863c49-6255-4580-8cd1-82dd023a556a";

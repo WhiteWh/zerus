@@ -1,0 +1,11 @@
+{
+  "protocol": 1,
+  "instructions": "Run the packaged smoke test. Exit nonzero if its assertions fail. Retain measurements in the result directory.",
+  "runtime": "powershell",
+  "entry": "run.ps1",
+  "arguments": [],
+  "timeout_seconds": 300,
+  "memory_bytes": 268435456,
+  "guided": false,
+  "adapter": "host"
+}

@@ -9,3 +9,8 @@ WhiteWh fork
   Zerus from current\hgs-tray.exe.
 - The fork ships only the Tauri desktop; the earlier Qt fallback
   (qt\zerus-qt.exe) is gone. Quit an old fallback before starting this build.
+- hgs-executor.exe is the model-free artifact executor (desync delivery,
+  scenario runs). executor\README.md explains pairing and setup and
+  executor\examples holds placeholder configurations; its linked-license
+  notices are in licenses\executor. A test host that needs no desktop can
+  use the release's standalone hgs-executor-windows-x86_64.zip instead.

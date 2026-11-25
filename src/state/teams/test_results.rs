@@ -62,6 +62,9 @@ const CODE: [&str; 9] = ["c", "cc", "cpp", "cxx", "h", "hpp", "mm", "m", "rs"];
 /// The hash a suite's unchanged result is reused by, or None when it is never
 /// reused (cargo by default) or its inputs cannot be read.
 pub(crate) fn input_hash(project: &Path, provider: &Provider, section: &ProviderMap, targets: &[String]) -> Option<String> {
+    // Source/binary hashes on the builder cannot establish a verdict on a
+    // selected device. Remote receipts retain their complete artifact identity.
+    if super::artifacts::profile_of(&provider.command).is_some() { return None; }
     use sha2::{Digest, Sha256};
     let reuse = provider.reuse_by();
     if reuse == ReuseBy::Never {

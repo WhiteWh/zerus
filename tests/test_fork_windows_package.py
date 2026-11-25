@@ -105,6 +105,81 @@ class ForkPackageTests(unittest.TestCase):
                 self.assertIn("unrecognized arguments", result.stderr)
 
 
+class ForkExecutorPackageTests(unittest.TestCase):
+    """zerus-y0cj: the fork zip ships the model-free artifact executor beside
+    hgs.exe with its linked-license notices, README and examples, and declares
+    its exact build identity in build-info.json."""
+    setUp = publication.PackageTests.setUp
+    run_script = publication.PackageTests.run_script
+    fork = ForkPackageTests.fork
+
+    def executor(self, binary=b"synthetic executor", attested=None, extra=None):
+        import hashlib
+        import json
+        inventory = b"[]\n"
+        build = {"protocol": 1, "desync_revision": "717d63b1756554abc470671ea591ad6d25e6059d",
+                 "source_sha256": "a" * 64, "binary_sha256": attested or hashlib.sha256(binary).hexdigest(),
+                 "inventory_sha256": hashlib.sha256(inventory).hexdigest()}
+        files = {"hgs-executor.exe": binary, "licenses/build.json": json.dumps(build).encode(),
+                 "licenses/inventory.json": inventory, "licenses/NOTICES.md": b"notices\n",
+                 "licenses/00/LICENSE": b"BSD-3-Clause\n", "README.md": b"# executor\n",
+                 "examples/executor.json": b"{}\n", "examples/scenario/run.ps1": b"exit 0\n", **(extra or {})}
+        path = self.directory / "hgs-executor-windows-x86_64.zip"
+        with zipfile.ZipFile(path, "w") as archive:
+            for name, data in files.items():
+                archive.writestr("hgs-executor-windows-x86_64/" + name, data)
+        return path, build
+
+    def test_the_executor_ships_beside_hgs_with_notices_and_identity(self):
+        package, build = self.executor()
+        output = self.directory / "fork.zip"
+        result = self.fork(output, "--fork", "--fork-build", "41", "--fork-feed", FEED, "--executor", package)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        info = portable.inspect(output)
+        self.assertEqual(info["artifact_executor"], {"binary": "hgs-executor.exe", "binary_sha256": build["binary_sha256"],
+                                                     "source_sha256": build["source_sha256"],
+                                                     "desync_revision": build["desync_revision"]})
+        with zipfile.ZipFile(output) as archive:
+            names = set(archive.namelist())
+            self.assertEqual(archive.read(f"{portable.TOP}/hgs-executor.exe"), b"synthetic executor")
+        for name in ["hgs.exe", "hgs-executor.exe", "licenses/executor/build.json", "licenses/executor/inventory.json",
+                     "licenses/executor/NOTICES.md", "licenses/executor/00/LICENSE", "executor/README.md",
+                     "executor/examples/executor.json", "executor/examples/scenario/run.ps1"]:
+            self.assertIn(f"{portable.TOP}/{name}", names)
+
+    def test_a_changed_executor_or_unexpected_entry_is_refused(self):
+        for options, words in [({"attested": "b" * 64}, "differs from its build attestation"),
+                               ({"extra": {"identity/identity.key": b"x"}}, "Unexpected executor package entry")]:
+            with self.subTest(words=words):
+                package = self.executor(**options)[0]
+                output = self.directory / "refused.zip"
+                result = self.fork(output, "--fork", "--executor", package)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(words, result.stderr)
+                self.assertFalse(output.exists())
+
+    def test_only_a_fork_zip_ships_the_executor(self):
+        result = self.fork(self.directory / "upstream.zip", "--executor", self.executor()[0])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Only a fork zip ships the artifact executor", result.stderr)
+
+    def test_inspection_refuses_an_undeclared_or_mismatched_executor(self):
+        files = {name: PAIR.get(name, b"x") for name in portable.NEXT_REQUIRED}
+        info = manifest(desktop="tauri", webview2_runtime="evergreen", mobile_connector_bundled=True,
+                        fork={"repository": "WhiteWh/zerus", "build": 41, "feed": FEED})
+        del info["qt_version"]
+        with self.assertRaisesRegex(ValueError, "needs its artifact_executor declaration"):
+            portable.inspect(bundle(self.directory / "undeclared.zip", {**files, "hgs-executor.exe": b"x"}, info))
+        declared = {**info, "artifact_executor": {"binary": "hgs-executor.exe", "binary_sha256": "0" * 64,
+                                                  "source_sha256": "a" * 64,
+                                                  "desync_revision": "717d63b1756554abc470671ea591ad6d25e6059d"}}
+        complete = {**files, **{name: b"x" for name in portable.EXECUTOR_REQUIRED}}
+        with self.assertRaisesRegex(ValueError, "differs from its declared identity"):
+            portable.inspect(bundle(self.directory / "mismatch.zip", complete, declared))
+        with self.assertRaisesRegex(ValueError, "artifact executor lacks"):
+            portable.inspect(bundle(self.directory / "partial.zip", {**files, "hgs-executor.exe": b"x"}, declared))
+
+
 class ForkWorkflowTests(unittest.TestCase):
     """Task #446: the manual build packages through the same release candidate as
     the local packages do; task #388: no Qt step and no Qt in the zip."""

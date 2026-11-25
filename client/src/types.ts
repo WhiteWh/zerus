@@ -1294,6 +1294,7 @@ export interface TeamBuildItem {
 }
 export interface TeamBuildsView {
   team: string; enabled: boolean;
+  deliveries?: {job: string; profile: string; executor: string; device: string; phase: string; instructions?: string; updated: number}[];
   folders: { folder: string; members: string[]; build_folders: { name: string; usual_ms: number; hit_rate: number | null; running: TeamBuildItem[]; queue: TeamBuildItem[]; recent: TeamBuildItem[] }[] }[];
 }
 
@@ -1407,6 +1408,7 @@ export interface TeamTestRun {
   flags: string[]; reused_from: string; due: boolean; over_budget: boolean;
   /** Task 88: one result per test from the provider's report, failures first; null without one. */
   report?: TeamTestReport | null;
+  executor_load?: {valid: boolean; loaded: boolean; sample_kind: string; cpu_percent: number | null; disk_percent: number | null; disk_busy_percent: number | null; waited_ms: number} | null;
 }
 
 /** Task 88: one test of a run's report. */

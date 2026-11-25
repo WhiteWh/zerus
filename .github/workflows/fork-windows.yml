@@ -192,10 +192,13 @@ jobs:
           BUILD: ${{ inputs.build || github.run_number }}
           COMMIT: ${{ steps.source.outputs.commit }}
         run: |
+          # zerus-y0cj: the standalone model-free executor package for test hosts
+          # that need no desktop; the same hgs-executor.exe ships inside the zip.
           gh release create "whitewh-$BUILD" artifacts/zerus-windows-x86_64.zip artifacts/zerus-fork-feed.json \
+            artifacts/hgs-executor-windows-x86_64.zip \
             --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --latest \
             --title "Zerus fork build $BUILD" \
-            --notes "Windows portable build $BUILD of whitewh/main at $COMMIT. Installed automatically by fork builds of Zerus (docs/fork-updates.md)."
+            --notes "Windows portable build $BUILD of whitewh/main at $COMMIT. Installed automatically by fork builds of Zerus (docs/fork-updates.md). hgs-executor-windows-x86_64.zip is the standalone model-free artifact executor with its linked-license notices (services/artifact-executor/README.md)."
       - name: Retain test logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

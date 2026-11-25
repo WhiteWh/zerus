@@ -746,6 +746,17 @@ export function TestsPanel(props: {
                   <span class="grow" />
                   <span>{runTime(run.duration_ms)}</span>
                   <Show when={run.runner}><span class="pm-note">{run.runner}</span></Show>
+                  <Show when={run.executor_load}>{(load) => (
+                    <span class="pm-note" data-executor-load={run.id}>
+                      <Show when={load().valid} fallback={tr("Executor load measurement unavailable")}>
+                        {load().sample_kind === "during_peak" ? tr("Executor sampled peak") : tr("Executor before run")}
+                        {" "}{tr("CPU %1%", Math.round(load().cpu_percent ?? 0))}
+                        {" / "}{tr("Disk busy %1%", Math.round(load().disk_busy_percent ?? 0))}
+                        {" / "}{tr("Disk used %1%", Math.round(load().disk_percent ?? 0))}
+                      </Show>
+                      <Show when={load().loaded}>{" "}{tr("Run under load")}</Show>
+                    </span>
+                  )}</Show>
                 </div>
                 <Show when={open() === run.id && run.report}>{(report) => (
                   <div class="pm-cases" data-run-cases={run.id}>
@@ -810,6 +821,20 @@ export function BuildsPanel(props: { builds?: TeamBuildsView | null; error?: str
   );
   return (
     <div class="pm-builds" data-builds>
+      <Show when={(props.builds?.deliveries?.length ?? 0) > 0}>
+        <section data-artifact-deliveries>
+          <h3>{tr("Remote artifact tests")}</h3>
+          <For each={props.builds?.deliveries ?? []}>{(item) => (
+            <div class="pm-queue" data-artifact-job={item.job}>
+              <b>{item.profile}</b><span>{item.device}</span><span class="pm-pill">{item.phase}</span>
+              <span class="pm-note" title={item.executor}>{tr("Job %1", item.job)}</span>
+              <Show when={item.phase === "awaiting_observation"}><span class="pm-note warn">{tr("Waiting for your scenario observation")}</span></Show>
+              <Show when={item.instructions}><details><summary>{tr("Scenario instructions")}</summary><p class="pm-note">{item.instructions}</p></details></Show>
+              <Show when={item.phase === "unknown"}><span class="pm-note warn">{tr("Execution outcome is unknown; review before starting a new job")}</span></Show>
+            </div>
+          )}</For>
+        </section>
+      </Show>
       <div class="pm-tests-counts" data-builds-counts>
         <span classList={{ "pm-pill": true, "pm-count-on": building() > 0 }} data-count="building">{tr("%n building", building())}</span>
         <span classList={{ "pm-pill": true, "pm-count-on": waiting() > 0 }} data-count="waiting">{tr("%n waiting", waiting())}</span>

@@ -1,0 +1,15 @@
+{
+  "root": "C:\\ZerusExecutor\\state",
+  "peer": {
+    "identity": "C:\\ZerusExecutor\\identity",
+    "fingerprint": "REPLACE_WITH_BUILDER_CERTIFICATE_SHA256",
+    "listen": "10.20.0.12:7443",
+    "read_idle_seconds": 30
+  },
+  "serve_seconds": 604800,
+  "memory_bytes": 1073741824,
+  "scenario_memory_bytes": 536870912,
+  "scenario_seconds": 3600,
+  "stash_bytes": 16777216,
+  "devices": [{"device_id": "console-devkit", "adapter": "vendor-sdk"}]
+}

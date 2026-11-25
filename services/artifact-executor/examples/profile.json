@@ -1,0 +1,20 @@
+{
+  "source": "snapshot",
+  "artifact_relative": "Build/Win64",
+  "controller": {
+    "endpoint": "https://10.20.0.12:7443",
+    "peer": {
+      "identity": "C:\\ZerusBuilder\\identity",
+      "fingerprint": "REPLACE_WITH_EXECUTOR_CERTIFICATE_SHA256",
+      "read_idle_seconds": 30
+    },
+    "slot": "project-development",
+    "device_id": "host",
+    "scenario_root": "C:\\ZerusBuilder\\scenarios\\smoke",
+    "listen": "10.20.0.11:0",
+    "average": 4194304,
+    "memory_bytes": 536870912,
+    "timeout_seconds": 86400,
+    "parameters": {"case": "smoke"}
+  }
+}

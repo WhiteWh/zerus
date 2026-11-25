@@ -2016,6 +2016,17 @@ pub struct TestRunView {
     /// Task 88: one result per test from the provider's report (counts,
     /// note and at most `REPORT_RESULTS` results, failures first), or null.
     pub report: Value,
+    pub executor_load: Option<ExecutorLoadView>,
+}
+
+#[derive(Clone,Debug,Default,PartialEq,Serialize)]
+pub struct ExecutorLoadView{pub valid:bool,pub loaded:bool,pub sample_kind:String,pub cpu_percent:Option<f64>,pub disk_percent:Option<f64>,pub disk_busy_percent:Option<f64>,pub waited_ms:u64}
+fn executor_load(run:&Value)->Option<ExecutorLoadView>{
+ let load=run.get("load")?;if load["origin"]!="executor-host"{return None}
+ let during=load.get("during").filter(|sample|sample.is_object());let sample=during.or_else(||load.get("before")).unwrap_or(&Value::Null);
+ let percent=|key:&str|sample.get(key).and_then(Value::as_f64).filter(|n|n.is_finite()&&(0.0..=100.0).contains(n));
+ let cpu=percent("cpu_percent");let disk=percent("disk_percent");let busy=percent("disk_busy_percent");
+ Some(ExecutorLoadView{valid:flag(load,"valid")&&cpu.is_some()&&disk.is_some()&&busy.is_some(),loaded:flag(load,"loaded"),sample_kind:if during.is_some(){"during_peak"}else{"before"}.into(),cpu_percent:cpu,disk_percent:disk,disk_busy_percent:busy,waited_ms:load["waited_ms"].as_u64().unwrap_or(0)})
 }
 
 /// Task 88: the results of one run the Tests mode shows; the counts cover the rest.
@@ -2085,6 +2096,7 @@ pub fn tests(team: &str, queue: &Value, results: &Value) -> TestsView {
                 due: flag(run, "due"),
                 over_budget: flag(run, "over_budget"),
                 report: test_report(run.get("report")),
+                executor_load:executor_load(run),
             })
             .collect(),
         next: results.get("next_cursor").and_then(Value::as_f64),
@@ -2336,7 +2348,11 @@ pub struct BuildsView {
     /// The build broker is on: members sharing a folder build in snapshots.
     pub enabled: bool,
     pub folders: Vec<BuildFolderView>,
+    pub deliveries: Vec<ArtifactDeliveryView>,
 }
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ArtifactDeliveryView {pub job:String,pub profile:String,pub executor:String,pub device:String,pub phase:String,pub instructions:String,pub updated:f64}
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct BuildFolderView {
@@ -2402,6 +2418,7 @@ pub fn builds(team: &str, value: &Value) -> BuildsView {
     BuildsView {
         team: team.to_owned(),
         enabled: flag(value, "enabled"),
+        deliveries:array(value,"deliveries").iter().take(BUILD_ITEMS_KEPT).map(|row|ArtifactDeliveryView{job:name(row,"job"),profile:name(row,"profile"),executor:name(row,"executor"),device:name(row,"device"),phase:name(row,"phase"),instructions:text(row,"instructions",16384),updated:number(row,"updated")}).collect(),
         folders: array(value, "folders")
             .iter()
             .take(BUILD_FOLDERS_KEPT)
@@ -2428,6 +2445,14 @@ pub fn builds(team: &str, value: &Value) -> BuildsView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn executor_load_projection_distinguishes_capacity_activity_and_missing_samples(){
+        let run=json!({"load":{"origin":"executor-host","valid":true,"loaded":true,"during":{"cpu_percent":70,"disk_percent":80,"disk_busy_percent":20}}});
+        let view=executor_load(&run).unwrap();assert!(view.valid&&view.loaded);assert_eq!(view.sample_kind,"during_peak");assert_eq!(view.disk_percent,Some(80.0));assert_eq!(view.disk_busy_percent,Some(20.0));
+        let missing=executor_load(&json!({"load":{"origin":"executor-host","valid":true}})).unwrap();assert!(!missing.valid);assert_eq!(missing.cpu_percent,None);
+        assert!(executor_load(&json!({"load":{"origin":"builder","valid":true}})).is_none());
+    }
 
     #[test]
     fn a_task_carries_its_lane_and_lane_zero_is_no_lane() {

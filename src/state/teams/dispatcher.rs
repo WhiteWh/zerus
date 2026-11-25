@@ -12814,6 +12814,7 @@ fn run_outcome(team: &Team, member: &Member, folder: &Path, request: &Value) -> 
     }
     // Task 85: a project template's own timeout comes from the folder's tests file.
     let timeout = Duration::from_secs(super::templates::timeout_in(template, folder));
+    if template=="artifact-test" { return super::artifacts::run(team,member,folder,&args,timeout); }
     // U36: a test stage builds in the task's folder (or its checkout), with
     // its own temporary folder, only while the stage is open.
     if let Some((stage_folder, temp)) = super::stages::run_folder(team, &member.id, request["attempt"].as_str().unwrap_or_default(), template)? {
