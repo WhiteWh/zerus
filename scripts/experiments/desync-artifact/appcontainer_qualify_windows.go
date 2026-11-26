@@ -722,8 +722,16 @@ func (q *qualifier) q10() error {
 		}
 		diag("cmd direct", cmd, []string{"/d", "/c", "echo diag-direct"})
 		diag("batch in runtime", cmd, []string{"/d", "/q", "/c", batch})
-		diag("batch in temp", powershell, []string{"-NoProfile", "-NonInteractive", "-Command",
-			"$t=[IO.Path]::GetTempPath(); $f=Join-Path $t 'diag2.cmd'; [IO.File]::WriteAllText($f, \"@echo diag-batch-temp\"); \"temp=$t\"; & $env:ComSpec /d /q /c $f; \"exit=$LASTEXITCODE\"; \"comspec=$env:ComSpec\""})
+		diag("batch in container temp", cmd, []string{"/d", "/c", "echo @echo diag-ac-temp> %TEMP%\\d3.cmd && call %TEMP%\\d3.cmd && echo temp=%TEMP%"})
+		// Experiment only: list (names, no file contents) on the runtime's
+		// ancestors for this package, then the runtime batch again.
+		listing := containedGrant{roleJobParent, principalPackage, windows.FILE_LIST_DIRECTORY | rightsTraverse, false, false}
+		for _, dir := range []string{q.cfg.Root, filepath.Join(q.cfg.Root, "jobs"), q.layout.Parent} {
+			if err := addExplicitEntry(dir, listing, q.plan, false); err != nil {
+				failures = append(failures, "diag list grant on "+dir+": "+err.Error())
+			}
+		}
+		diag("batch in runtime with ancestor listing", cmd, []string{"/d", "/q", "/c", batch})
 		return errors.New("unsupported: " + strings.Join(failures, "; "))
 	}
 	return nil
