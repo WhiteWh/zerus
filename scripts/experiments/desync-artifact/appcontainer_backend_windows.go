@@ -211,9 +211,9 @@ type appContainerIsolation struct {
 	record qualificationRecord
 	binary string
 	api    profileAPI
-	mu     sync.Mutex           // guards probes
-	flight sync.Mutex           // serializes runtime probes (single flight)
-	probes map[string]time.Time // key -> expiry, at most maxProbeCache entries
+	mu     sync.Mutex                                  // guards probes
+	flight sync.Mutex                                  // serializes runtime probes (single flight)
+	probes map[string]time.Time                        // key -> expiry, at most maxProbeCache entries
 	probe  func(root string, plan containerPlan) error // runtimeProbe; tests substitute
 }
 
@@ -419,7 +419,7 @@ func applyProtectedFolder(path, sddl string) error {
 		return accessCode("container-grant-failed")
 	}
 	got, err := windows.GetSecurityInfo(windows.Handle(f.Fd()), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-	if err != nil || descriptorParts(got) != descriptorParts(sd) {
+	if err != nil || !sameProtection(got, sd) {
 		return accessCode("container-grant-mismatch")
 	}
 	return nil

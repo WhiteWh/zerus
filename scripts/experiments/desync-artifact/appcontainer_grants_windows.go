@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"unsafe"
 
@@ -92,10 +93,57 @@ func readBackDescriptor(h windows.Handle, want *windows.SECURITY_DESCRIPTOR) err
 	if err != nil {
 		return accessCode("container-grant-unreadable")
 	}
-	if descriptorParts(got) != descriptorParts(want) {
+	if !sameProtection(got, want) {
 		return accessCode("container-grant-mismatch")
 	}
 	return nil
+}
+
+// aceEntries lists an ACL's entries as "type/flags/mask/sid" with the
+// inherited flag removed, sorted; the system's own normalization (entry
+// order, the auto-inherited control flag, alias spelling) does not matter,
+// the entries do.
+func aceEntries(acl *windows.ACL) ([]string, error) {
+	if acl == nil {
+		return nil, nil
+	}
+	var out []string
+	for i := 0; i < int(acl.AceCount); i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(acl, uint32(i), &ace); err != nil {
+			return nil, err
+		}
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		flags := ace.Header.AceFlags &^ windows.INHERITED_ACE
+		out = append(out, fmt.Sprintf("%d/%d/%#x/%s", ace.Header.AceType, flags, uint32(ace.Mask), sid.String()))
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// sameProtection compares two descriptors by meaning: the DACL's protection,
+// its entries and the mandatory label entries.
+func sameProtection(got, want *windows.SECURITY_DESCRIPTOR) bool {
+	gotControl, _, err1 := got.Control()
+	wantControl, _, err2 := want.Control()
+	if err1 != nil || err2 != nil || gotControl&windows.SE_DACL_PROTECTED != wantControl&windows.SE_DACL_PROTECTED {
+		return false
+	}
+	gotDACL, _, err1 := got.DACL()
+	wantDACL, _, err2 := want.DACL()
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	a, err1 := aceEntries(gotDACL)
+	b, err2 := aceEntries(wantDACL)
+	if err1 != nil || err2 != nil || strings.Join(a, ",") != strings.Join(b, ",") {
+		return false
+	}
+	gotSACL, _, _ := got.SACL()
+	wantSACL, _, _ := want.SACL()
+	a, err1 = aceEntries(gotSACL)
+	b, err2 = aceEntries(wantSACL)
+	return err1 == nil && err2 == nil && strings.Join(a, ",") == strings.Join(b, ",")
 }
 
 func descriptorParts(sd *windows.SECURITY_DESCRIPTOR) string {

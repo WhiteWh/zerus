@@ -58,8 +58,10 @@ func TestOnlyACompleteDistributableRecordForThisBinaryActivates(t *testing.T) {
 		"padded OS":            {fixtureSource, host, func(r *qualificationRecord) { r.OSVersion = "10.0.026100" }, "qualification-os"},
 		"old host":             {fixtureSource, "10.0.22631", func(*qualificationRecord) {}, "qualification-host-incompatible"},
 		"other host version":   {fixtureSource, "11.0.30000", func(*qualificationRecord) {}, "qualification-host-incompatible"},
-		"unexpected case":      {fixtureSource, host, func(r *qualificationRecord) { r.Cases = append(r.Cases, qualificationCase{Case: "Q11", Verdict: "pass"}) }, "qualification-unexpected-case"},
-		"renamed case":         {fixtureSource, host, func(r *qualificationRecord) { r.Cases[3].Case = "q3" }, "qualification-unexpected-case"},
+		"unexpected case": {fixtureSource, host, func(r *qualificationRecord) {
+			r.Cases = append(r.Cases, qualificationCase{Case: "Q11", Verdict: "pass"})
+		}, "qualification-unexpected-case"},
+		"renamed case": {fixtureSource, host, func(r *qualificationRecord) { r.Cases[3].Case = "q3" }, "qualification-unexpected-case"},
 	} {
 		r := passingRecord(binary)
 		c.change(&r)
@@ -498,5 +500,45 @@ func TestRuntimeProbesAreSingleFlightAndBounded(t *testing.T) {
 	}
 	if _, cached := b.probes[b.probeKey(plan, "fresh")]; cached {
 		t.Fatal("a failed probe was cached")
+	}
+}
+
+// Read-back compares meaning, not the system's SDDL spelling.
+func TestReadBackComparesProtectionNotSpelling(t *testing.T) {
+	sid, _ := appContainerSID("Zerus.AC.alpha")
+	me := currentUserSID(t).String()
+	set := "D:P(A;OICI;FA;;;" + me + ")(A;OICI;FA;;;SY)(A;OICI;0x1301bf;;;" + sid.String() + ")S:(ML;OICI;NW;;;LW)"
+	same := []string{
+		"D:PAI(A;OICI;FA;;;SY)(A;OICI;0x1301bf;;;" + sid.String() + ")(A;OICI;0x1f01ff;;;" + me + ")S:(ML;OICI;NW;;;LW)",
+		"D:PAI(A;OICIID;FA;;;" + me + ")(A;OICI;FA;;;SY)(A;OICI;0x1301bf;;;" + sid.String() + ")S:AI(ML;OICI;NW;;;LW)",
+	}
+	different := []string{
+		"D:(A;OICI;FA;;;" + me + ")(A;OICI;FA;;;SY)(A;OICI;0x1301bf;;;" + sid.String() + ")S:(ML;OICI;NW;;;LW)",  // not protected
+		"D:P(A;OICI;FA;;;" + me + ")(A;OICI;FA;;;SY)(A;OICI;0x1301bf;;;" + sid.String() + ")",                    // no label
+		"D:P(A;OICI;FA;;;" + me + ")(A;OICI;FA;;;SY)(A;OICI;0x1301bf;;;AC)S:(ML;OICI;NW;;;LW)",                   // other principal
+		"D:P(A;OICI;FA;;;" + me + ")(A;OICI;FA;;;SY)(A;OICI;0x1f01ff;;;" + sid.String() + ")S:(ML;OICI;NW;;;LW)", // more rights
+		"D:P(A;OICI;FA;;;" + me + ")(A;OICI;FA;;;SY)(A;OICI;0x1301bf;;;" + sid.String() + ")(A;;FR;;;WD)S:(ML;OICI;NW;;;LW)",
+	}
+	want, err := windows.SecurityDescriptorFromString(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range same {
+		got, err := windows.SecurityDescriptorFromString(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !sameProtection(got, want) {
+			t.Errorf("same protection refused: %s", s)
+		}
+	}
+	for _, s := range different {
+		got, err := windows.SecurityDescriptorFromString(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sameProtection(got, want) {
+			t.Errorf("different protection accepted: %s", s)
+		}
 	}
 }
