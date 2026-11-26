@@ -133,5 +133,29 @@ class ScenarioExecutionTests(unittest.TestCase):
         self.assertEqual(self.state(value)["status"],"passed")
         self.assertTrue(self.state(value)["observation"]["notes"]=="Synthetic test observer response")
 
+    def test_guided_scenario_that_exits_on_the_observation_still_passes(self):
+        # LAN qualification found this race: the scenario exits the moment the
+        # observation lands, before the monitor's next tick reads it.
+        script="while (-not (Test-Path $env:ZERUS_OBSERVATION_FILE)) { [Threading.Thread]::Sleep(5) }; exit 0"
+        for _ in range(3):
+            root,config,value=self.fixture(script=script,timeout=15,guided=True)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                running=pool.submit(self.invoke,config)
+                deadline=time.monotonic()+10
+                state=None
+                while time.monotonic()<deadline:
+                    try:
+                        state=self.state(value)
+                        if state["status"]=="awaiting_observation":break
+                    except FileNotFoundError:pass
+                    if running.done():break
+                    time.sleep(0.02)
+                self.assertEqual(state["status"],"awaiting_observation")
+                value["observation"]={"request_id":uuid.uuid4().hex,"job_id":value["job_id"],"request_sha256":state["request_sha256"],"verdict":"passed","notes":"Synthetic test observer response"}
+                config.write_text(json.dumps(value),encoding="utf-8")
+                self.assertEqual(self.invoke(config,"scenario-observe","observe"),0)
+                self.assertEqual(running.result(timeout=20),0)
+            self.assertEqual(self.state(value)["status"],"passed",self.state(value).get("reason"))
+
 
 if __name__=="__main__":unittest.main()

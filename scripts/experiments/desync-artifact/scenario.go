@@ -501,6 +501,14 @@ func runScenario(command, configPath string) error {
 	}
 	state.Exit = &code
 	state.Finished = time.Now().UnixMilli()
+	// An observation is accepted only while the guided process is live
+	// (submitObservation), but the process may exit right after it lands and
+	// before the next monitor tick reads it: read it once more before settling.
+	if spec.Guided && runErr == nil {
+		if err := observeScenario(work, &state); err != nil {
+			runErr = err
+		}
+	}
 	if native.capture != nil {
 		native.capture.mu.Lock()
 		state.LogBytes = native.capture.bytes
