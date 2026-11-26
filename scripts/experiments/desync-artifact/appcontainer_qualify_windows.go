@@ -692,6 +692,7 @@ func (q *qualifier) q10() error {
 	files := map[string]string{
 		"CMakeLists.txt": "cmake_minimum_required(VERSION 3.20)\nproject(hello C)\nadd_executable(hello main.c)\n",
 		"main.c":         "#include <stdio.h>\nint main(void){puts(\"contained-hello\");return 0;}\n",
+		"hello.cpp":      "#include <iostream>\n#include <string>\nint main(){std::string s=\"contained-\";std::cout<<s<<\"cpp\"<<std::endl;return 0;}\n",
 		"tiny.proj":      "<Project><Target Name=\"Build\"><Message Importance=\"high\" Text=\"contained-msbuild\" /></Target></Project>\n",
 		"tiny.ps1":       "$value = 'contained-' + (1+1)\n$value\n",
 	}
@@ -738,14 +739,33 @@ func (q *qualifier) q10() error {
 	if toolchain["INCLUDE"] == "" || toolchain["LIB"] == "" || len(toolPath) < 2 {
 		failures = append(failures, "MSVC toolchain environment not provided by the workflow")
 	} else {
-		code, log, err = q.containedToolWith(q.cfg.CMake, []string{"-S", sources, "-B", build, "-G", "NMake Makefiles", "-DCMAKE_BUILD_TYPE=Release",
-			"-DCMAKE_C_COMPILER=cl.exe"}, append([]string{filepath.Dir(q.cfg.CMake)}, toolPath...), toolchain)
-		if check("C++ configure (CMake, NMake, MSVC)", "Build files have been written", code, log, err) {
-			code, log, err = q.containedToolWith(q.cfg.CMake, []string{"--build", build}, append([]string{filepath.Dir(q.cfg.CMake)}, toolPath...), toolchain)
-			if check("C++ build", "", code, log, err) {
-				code, log, err = q.containedTool(filepath.Join(build, "hello.exe"), nil, nil)
-				check("built program", "contained-hello", code, log, err)
+		// Required: MSVC compiles and links C++ inside the container (cl
+		// starts link itself; no debug database server, no pipes).
+		cl := ""
+		for _, dir := range toolPath {
+			if candidate := filepath.Join(dir, "cl.exe"); fileExists(candidate) {
+				cl = candidate
+				break
 			}
+		}
+		if cl == "" {
+			failures = append(failures, "cl.exe not found on the toolchain PATH")
+		} else {
+			code, log, err = q.containedToolWith(cl, []string{"/nologo", "/EHsc", "/O2", filepath.Join(sources, "hello.cpp"), "/Fe" + filepath.Join(q.layout.Runtime, "hello-cpp.exe")}, toolPath, toolchain)
+			if check("C++ compile and link (MSVC)", "", code, log, err) {
+				code, log, err = q.containedTool(filepath.Join(q.layout.Runtime, "hello-cpp.exe"), nil, nil)
+				check("built C++ program", "contained-cpp", code, log, err)
+			}
+		}
+		// Recorded, not required: CMake's generators wrap the compiler in
+		// `cmake -E` helpers (and Ninja) that create global named pipes,
+		// which an AppContainer may not.
+		cmCode, cmLog, cmErr := q.containedToolWith(q.cfg.CMake, []string{"-S", sources, "-B", build, "-G", "NMake Makefiles", "-DCMAKE_BUILD_TYPE=Release",
+			"-DCMAKE_C_COMPILER=cl.exe"}, append([]string{filepath.Dir(q.cfg.CMake)}, toolPath...), toolchain)
+		if cmErr == nil && cmCode == 0 {
+			fmt.Fprintln(os.Stderr, "note: CMake (NMake) also configures inside the container")
+		} else {
+			fmt.Fprintf(os.Stderr, "note: CMake generators unsupported inside the container: code %d %v %.300q\n", cmCode, cmErr, cmLog)
 		}
 	}
 	// MSBuild C++ (vcxproj) build events: a known AppContainer limitation,
@@ -843,4 +863,9 @@ func grantPolicyKeyRead(plan containerPlan) error {
 		}
 	}
 	return nil
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
