@@ -425,6 +425,19 @@ func applyProtectedFolder(path, sddl string) error {
 	return nil
 }
 
+// containedBaseEnvironment is the minimal environment of a contained probe:
+// Windows basics and job-local profile and temporary folders. Windows
+// rewrites TEMP, TMP and LOCALAPPDATA of an AppContainer process to the
+// container's own storage and refuses creation when they are missing.
+func containedBaseEnvironment(runtime string) map[string]string {
+	system, _ := systemDirectory()
+	env := map[string]string{"SystemRoot": filepath.Dir(system), "WINDIR": filepath.Dir(system), "PATH": system}
+	for _, key := range []string{"TEMP", "TMP", "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA"} {
+		env[key] = runtime
+	}
+	return env
+}
+
 // runContainedProbe runs this binary's contained-probe command in the plan's
 // container through StartContained and returns its outcomes.
 func runContainedProbe(plan containerPlan, actions []probeAction, cwd string, extra map[string]string, seconds int) (map[string]probeOutcome, error) {
@@ -444,7 +457,8 @@ func runContainedProbe(plan containerPlan, actions []probeAction, cwd string, ex
 		return nil, err
 	}
 	defer log.Close()
-	env := map[string]string{"SystemRoot": os.Getenv("SystemRoot"), "ZERUS_CONTAINED_PROBE": string(spec)}
+	env := containedBaseEnvironment(cwd)
+	env["ZERUS_CONTAINED_PROBE"] = string(spec)
 	for k, v := range extra {
 		env[k] = v
 	}

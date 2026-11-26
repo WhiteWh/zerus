@@ -34,7 +34,7 @@ var scenarioEnvironmentKeys = []string{
 	"SystemRoot", "WINDIR", "COMSPEC", "PATH",
 	"TEMP", "TMP", "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA",
 	"ZERUS_ARTIFACT_ROOT", "ZERUS_SCENARIO_ROOT", "ZERUS_RESULT_DIR", "ZERUS_PARAMETERS_FILE", "ZERUS_OBSERVATION_FILE", "ZERUS_DEVICE_ID",
-	"GOTELEMETRY", "OTEL_SDK_DISABLED",
+	"GOTELEMETRY", "OTEL_SDK_DISABLED", "PSModulePath",
 }
 
 func scenarioEnvironment(work string, cfg ScenarioConfig) (map[string]string, error) {
@@ -45,8 +45,9 @@ func scenarioEnvironment(work string, cfg ScenarioConfig) (map[string]string, er
 	windowsRoot := filepath.Dir(system)
 	runtime := filepath.Join(work, "runtime")
 	env := map[string]string{"SystemRoot": windowsRoot, "WINDIR": windowsRoot, "COMSPEC": filepath.Join(system, "cmd.exe"),
-		"PATH": system + string(os.PathListSeparator) + filepath.Join(system, "WindowsPowerShell", "v1.0"),
-		"TEMP": runtime, "TMP": runtime, "HOME": runtime, "USERPROFILE": runtime, "LOCALAPPDATA": runtime, "APPDATA": runtime,
+		"PATH":         system + string(os.PathListSeparator) + filepath.Join(system, "WindowsPowerShell", "v1.0"),
+		"PSModulePath": filepath.Join(system, "WindowsPowerShell", "v1.0", "Modules"),
+		"TEMP":         runtime, "TMP": runtime, "HOME": runtime, "USERPROFILE": runtime, "LOCALAPPDATA": runtime, "APPDATA": runtime,
 		"ZERUS_ARTIFACT_ROOT": filepath.Join(cfg.ArtifactSlot, "build"), "ZERUS_SCENARIO_ROOT": filepath.Join(cfg.ScenarioSlot, "build"),
 		"ZERUS_RESULT_DIR": filepath.Join(work, "outputs"), "ZERUS_PARAMETERS_FILE": filepath.Join(work, "parameters.json"),
 		"ZERUS_OBSERVATION_FILE": filepath.Join(work, "observation.json"), "ZERUS_DEVICE_ID": cfg.Device,

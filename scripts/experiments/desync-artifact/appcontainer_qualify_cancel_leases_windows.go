@@ -26,7 +26,8 @@ func (q *qualifier) q7() error {
 	}
 	defer log.Close()
 	spec, _ := json.Marshal([]probeAction{{"spawn", ""}, {"sleep", "120"}})
-	env := map[string]string{"SystemRoot": os.Getenv("SystemRoot"), "ZERUS_CONTAINED_PROBE": string(spec)}
+	env := containedBaseEnvironment(q.layout.Runtime)
+	env["ZERUS_CONTAINED_PROBE"] = string(spec)
 	if err := native.StartContained(q.plan, self, []string{"contained-probe"}, env, q.layout.Runtime, log, func(processReceipt) error { return nil }); err != nil {
 		return err
 	}
