@@ -125,7 +125,9 @@ func provenanceAllowed(r qualificationRecord, host string) error {
 		return accessCode("qualification-os")
 	}
 	hMajor, hMinor, hBuild, ok := parseOSVersion(host)
-	if !ok || hMajor != major || hMinor != minor || hBuild < minimumQualifiedBuild {
+	// A Windows 11 host below the qualified kernel is covered only together
+	// with its own host probe (activateAppContainer, hostNeedsProbe).
+	if !ok || hMajor != major || hMinor != minor || hBuild < minimumProbedBuild {
 		return accessCode("qualification-host-incompatible")
 	}
 	return nil
@@ -186,7 +188,7 @@ func checkQualificationRecordOn(r qualificationRecord, binary, source, host stri
 // complete record beside this binary. The record is read through the same
 // held-handle, installer-trust check as the bootstrap configuration, so a
 // user-editable file never enables isolation.
-func activateAppContainer(bootstrap policyTrust) error {
+func activateAppContainer(bootstrap policyTrust, stateRoot string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -201,6 +203,11 @@ func activateAppContainer(bootstrap policyTrust) error {
 	}
 	if err := checkQualificationRecord(record, binary); err != nil {
 		return err
+	}
+	if hostNeedsProbe(osVersion()) {
+		if err := hostCompatibilityProbe(stateRoot); err != nil {
+			return fmt.Errorf("qualification-host-probe-failed: %v", err)
+		}
 	}
 	isolationBackends[appContainerBackend] = &appContainerIsolation{record: record, binary: binary, api: windowsProfiles{}, probes: map[string]time.Time{}}
 	return nil

@@ -65,6 +65,10 @@ type qualifier struct {
 	layout   containedLayout
 	otherJob string
 	cases    []qualificationCase
+	// installRoot, when set, is the executor installation whose identity
+	// names the jobs capability (the host probe runs in a subfolder of it and
+	// uses the capability the operator already let list the volume root).
+	installRoot string
 }
 
 func (q *qualifier) record(name string, err error) {
@@ -129,7 +133,11 @@ func osVersion() string {
 func (q *qualifier) setup() error {
 	// The installation identity is the root's, as in production, so the
 	// operator command appcontainer-capability names the same capability.
-	parents, rootID, err := holdDirectoryChain(q.cfg.Root)
+	identityRoot := q.cfg.Root
+	if q.installRoot != "" {
+		identityRoot = q.installRoot
+	}
+	parents, rootID, err := holdDirectoryChain(identityRoot)
 	closeFiles(parents)
 	if err != nil {
 		return err

@@ -551,7 +551,7 @@ func serveSharedExecutor(configPath string) error {
 		return errors.New("executor-serve-shared needs an access section")
 	}
 	if cfg.Access.Isolation == appContainerBackend {
-		if err := activateAppContainer(bootstrap); err != nil {
+		if err := activateAppContainer(bootstrap, cfg.Root); err != nil {
 			return errors.New("isolation backend unavailable: " + err.Error())
 		}
 	}

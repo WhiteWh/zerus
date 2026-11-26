@@ -56,7 +56,7 @@ func TestOnlyACompleteDistributableRecordForThisBinaryActivates(t *testing.T) {
 		"old qualified OS":     {fixtureSource, host, func(r *qualificationRecord) { r.OSVersion = "10.0.20348" }, "qualification-os"},
 		"malformed OS":         {fixtureSource, host, func(r *qualificationRecord) { r.OSVersion = "10.0" }, "qualification-os"},
 		"padded OS":            {fixtureSource, host, func(r *qualificationRecord) { r.OSVersion = "10.0.026100" }, "qualification-os"},
-		"old host":             {fixtureSource, "10.0.22631", func(*qualificationRecord) {}, "qualification-host-incompatible"},
+		"windows 10 host":      {fixtureSource, "10.0.19045", func(*qualificationRecord) {}, "qualification-host-incompatible"},
 		"other host version":   {fixtureSource, "11.0.30000", func(*qualificationRecord) {}, "qualification-host-incompatible"},
 		"unexpected case": {fixtureSource, host, func(r *qualificationRecord) {
 			r.Cases = append(r.Cases, qualificationCase{Case: "Q11", Verdict: "pass"})
@@ -93,7 +93,7 @@ func TestOnlyACompleteDistributableRecordForThisBinaryActivates(t *testing.T) {
 	}
 	// Beside this test binary there is no record: activation refuses and the
 	// registry stays empty of the backend.
-	if err := activateAppContainer(acceptTrust{}); err == nil || err.Error() != "qualification-unavailable" {
+	if err := activateAppContainer(acceptTrust{}, t.TempDir()); err == nil || err.Error() != "qualification-unavailable" {
 		t.Fatalf("activation without a record: %v", err)
 	}
 	if _, ok := isolationBackends[appContainerBackend]; ok {

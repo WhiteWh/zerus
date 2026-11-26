@@ -444,6 +444,21 @@ func run(command, configPath string) error {
 	if command == "appcontainer-qualify" {
 		return runAppContainerQualification(configPath)
 	}
+	if command == "appcontainer-host-probe" {
+		// Operator diagnostic: the host-compatibility cases activation runs on
+		// a Windows 11 host below the qualified kernel, here on demand.
+		var cfg struct {
+			Root string `json:"root"`
+		}
+		if err := strictControl(configPath, &cfg); err != nil {
+			return err
+		}
+		if err := runHostProbe(cfg.Root); err != nil {
+			return errors.New("host probe failed: " + err.Error())
+		}
+		fmt.Println("host probe passed on " + osVersion())
+		return nil
+	}
 	switch command {
 	case "access-request-device":
 		return runRequestDevice(configPath)
@@ -685,7 +700,7 @@ func main() {
 		return
 	}
 	if len(os.Args) == 2 && os.Args[1] == "--help" {
-		fmt.Println("hgs-executor COMMAND CONFIG\nCommands: identity-init, executor-serve, executor-serve-shared, controller-run, controller-deploy, controller-status, controller-capabilities, controller-observe, controller-collect, tree-serve, tree-receive, tree-status. Access administration: access-request-device, access-admit-device (also rotation), access-revoke, access-show. Disposable-runner qualification: appcontainer-qualify. Local qualification also supports prepare, apply, status, metadata, serve, receive and receive-status.")
+		fmt.Println("hgs-executor COMMAND CONFIG\nCommands: identity-init, executor-serve, executor-serve-shared, controller-run, controller-deploy, controller-status, controller-capabilities, controller-observe, controller-collect, tree-serve, tree-receive, tree-status. Access administration: access-request-device, access-admit-device (also rotation), access-revoke, access-show. Disposable-runner qualification: appcontainer-qualify. Host compatibility below the qualified kernel: appcontainer-host-probe. Local qualification also supports prepare, apply, status, metadata, serve, receive and receive-status.")
 		return
 	}
 	if len(os.Args) == 2 && os.Args[1] == "contained-probe" {
