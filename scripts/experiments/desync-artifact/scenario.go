@@ -599,7 +599,7 @@ func containedLaunchPlan(work string, cfg ScenarioConfig, prepare func(contained
 	if err != nil {
 		return nil, err
 	}
-	layout := containedLayout{Parent: work, Runtime: filepath.Join(work, "runtime"), Outputs: filepath.Join(work, "outputs"),
+	layout := containedLayout{Root: cfg.ExecutorRoot, Parent: work, Runtime: filepath.Join(work, "runtime"), Outputs: filepath.Join(work, "outputs"),
 		Generation: filepath.Join(cfg.ArtifactSlot, "build"), Bundle: filepath.Join(cfg.ScenarioSlot, "build")}
 	if err := prepare(layout, plan); err != nil {
 		return nil, err

@@ -375,7 +375,7 @@ func TestTheSharedExecutorPlansEachJobsContainerFromTheCurrentPolicy(t *testing.
 	if err != nil || spec == nil || fake.calls != 1 || fake.origin.Person != f.person("bob").Person || fake.origin.Context != "bob-worker" {
 		t.Fatalf("container: %+v %v %+v", spec, err, fake)
 	}
-	if fake.planned.CapabilityNames[0] == "" || len(fake.planned.Capabilities) != 1 {
+	if fake.planned.CapabilityNames[0] == "" || len(fake.planned.Capabilities) != 2 {
 		t.Fatalf("capabilities %+v", fake.planned)
 	}
 	fake.refuse = accessCode("probe-boundary-failed")

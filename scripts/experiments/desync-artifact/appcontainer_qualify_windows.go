@@ -147,7 +147,7 @@ func (q *qualifier) setup() error {
 		_ = os.MkdirAll(path, 0700)
 		return path
 	}
-	q.layout = containedLayout{Parent: mk("jobs", "job-a"), Runtime: mk("jobs", "job-a", "runtime"), Outputs: mk("jobs", "job-a", "outputs"),
+	q.layout = containedLayout{Root: root, Parent: mk("jobs", "job-a"), Runtime: mk("jobs", "job-a", "runtime"), Outputs: mk("jobs", "job-a", "outputs"),
 		Generation: mk("project-slots", "proj-shared", "slot", "build"), Bundle: mk("project-slots", "proj-shared", "bundle", "build")}
 	otherParent := mk("jobs", "job-b")
 	q.otherJob = mk("jobs", "job-b", "runtime")
@@ -184,7 +184,7 @@ func (q *qualifier) setup() error {
 	if err := prepareContainedJob(q.layout, q.plan); err != nil {
 		return err
 	}
-	return prepareContainedJob(containedLayout{Parent: otherParent, Runtime: q.otherJob, Outputs: otherOut,
+	return prepareContainedJob(containedLayout{Root: root, Parent: otherParent, Runtime: q.otherJob, Outputs: otherOut,
 		Generation: filepath.Join(root, "project-slots", "proj-other", "slot", "build"), Bundle: filepath.Join(root, "project-slots", "proj-other", "bundle", "build")}, q.other)
 }
 
@@ -323,7 +323,9 @@ func (q *qualifier) q1q3q5() (error, error, error) {
 	files := []expectation{
 		{probeAction{"read", filepath.Join(root, "identity.key")}, "deny", true},
 		{probeAction{"read", filepath.Join(root, "executor-queue.json")}, "deny", true},
-		{probeAction{"list", root}, "deny", true},
+		{probeAction{"list", root}, "allow", true}, // names only (cmd.exe batch runs need it)
+		{probeAction{"list", q.otherJob}, "deny", true},
+		{probeAction{"list", filepath.Join(root, "profile")}, "deny", true},
 		{probeAction{"read", filepath.Join(root, "operator-policy.json")}, "deny", true},
 		{probeAction{"read", filepath.Join(root, "profile", ".codex", "auth.json")}, "deny", true},
 		{probeAction{"read", filepath.Join(q.layout.Parent, "job-state.json")}, "deny", true},
@@ -472,7 +474,10 @@ func (q *qualifier) q2() error {
 		}
 		for _, part := range strings.Split(sd.String(), "(") {
 			fields := strings.Split(strings.TrimSuffix(part, ")"), ";")
-			if len(fields) >= 6 && contained(fields[5]) && !allowed {
+			// Folder-name listing (no inheritance, no file access) is the
+			// matrix's executor-path and project-path entry.
+			listingOnly := len(fields) >= 6 && fields[1] == "" && strings.EqualFold(fields[2], fmt.Sprintf("0x%x", rightsListing))
+			if len(fields) >= 6 && contained(fields[5]) && !allowed && !listingOnly {
 				return fmt.Errorf("%s grants %s", path, fields[5])
 			}
 			if len(fields) >= 6 && fields[5] == "AC" && !strings.HasPrefix(strings.ToLower(path), strings.ToLower(filepath.Join(q.cfg.Root, "broad"))) {

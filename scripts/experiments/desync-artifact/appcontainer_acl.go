@@ -6,6 +6,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"golang.org/x/sys/windows"
 )
@@ -16,6 +17,7 @@ type grantPrincipal string
 const (
 	principalPackage    grantPrincipal = "package"      // this job's container SID
 	principalProject    grantPrincipal = "project"      // the project capability SID
+	principalJobs       grantPrincipal = "jobs"         // the installation's jobs-path capability SID
 	principalAllPackage grantPrincipal = "all-app"      // ALL APPLICATION PACKAGES, S-1-15-2-1
 	principalRestricted grantPrincipal = "all-restrict" // ALL RESTRICTED APPLICATION PACKAGES, S-1-15-2-2
 	principalService    grantPrincipal = "service"
@@ -24,7 +26,7 @@ const (
 )
 
 func (p grantPrincipal) contained() bool {
-	return p == principalPackage || p == principalProject || p == principalAllPackage || p == principalRestricted
+	return p == principalPackage || p == principalProject || p == principalJobs || p == principalAllPackage || p == principalRestricted
 }
 
 // grantRole names an object in the job's layout.
@@ -36,7 +38,9 @@ const (
 	roleJobHome        grantRole = "job-home"        // requests/<job>/runtime: HOME, USERPROFILE, APPDATA, LOCALAPPDATA, cwd
 	roleJobTemp        grantRole = "job-temp"        // TEMP, TMP (same folder as job-home today)
 	roleJobOut         grantRole = "job-out"         // requests/<job>/outputs
-	roleJobParent      grantRole = "job-parent"      // requests/<job>
+	roleJobParent      grantRole = "job-parent"      // jobs/<job>
+	roleExecutorPath   grantRole = "executor-path"   // the executor root's ancestors, the root and its jobs folder (entries only)
+	roleProjectPath    grantRole = "project-path"    // folders between the root and a generation or bundle (entries only)
 	roleExecutorRoot   grantRole = "executor-root"   // identity, queue, high-water, receipts
 	roleOperatorFolder grantRole = "operator-folder" // policy and bootstrap configuration
 	roleIdentityKey    grantRole = "identity-key"
@@ -46,8 +50,9 @@ const (
 
 const (
 	rightsTraverse = windows.FILE_TRAVERSE | windows.SYNCHRONIZE | windows.FILE_READ_ATTRIBUTES
-	rightsReadExec = 0x1200a9                      // FILE_GENERIC_READ | FILE_GENERIC_EXECUTE
-	rightsModify   = 0x1301bf &^ windows.WRITE_DAC // modify, never re-permission
+	rightsListing  = rightsTraverse | windows.FILE_LIST_DIRECTORY // folder names, never file contents
+	rightsReadExec = 0x1200a9                                     // FILE_GENERIC_READ | FILE_GENERIC_EXECUTE
+	rightsModify   = 0x1301bf &^ windows.WRITE_DAC                // modify, never re-permission
 	rightsWriteAny = windows.FILE_WRITE_DATA | windows.FILE_APPEND_DATA | windows.FILE_WRITE_EA | windows.FILE_WRITE_ATTRIBUTES |
 		windows.DELETE | windows.WRITE_DAC | windows.WRITE_OWNER | fileDeleteChild | genericWrite | genericAll
 )
@@ -65,7 +70,9 @@ type containedGrant struct {
 var appContainerGrants = []containedGrant{
 	{roleGeneration, principalProject, rightsReadExec, true, false},
 	{roleBundle, principalProject, rightsReadExec, true, false},
-	{roleJobParent, principalPackage, rightsTraverse, false, false},
+	{roleJobParent, principalPackage, rightsListing, false, false},
+	{roleExecutorPath, principalJobs, rightsListing, false, false},
+	{roleProjectPath, principalProject, rightsListing, false, false},
 	{roleJobHome, principalPackage, rightsModify, true, true},
 	{roleJobTemp, principalPackage, rightsModify, true, true},
 	{roleJobOut, principalPackage, rightsModify, true, true},
@@ -111,8 +118,16 @@ func validateGrantMatrix(grants []containedGrant) error {
 				return fmt.Errorf("%s: written only by the job's own package SID with a Low label", g.Role)
 			}
 		case roleJobParent:
-			if g.Principal != principalPackage || g.Rights&^rightsTraverse != 0 || g.Inherit {
-				return fmt.Errorf("%s: traverse only, not inherited", g.Role)
+			if g.Principal != principalPackage || g.Rights&^rightsListing != 0 || g.Inherit {
+				return fmt.Errorf("%s: traverse and folder listing only, not inherited", g.Role)
+			}
+		case roleExecutorPath:
+			if g.Principal != principalJobs || g.Rights&^rightsListing != 0 || g.Inherit {
+				return fmt.Errorf("%s: the jobs capability lists folder names only, not inherited", g.Role)
+			}
+		case roleProjectPath:
+			if g.Principal != principalProject || g.Rights&^rightsListing != 0 || g.Inherit {
+				return fmt.Errorf("%s: the project capability lists folder names only, not inherited", g.Role)
 			}
 		default:
 			return fmt.Errorf("%s: unknown role", g.Role)
@@ -128,11 +143,19 @@ func grantSDDL(g containedGrant, plan containerPlan) (dacl, label string, err er
 	switch g.Principal {
 	case principalPackage:
 		sid = plan.SID.String()
-	case principalProject:
-		if len(plan.Capabilities) != 1 {
-			return "", "", fmt.Errorf("plan needs exactly one project capability")
+	case principalProject, principalJobs:
+		prefix := "zerusProject"
+		if g.Principal == principalJobs {
+			prefix = "zerusJobs"
 		}
-		sid = plan.Capabilities[0].String()
+		for i, name := range plan.CapabilityNames {
+			if strings.HasPrefix(name, prefix) && i < len(plan.Capabilities) {
+				sid = plan.Capabilities[i].String()
+			}
+		}
+		if sid == "" {
+			return "", "", fmt.Errorf("plan has no %s capability", g.Principal)
+		}
 	default:
 		return "", "", fmt.Errorf("%s is not applied by the launcher", g.Principal)
 	}

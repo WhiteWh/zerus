@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"unsafe"
@@ -21,6 +22,7 @@ var procTreeSetNamedSecurityInfo = windows.NewLazySystemDLL("advapi32.dll").NewP
 
 // containedLayout names the folders of one contained job.
 type containedLayout struct {
+	Root                     string // the executor root
 	Parent, Runtime, Outputs string // jobs/<job>, its runtime and outputs
 	Generation, Bundle       string // the project's leased input and scenario bundle
 }
@@ -164,6 +166,53 @@ func addTraverse(path string, plan containerPlan) error {
 	return addExplicitEntry(path, g, plan, false)
 }
 
+// pathFolders lists the folders strictly between the volume root and path.
+func pathFolders(path string) []string {
+	var out []string
+	for p := filepath.Dir(filepath.Clean(path)); p != filepath.Dir(p); p = filepath.Dir(p) {
+		out = append([]string{p}, out...)
+	}
+	return out
+}
+
+// grantPathListing lets the job's containers list (names only) every folder
+// on the way to their runtime, generation and bundle: cmd.exe opens and
+// lists each ancestor before running a batch file. The executor root's
+// ancestors, the root and its jobs folder take the installation's jobs
+// capability (an entry the operator may also provision ahead); the folders
+// below the root on the way to a project's inputs take that project's
+// capability. Nothing is inherited, so no file below grants anything new.
+func grantPathListing(layout containedLayout, plan containerPlan) error {
+	if layout.Root == "" {
+		return accessCode("container-layout-invalid")
+	}
+	jobs, err := grantFor(roleExecutorPath, principalJobs)
+	if err != nil {
+		return err
+	}
+	project, err := grantFor(roleProjectPath, principalProject)
+	if err != nil {
+		return err
+	}
+	root := filepath.Clean(layout.Root)
+	for _, dir := range append(pathFolders(root), root, filepath.Join(root, "jobs")) {
+		if err := addExplicitEntry(dir, jobs, plan, false); err != nil {
+			return fmt.Errorf("%w (%s)", accessCode("container-path-unlisted"), dir)
+		}
+	}
+	for _, target := range []string{layout.Generation, layout.Bundle} {
+		for _, dir := range pathFolders(target) {
+			if len(dir) <= len(root) || !strings.HasPrefix(strings.ToLower(dir), strings.ToLower(root)+`\`) {
+				continue
+			}
+			if err := addExplicitEntry(dir, project, plan, false); err != nil {
+				return fmt.Errorf("%w (%s)", accessCode("container-path-unlisted"), dir)
+			}
+		}
+	}
+	return nil
+}
+
 // ensureProjectGrant gives the project capability inherited read and execute
 // on an input generation or scenario bundle, once: an existing exact entry is
 // kept. Existing files receive the inherited entry through the tree walk;
@@ -276,6 +325,9 @@ func prepareContainedJob(layout containedLayout, plan containerPlan) error {
 		}
 	}
 	if err := addTraverse(layout.Parent, plan); err != nil {
+		return err
+	}
+	if err := grantPathListing(layout, plan); err != nil {
 		return err
 	}
 	if err := ensureProjectGrant(layout.Generation, roleGeneration, plan); err != nil {

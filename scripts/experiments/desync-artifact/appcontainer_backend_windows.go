@@ -256,7 +256,7 @@ func planOf(spec *containerSpec) (containerPlan, error) {
 	}
 	plan := containerPlan{Name: spec.Name, SID: sid}
 	for i, name := range spec.CapabilityNames {
-		if !strings.HasPrefix(name, "zerusProject") {
+		if !strings.HasPrefix(name, "zerusProject") && !strings.HasPrefix(name, "zerusJobs") {
 			return containerPlan{}, accessCode("container-spec-invalid")
 		}
 		c, err := capabilitySID(name)
