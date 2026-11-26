@@ -354,7 +354,59 @@ fn first_codex_turn<'a>(record: &Value, source: &'a Source) -> Option<&'a [Value
     if meta["source"] != "cli" || !(launched - 1.0..=pending).contains(&timestamp(meta)?) {
         return None;
     }
-    let mut turns = source.rows.split(|row| {
+    first_turn(&source.rows)
+}
+
+/// A native clear can show its empty prompt before Codex opens the successor
+/// transcript on the first submission. In that interval, a terminal receipt
+/// still names the prior conversation. Only the recorded same-run clear and
+/// the successor's first native turn can confirm that receipt.
+fn cleared_codex_start(record: &Value, receipt: &Value) -> Option<f64> {
+    let clear = &record["session_clear"];
+    let observation = &record["hook_observation"];
+    let start = &observation["events"]["SessionStart"];
+    let pending = record["input_pending_at"].as_f64()?;
+    let at = start["last_at"].as_f64()?;
+    let canonical = zerus_client_core::input_acknowledgment::canonical;
+    (record["agent"] == "codex"
+        && receipt["transport"] == "terminal"
+        && record["conversation_id"] != receipt["conversation_id"]
+        && canonical(string(record, "conversation_id"))
+        && canonical(string(receipt, "conversation_id"))
+        && clear["source"] == "native_hook"
+        && clear["run_id"] == record["run_id"]
+        && clear["conversation_id"] == record["conversation_id"]
+        && clear["previous_conversation_id"] == receipt["conversation_id"]
+        && clear["at"]
+            .as_f64()
+            .is_some_and(|clear_at| clear_at > 0.0 && clear_at <= at)
+        && observation["run_id"] == record["run_id"]
+        && observation["conversation_id"] == record["conversation_id"]
+        && start["count"] == 1
+        && (pending..=pending + PROOF_LIMIT.as_secs_f64()).contains(&at)
+        && at <= now())
+    .then_some(at)
+}
+
+fn cleared_codex_turn(source: &Source, pending: f64, started: f64) -> Option<&[Value]> {
+    let header = source.header.as_ref()?;
+    let meta = &header["payload"];
+    // The payload dates the conversation created by /clear. The enclosing
+    // row dates the transcript that Codex opened when the input arrived.
+    let written = timestamp(header)?;
+    if meta["source"] != "cli"
+        || !meta["forked_from_id"].is_null()
+        || !meta["parent_thread_id"].is_null()
+        || timestamp(meta)? > written
+        || !(pending..=started).contains(&written)
+    {
+        return None;
+    }
+    first_turn(&source.rows)
+}
+
+fn first_turn(rows: &[Value]) -> Option<&[Value]> {
+    let mut turns = rows.split(|row| {
         row["type"] == "event_msg"
             && matches!(
                 string(&row["payload"], "type"),
@@ -365,7 +417,7 @@ fn first_codex_turn<'a>(record: &Value, source: &'a Source) -> Option<&'a [Value
     // the turn identity and ordering.
     let start = turns.next()?.len();
     let body = turns.next()?;
-    Some(&source.rows[start..start + 1 + body.len()])
+    Some(&rows[start..start + 1 + body.len()])
 }
 
 pub(in crate::state) fn allows_pending(record: &Value) -> bool {
@@ -480,11 +532,12 @@ pub(in crate::state) fn reconcile_locked(record: &mut Value) -> Result<()> {
         None
     };
     let first = first_codex_receipt(record, &receipt);
+    let cleared_start = cleared_codex_start(record, &receipt);
     let source = if agent == "codex" {
         source(
             Path::new(string(record, "transcript")),
             Some(string(record, "conversation_id")),
-            first,
+            first || cleared_start.is_some(),
         )
     } else {
         kimi(record)
@@ -495,6 +548,7 @@ pub(in crate::state) fn reconcile_locked(record: &mut Value) -> Result<()> {
     if agent == "codex"
         && receipt["conversation_id"] != record["conversation_id"]
         && !first
+        && cleared_start.is_none()
         && !(codex_tasks::recovered_pending(record)
             && receipt["conversation_id"] == record["codex_binding_recovery"]["from"])
         && !bootstrap::receipt(record, &receipt)
@@ -511,8 +565,14 @@ pub(in crate::state) fn reconcile_locked(record: &mut Value) -> Result<()> {
     {
         return Ok(());
     }
+    let pending = record["input_pending_at"].as_f64().unwrap_or(f64::INFINITY);
     let rows = if first {
         let Some(rows) = first_codex_turn(record, &source) else {
+            return Ok(());
+        };
+        rows
+    } else if let Some(started) = cleared_start {
+        let Some(rows) = cleared_codex_turn(&source, pending, started) else {
             return Ok(());
         };
         rows
@@ -522,13 +582,13 @@ pub(in crate::state) fn reconcile_locked(record: &mut Value) -> Result<()> {
     let Some((at, native_id)) = consumed(
         rows,
         agent,
-        record["input_pending_at"].as_f64().unwrap_or(f64::INFINITY),
+        pending,
         string(&receipt, "submitted_text"),
         after,
     ) else {
         return Ok(());
     };
-    if !source.current() {
+    if (cleared_start.is_some() && at > pending + PROOF_LIMIT.as_secs_f64()) || !source.current() {
         return Ok(());
     }
     record["input_seen_at"] = json!(at);
@@ -708,6 +768,85 @@ mod tests {
             assert_eq!(fs::read_to_string(receipt_path).unwrap(), original);
         });
     }
+
+    #[test]
+    fn codex_send_after_clear_requires_the_successors_exact_first_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::state::with_test_state_root(dir.path(), || {
+            let _guard = lock(None).unwrap();
+            let name = "codex/example/send-after-clear";
+            let run = "private-run";
+            let previous = "10000000-0000-4000-8000-000000000001";
+            let conversation = "10000000-0000-4000-8000-000000000002";
+            let request = uuid::Uuid::new_v4().to_string();
+            let receipt = json!({"request_id":request,"name":name,"run_id":run,
+                "conversation_id":previous,"first_message":false,"submitted_at":10.0,
+                "transport":"terminal","status":"submitted","submitted_text":"Owner input",
+                "digest":"a".repeat(64),"attachments":[]});
+            let receipt_path = dir
+                .path()
+                .join("input_receipts")
+                .join(format!("{request}.json"));
+            let original = receipt.to_string();
+            atomic(&receipt_path, &original).unwrap();
+            let transcript = dir.path().join("native.jsonl");
+            let write_turns = |written: &str, first: &str| {
+                let rows = [
+                    json!({"type":"session_meta","timestamp":written,
+                        "payload":{"id":conversation,"source":"cli","timestamp":"1970-01-01T00:00:04Z"}}),
+                    json!({"type":"event_msg","timestamp":"1970-01-01T00:00:11Z","payload":{"type":"task_started","turn_id":"first"}}),
+                    json!({"type":"response_item","timestamp":"1970-01-01T00:00:12Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":first}]}}),
+                    json!({"type":"event_msg","timestamp":"1970-01-01T00:00:13Z","payload":{"type":"task_started","turn_id":"second"}}),
+                    json!({"type":"response_item","timestamp":"1970-01-01T00:00:14Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Owner input"}]}}),
+                ];
+                fs::write(&transcript, rows.map(|row| format!("{row}\n")).concat()).unwrap();
+            };
+            let mut record = json!({"version":1,"name":name,"agent":"codex","run_id":run,
+                "conversation_id":conversation,"transcript":transcript,"input_pending_at":10.0,
+                "input_pending_request":request,"input_seen_at":0.0,
+                "session_clear":{"source":"native_hook","at":5.0,"run_id":run,
+                    "previous_conversation_id":previous,"conversation_id":conversation},
+                "hook_observation":{"run_id":run,"conversation_id":conversation,
+                    "events":{"SessionStart":{"count":1,"last_at":11.5}}}});
+
+            write_turns("1970-01-01T00:00:10.500Z", "Different input");
+            reconcile_locked(&mut record).unwrap();
+            assert!(
+                input_unconfirmed(&record),
+                "a later identical input is insufficient"
+            );
+            write_turns("1970-01-01T00:00:09Z", "Owner input");
+            reconcile_locked(&mut record).unwrap();
+            assert!(
+                input_unconfirmed(&record),
+                "the successor existed before the send"
+            );
+            write_turns("1970-01-01T00:00:10.500Z", "Owner input");
+            for field in [
+                "previous_conversation_id",
+                "conversation_id",
+                "run_id",
+                "source",
+            ] {
+                let mut unrelated = record.clone();
+                unrelated["session_clear"][field] = json!("unrelated");
+                reconcile_locked(&mut unrelated).unwrap();
+                assert!(input_unconfirmed(&unrelated), "clear mismatch at {field}");
+            }
+
+            reconcile_locked(&mut record).unwrap();
+            assert!(!input_unconfirmed(&record));
+            assert_eq!(record["input_seen_at"], 12.0);
+            let accepted = read(name).unwrap();
+            assert_eq!(accepted["input_acceptance"]["request_id"], request);
+            assert_eq!(
+                accepted["input_acceptance"]["receipt_conversation_id"],
+                previous
+            );
+            assert_eq!(fs::read_to_string(receipt_path).unwrap(), original);
+        });
+    }
+
     #[test]
     fn native_hook_text_accepts_only_the_complete_native_input() {
         let kimi = json!({"prompt":[{"type":"text","text":"literal"}]});
