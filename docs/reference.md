@@ -10292,6 +10292,94 @@ itself uses provider tokens.
 
 <a id="local-models"></a>
 
+## Multi-person hosts
+
+Status: implemented on the full-Zerus CLI and desktop side for epic
+`zerus-un7n` (phases 5 and 6); not part of fork build 225. Design:
+`docs/superpowers/specs/2026-11-26-shared-host-personal-accounts-design.md`;
+contract: `contracts/host-access-v1/`.
+
+A host is in multi-person mode only when its operator directory holds
+`policy.json` (`/etc/zerus/host-access` on Unix, `%ProgramData%\Zerus\host-access`
+on Windows) with `host-id` and `os-bindings.json`. Every file there must belong
+to root (Unix) or Administrators/SYSTEM (Windows) and must not be modifiable by
+the caller. A policy that fails any check makes the host refuse every gated
+route (`host-access/policy-broken`); it never falls back to single-person
+behavior. Without a policy every route behaves as before.
+
+A host never silently returns to single-person mode. The first time a caller
+sees a valid multi-person policy for a host ID, that caller's own process
+records a marker and a high-water mark (policy revision and SHA-256 digest) in
+its own state folder (`host-access/seen/`, `host-access/high-water/`), written
+through a private temporary file and a rename. After that, a missing or
+unreadable policy is `policy-lost`; a lower revision is `policy-rollback`; the
+same revision with other bytes is `policy-replaced`; a lost or corrupt mark is
+`high-water-lost` or `high-water-unreadable`. None of these are bootstrapped
+again. A host the caller never saw as multi-person stays legacy. The model-free
+executor keeps one such mark per host in its own private state. Full Zerus
+keeps it per caller, because a non-admin caller cannot write the operator
+directory.
+
+Each person reaches the host as their own OS account. `os-bindings.json`
+(`zerus-full-host-bindings-v1`: host, revision, `[{context, os_identity}]`,
+where `os_identity` is `uid:N` or a user SID) maps that verified OS identity to
+a policy context and so to a person. No request field and no `HGS_*` variable
+names the caller. An OS account without a binding keeps its private legacy use
+and has no shared access.
+
+On a multi-person host every route that acts on that computer (launch, send,
+resume, fork, approvals, stop and terminate, switch-account, history,
+terminal, account reads, usage, archives) first requires the state folder to
+belong to the caller's OS identity. `hgs host-access bind --json`, a person
+action, binds the state folder to the host, person and context; a folder bound
+to anyone else is refused for every route (`owner-mismatch`), so an OS account
+rebound to another person never inherits sessions or accounts. Unbound
+(historical) state stays private and cannot be shared. A bound person cannot
+copy, export or import provider credentials (`account-transfer-unsupported`).
+
+Refusals print `host-access/<code>: <text> (zerus-host-access-v1)`. Clients
+check `Multi-person access ABI: multi-person-access-v1` in `hgs --help` first;
+an older host reports unsupported, never a fallback.
+
+### Shared project history and memory
+
+`hgs [@host] host-access share publish|memory|list|read|continue --json` (JSON
+stdin) works on the operator's shared root, which must be operator-owned:
+`shared/<project>/<person>/` partitions provisioned for each member's OS
+account. A publication holds only approved entries (`person`, `agent` or `note`
+text), a title and a provenance digest; schemas refuse every other field, so no
+agent home, account, credential, native conversation or run ID, or resume
+record is stored. Memory notes are explicit typed additions (`decision`,
+`fact`, `recipe`, `note`); personal memory and swarms are never merged.
+
+Membership and revocation are checked on every call: readers list and read,
+contributors also publish, add memory and continue. Feeds are append-only and
+read in pages of at most 100 from byte offsets; a cursor is bound to the
+project, kind and policy revision and becomes `cursor-stale` after a policy
+change. Updates carry `expected_generation` (`conflict` otherwise); each write
+carries a `request_id` whose replay returns the first result. **Continue with
+my account** writes a private handoff into the caller's own state
+(`host-access/handoffs/`) for a new session under the caller's own account; it
+never names the author's session, so it cannot send, resume or fork under the
+author's grant.
+
+### Provider support and remote compute
+
+`hgs host-access support --json` lists every provider and mode. Only
+**local agent, remote compute** for Claude Code is implemented, without live
+qualification: Claude runs on the workstation with `--tools ""`,
+`--strict-mcp-config` and Zerus's MCP server
+(`hgs host-access remote-compute claude-args --host H --root R --json`). Its
+`remote_read`, `remote_write`, `remote_edit`, `remote_list` and `remote_bash`
+tools call `hgs @host host-access compute --json`, confined to a caller-owned
+root outside Zerus state and provider or SSH homes, with commands run under a
+scrubbed environment. A bound context that holds provider sign-ins is refused.
+An offline host returns `host-unreachable`; nothing runs locally and the host
+never launches or resumes an agent. Codex and the other agents are unsupported
+in this mode; remote native sessions reusing a subscription and API-proxy
+modes are unsupported for every provider. Settings > Shared hosts shows the
+caller's status, the shared history and the matrix.
+
 ## Local models and OpenCode
 
 Ollama runs model inference on the chosen agent computer. The native harness

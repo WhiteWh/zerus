@@ -1,0 +1,99 @@
+{
+ "contract": "zerus-host-access-v1",
+ "keys": [
+  {
+   "ref": {
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "context": "alice-worker",
+    "provider": "codex",
+    "account": "native-codex"
+   },
+   "key": "zerus-account-v1:cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136/alice-worker/codex/native-codex"
+  },
+  {
+   "ref": {
+    "person": "54da52455fe491d3f46c91650ffa6242d0324a648de7762e81d20596c5f39386",
+    "context": "bob-worker",
+    "provider": "codex",
+    "account": "native-codex"
+   },
+   "key": "zerus-account-v1:54da52455fe491d3f46c91650ffa6242d0324a648de7762e81d20596c5f39386/bob-worker/codex/native-codex"
+  }
+ ],
+ "distinct": [
+  [
+   {
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "context": "alice-worker",
+    "provider": "codex",
+    "account": "native-codex"
+   },
+   {
+    "person": "54da52455fe491d3f46c91650ffa6242d0324a648de7762e81d20596c5f39386",
+    "context": "bob-worker",
+    "provider": "codex",
+    "account": "native-codex"
+   }
+  ],
+  [
+   {
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "context": "alice-worker",
+    "provider": "codex",
+    "account": "native-codex"
+   },
+   {
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "context": "alice-other",
+    "provider": "codex",
+    "account": "native-codex"
+   }
+  ],
+  [
+   {
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "context": "alice-worker",
+    "provider": "codex",
+    "account": "native-codex"
+   },
+   {
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "context": "alice-worker",
+    "provider": "claude",
+    "account": "native-codex"
+   }
+  ]
+ ],
+ "invalid": [
+  {
+   "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+   "context": "alice-worker",
+   "provider": "codex",
+   "account": "-x"
+  },
+  {
+   "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+   "context": "alice-worker",
+   "provider": "codex",
+   "account": "a/b"
+  },
+  {
+   "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+   "context": "Alice",
+   "provider": "codex",
+   "account": "work"
+  },
+  {
+   "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+   "context": "alice-worker",
+   "provider": "Codex",
+   "account": "work"
+  },
+  {
+   "person": "alice",
+   "context": "alice-worker",
+   "provider": "codex",
+   "account": "work"
+  }
+ ]
+}

@@ -2031,6 +2031,7 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         teams::team_role_models,
         teams::iron_rules,
         teams::project_memory,
+        teams::host_access,
         wsl_mapping::wsl_mapping_open,
         wsl_mapping::wsl_mapping_preview,
         wsl_mapping::wsl_mapping_use,

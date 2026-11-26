@@ -4,6 +4,7 @@ import { AppearanceSection } from "./Appearance";
 import { SessionsSection } from "./Sessions";
 import { TeamsSection } from "./TeamsSection";
 import { MemorySection } from "./MemorySection";
+import { SharedHostsSection } from "./SharedHostsSection";
 import { ModelServersSection } from "./ModelServersSection";
 import { KeyboardSection } from "./Keyboard";
 import { VoiceSection, refreshVoice } from "./Voice";
@@ -29,7 +30,7 @@ import { trNoop } from "../../../i18n";
 export type SectionId =
   | "appearance" | "sessions" | "teams" | "recovery" | "processes" | "updates" | "mobile" | "files"
   | "worktrees" | "disk" | "approvals" | "voice" | "keyboard" | "analytics" | "extensions" | "about" | "modelservers"
-  | "memory";
+  | "memory" | "sharedhosts";
 
 export interface Section {
   id: SectionId;
@@ -54,6 +55,8 @@ export const SECTIONS: readonly Section[] = [
   { id: "teams", label: "Teams", icon: "users", component: TeamsSection },
   // Task #397: project memory, its search and the model search notice.
   { id: "memory", label: trNoop("Memory"), icon: "hard-drive", component: MemorySection },
+  // zerus-un7n: multi-person hosts, their shared history and provider support.
+  { id: "sharedhosts", label: trNoop("Shared hosts"), icon: "users", component: SharedHostsSection },
   { id: "modelservers", label: trNoop("Model servers"), icon: "hard-drive", component: ModelServersSection },
   { id: "disk", label: trNoop("Build folders"), icon: "trash-2", component: DiskSection },
   { id: "voice", label: trNoop("Voice input"), icon: "mic", component: VoiceSection, refresh: refreshVoice },

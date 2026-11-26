@@ -229,7 +229,7 @@ func runController(command, configPath string) error {
 	}
 	snapshot, status, err := c.snapshot(cfg.Job)
 	if err == nil {
-		expected := ExecutorRequest{deliveryProtocol, cfg.Job, cfg.Slot, cfg.Device, snapshot.Submission.Request.Artifact, snapshot.Submission.Request.Scenario, cfg.Parameters, cfg.Performance}
+		expected := ExecutorRequest{deliveryProtocol, cfg.Job, cfg.Slot, cfg.Device, snapshot.Submission.Request.Artifact, snapshot.Submission.Request.Scenario, cfg.Parameters, cfg.Performance, ""}
 		if snapshot.Submission.Digest != executorRequestDigest(expected) || snapshot.Submission.Request.Artifact.Peer != builder || snapshot.Submission.Request.Scenario.Peer != builder {
 			return errors.New("remote request parameters or publication peer differ")
 		}
@@ -332,7 +332,7 @@ func runController(command, configPath string) error {
 		if err := saveController(work, &state); err != nil {
 			return err
 		} // Before the potentially unknown POST.
-		request := ExecutorRequest{deliveryProtocol, cfg.Job, cfg.Slot, cfg.Device, artifact.offer, bundle.offer, cfg.Parameters, cfg.Performance}
+		request := ExecutorRequest{deliveryProtocol, cfg.Job, cfg.Slot, cfg.Device, artifact.offer, bundle.offer, cfg.Parameters, cfg.Performance, ""}
 		method, path := "POST", "/executor/v1/jobs"
 		if status != 404 {
 			method = "PUT"

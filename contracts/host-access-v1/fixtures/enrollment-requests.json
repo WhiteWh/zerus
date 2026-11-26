@@ -1,0 +1,296 @@
+{
+ "contract": "zerus-host-access-v1",
+ "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+ "now": 1795000000,
+ "cases": [
+  {
+   "name": "valid",
+   "policy": "base",
+   "request": {
+    "contract": "zerus-host-access-v1",
+    "kind": "device-enrollment-request",
+    "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+    "person": "32e812ecbd0002125ccc9c67588ee7cddf365985d311f10dd77092d4a93a0713",
+    "public_key": "Km-bZiH1xYYL59VHZvWeyAVfxXPMZdSXOpbLJBI-SdU",
+    "label": "Synthetic mallory",
+    "device": "189c1c448b1adb590db54ee677d864b5f5faec83d3a64ca0693d41e88efd5bc5",
+    "issued": 1794999940,
+    "expires": 1797592000,
+    "signature": "Rbk1yox5wauUXtVtIUqXs2-iQq0v2Hnkgl1QFgqMYland9cZ4hx6jC9kvH-prmrD7LkWYgLkjuU0d9xEY0dtCg"
+   },
+   "code": ""
+  },
+  {
+   "name": "known person adds a device",
+   "policy": "base",
+   "request": {
+    "contract": "zerus-host-access-v1",
+    "kind": "device-enrollment-request",
+    "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "public_key": "OHGyvx7GoN9L11x82VTL43CeYetQBwSvkKLuAjcmzLs",
+    "label": "Synthetic alice",
+    "device": "f8684cd51b3242a3a466a72b76d459127ac1a76f17a8bbd1bafe2251a27dd7c0",
+    "issued": 1794999940,
+    "expires": 1797592000,
+    "signature": "iSTsCseqXBBdb0hk9RoX0E_FiaiHd2jIu6PfojqFUwkhnJqPGy8RC80j8pgOfZU9i1iY_hKAnQE0u8yhSFzeBw"
+   },
+   "code": ""
+  },
+  {
+   "name": "wrong kind",
+   "policy": "base",
+   "request": {
+    "contract": "zerus-host-access-v1",
+    "kind": "policy",
+    "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+    "person": "32e812ecbd0002125ccc9c67588ee7cddf365985d311f10dd77092d4a93a0713",
+    "public_key": "Km-bZiH1xYYL59VHZvWeyAVfxXPMZdSXOpbLJBI-SdU",
+    "label": "Synthetic mallory",
+    "device": "189c1c448b1adb590db54ee677d864b5f5faec83d3a64ca0693d41e88efd5bc5",
+    "issued": 1794999940,
+    "expires": 1797592000,
+    "signature": "Rbk1yox5wauUXtVtIUqXs2-iQq0v2Hnkgl1QFgqMYland9cZ4hx6jC9kvH-prmrD7LkWYgLkjuU0d9xEY0dtCg"
+   },
+   "code": "request-contract"
+  },
+  {
+   "name": "other host",
+   "policy": "base",
+   "request": {
+    "contract": "zerus-host-access-v1",
+    "kind": "device-enrollment-request",
+    "host": "0109136f366434026e5d51179da9c6224aa3d1644584251e6cd14a5fa8feea4c",
+    "person": "32e812ecbd0002125ccc9c67588ee7cddf365985d311f10dd77092d4a93a0713",
+    "public_key": "Km-bZiH1xYYL59VHZvWeyAVfxXPMZdSXOpbLJBI-SdU",
+    "label": "Synthetic mallory",
+    "device": "189c1c448b1adb590db54ee677d864b5f5faec83d3a64ca0693d41e88efd5bc5",
+    "issued": 1794999940,
+    "expires": 1797592000,
+    "signature": "fu-Xtq7n-8Ly8HVOAddaotowj-hsQvuZKtqVNuYM6Ygjpw8sb1Lef_dFYWhHThQBOCUFFRrO9qg8SkZJgiqfCQ"
+   },
+   "code": "request-host-mismatch"
+  },
+  {
+   "name": "body person claim",
+   "policy": "base",
+   "request": {
+    "contract": "zerus-host-access-v1",
+    "kind": "device-enrollment-request",
+    "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "public_key": "Km-bZiH1xYYL59VHZvWeyAVfxXPMZdSXOpbLJBI-SdU",
+    "label": "Synthetic mallory",
+    "device": "189c1c448b1adb590db54ee677d864b5f5faec83d3a64ca0693d41e88efd5bc5",
+    "issued": 1794999940,
+    "expires": 1797592000,
+    "signature": "Rbk1yox5wauUXtVtIUqXs2-iQq0v2Hnkgl1QFgqMYland9cZ4hx6jC9kvH-prmrD7LkWYgLkjuU0d9xEY0dtCg"
+   },
+   "code": "request-identity"
+  },
+  {
+   "name": "key of another person",
+   "policy": "base",
+   "request": {
+    "contract": "zerus-host-access-v1",
+    "kind": "device-enrollment-request",
+    "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+    "person": "32e812ecbd0002125ccc9c67588ee7cddf365985d311f10dd77092d4a93a0713",
+    "public_key": "HtkoIaea1Dl6Y4dN0EVOLRkBprrZrkp9SylWBrD_hC4",
+    "label": "Synthetic mallory",
+    "device": "189c1c448b1adb590db54ee677d864b5f5faec83d3a64ca0693d41e88efd5bc5",
+    "issued": 1794999940,
+    "expires": 1797592000,
+    "signature": "Rbk1yox5wauUXtVtIUqXs2-iQq0v2Hnkgl1QFgqMYland9cZ4hx6jC9kvH-prmrD7LkWYgLkjuU0d9xEY0dtCg"
+   },
+   "code": "request-identity"
+  },
+  {
+   "name": "empty label",
+   "policy": "base",
+   "request": {
+    "contract": "zerus-host-access-v1",
+    "kind": "device-enrollment-request",
+    "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+    "person": "32e812ecbd0002125ccc9c67588ee7cddf365985d311f10dd77092d4a93a0713",
+    "public_key": "Km-bZiH1xYYL59VHZvWeyAVfxXPMZdSXOpbLJBI-SdU",
+    "label": "",
+    "device": "189c1c448b1adb590db54ee677d864b5f5faec83d3a64ca0693d41e88efd5bc5",
+    "issued": 1794999940,
+    "expires": 1797592000,
+    "signature": "Rbk1yox5wauUXtVtIUqXs2-iQq0v2Hnkgl1QFgqMYland9cZ4hx6jC9kvH-prmrD7LkWYgLkjuU0d9xEY0dtCg"
+   },
+   "code": "request-identity"
+  },
+  {
+   "name": "bad device id",
+   "policy": "base",
+   "request": {
+    "contract": "zerus-host-access-v1",
+    "kind": "device-enrollment-request",
+    "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+    "person": "32e812ecbd0002125ccc9c67588ee7cddf365985d311f10dd77092d4a93a0713",
+    "public_key": "Km-bZiH1xYYL59VHZvWeyAVfxXPMZdSXOpbLJBI-SdU",
+    "label": "Synthetic mallory",
+    "device": "ABC",
+    "issued": 1794999940,
+    "expires": 1797592000,
+    "signature": "9cVi7-3oyYsg6HynXl-unE4vsBgCFFdSPDASTgY-VVWG3Y-2oGNBtEFX2d3kSAHk8iXPPFjjgth7XGJpzRiXCQ"
+   },
+   "code": "request-identity"
+  },
+  {
+   "name": "inverted window",
+   "policy": "base",
+   "request": {
+    "contract": "zerus-host-access-v1",
+    "kind": "device-enrollment-request",
+    "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+    "person": "32e812ecbd0002125ccc9c67588ee7cddf365985d311f10dd77092d4a93a0713",
+    "public_key": "Km-bZiH1xYYL59VHZvWeyAVfxXPMZdSXOpbLJBI-SdU",
+    "label": "Synthetic mallory",
+    "device": "189c1c448b1adb590db54ee677d864b5f5faec83d3a64ca0693d41e88efd5bc5",
+    "issued": 1797592000,
+    "expires": 1794999940,
+    "signature": "cTN5knwTuGsNpKiGB2CNrGKrn9vcG2cKL7kA8y3ZMqxmYDVV_DJ014P5Tc3XqIzkNoW52eWt4GA2SJ9-yXNDCQ"
+   },
+   "code": "request-window"
+  },
+  {
+   "name": "too long",
+   "policy": "base",
+   "request": {
+    "contract": "zerus-host-access-v1",
+    "kind": "device-enrollment-request",
+    "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+    "person": "32e812ecbd0002125ccc9c67588ee7cddf365985d311f10dd77092d4a93a0713",
+    "public_key": "Km-bZiH1xYYL59VHZvWeyAVfxXPMZdSXOpbLJBI-SdU",
+    "label": "Synthetic mallory",
+    "device": "189c1c448b1adb590db54ee677d864b5f5faec83d3a64ca0693d41e88efd5bc5",
+    "issued": 1794999940,
+    "expires": 1829559941,
+    "signature": "1D8RePvej2_eTRE6aIavXMcanDFil-qGuonDAKdUcPEAKiZwqp9VghTGJauUR_w-7N8kGhs-Fr-kEORwr0jLCQ"
+   },
+   "code": "request-window"
+  },
+  {
+   "name": "stale",
+   "policy": "base",
+   "request": {
+    "contract": "zerus-host-access-v1",
+    "kind": "device-enrollment-request",
+    "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+    "person": "32e812ecbd0002125ccc9c67588ee7cddf365985d311f10dd77092d4a93a0713",
+    "public_key": "Km-bZiH1xYYL59VHZvWeyAVfxXPMZdSXOpbLJBI-SdU",
+    "label": "Synthetic mallory",
+    "device": "189c1c448b1adb590db54ee677d864b5f5faec83d3a64ca0693d41e88efd5bc5",
+    "issued": 1794395199,
+    "expires": 1797592000,
+    "signature": "B6xD1Ygq5gETDEx4Dd3iBiLcbb9-ZXKCc9shrO_LH3Bd5P3Gz_x2b7SJmwSnQgP6sfEC5yYdtGlfzmZA-EQNCA"
+   },
+   "code": "request-stale"
+  },
+  {
+   "name": "issued in the future",
+   "policy": "base",
+   "request": {
+    "contract": "zerus-host-access-v1",
+    "kind": "device-enrollment-request",
+    "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+    "person": "32e812ecbd0002125ccc9c67588ee7cddf365985d311f10dd77092d4a93a0713",
+    "public_key": "Km-bZiH1xYYL59VHZvWeyAVfxXPMZdSXOpbLJBI-SdU",
+    "label": "Synthetic mallory",
+    "device": "189c1c448b1adb590db54ee677d864b5f5faec83d3a64ca0693d41e88efd5bc5",
+    "issued": 1795000301,
+    "expires": 1797592000,
+    "signature": "ipe4BOlY3lh00lAZTl7H6Ja_UcZ4kBplgqe8ClfRLBv5rZTIqROdGkyLcBQvUeJUvFT4q3iM1FB_nMNwbTgUBg"
+   },
+   "code": "request-stale"
+  },
+  {
+   "name": "expired",
+   "policy": "base",
+   "request": {
+    "contract": "zerus-host-access-v1",
+    "kind": "device-enrollment-request",
+    "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+    "person": "32e812ecbd0002125ccc9c67588ee7cddf365985d311f10dd77092d4a93a0713",
+    "public_key": "Km-bZiH1xYYL59VHZvWeyAVfxXPMZdSXOpbLJBI-SdU",
+    "label": "Synthetic mallory",
+    "device": "189c1c448b1adb590db54ee677d864b5f5faec83d3a64ca0693d41e88efd5bc5",
+    "issued": 1794827200,
+    "expires": 1795000000,
+    "signature": "rC-HsryLe4_hM_z7FianDTqmTWVY8CMprYXCSkSB_ptswkAQgFr6R2LKXs0F6WpPMygF2CSPkNC_1krjGDY0Cw"
+   },
+   "code": "request-stale"
+  },
+  {
+   "name": "edited expiry",
+   "policy": "base",
+   "request": {
+    "contract": "zerus-host-access-v1",
+    "kind": "device-enrollment-request",
+    "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+    "person": "32e812ecbd0002125ccc9c67588ee7cddf365985d311f10dd77092d4a93a0713",
+    "public_key": "Km-bZiH1xYYL59VHZvWeyAVfxXPMZdSXOpbLJBI-SdU",
+    "label": "Synthetic mallory",
+    "device": "189c1c448b1adb590db54ee677d864b5f5faec83d3a64ca0693d41e88efd5bc5",
+    "issued": 1794999940,
+    "expires": 1797678400,
+    "signature": "Rbk1yox5wauUXtVtIUqXs2-iQq0v2Hnkgl1QFgqMYland9cZ4hx6jC9kvH-prmrD7LkWYgLkjuU0d9xEY0dtCg"
+   },
+   "code": "request-signature"
+  },
+  {
+   "name": "revoked device",
+   "policy": "base",
+   "request": {
+    "contract": "zerus-host-access-v1",
+    "kind": "device-enrollment-request",
+    "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+    "person": "54da52455fe491d3f46c91650ffa6242d0324a648de7762e81d20596c5f39386",
+    "public_key": "HtkoIaea1Dl6Y4dN0EVOLRkBprrZrkp9SylWBrD_hC4",
+    "label": "Synthetic bob",
+    "device": "463bf033359a9ad1a1d5d8d57832243a4c14c25fcec7fcb1923d447ef00a6f49",
+    "issued": 1794999940,
+    "expires": 1797592000,
+    "signature": "xL2JmH7B3-_8h7XGmGN2zLVR65rck4OLSHwOfdTlIANQmTrGRUF5_87Atx-shSpdwW2nKRVu5os_Jt5Eh_aoBw"
+   },
+   "code": "request-device-revoked"
+  },
+  {
+   "name": "revoked person",
+   "policy": "bob-revoked",
+   "request": {
+    "contract": "zerus-host-access-v1",
+    "kind": "device-enrollment-request",
+    "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+    "person": "54da52455fe491d3f46c91650ffa6242d0324a648de7762e81d20596c5f39386",
+    "public_key": "HtkoIaea1Dl6Y4dN0EVOLRkBprrZrkp9SylWBrD_hC4",
+    "label": "Synthetic bob",
+    "device": "c43a7113df6911108a1f0b450efbd1afbd367248c79523054f994ab44a6b760e",
+    "issued": 1794999940,
+    "expires": 1797592000,
+    "signature": "FPdCTdFFZYpSIgJ9ECkUGxgkyjlaVrr6urcJ1PRZLzSUd3-toGVQhxcTw7U6Cro9omd1al767KWuU2UABc5cAw"
+   },
+   "code": "request-person-revoked"
+  },
+  {
+   "name": "duplicate device",
+   "policy": "base",
+   "request": {
+    "contract": "zerus-host-access-v1",
+    "kind": "device-enrollment-request",
+    "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "public_key": "OHGyvx7GoN9L11x82VTL43CeYetQBwSvkKLuAjcmzLs",
+    "label": "Synthetic alice",
+    "device": "7445be3fdace8d84ecff03ee9e8cc8428aa9d94550901c9ff9c11838e2ffe98d",
+    "issued": 1794999940,
+    "expires": 1797592000,
+    "signature": "5gMZ4fPX-tYgkxkbpgm_oBHKNwdXkVz4Sxpeyg1295VxelkDgAF20zfgl2y6MXwmG48gGUyQfXtD3WocQ7OJCQ"
+   },
+   "code": "request-duplicate-device"
+  }
+ ]
+}

@@ -121,6 +121,213 @@ bound metadata commit, with its source pinned against writers and both native
 name bindings rechecked after refusal. Changed or unknown bindings stop the
 commit. This mechanism never retries a scenario launch or a payload operation.
 
+## Several people (in development, epic zerus-un7n)
+
+Milestone 1 of `docs/superpowers/specs/2026-11-26-shared-host-personal-accounts-design.md`
+adds an `access` section that lets one executor serve several people. It is
+not ready for use yet: it requires an isolation backend that runs each
+person's jobs under their own security principal, and this build provides
+none. A configuration with `access` refuses to start, and refuses before the
+executor writes anything, until such a backend exists.
+
+```json
+"access": {
+  "policy": "C:\\ZerusOperator\\access-policy.json",
+  "operator": "S-1-5-21-<domain>-<rid>",
+  "isolation_backend": "<a qualified backend>",
+  "per_person_jobs": 3
+}
+```
+
+`policy` is the host operator's private policy file, in the shared contract
+`contracts/host-access-v1` (also implemented by `src/host_access` in full
+Zerus). It must be an absolute path outside the executor root and every shared
+tree. It is read through one handle opened without following a link or
+reparse point, while its ancestor folders are held open against renaming. A
+link, a junction on the path, a second hard link or a final path other than
+the configured one is refused. The policy must be on a fixed NTFS or ReFS
+volume.
+
+Multi-person mode starts only through its own service entry,
+`executor-serve-shared <config>`. `executor-serve` refuses a configuration
+with an `access` section, and `executor-serve-shared` refuses one without it,
+so editing the configuration never moves a service between the modes. The
+shared entry reads its configuration through one held handle (no link, one
+hard link, within the control size bound, at exactly the configured final
+path) and verifies that file and its folders against the fixed installer trust
+(Administrators, SYSTEM and TrustedInstaller) before it uses any field; only
+the bytes read through the checked handle are parsed. The configuration's
+folder may receive the executor's own offer file, so it is held to the
+higher-folder rule below.
+
+`operator` is the SID of the named host operator. It is pinned in that
+installer-protected configuration, never in the policy it authenticates, so a
+configuration cannot make its own writer trusted by naming it. The operator
+must resolve to an individual local or domain user account; groups, aliases,
+well-known and capability SIDs and unresolved SIDs are refused. The executor's
+own account may not be the operator (compared whatever the token's attributes:
+a restricted token is still that account), Administrators, SYSTEM or a member
+of them. The executor refuses to start, before it writes anything, rather than
+adopt the account it runs under. Trusted principals for the policy are the
+operator, Administrators, SYSTEM and TrustedInstaller. Through the held
+handles, on every read:
+
+- every object's owner must be trusted;
+- the policy file grants no untrusted principal write, append, attribute,
+  extended attribute, delete, permission or ownership rights;
+- its folder grants no untrusted principal new entries, child deletion,
+  deletion, permission or ownership rights;
+- every higher folder grants no untrusted principal child deletion, deletion,
+  permission or ownership rights (deleting a volume root is moot); adding
+  unrelated entries beside the held chain replaces nothing;
+- allow entries count even when a deny entry narrows them, entries of other
+  kinds are refused, and a missing DACL is refused;
+- finally Windows `AccessCheck` with the executor's own token must grant none
+  of those rights, which covers inheritance, deny entries and owner rights.
+
+A refusal names the object's role and the principal in the start log. A
+missing, unreadable, invalid,
+replaced (same revision, other content) or rolled-back policy refuses every
+request. The highest accepted revision is kept in the executor root and in
+memory, so a rollback stays refused after a restart. A lost or unreadable mark
+on a root that already served several people refuses every policy until the
+operator restores it. The mark, the mode record and the in-memory floor are
+checked on every policy read, including when the policy bytes are unchanged
+and their earlier verification is reused; a missing, unreadable, replaced or
+rolled-back mark or mode record refuses. Once a root has run in this mode, it
+never returns to the single paired client.
+
+In this mode:
+
+- The executor accepts any client certificate the current policy enrolls: a
+  person's key signs each device's enrollment for this host, and the operator's
+  policy grants project membership. Every request is authorized again against
+  a freshly checked policy, so revoking a device or person takes effect on
+  connections that are already open. A person, owner or role field in a
+  request is refused, never trusted.
+- Each job belongs to the person who submitted it, for one project. Status,
+  logs, evidence, publication refresh, observations, acknowledgements and
+  release answer only that person; to anyone else the job does not exist. The
+  list shows only the caller's jobs in projects they may still read, and
+  capabilities name only the caller. A
+  job ID that another person already used is refused without its receipt.
+- Mutations carry `Zerus-Policy-Revision` (the current revision) and
+  `Zerus-Request-Deadline` (Unix milliseconds, at most five minutes ahead). A
+  stale revision is refused; earlier receipts stay valid.
+- A queued job is authorized again before it deploys, after each delivery,
+  and at the launch boundary: after the scenario's verification and quiet wait,
+  and inside the process creation callback before `CreateProcess`. A revoked
+  device, person, membership or execution context marks it `access_refused`
+  before launch (or `not_run` with an access reason at the boundary). Its owner,
+  or an operator with `resource-cancel`, may release an `access_refused`
+  receipt.
+- Each person has a bounded queue (`per_person_jobs`, at most the executor's
+  six) and the worker serves people in turn.
+- Delivery slots belong to the job's project (`project-slots/<project>/<slot>`):
+  members of one project share one managed copy, and another project's slot
+  of the same name is a different folder. There is still only one installed
+  tree per slot.
+- Generation leases: before a job's delivery reads or advances a slot, a
+  lease naming the slot, the generation it reads and the job is written under
+  the slot's lock (`leases/<job>.json`). Jobs reading the same generation
+  share it. The tree is never advanced to another generation while another
+  job's lease names a different one: the later job is `held`. A lease is
+  released only after its job's final receipt and verified whole-tree
+  settlement; `unknown`, creation-issued, `awaiting_observation` and
+  `cancel_unconfirmed` receipts keep it, also across restarts. Nothing is
+  released by age.
+- Cancellation: `POST /executor/v1/jobs/<id>/cancel` with a `request_id`
+  (UUID), by the owner or by an operator with `resource-cancel`. A queued or
+  held job becomes `cancelled` at once; a deploying job stops before launch; a
+  running job's whole Job tree is terminated and the receipt says `cancelled`
+  only after zero processes are verified, otherwise `cancel_unconfirmed`
+  (never replayed, resources stay pinned). A repeated request returns the
+  first request's identity. The answer carries only the job's phase; the
+  operator's right never reads logs or results.
+- Revocation takes effect at once for new requests, deployments and launches.
+  A job already running is not killed for it (that would be a new kill
+  authority); its receipt records `revoked_while_running` with the refusal,
+  and the revoked person cannot read its results.
+
+Isolation backend `windows-appcontainer-v1` (implemented, not qualified). Each
+job runs in an AppContainer named for (executor root, host, person, context),
+derived only from the current verified policy. Inputs (the project's
+generation and scenario bundle) are readable through a per-project capability;
+the job's runtime and output folders are its only writable places (Low label,
+no permission or ownership rights); executor, operator, key, other people's
+and human-profile objects carry no contained entry, and nothing is granted to
+ALL APPLICATION PACKAGES. A regular AppContainer can still read objects that
+grant ALL APPLICATION PACKAGES (much of Windows and Program Files); LPAC is
+not supported. The suspended process's token, package SID, capabilities,
+integrity, privileges and Job membership are verified before it resumes, and
+its container must equal what the current policy gives the job's owner,
+context and project. There is no uncontained fallback.
+
+The backend registers only when `appcontainer-qualification.json`, placed
+beside the binary by trusted packaging and protected by the installer, names
+this exact binary, its source identity, grant matrix and configuration, a
+`win25` runner on Windows 10.0 build 26100 or later, a non-administrator
+service account and a pass for each of Q0-Q10, produced by the binary's own
+`appcontainer-qualify` command on a disposable runner. This host must also be
+Windows 10.0 build 26100 or later. The record's runner field is asserted by
+the CI job, not signed; the packaging step and the installer's protection are
+what vouch for it. Without such a record multi-person mode refuses to start.
+
+Administration of people and devices (run explicitly; the service never
+writes the policy):
+
+- `access-request-device` (on the person's device) signs a device enrollment
+  request for one host with the person's local key, which never leaves it.
+- `access-admit-device` (operator) checks a request against the current
+  policy, admits it once (a ledger refuses replays), adds project roles and a
+  context from the operator's input only, optionally revokes devices it
+  replaces (rotation), and writes the next policy revision to a new file.
+- `access-revoke` revokes devices or people in the next revision.
+- `access-show` prints the verified host and every person's devices, projects,
+  roles, operator rights and context, without keys or signatures.
+
+Data publishers (`data_peers`) remain a separate authorization from people's
+devices. A Windows Job Object limits a process tree's lifetime and resources;
+it is not a security boundary between people, and neither is a separate HOME.
+
+### Operator setup, migration and rollback (multi-person)
+
+Setup is manual and reviewed; no installer provisions accounts or ACLs yet.
+The objects an operator creates, and removes on uninstall, are exactly:
+
+1. a dedicated non-administrator service account that runs
+   `hgs-executor executor-serve-shared <config>` (distinct from the named
+   operator; never in Administrators);
+2. the operator folder (for example `C:\ProgramData\ZerusOperator`) with a
+   protected DACL: the named operator, Administrators and SYSTEM write; the
+   service account reads; nobody else, and no ALL APPLICATION PACKAGES entry;
+3. the executor configuration (installer-owned, same rules) naming the policy
+   and the operator SID; see `examples/executor-shared.json`;
+4. the policy, written only through `access-admit-device`, `access-revoke` and
+   the operator's own reviewed edits; every change is a higher revision;
+5. the qualification record beside the binary, copied by trusted packaging
+   only, never edited.
+
+The executor itself creates, inside its root only: `access-mode.json`,
+`access-high-water.json`, `appcontainers/` (profile origin records and probe
+folders) and per-job folders. AppContainer profiles it created are listed by
+their origin records; remove them with the executor stopped and no unknown,
+running or unconfirmed receipt, or leave them (they hold no data).
+
+Migration and rollback:
+
+- A root that has served several people never returns to single-person mode
+  (`access-mode.json`; `executor-serve` refuses it). Roll back by stopping the
+  shared service and starting a single-person executor on a NEW root.
+- Rolling the policy back is refused (`access-high-water.json`); publish a
+  new revision with the earlier content instead. A lost mark stops the
+  service until the operator restores it.
+- Single-person jobs must be collected or released before a root enables
+  multi-person mode; ownerless receipts are never adopted.
+- Upgrading the binary invalidates the qualification record (it names the
+  binary's SHA-256): multi-person mode refuses to start until the new binary
+  has its own record.
+
 ## Teams and test broker
 
 The profile selects `source: snapshot` for the member's existing build-broker
@@ -223,10 +430,21 @@ members of the verified scenario tree. Scripts receive a sanitized environment:
 | `ZERUS_DEVICE_ID` | Exact locally configured device |
 | `ZERUS_OBSERVATION_FILE` | Explicit human verdict, when guided |
 
-The runtime current directory and HOME/TEMP/APPDATA point to the job's generated
-runtime folder. Ambient model, SSH and Zerus credentials are not inherited.
-Scripts are trusted programs under the configured Windows account, not a
-security sandbox. The account and local firewall must provide any required
+The runtime current directory and HOME, USERPROFILE, TEMP, TMP, APPDATA and
+LOCALAPPDATA point to the job's generated runtime folder. The environment is
+built from an explicit allowlist and nothing else: `SystemRoot`, `WINDIR`,
+`COMSPEC`, a `PATH` of the system and Windows PowerShell folders, those
+job-local folders, the variables above and the `GOTELEMETRY`/`OTEL_SDK_DISABLED`
+opt-outs. The executor's own environment is never inherited, so provider keys
+and homes, HGS account state, SSH agent sockets and proxy settings do not reach
+a scenario. Names are unique regardless of case, contain no `=` or NUL, and
+names, values and the whole block are bounded. The child inherits exactly two
+handles, the log pipe's writer (standard output and error) and NUL (standard
+input); policy, key, control, Job and process handles of the executor stay in
+the executor. Scenario Job objects carry a protected DACL granting the
+executor's account and SYSTEM only. All of this is hygiene under one account,
+not isolation: scripts are trusted programs under the configured Windows
+account, not a security sandbox. The account and local firewall must provide any required
 isolation from other data or services. The transport itself has no telemetry
 exporter or cloud store.
 

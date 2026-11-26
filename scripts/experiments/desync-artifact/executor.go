@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -27,6 +28,8 @@ type ExecutorConfig struct {
 	ScenarioSeconds int              `json:"scenario_seconds"`
 	Stash           int64            `json:"stash_bytes"`
 	Devices         []ExecutorDevice `json:"devices,omitempty"`
+	// Access selects multi-person mode (executor_access.go).
+	Access *AccessConfig `json:"access,omitempty"`
 }
 type ExecutorDevice struct {
 	ID      string `json:"device_id"`
@@ -41,6 +44,8 @@ type ExecutorRequest struct {
 	Scenario    TreeOffer                  `json:"scenario"`
 	Parameters  map[string]json.RawMessage `json:"parameters"`
 	Performance *PerformancePolicy         `json:"performance,omitempty"`
+	// Project names the shared project in multi-person mode; empty otherwise.
+	Project string `json:"project,omitempty"`
 }
 type ExecutorSubmission struct {
 	Protocol int             `json:"protocol"`
@@ -51,6 +56,8 @@ type ExecutorSubmission struct {
 	Phase    string          `json:"phase"`
 	Reason   string          `json:"reason,omitempty"`
 	Created  int64           `json:"created"`
+	// Owner is the admitting person in multi-person mode; nil otherwise.
+	Owner *JobOwner `json:"owner,omitempty"`
 }
 type ExecutorQueue struct {
 	Protocol int      `json:"protocol"`
@@ -65,6 +72,11 @@ type executorService struct {
 	stopping            bool
 	queue               ExecutorQueue
 	wake, stop, settled chan struct{}
+	access              accessState
+	lastPerson          string
+	// Test seams for delivery and launch; nil uses the real ones.
+	deliverFn func(ExecutorSubmission, TreeOffer, string) (string, string, error)
+	launchFn  func(command, path string) error
 }
 
 func executorRequestDigest(request ExecutorRequest) string {
@@ -109,6 +121,9 @@ func (s *executorService) validateRequest(request ExecutorRequest) error {
 	if request.Protocol != deliveryProtocol || !validHex(request.Job, 16) || !validDevice(request.Slot) || !validDevice(request.Device) || len(request.Parameters) > 32 {
 		return errors.New("unsupported executor request")
 	}
+	if s.shared() != accessName(request.Project) || (!s.shared() && request.Project != "") {
+		return errors.New("project does not match the access mode")
+	}
 	allowedDevice := request.Device == "host"
 	for _, device := range s.cfg.Devices {
 		if device.ID == request.Device {
@@ -134,9 +149,12 @@ func (s *executorService) validateRequest(request ExecutorRequest) error {
 	}
 	return nil
 }
-func (s *executorService) submit(request ExecutorRequest) (ExecutorSubmission, error) {
+func (s *executorService) submit(request ExecutorRequest, owner *JobOwner) (ExecutorSubmission, error) {
 	if err := s.validateRequest(request); err != nil {
 		return ExecutorSubmission{}, err
+	}
+	if s.shared() != (owner != nil) || (owner != nil && owner.Project != request.Project) {
+		return ExecutorSubmission{}, errors.New("job owner does not match the access mode")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -144,6 +162,12 @@ func (s *executorService) submit(request ExecutorRequest) (ExecutorSubmission, e
 		return ExecutorSubmission{}, errors.New("executor is draining")
 	}
 	if prior, err := s.readSubmission(request.Job); err == nil {
+		// An existing ID answers only its own owner: another person, or an
+		// ownerless receipt in multi-person mode, gets the plain refusal and
+		// never the receipt.
+		if !sameOwner(prior.Owner, owner) {
+			return ExecutorSubmission{}, errors.New("job admission refused")
+		}
 		if prior.Digest != executorRequestDigest(request) {
 			return prior, errors.New("job ID already has different inputs")
 		}
@@ -176,7 +200,10 @@ func (s *executorService) submit(request ExecutorRequest) (ExecutorSubmission, e
 	if len(s.queue.Jobs) >= 6 {
 		return ExecutorSubmission{}, errors.New("executor queue full; collect retained results")
 	}
-	value := ExecutorSubmission{deliveryProtocol, s.identity, s.root, executorRequestDigest(request), request, "queued", "", time.Now().UnixMilli()}
+	if owner != nil && s.ownedJobs(owner.Person) >= s.personJobLimit() {
+		return ExecutorSubmission{}, errors.New("this person's queue is full; collect retained results")
+	}
+	value := ExecutorSubmission{deliveryProtocol, s.identity, s.root, executorRequestDigest(request), request, "queued", "", time.Now().UnixMilli(), owner}
 	if err := s.saveSubmission(value); err != nil {
 		return value, err
 	}
@@ -193,6 +220,12 @@ func (s *executorService) submit(request ExecutorRequest) (ExecutorSubmission, e
 func (s *executorService) phase(value *ExecutorSubmission, phase, reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// A cancelled receipt is final: a worker that read the job before the
+	// cancel never moves it on.
+	if stored, err := s.readSubmission(value.Request.Job); err == nil && stored.Phase == "cancelled" && phase != "cancelled" {
+		*value = stored
+		return errors.New("job was cancelled")
+	}
 	value.Phase = phase
 	value.Reason = reason
 	return s.saveSubmission(*value)
@@ -209,6 +242,18 @@ func (s *executorService) worker() {
 		jobs := append([]string{}, s.queue.Jobs...)
 		s.mu.Unlock()
 		worked := false
+		if s.shared() {
+			worked = s.runNextShared(jobs)
+			select {
+			case <-s.stop:
+				return
+			default:
+			}
+			if worked {
+				continue
+			}
+			jobs = nil
+		}
 		for _, job := range jobs {
 			value, err := s.readSubmission(job)
 			if err != nil {
@@ -237,8 +282,9 @@ func (s *executorService) worker() {
 	}
 }
 func (s *executorService) delivery(value ExecutorSubmission, offer TreeOffer, kind string) (string, string, error) {
-	base := filepath.Join(s.cfg.Root, kind, value.Request.Slot)
-	parents, err := managedDirectory(s.cfg.Root, kind+"/"+value.Request.Slot)
+	relative := slotRelative(value, kind)
+	base := filepath.Join(s.cfg.Root, filepath.FromSlash(relative))
+	parents, err := managedDirectory(s.cfg.Root, relative)
 	defer closeFiles(parents)
 	if err != nil {
 		return "", "", err
@@ -285,14 +331,48 @@ func (s *executorService) runOne(value ExecutorSubmission) {
 	if err := s.phase(&value, "deploying", ""); err != nil {
 		return
 	}
-	artifact, artifactDelivery, err := s.delivery(value, value.Request.Artifact, "slots")
+	deliver, launch := s.delivery, runScenario
+	if s.deliverFn != nil {
+		deliver = s.deliverFn
+	}
+	if s.launchFn != nil {
+		launch = s.launchFn
+	}
+	// Leases on both slots are reserved, under each slot's lock, before any
+	// delivery reads or advances them; they are released only when the
+	// job's own receipt is final and its process tree settled.
+	defer func() {
+		if value.Phase == "held" || finalReleasable[value.Phase] {
+			s.releaseJobLeases(value)
+		}
+	}()
+	for _, slot := range []struct {
+		kind  string
+		offer TreeOffer
+	}{{"slots", value.Request.Artifact}, {"bundles", value.Request.Scenario}} {
+		lease := slotLease{Generation: slot.offer.ID, Job: value.Request.Job}
+		if value.Owner != nil {
+			lease.Person = value.Owner.Person
+		}
+		if err := acquireLease(s.cfg.Root, slotRelative(value, slot.kind), lease); err != nil {
+			_ = s.phase(&value, "held", "slot generation is in use by an unresolved job; it resumes after that job settles or is reviewed")
+			return
+		}
+	}
+	artifact, artifactDelivery, err := deliver(value, value.Request.Artifact, "slots")
 	if err != nil {
 		_ = s.phase(&value, "held", "artifact unavailable; refresh the pinned publication to resume")
 		return
 	}
-	bundle, bundleDelivery, err := s.delivery(value, value.Request.Scenario, "bundles")
+	if s.refusedDuringDeploy(&value) {
+		return
+	}
+	bundle, bundleDelivery, err := deliver(value, value.Request.Scenario, "bundles")
 	if err != nil {
 		_ = s.phase(&value, "held", "scenario bundle unavailable; refresh its pinned publication to resume")
+		return
+	}
+	if s.refusedDuringDeploy(&value) {
 		return
 	}
 	parents, err := managedDirectory(s.cfg.Root, "requests/"+value.Request.Job)
@@ -301,16 +381,39 @@ func (s *executorService) runOne(value ExecutorSubmission) {
 		_ = s.phase(&value, "infrastructure_error", "request storage unavailable")
 		return
 	}
-	cfg := ScenarioConfig{ExecutorRoot: s.cfg.Root, Identity: s.cfg.Peer.Identity, Job: value.Request.Job, ArtifactSlot: artifact, Artifact: value.Request.Artifact.ID, ArtifactDelivery: artifactDelivery, ScenarioSlot: bundle, Scenario: value.Request.Scenario.ID, ScenarioDelivery: bundleDelivery, Device: value.Request.Device, Parameters: value.Request.Parameters, MaxMemory: s.cfg.ScenarioMemory, MaxSeconds: s.cfg.ScenarioSeconds, Performance: value.Request.Performance}
+	container, err := s.containerFor(value)
+	if err != nil {
+		_ = s.phase(&value, "access_refused", "isolation: "+err.Error())
+		return
+	}
+	cfg := ScenarioConfig{Container: container, ExecutorRoot: s.cfg.Root, Identity: s.cfg.Peer.Identity, Job: value.Request.Job, ArtifactSlot: artifact, Artifact: value.Request.Artifact.ID, ArtifactDelivery: artifactDelivery, ScenarioSlot: bundle, Scenario: value.Request.Scenario.ID, ScenarioDelivery: bundleDelivery, Device: value.Request.Device, Parameters: value.Request.Parameters, MaxMemory: s.cfg.ScenarioMemory, MaxSeconds: s.cfg.ScenarioSeconds, Performance: value.Request.Performance}
 	path := filepath.Join(s.cfg.Root, "requests", value.Request.Job, "run.json")
 	if err := durableJSON(path, cfg); err != nil {
 		_ = s.phase(&value, "infrastructure_error", "job configuration persistence failed")
 		return
 	}
+	if s.shared() {
+		owned := value
+		executionAdmissions.Store(owned.Request.Job, func() error { return s.authorizeExecution(owned) })
+		defer executionAdmissions.Delete(owned.Request.Job)
+		if container != nil {
+			executionContainers.Store(owned.Request.Job, func(spec *containerSpec) error {
+				want, err := s.expectedContainer(owned)
+				if err != nil {
+					return err
+				}
+				if !sameContainer(spec, want) {
+					return accessCode("container-envelope-mismatch")
+				}
+				return nil
+			})
+			defer executionContainers.Delete(owned.Request.Job)
+		}
+	}
 	if err := s.phase(&value, "executing", ""); err != nil {
 		return
 	}
-	runErr := runScenario("scenario-run", path)
+	runErr := launch("scenario-run", path)
 	var state ScenarioState
 	if err := readTreeControl(filepath.Join(s.cfg.Root, "jobs", cfg.Job, "job-state.json"), &state); err == nil {
 		if activeScenarioStatus(state.Status) {
@@ -360,7 +463,22 @@ func (s *executorService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == "GET" && r.URL.Path == "/executor/v1/capabilities" {
-		s.json(w, map[string]any{"protocol": deliveryProtocol, "executor": s.identity, "os": "windows", "backend": deliveryBackend, "model_runtime": false, "features": []string{"artifact-tree-v1", "scenario-v1", "host-performance-v1"}, "performance_scope": "host-cpu-volumes-physical-disks", "performance_availability": "checked-at-admission", "devices": append([]ExecutorDevice{{"host", "host"}}, s.cfg.Devices...), "runtimes": []string{"powershell", "native"}, "maximum_scenario_memory_bytes": s.cfg.ScenarioMemory, "maximum_scenario_seconds": s.cfg.ScenarioSeconds, "maximum_pending_jobs": 6, "maximum_log_bytes": maxScenarioLog, "maximum_evidence_bytes": 64 * MiB})
+		var access map[string]any
+		if s.shared() {
+			caller, _, ok := s.authenticate(w, r, "capabilities", "")
+			if !ok {
+				return
+			}
+			// Only the caller's own identity and the host's limits; never
+			// another person, project roster or account.
+			access = map[string]any{"mode": "multi-person", "contract": hostAccessContract, "person": caller.Person, "policy_revision": caller.Policy.Revision,
+				"isolation_backend": s.cfg.Access.Isolation, "maximum_person_jobs": s.personJobLimit(), "cancel": "settled"}
+		}
+		capabilities := map[string]any{"protocol": deliveryProtocol, "executor": s.identity, "os": "windows", "backend": deliveryBackend, "model_runtime": false, "features": []string{"artifact-tree-v1", "scenario-v1", "host-performance-v1"}, "performance_scope": "host-cpu-volumes-physical-disks", "performance_availability": "checked-at-admission", "devices": append([]ExecutorDevice{{"host", "host"}}, s.cfg.Devices...), "runtimes": []string{"powershell", "native"}, "maximum_scenario_memory_bytes": s.cfg.ScenarioMemory, "maximum_scenario_seconds": s.cfg.ScenarioSeconds, "maximum_pending_jobs": 6, "maximum_log_bytes": maxScenarioLog, "maximum_evidence_bytes": 64 * MiB}
+		if access != nil {
+			capabilities["access"] = access
+		}
+		s.json(w, capabilities)
 		return
 	}
 	if r.Method == "POST" && r.URL.Path == "/executor/v1/jobs" {
@@ -369,7 +487,20 @@ func (s *executorService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "request refused", 400)
 			return
 		}
-		value, err := s.submit(request)
+		var owner *JobOwner
+		if s.shared() {
+			caller, _, ok := s.authenticate(w, r, "jobs.submit", request.Project)
+			if !ok || !s.mutationBound(w, r, caller) {
+				return
+			}
+			// Refused before any job directory, queue receipt or download.
+			if err := s.executionContext(caller.Policy, caller.Person); err != nil {
+				accessRefused(w, err.Error())
+				return
+			}
+			owner = &JobOwner{caller.Person, caller.Device, request.Project, caller.Policy.Revision}
+		}
+		value, err := s.submit(request, owner)
 		if err != nil {
 			http.Error(w, "job admission refused", 409)
 			return
@@ -378,12 +509,19 @@ func (s *executorService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == "GET" && r.URL.Path == "/executor/v1/jobs" {
+		var caller *accessCaller
+		if s.shared() {
+			var ok bool
+			if caller, _, ok = s.authenticate(w, r, "jobs.list", ""); !ok {
+				return
+			}
+		}
 		s.mu.Lock()
 		jobs := append([]string{}, s.queue.Jobs...)
 		s.mu.Unlock()
 		rows := []ExecutorSubmission{}
 		for _, job := range jobs {
-			if value, err := s.readSubmission(job); err == nil {
+			if value, err := s.readSubmission(job); err == nil && (!s.shared() || s.listable(caller, value)) {
 				rows = append(rows, value)
 			}
 		}
@@ -403,6 +541,9 @@ func (s *executorService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown job", 404)
 		return
 	}
+	if s.shared() && !s.authorizeJob(w, r, value, parts) {
+		return
+	}
 	if len(parts) == 2 && parts[1] == "release" && r.Method == "POST" {
 		s.control.Lock()
 		defer s.control.Unlock()
@@ -410,7 +551,7 @@ func (s *executorService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Request string `json:"request_id"`
 			Digest  string `json:"request_sha256"`
 		}
-		if decodeRequest(w, r, &release) != nil || !validHex(release.Request, 16) || release.Digest != value.Digest || value.Phase != "infrastructure_error" {
+		if decodeRequest(w, r, &release) != nil || !validHex(release.Request, 16) || release.Digest != value.Digest || (value.Phase != "infrastructure_error" && value.Phase != "access_refused") {
 			http.Error(w, "release refused", 409)
 			return
 		}
@@ -421,10 +562,21 @@ func (s *executorService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "admission needs result collection or review", 409)
 			return
 		}
-		cfg, err := s.runConfig(value)
-		if err != nil {
-			http.Error(w, "admission receipt unavailable", 409)
-			return
+		// A job refused at execution by access never deployed: it has no
+		// admission receipt or spool to release.
+		var cfg ScenarioConfig
+		if value.Phase != "access_refused" {
+			if cfg, err = s.runConfig(value); err != nil {
+				http.Error(w, "admission receipt unavailable", 409)
+				return
+			}
+		} else {
+			parents, err := managedDirectory(s.cfg.Root, "requests/"+job)
+			closeFiles(parents)
+			if err != nil {
+				http.Error(w, "release unavailable", 503)
+				return
+			}
 		}
 		path := filepath.Join(s.cfg.Root, "requests", job, "released.json")
 		var prior struct {
@@ -440,9 +592,11 @@ func (s *executorService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "release identity changed", 409)
 			return
 		}
-		if err := releaseScenarioSpool(s.cfg.Root, ScenarioState{Job: job, Digest: scenarioDigest(cfg, s.identity)}); err != nil && !os.IsNotExist(err) {
-			http.Error(w, "spool release unavailable", 409)
-			return
+		if value.Phase != "access_refused" {
+			if err := releaseScenarioSpool(s.cfg.Root, ScenarioState{Job: job, Digest: scenarioDigest(cfg, s.identity)}); err != nil && !os.IsNotExist(err) {
+				http.Error(w, "spool release unavailable", 409)
+				return
+			}
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -647,18 +801,41 @@ func (s *executorService) serveEvidence(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("X-Zerus-SHA256", entry.SHA256)
 	_, _ = io.CopyN(w, io.NewSectionReader(f, offset, n), n)
 }
+
+// serveExecutor is the single-person service entry. It never starts
+// multi-person mode, so a configuration that gains or loses an access section
+// cannot move a service between the modes.
 func serveExecutor(configPath string) error {
 	var cfg ExecutorConfig
 	if err := strictControl(configPath, &cfg); err != nil {
 		return err
 	}
-	if cfg.Peer.Identity == "" || cfg.Peer.Fingerprint == "" || cfg.Root == "" || cfg.ServeSeconds < 1 || cfg.ServeSeconds > 604800 || cfg.Memory < 128*MiB || cfg.Memory > 4*1024*MiB || cfg.ScenarioMemory < 64*MiB || cfg.ScenarioMemory >= cfg.Memory || cfg.ScenarioSeconds < 1 || cfg.ScenarioSeconds > 86400 || cfg.Stash < 0 || len(cfg.DataPeers) > 64 {
+	if cfg.Access != nil {
+		return errors.New("multi-person mode starts only through executor-serve-shared")
+	}
+	return runExecutor(cfg, configPath, nil)
+}
+
+// runExecutor serves a parsed configuration; trust is set exactly in
+// multi-person mode.
+func runExecutor(cfg ExecutorConfig, configPath string, trust policyTrust) error {
+	if (trust == nil) != (cfg.Access == nil) {
+		return errors.New("executor mode and configuration disagree")
+	}
+	if cfg.Peer.Identity == "" || (cfg.Access == nil && cfg.Peer.Fingerprint == "") || cfg.Root == "" || cfg.ServeSeconds < 1 || cfg.ServeSeconds > 604800 || cfg.Memory < 128*MiB || cfg.Memory > 4*1024*MiB || cfg.ScenarioMemory < 64*MiB || cfg.ScenarioMemory >= cfg.Memory || cfg.ScenarioSeconds < 1 || cfg.ScenarioSeconds > 86400 || cfg.Stash < 0 || len(cfg.DataPeers) > 64 {
 		return errors.New("invalid executor configuration or limits")
 	}
 	for _, pin := range cfg.DataPeers {
 		if !validHex(pin, 32) {
 			return errors.New("invalid data peer")
 		}
+	}
+	// Multi-person mode was checked, including its isolation backend and
+	// operator, before the executor writes anything.
+	if trust != nil {
+		sharedExecution.Store(true)
+	} else if err := refuseLegacyAfterShared(cfg.Root); err != nil {
+		return err
 	}
 	parents, root, err := holdDirectoryChain(cfg.Root)
 	defer closeFiles(parents)
@@ -709,14 +886,30 @@ func serveExecutor(configPath string) error {
 	if s.queue.Protocol != deliveryProtocol || s.queue.Root != root || len(s.queue.Jobs) > 6 {
 		return errors.New("executor queue identity changed")
 	}
+	if s.shared() {
+		s.access.trust = trust
+		if _, err := s.currentPolicy(); err != nil {
+			return errors.New("access policy unavailable: " + trustDetail(err).Error())
+		}
+		if err := s.prepareAccessRoot(); err != nil {
+			return err
+		}
+	}
 	if err := s.recoverQueue(); err != nil {
 		return err
 	}
+	s.reconcileLeases()
 	session, err := newIdentity()
 	if err != nil {
 		return err
 	}
-	listener, endpoint, pin, err := dataListener(cfg.Peer)
+	var listener net.Listener
+	var endpoint, pin string
+	if s.shared() {
+		listener, endpoint, pin, err = s.accessListener()
+	} else {
+		listener, endpoint, pin, err = dataListener(cfg.Peer)
+	}
 	if err != nil {
 		return err
 	}

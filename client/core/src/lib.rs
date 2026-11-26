@@ -41,6 +41,7 @@ pub mod git_status;
 pub mod git_changes;
 pub mod held_input;
 pub mod hgs_settings;
+pub mod host_access;
 pub mod image;
 pub mod input_acknowledgment;
 pub mod input_queue;

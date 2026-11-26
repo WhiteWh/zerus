@@ -1,0 +1,8 @@
+{
+  "policy_in": "C:\\ProgramData\\ZerusOperator\\access-policy.json",
+  "policy_out": "C:\\ProgramData\\ZerusOperator\\access-policy-next.json",
+  "request": "C:\\ProgramData\\ZerusOperator\\incoming\\enrollment-request.json",
+  "ledger": "C:\\ProgramData\\ZerusOperator\\enrollment-ledger.json",
+  "grants": [{"project": "game-a", "role": "contributor"}],
+  "context": {"context": "builds", "backend": "windows-appcontainer-v1"}
+}

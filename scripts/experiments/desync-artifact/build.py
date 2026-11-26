@@ -103,6 +103,16 @@ def main():
     files = [p for p in here.glob("*.go") if args.test or not p.name.endswith("_test.go")]
     for path in files:
         shutil.copyfile(path, work / path.name)
+    if args.test:
+        # zerus-un7n: the host access contract's shared fixtures (also read by
+        # src/host_access) and the mobile protocol's rejected-key vectors.
+        repo = here.parents[2]
+        shared = {"host-access-v1": sorted((repo / "contracts/host-access-v1/fixtures").glob("*.json")),
+                  "mobile-vectors": [repo / "services/mobile/crypto/tests/vectors/rejected-keys-v1.json"]}
+        for folder, fixtures in shared.items():
+            (work / "testdata" / folder).mkdir(parents=True, exist_ok=True)
+            for fixture in fixtures:
+                shutil.copyfile(fixture, work / "testdata" / folder / fixture.name)
     # The binary records this path in its build information: a relative one
     # keeps local and builder binaries of the same source identical and keeps
     # the build machine's folders out of a published executable.
@@ -115,6 +125,8 @@ def main():
     (work / "go.mod").write_text(
         "module zerus.local/artifact-sync-prototype\n\ngo 1.26.0\n\n"
         "require github.com/folbricht/desync v0.0.0\n\n"
+        # zerus-un7n: host access person-key point decoding (BSD-3-Clause).
+        "require filippo.io/edwards25519 v1.2.0\n\n"
         "replace github.com/folbricht/desync => " + json.dumps(replacement) + "\n",
         encoding="utf-8")
     log_path = work.parent / "prototype-build.log"

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -72,7 +73,11 @@ func newNativeScenario(memory int64) (*nativeScenario, error) {
 	if err != nil {
 		return nil, err
 	}
-	job, err := windows.CreateJobObject(nil, ptr)
+	security, err := jobSecurity()
+	if err != nil {
+		return nil, err
+	}
+	job, err := windows.CreateJobObject(security, ptr)
 	if err != nil {
 		return nil, err
 	}
@@ -87,6 +92,29 @@ func newNativeScenario(memory int64) (*nativeScenario, error) {
 		return nil, err
 	}
 	return &nativeScenario{job: job, info: processReceipt{Name: name}}, nil
+}
+
+// jobSecurity gives a Job object a protected DACL that grants all job rights
+// to the executor's own account and SYSTEM, and nothing to anyone else: no
+// inherited, default or broad entries. The handle is not inheritable. This is
+// custody and resource control for the executor; a process running as the
+// same account still matches the first entry, so a Job object is never a
+// person-isolation boundary.
+func jobSecurity() (*windows.SecurityAttributes, error) {
+	var token windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &token); err != nil {
+		return nil, err
+	}
+	defer token.Close()
+	user, err := token.GetTokenUser()
+	if err != nil {
+		return nil, err
+	}
+	sd, err := windows.SecurityDescriptorFromString("D:P(A;;GA;;;" + user.User.Sid.String() + ")(A;;GA;;;SY)")
+	if err != nil {
+		return nil, err
+	}
+	return &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}, nil
 }
 
 func (j *nativeScenario) Close() {
@@ -107,15 +135,41 @@ func (j *nativeScenario) Close() {
 	}
 }
 
+// Environment bounds: Windows limits one variable to 32767 characters; the
+// scenario contract needs far less.
+const (
+	maxEnvironmentVariables = 128
+	maxEnvironmentName      = 255
+	maxEnvironmentValue     = 32767
+	maxEnvironmentBlock     = 64 * 1024 // UTF-16 code units
+)
+
+// environmentBlock builds the complete child environment from exactly the
+// given values; nothing is inherited from the executor. Names are unique
+// regardless of case (Windows treats them case-insensitively), contain no '='
+// or NUL and are not empty; values contain no NUL; every part is bounded. The
+// block is sorted case-insensitively, as CreateProcess expects.
 func environmentBlock(values map[string]string) ([]uint16, error) {
+	if len(values) > maxEnvironmentVariables {
+		return nil, errors.New("scenario environment has too many variables")
+	}
 	keys := make([]string, 0, len(values))
+	seen := map[string]bool{}
 	for key, value := range values {
 		if key == "" || strings.ContainsAny(key, "=\x00") || strings.ContainsRune(value, 0) {
 			return nil, errors.New("invalid scenario environment")
 		}
+		if len(utf16.Encode([]rune(key))) > maxEnvironmentName || len(utf16.Encode([]rune(value))) > maxEnvironmentValue {
+			return nil, errors.New("scenario environment variable exceeds limit")
+		}
+		folded := strings.ToUpper(key)
+		if seen[folded] {
+			return nil, errors.New("scenario environment repeats a name")
+		}
+		seen[folded] = true
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	sort.Slice(keys, func(a, b int) bool { return strings.ToUpper(keys[a]) < strings.ToUpper(keys[b]) })
 	var block []uint16
 	for _, key := range keys {
 		block = append(block, utf16.Encode([]rune(key+"="+values[key]))...)
@@ -125,10 +179,31 @@ func environmentBlock(values map[string]string) ([]uint16, error) {
 	if len(block) == 1 {
 		block = append(block, 0)
 	}
+	if len(block) > maxEnvironmentBlock {
+		return nil, errors.New("scenario environment exceeds limit")
+	}
 	return block, nil
 }
 
+// Start launches an uncontained scenario process (single-person mode).
 func (j *nativeScenario) Start(executable string, args []string, environment map[string]string, cwd string, log *os.File, created func(processReceipt) error) error {
+	return j.start(nil, executable, args, environment, cwd, log, created)
+}
+
+// StartContained launches the scenario process in the plan's AppContainer.
+// It uses the same custody as Start (creation-time Job association, exact
+// handle list, suspended creation, issued then accepted receipts) and adds
+// SECURITY_CAPABILITIES plus verification of the suspended process's token
+// and Job membership before its first instruction. A failed verification
+// terminates the suspended process; there is never an uncontained fallback.
+func (j *nativeScenario) StartContained(plan containerPlan, executable string, args []string, environment map[string]string, cwd string, log *os.File, created func(processReceipt) error) error {
+	if plan.SID == nil {
+		return accessCode("container-plan-invalid")
+	}
+	return j.start(&plan, executable, args, environment, cwd, log, created)
+}
+
+func (j *nativeScenario) start(plan *containerPlan, executable string, args []string, environment map[string]string, cwd string, log *os.File, created func(processReceipt) error) error {
 	app, err := windows.UTF16PtrFromString(executable)
 	if err != nil {
 		return err
@@ -156,7 +231,11 @@ func (j *nativeScenario) Start(executable string, args []string, environment map
 		return err
 	}
 	defer null.Close()
-	attributes, err := windows.NewProcThreadAttributeList(2)
+	count := uint32(2)
+	if plan != nil {
+		count = 3
+	}
+	attributes, err := windows.NewProcThreadAttributeList(count)
 	if err != nil {
 		return err
 	}
@@ -177,6 +256,15 @@ func (j *nativeScenario) Start(executable string, args []string, environment map
 	if err := attributes.Update(0x2000d, unsafe.Pointer(&jobs[0]), unsafe.Sizeof(jobs[0])); err != nil {
 		return err
 	}
+	var keep []windows.SIDAndAttributes
+	if plan != nil {
+		var caps *securityCapabilities
+		caps, keep = securityCapabilitiesFor(*plan)
+		if err := attributes.Update(procThreadAttributeSecurityCapabilities, unsafe.Pointer(caps), unsafe.Sizeof(*caps)); err != nil {
+			return err
+		}
+		defer runtime.KeepAlive(caps)
+	}
 	startup := windows.StartupInfoEx{StartupInfo: windows.StartupInfo{Cb: uint32(unsafe.Sizeof(windows.StartupInfoEx{})),
 		Flags: windows.STARTF_USESTDHANDLES | windows.STARTF_USESHOWWINDOW, ShowWindow: windows.SW_HIDE,
 		StdInput: handles[1], StdOutput: handles[0], StdErr: handles[0]}, ProcThreadAttributeList: attributes.List()}
@@ -189,7 +277,15 @@ func (j *nativeScenario) Start(executable string, args []string, environment map
 	if err := windows.CreateProcess(app, line, nil, nil, true, flags, &env[0], directory, &startup.StartupInfo, &process); err != nil {
 		return err
 	}
+	runtime.KeepAlive(keep)
 	j.process, j.thread = process.Process, process.Thread
+	if plan != nil {
+		if err := verifyContainedProcess(process.Process, j.job, *plan); err != nil {
+			_ = windows.TerminateProcess(process.Process, 0xe0000001)
+			_, _ = windows.WaitForSingleObject(process.Process, 10000)
+			return err
+		}
+	}
 	var creation, exit, kernel, user windows.Filetime
 	if err := windows.GetProcessTimes(process.Process, &creation, &exit, &kernel, &user); err != nil {
 		return err
@@ -211,6 +307,42 @@ func (j *nativeScenario) Start(executable string, args []string, environment map
 		return err
 	}
 	return nil
+}
+
+// TerminateAndSettle ends the whole Job tree and reports whether zero
+// processes and the root's exit were verified within the bound. A false
+// result is an unconfirmed outcome, never settlement.
+func (j *nativeScenario) TerminateAndSettle() bool {
+	if err := windows.TerminateJobObject(j.job, 0xe0000002); err != nil {
+		return false
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		active, err := jobActive(j.job)
+		if err != nil {
+			return false
+		}
+		if active == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if j.process != 0 {
+		if status, err := windows.WaitForSingleObject(j.process, 1000); err != nil || status != windows.WAIT_OBJECT_0 {
+			return false
+		}
+	}
+	if j.drained != nil {
+		select {
+		case <-j.drained:
+		case <-time.After(2 * time.Second):
+			j.pipe.Close()
+		}
+	}
+	return true
 }
 
 func processInJob(process, job windows.Handle) (bool, error) {
@@ -397,7 +529,11 @@ func openLiveLog(path string) (*os.File, error) {
 }
 
 func limitExecutorProcess(memory int64) (func(), error) {
-	job, err := windows.CreateJobObject(nil, nil)
+	security, err := jobSecurity()
+	if err != nil {
+		return nil, err
+	}
+	job, err := windows.CreateJobObject(security, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -1,0 +1,19 @@
+{
+  "root": "C:\\ZerusExecutor\\state",
+  "peer": {
+    "identity": "C:\\ZerusExecutor\\identity",
+    "listen": "10.20.0.12:7443",
+    "read_idle_seconds": 30
+  },
+  "serve_seconds": 604800,
+  "memory_bytes": 1073741824,
+  "scenario_memory_bytes": 536870912,
+  "scenario_seconds": 3600,
+  "stash_bytes": 16777216,
+  "access": {
+    "policy": "C:\\ProgramData\\ZerusOperator\\access-policy.json",
+    "operator": "S-1-5-21-REPLACE-WITH-THE-NAMED-OPERATOR-USER",
+    "isolation_backend": "windows-appcontainer-v1",
+    "per_person_jobs": 3
+  }
+}

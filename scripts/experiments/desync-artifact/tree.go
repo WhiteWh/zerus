@@ -505,6 +505,11 @@ func runTree(command, configPath string) error {
 	if err := validTreeOffer(cfg.Offer); err != nil {
 		return err
 	}
+	// The one installed tree never advances under another job's unresolved
+	// lease on a different generation.
+	if err := leasesAllow(s.work, cfg.Offer.ID, ""); err != nil {
+		return err
+	}
 	client, err := dataClient(cfg.Offer.Endpoint, cfg.Offer.Peer, cfg.Peer)
 	if err != nil {
 		return err

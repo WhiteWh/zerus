@@ -1,0 +1,42 @@
+{
+ "warning": "Synthetic fixture keys derived from public labels. Never use outside tests.",
+ "contract": "zerus-host-access-v1",
+ "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+ "now": 1795000000,
+ "persons": [
+  {
+   "name": "alice",
+   "seed": "7e1821b4e8f2116b923424535e5458686eafc9e5c6b554778a683278921ec28a",
+   "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+   "public": "OHGyvx7GoN9L11x82VTL43CeYetQBwSvkKLuAjcmzLs"
+  },
+  {
+   "name": "bob",
+   "seed": "2eb8ac5034b9f81537d4b8c10fffb3baaf59ffd44cb1fd8e9370ff12c922aefd",
+   "person": "54da52455fe491d3f46c91650ffa6242d0324a648de7762e81d20596c5f39386",
+   "public": "HtkoIaea1Dl6Y4dN0EVOLRkBprrZrkp9SylWBrD_hC4"
+  },
+  {
+   "name": "carol",
+   "seed": "e09e22d0058ffbf187487ab6a6b82d15de6578c45ea8ccd752ba67479bf9c835",
+   "person": "b80447a6ace74572513765019cb3b21ffa4653c88c22f43eaaa2307138f5844d",
+   "public": "N_1jc77OR28tKETBn7jX32Z9fRM0vhej9_1LDLG_a3Q"
+  },
+  {
+   "name": "mallory",
+   "seed": "e6346db8f21e8a3085fba52946ff6e157f7163c9adbc8745fb767dc4c4701dc6",
+   "person": "32e812ecbd0002125ccc9c67588ee7cddf365985d311f10dd77092d4a93a0713",
+   "public": "Km-bZiH1xYYL59VHZvWeyAVfxXPMZdSXOpbLJBI-SdU"
+  }
+ ],
+ "devices": {
+  "alice-laptop": "7445be3fdace8d84ecff03ee9e8cc8428aa9d94550901c9ff9c11838e2ffe98d",
+  "alice-desktop": "4df8b979b2be3cb532f153817528c14af6bf872bfcef30ae68d8ef2db1be8a4b",
+  "alice-future": "e34c935168b80b1b50ad79653e5272649d90615c3a0695e5eb12e5c7b14f4fc2",
+  "alice-expired": "b4fce406fbcb9576aaab667012e5fcf7ac23a8534670371f268d39a90680edca",
+  "bob-laptop": "8d11198f592c0c7816ecf430b610ff33d4e34df189487880a47a4abf4708d0fa",
+  "bob-old": "463bf033359a9ad1a1d5d8d57832243a4c14c25fcec7fcb1923d447ef00a6f49",
+  "carol-console": "1e7e15f1f46953e60f5aff72a8e95e0da90a7cf3897c652ce089e827ac43a3ee",
+  "stranger": "e037b06db81b26547a1f6bd21a9a297fff7f4f179e5a036121751e60b3dcdaf9"
+ }
+}

@@ -1219,6 +1219,7 @@ dependencies = [
  "cc",
  "chrono",
  "chrono-tz",
+ "ed25519-dalek",
  "fs2",
  "hkdf 0.12.4",
  "http",

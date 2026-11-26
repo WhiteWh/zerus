@@ -40,6 +40,9 @@ type ScenarioConfig struct {
 	MaxMemory        int64                      `json:"maximum_memory_bytes,omitempty"`
 	MaxSeconds       int                        `json:"maximum_seconds,omitempty"`
 	Performance      *PerformancePolicy         `json:"performance,omitempty"`
+	// Container is set only by a shared executor; a shared executor never
+	// launches a scenario without one.
+	Container *containerSpec `json:"container,omitempty"`
 }
 
 type EvidenceFile struct {
@@ -76,6 +79,11 @@ type ScenarioState struct {
 	Collected    bool               `json:"collected,omitempty"`
 	Ack          string             `json:"acknowledgement_id,omitempty"`
 	Performance  *PerformanceReport `json:"performance,omitempty"`
+	// RevokedWhileRunning records the access refusal observed while the job
+	// ran. The job is not killed for it (no new kill authority); new
+	// launches and result access are refused by the executor's gates.
+	RevokedWhileRunning string `json:"revoked_while_running,omitempty"`
+	CancelRequest       string `json:"cancel_request,omitempty"`
 }
 
 type Observation struct {
@@ -384,8 +392,34 @@ func runScenario(command, configPath string) error {
 	if perfErr != nil {
 		return finishPerformanceRefusal(work, cfg, &state, log, perfErr.Error())
 	}
+	// Multi-person access is checked again at the launch boundary (a
+	// revocation during delivery or the quiet wait refuses the launch).
+	if err := admitExecution(cfg.Job); err != nil {
+		return finishPerformanceRefusal(work, cfg, &state, log, "access: "+err.Error())
+	}
+	if cancelRequested(cfg.Job) {
+		state.Status, state.Reason = "cancelled", "cancelled before launch"
+		return saveScenario(work, &state)
+	}
+	plan, err := containedLaunchPlan(work, cfg, prepareContainedJob)
+	if err != nil {
+		return finishPerformanceRefusal(work, cfg, &state, log, "isolation: "+err.Error())
+	}
 	executionStart := time.Now()
-	err = native.Start(executable, args, environment, filepath.Join(work, "runtime"), log, func(info processReceipt) error {
+	launch := native.Start
+	if plan != nil {
+		contained := *plan
+		launch = func(executable string, args []string, environment map[string]string, cwd string, log *os.File, created func(processReceipt) error) error {
+			return native.StartContained(contained, executable, args, environment, cwd, log, created)
+		}
+	}
+	err = launch(executable, args, environment, filepath.Join(work, "runtime"), log, func(info processReceipt) error {
+		if !info.Accepted {
+			// Called before CreateProcess: the last point to refuse.
+			if err := admitExecution(cfg.Job); err != nil {
+				return err
+			}
+		}
 		state.Process = info
 		state.Status = "creating"
 		if info.Accepted {
@@ -418,6 +452,16 @@ func runScenario(command, configPath string) error {
 	lastCheck := time.Time{}
 	code, timedOut, runErr := native.Wait(spec.Timeout, func() error {
 		monitor.poll()
+		if record, ok := cancelRequests.Load(cfg.Job); ok {
+			state.CancelRequest = record.(cancelRecord).RequestID
+			return errCancelRequested
+		}
+		if state.RevokedWhileRunning == "" && sharedExecution.Load() {
+			if err := admitExecution(cfg.Job); err != nil {
+				state.RevokedWhileRunning = err.Error()
+				_ = saveScenario(work, &state)
+			}
+		}
 		if time.Since(lastCheck) < 250*time.Millisecond {
 			return nil
 		}
@@ -434,6 +478,27 @@ func runScenario(command, configPath string) error {
 		return nil
 	})
 	monitor.finish(time.Since(executionStart))
+	if errors.Is(runErr, errCancelRequested) {
+		// Cancelled only after the whole tree is verified at zero; otherwise
+		// the outcome stays unconfirmed and its slots stay pinned.
+		state.Finished = time.Now().UnixMilli()
+		if native.TerminateAndSettle() {
+			state.Status, state.Reason = "cancelled", "cancelled; the process tree settled"
+			_ = log.Close()
+			if err := saveScenario(work, &state); err != nil {
+				return err
+			}
+			for _, slot := range []*slot{artifact, bundle, device} {
+				if err := checkScenarioCustody(slot, executor); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		state.Status, state.Reason = "cancel_unconfirmed", "cancel requested; process tree settlement could not be verified; never replay"
+		_ = log.Close()
+		return saveScenario(work, &state)
+	}
 	state.Exit = &code
 	state.Finished = time.Now().UnixMilli()
 	if native.capture != nil {
@@ -510,4 +575,34 @@ func runScenario(command, configPath string) error {
 		}
 	}
 	return runErr
+}
+
+// containedLaunchPlan decides how a scenario launches: no container in
+// single-person mode; in a shared executor, only the re-derived container of
+// its run configuration with every grant applied and read back. A shared
+// executor never launches without one.
+func containedLaunchPlan(work string, cfg ScenarioConfig, prepare func(containedLayout, containerPlan) error) (*containerPlan, error) {
+	if cfg.Container == nil {
+		if sharedExecution.Load() {
+			return nil, accessCode("container-missing")
+		}
+		return nil, nil
+	}
+	// The run configuration lives in the executor root, which no contained
+	// principal can read or write; still, the container is accepted only if
+	// it is exactly what the current policy gives this job's owner, context
+	// and project (verifyLaunchEnvelope), not merely self-consistent.
+	if err := verifyLaunchEnvelope(cfg.Job, cfg.Container); err != nil {
+		return nil, err
+	}
+	plan, err := planOf(cfg.Container)
+	if err != nil {
+		return nil, err
+	}
+	layout := containedLayout{Parent: work, Runtime: filepath.Join(work, "runtime"), Outputs: filepath.Join(work, "outputs"),
+		Generation: filepath.Join(cfg.ArtifactSlot, "build"), Bundle: filepath.Join(cfg.ScenarioSlot, "build")}
+	if err := prepare(layout, plan); err != nil {
+		return nil, err
+	}
+	return &plan, nil
 }

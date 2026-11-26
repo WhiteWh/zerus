@@ -23,6 +23,20 @@ func declaredScenarioEntry(root, entry string) bool {
 	return false
 }
 
+// scenarioEnvironmentKeys is the complete scenario environment: the Windows
+// basics a tool needs, job-local profile and temporary folders, the
+// documented ZERUS_* contract and telemetry opt-outs. Nothing comes from the
+// executor's own environment, so provider credentials, HGS account state, SSH
+// agent sockets and proxy settings never reach a scenario. Running under the
+// executor's account, this is hygiene, not isolation: a same-account process
+// can still read that account's files.
+var scenarioEnvironmentKeys = []string{
+	"SystemRoot", "WINDIR", "COMSPEC", "PATH",
+	"TEMP", "TMP", "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA",
+	"ZERUS_ARTIFACT_ROOT", "ZERUS_SCENARIO_ROOT", "ZERUS_RESULT_DIR", "ZERUS_PARAMETERS_FILE", "ZERUS_OBSERVATION_FILE", "ZERUS_DEVICE_ID",
+	"GOTELEMETRY", "OTEL_SDK_DISABLED",
+}
+
 func scenarioEnvironment(work string, cfg ScenarioConfig) (map[string]string, error) {
 	system, err := systemDirectory()
 	if err != nil {
@@ -37,6 +51,14 @@ func scenarioEnvironment(work string, cfg ScenarioConfig) (map[string]string, er
 		"ZERUS_RESULT_DIR": filepath.Join(work, "outputs"), "ZERUS_PARAMETERS_FILE": filepath.Join(work, "parameters.json"),
 		"ZERUS_OBSERVATION_FILE": filepath.Join(work, "observation.json"), "ZERUS_DEVICE_ID": cfg.Device,
 		"GOTELEMETRY": "off", "OTEL_SDK_DISABLED": "true"}
+	if len(env) != len(scenarioEnvironmentKeys) {
+		return nil, errors.New("scenario environment differs from its allowlist")
+	}
+	for _, key := range scenarioEnvironmentKeys {
+		if _, ok := env[key]; !ok {
+			return nil, errors.New("scenario environment differs from its allowlist")
+		}
+	}
 	return env, nil
 }
 

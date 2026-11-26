@@ -146,6 +146,10 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        hgs [@host] history <session> --json bounded exact public history
        hgs [@host] history-projection <session> --json retired and refreshed history rows
        hgs [@host] graph snapshot --json   bounded saved relationship metadata (partial coverage)
+       hgs [@host] host-access status|support|bind --json   multi-person host access: caller, provider support, binding
+       hgs [@host] host-access share publish|memory|list|read|continue --json   shared project history and memory (JSON stdin)
+       hgs [@host] host-access compute --json   one mediated remote file or command call (JSON stdin)
+       hgs host-access remote-compute claude-args --host H --root R --json   local agent with remote tools only
        hgs [@host] wait begin|ack|finish|cancel|list --json   explicit independent-agent waits (JSON stdin)
        hgs [@host] team OPERATION --json   agent teams: plan, run, report and decide tasks (JSON stdin or --json-file PATH)
        hgs team outbox take|ack --json   a lead computer's worker collects its remote members' kept reports
@@ -1028,6 +1032,12 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
     if let Some(result) = wsl_forward(&config, &target, command, args, dry) {
         return result;
     }
+    // zerus-un7n phase 5: on a multi-person host every route that acts on this
+    // computer proves its caller and state owner before it reads or changes
+    // sessions, accounts, logs or usage; a legacy host admits everything.
+    if target.is_empty() || config.is_self(&target) {
+        crate::host_access::gate::admit(&crate::host_access::runtime::current(), command, args, &state::state_root())?;
+    }
     // zerus-ucck P1c: a session reference selects the session it names on every
     // session command, through the same checks as `--session-id`. `inspect`
     // keeps its own read-only reference path below.
@@ -1144,6 +1154,7 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
             println!("WSL file snapshot ABI: wsl-file-snapshot-v1");
             println!("Desktop creation ABI: guarded-create-v1");
             println!("Account transfer ABI: revision-copy-v1");
+            println!("{}", crate::host_access::gate::MARKER);
             #[cfg(windows)]
             print!("{}\nMobile gateway ABI: windows-local-v1\n", crate::host::admin::HELP);
             return Ok(0);
@@ -1326,6 +1337,9 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
     }
     if !target.is_empty() && !config.is_self(&target) {
         return remote(&config, &target, command, args, dry);
+    }
+    if command == "host-access" {
+        return crate::host_access::command::dispatch(args, dry);
     }
     if command == "external" { return crate::external_workstreams::dispatch(&config,args,dry); }
     if args.first().is_some_and(|name| crate::external_workstreams::reserved(name))

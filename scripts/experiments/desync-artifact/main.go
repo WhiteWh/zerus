@@ -406,6 +406,22 @@ func run(command, configPath string) error {
 	if command == "executor-serve" {
 		return serveExecutor(configPath)
 	}
+	if command == "executor-serve-shared" {
+		return serveSharedExecutor(configPath)
+	}
+	if command == "appcontainer-qualify" {
+		return runAppContainerQualification(configPath)
+	}
+	switch command {
+	case "access-request-device":
+		return runRequestDevice(configPath)
+	case "access-admit-device":
+		return runAdmitDevice(configPath)
+	case "access-revoke":
+		return runRevoke(configPath)
+	case "access-show":
+		return runShow(configPath)
+	}
 	if strings.HasPrefix(command, "controller-") {
 		return runController(command, configPath)
 	}
@@ -635,8 +651,11 @@ func main() {
 		return
 	}
 	if len(os.Args) == 2 && os.Args[1] == "--help" {
-		fmt.Println("hgs-executor COMMAND CONFIG\nCommands: identity-init, executor-serve, controller-run, controller-deploy, controller-status, controller-capabilities, controller-observe, controller-collect, tree-serve, tree-receive, tree-status. Local qualification also supports prepare, apply, status, metadata, serve, receive and receive-status.")
+		fmt.Println("hgs-executor COMMAND CONFIG\nCommands: identity-init, executor-serve, executor-serve-shared, controller-run, controller-deploy, controller-status, controller-capabilities, controller-observe, controller-collect, tree-serve, tree-receive, tree-status. Access administration: access-request-device, access-admit-device (also rotation), access-revoke, access-show. Disposable-runner qualification: appcontainer-qualify. Local qualification also supports prepare, apply, status, metadata, serve, receive and receive-status.")
 		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == "contained-probe" {
+		os.Exit(containedProbeMain())
 	}
 	if err := qualificationGate(); err != nil {
 		fmt.Fprintln(os.Stderr, "qualification resource gate refused")

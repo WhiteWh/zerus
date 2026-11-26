@@ -725,6 +725,23 @@ export type RulesOutcome =
   | { outcome: "unsupported"; detail: Text }
   | { outcome: "failed"; detail: Text; request_id?: string }
   | { outcome: "uncertain"; detail: Text; request_id: string };
+/** zerus-un7n phase 5/6: multi-person host access (client/core host_access over `hgs [@host] host-access`). Hosts enforce every rule. */
+export type HostAccessKind = "history" | "memory";
+export interface HostAccessEntry { role: "person" | "agent" | "note"; text: string }
+export type HostAccessOp =
+  | { op: "status" }
+  | { op: "support" }
+  | { op: "list"; project: string; kind: HostAccessKind; cursor?: string | null; limit?: number }
+  | { op: "read"; project: string; kind: HostAccessKind; person: string; id: string }
+  | { op: "publish"; project: string; title: string; session: string; entries: HostAccessEntry[]; id?: string; expected_generation?: number; request_id?: string }
+  | { op: "continue"; project: string; person: string; id: string; generation: number; request_id?: string };
+export interface HostAccessCall { host: string; op: HostAccessOp }
+export type HostAccessOutcome =
+  | { outcome: "done"; value: any; request_id?: string }
+  | { outcome: "unsupported"; detail: string }
+  | { outcome: "refused"; code: string; detail: string }
+  | { outcome: "failed"; detail: string }
+  | { outcome: "uncertain"; detail: string; request_id: string };
 /** Task 126: a project's memory, RustCodeLore and its store (client/core project_memory over `hgs project config`). */
 export type MemoryOp =
   | { op: "read" }
@@ -831,6 +848,10 @@ export async function wslDialogClose(handle: string): Promise<void> {
 export async function ironRules(call: RulesCall): Promise<RulesOutcome> {
   if (!inTauri()) throw new Error(DESKTOP_ONLY);
   return invoke("iron_rules", { call });
+}
+export async function hostAccess(call: HostAccessCall): Promise<HostAccessOutcome> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke("host_access", { call });
 }
 export async function projectMemory(call: MemoryCall): Promise<MemoryOutcome> {
   if (!inTauri()) throw new Error(DESKTOP_ONLY);

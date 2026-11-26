@@ -1,0 +1,8 @@
+{
+  "person_seed_file": "C:\\Users\\REPLACE\\.zerus\\person.key",
+  "host": "REPLACE_WITH_THE_HOST_FINGERPRINT_YOU_VERIFIED",
+  "device_certificate": "C:\\Users\\REPLACE\\.zerus\\device.pem",
+  "label": "Your name",
+  "lifetime_days": 90,
+  "output": "C:\\Users\\REPLACE\\Desktop\\enrollment-request.json"
+}

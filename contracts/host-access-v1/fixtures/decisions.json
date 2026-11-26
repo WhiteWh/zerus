@@ -1,0 +1,298 @@
+{
+ "contract": "zerus-host-access-v1",
+ "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+ "cases": [
+  {
+   "name": "enrolled device reads capabilities",
+   "policy": "base",
+   "device": "7445be3fdace8d84ecff03ee9e8cc8428aa9d94550901c9ff9c11838e2ffe98d",
+   "now": 1795000000,
+   "operation": "capabilities",
+   "project": "",
+   "expect": {
+    "allow": true,
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "role": "",
+    "via": ""
+   }
+  },
+  {
+   "name": "second device of the same person",
+   "policy": "base",
+   "device": "4df8b979b2be3cb532f153817528c14af6bf872bfcef30ae68d8ef2db1be8a4b",
+   "now": 1795000000,
+   "operation": "jobs.list",
+   "project": "",
+   "expect": {
+    "allow": true,
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "role": "",
+    "via": ""
+   }
+  },
+  {
+   "name": "unknown operation first",
+   "policy": "base",
+   "device": "e037b06db81b26547a1f6bd21a9a297fff7f4f179e5a036121751e60b3dcdaf9",
+   "now": 1795000000,
+   "operation": "jobs.delete",
+   "project": "proj-shared",
+   "expect": {
+    "allow": false,
+    "code": "operation-unknown"
+   }
+  },
+  {
+   "name": "unknown device",
+   "policy": "base",
+   "device": "e037b06db81b26547a1f6bd21a9a297fff7f4f179e5a036121751e60b3dcdaf9",
+   "now": 1795000000,
+   "operation": "capabilities",
+   "project": "",
+   "expect": {
+    "allow": false,
+    "code": "device-unknown"
+   }
+  },
+  {
+   "name": "revoked device",
+   "policy": "base",
+   "device": "463bf033359a9ad1a1d5d8d57832243a4c14c25fcec7fcb1923d447ef00a6f49",
+   "now": 1795000000,
+   "operation": "jobs.list",
+   "project": "",
+   "expect": {
+    "allow": false,
+    "code": "device-revoked"
+   }
+  },
+  {
+   "name": "future enrollment",
+   "policy": "base",
+   "device": "e34c935168b80b1b50ad79653e5272649d90615c3a0695e5eb12e5c7b14f4fc2",
+   "now": 1795000000,
+   "operation": "capabilities",
+   "project": "",
+   "expect": {
+    "allow": false,
+    "code": "enrollment-not-yet-valid"
+   }
+  },
+  {
+   "name": "expiry is exclusive",
+   "policy": "base",
+   "device": "b4fce406fbcb9576aaab667012e5fcf7ac23a8534670371f268d39a90680edca",
+   "now": 1795000000,
+   "operation": "capabilities",
+   "project": "",
+   "expect": {
+    "allow": false,
+    "code": "enrollment-expired"
+   }
+  },
+  {
+   "name": "contributor submits",
+   "policy": "base",
+   "device": "7445be3fdace8d84ecff03ee9e8cc8428aa9d94550901c9ff9c11838e2ffe98d",
+   "now": 1795000000,
+   "operation": "jobs.submit",
+   "project": "proj-shared",
+   "expect": {
+    "allow": true,
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "role": "contributor",
+    "via": "member"
+   }
+  },
+  {
+   "name": "reader cannot submit",
+   "policy": "base",
+   "device": "7445be3fdace8d84ecff03ee9e8cc8428aa9d94550901c9ff9c11838e2ffe98d",
+   "now": 1795000000,
+   "operation": "jobs.submit",
+   "project": "proj-read",
+   "expect": {
+    "allow": false,
+    "code": "role-insufficient"
+   }
+  },
+  {
+   "name": "reader reads",
+   "policy": "base",
+   "device": "7445be3fdace8d84ecff03ee9e8cc8428aa9d94550901c9ff9c11838e2ffe98d",
+   "now": 1795000000,
+   "operation": "jobs.read",
+   "project": "proj-read",
+   "expect": {
+    "allow": true,
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "role": "reader",
+    "via": "member"
+   }
+  },
+  {
+   "name": "reader reads artifacts",
+   "policy": "base",
+   "device": "7445be3fdace8d84ecff03ee9e8cc8428aa9d94550901c9ff9c11838e2ffe98d",
+   "now": 1795000000,
+   "operation": "artifacts.read",
+   "project": "proj-read",
+   "expect": {
+    "allow": true,
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "role": "reader",
+    "via": "member"
+   }
+  },
+  {
+   "name": "reader cannot control",
+   "policy": "base",
+   "device": "7445be3fdace8d84ecff03ee9e8cc8428aa9d94550901c9ff9c11838e2ffe98d",
+   "now": 1795000000,
+   "operation": "jobs.control",
+   "project": "proj-read",
+   "expect": {
+    "allow": false,
+    "code": "role-insufficient"
+   }
+  },
+  {
+   "name": "non-member read",
+   "policy": "base",
+   "device": "8d11198f592c0c7816ecf430b610ff33d4e34df189487880a47a4abf4708d0fa",
+   "now": 1795000000,
+   "operation": "jobs.read",
+   "project": "proj-alice",
+   "expect": {
+    "allow": false,
+    "code": "not-a-member"
+   }
+  },
+  {
+   "name": "empty project",
+   "policy": "base",
+   "device": "7445be3fdace8d84ecff03ee9e8cc8428aa9d94550901c9ff9c11838e2ffe98d",
+   "now": 1795000000,
+   "operation": "jobs.submit",
+   "project": "",
+   "expect": {
+    "allow": false,
+    "code": "project-unknown"
+   }
+  },
+  {
+   "name": "unknown project",
+   "policy": "base",
+   "device": "7445be3fdace8d84ecff03ee9e8cc8428aa9d94550901c9ff9c11838e2ffe98d",
+   "now": 1795000000,
+   "operation": "jobs.submit",
+   "project": "proj-none",
+   "expect": {
+    "allow": false,
+    "code": "project-unknown"
+   }
+  },
+  {
+   "name": "member cancels",
+   "policy": "base",
+   "device": "7445be3fdace8d84ecff03ee9e8cc8428aa9d94550901c9ff9c11838e2ffe98d",
+   "now": 1795000000,
+   "operation": "jobs.cancel",
+   "project": "proj-shared",
+   "expect": {
+    "allow": true,
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "role": "contributor",
+    "via": "member"
+   }
+  },
+  {
+   "name": "operator cancels",
+   "policy": "base",
+   "device": "1e7e15f1f46953e60f5aff72a8e95e0da90a7cf3897c652ce089e827ac43a3ee",
+   "now": 1795000000,
+   "operation": "jobs.cancel",
+   "project": "proj-shared",
+   "expect": {
+    "allow": true,
+    "person": "b80447a6ace74572513765019cb3b21ffa4653c88c22f43eaaa2307138f5844d",
+    "role": "",
+    "via": "operator"
+   }
+  },
+  {
+   "name": "operator cannot read",
+   "policy": "base",
+   "device": "1e7e15f1f46953e60f5aff72a8e95e0da90a7cf3897c652ce089e827ac43a3ee",
+   "now": 1795000000,
+   "operation": "jobs.read",
+   "project": "proj-shared",
+   "expect": {
+    "allow": false,
+    "code": "not-a-member"
+   }
+  },
+  {
+   "name": "non-member cannot cancel",
+   "policy": "base",
+   "device": "8d11198f592c0c7816ecf430b610ff33d4e34df189487880a47a4abf4708d0fa",
+   "now": 1795000000,
+   "operation": "jobs.cancel",
+   "project": "proj-alice",
+   "expect": {
+    "allow": false,
+    "code": "not-a-member"
+   }
+  },
+  {
+   "name": "reader cannot cancel",
+   "policy": "base",
+   "device": "7445be3fdace8d84ecff03ee9e8cc8428aa9d94550901c9ff9c11838e2ffe98d",
+   "now": 1795000000,
+   "operation": "jobs.cancel",
+   "project": "proj-read",
+   "expect": {
+    "allow": false,
+    "code": "role-insufficient"
+   }
+  },
+  {
+   "name": "revoked person",
+   "policy": "bob-revoked",
+   "device": "8d11198f592c0c7816ecf430b610ff33d4e34df189487880a47a4abf4708d0fa",
+   "now": 1795000000,
+   "operation": "capabilities",
+   "project": "",
+   "expect": {
+    "allow": false,
+    "code": "person-revoked"
+   }
+  },
+  {
+   "name": "device revocation precedes person",
+   "policy": "bob-revoked",
+   "device": "463bf033359a9ad1a1d5d8d57832243a4c14c25fcec7fcb1923d447ef00a6f49",
+   "now": 1795000000,
+   "operation": "capabilities",
+   "project": "",
+   "expect": {
+    "allow": false,
+    "code": "device-revoked"
+   }
+  },
+  {
+   "name": "other person unaffected",
+   "policy": "bob-revoked",
+   "device": "7445be3fdace8d84ecff03ee9e8cc8428aa9d94550901c9ff9c11838e2ffe98d",
+   "now": 1795000000,
+   "operation": "jobs.submit",
+   "project": "proj-shared",
+   "expect": {
+    "allow": true,
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "role": "contributor",
+    "via": "member"
+   }
+  }
+ ]
+}

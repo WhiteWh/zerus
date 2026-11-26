@@ -10,6 +10,7 @@ mod desktop;
 mod download;
 mod tunnel;
 mod host;
+mod host_access;
 mod machines;
 mod macos_session;
 mod metrics;

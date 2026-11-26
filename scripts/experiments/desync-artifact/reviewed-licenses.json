@@ -1,4 +1,11 @@
 {
+  "filippo.io/edwards25519": {
+    "version": "v1.2.0",
+    "license": "BSD-3-Clause",
+    "texts": {
+      "LICENSE": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067"
+    }
+  },
   "github.com/boljen/go-bitmap": {
     "version": "v0.0.0-20151001105940-23cd2fb0ce7d",
     "license": "MIT",

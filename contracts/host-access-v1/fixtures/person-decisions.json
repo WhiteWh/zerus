@@ -1,0 +1,194 @@
+{
+ "contract": "zerus-host-access-v1",
+ "host": "0090d553f0be637cd50d60f17023f08e3c0da088aac29b173ac6731a49223e38",
+ "cases": [
+  {
+   "name": "unknown operation first",
+   "policy": "base",
+   "person": "32e812ecbd0002125ccc9c67588ee7cddf365985d311f10dd77092d4a93a0713",
+   "operation": "jobs.submit",
+   "project": "proj-shared",
+   "expect": {
+    "allow": false,
+    "code": "operation-unknown"
+   }
+  },
+  {
+   "name": "unknown person",
+   "policy": "base",
+   "person": "32e812ecbd0002125ccc9c67588ee7cddf365985d311f10dd77092d4a93a0713",
+   "operation": "history.read",
+   "project": "proj-shared",
+   "expect": {
+    "allow": false,
+    "code": "person-unknown"
+   }
+  },
+  {
+   "name": "member reads history",
+   "policy": "base",
+   "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+   "operation": "history.read",
+   "project": "proj-shared",
+   "expect": {
+    "allow": true,
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "role": "contributor",
+    "via": "member"
+   }
+  },
+  {
+   "name": "reader reads memory",
+   "policy": "base",
+   "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+   "operation": "memory.read",
+   "project": "proj-read",
+   "expect": {
+    "allow": true,
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "role": "reader",
+    "via": "member"
+   }
+  },
+  {
+   "name": "reader cannot publish history",
+   "policy": "base",
+   "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+   "operation": "history.publish",
+   "project": "proj-read",
+   "expect": {
+    "allow": false,
+    "code": "role-insufficient"
+   }
+  },
+  {
+   "name": "reader cannot write memory",
+   "policy": "base",
+   "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+   "operation": "memory.write",
+   "project": "proj-read",
+   "expect": {
+    "allow": false,
+    "code": "role-insufficient"
+   }
+  },
+  {
+   "name": "reader cannot continue a handoff",
+   "policy": "base",
+   "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+   "operation": "handoff.continue",
+   "project": "proj-read",
+   "expect": {
+    "allow": false,
+    "code": "role-insufficient"
+   }
+  },
+  {
+   "name": "contributor publishes",
+   "policy": "base",
+   "person": "54da52455fe491d3f46c91650ffa6242d0324a648de7762e81d20596c5f39386",
+   "operation": "history.publish",
+   "project": "proj-shared",
+   "expect": {
+    "allow": true,
+    "person": "54da52455fe491d3f46c91650ffa6242d0324a648de7762e81d20596c5f39386",
+    "role": "contributor",
+    "via": "member"
+   }
+  },
+  {
+   "name": "contributor writes memory",
+   "policy": "base",
+   "person": "54da52455fe491d3f46c91650ffa6242d0324a648de7762e81d20596c5f39386",
+   "operation": "memory.write",
+   "project": "proj-read",
+   "expect": {
+    "allow": true,
+    "person": "54da52455fe491d3f46c91650ffa6242d0324a648de7762e81d20596c5f39386",
+    "role": "contributor",
+    "via": "member"
+   }
+  },
+  {
+   "name": "contributor continues",
+   "policy": "base",
+   "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+   "operation": "handoff.continue",
+   "project": "proj-shared",
+   "expect": {
+    "allow": true,
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "role": "contributor",
+    "via": "member"
+   }
+  },
+  {
+   "name": "non-member",
+   "policy": "base",
+   "person": "54da52455fe491d3f46c91650ffa6242d0324a648de7762e81d20596c5f39386",
+   "operation": "history.read",
+   "project": "proj-alice",
+   "expect": {
+    "allow": false,
+    "code": "not-a-member"
+   }
+  },
+  {
+   "name": "operator is not a member",
+   "policy": "base",
+   "person": "b80447a6ace74572513765019cb3b21ffa4653c88c22f43eaaa2307138f5844d",
+   "operation": "history.read",
+   "project": "proj-shared",
+   "expect": {
+    "allow": false,
+    "code": "not-a-member"
+   }
+  },
+  {
+   "name": "unknown project",
+   "policy": "base",
+   "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+   "operation": "history.read",
+   "project": "proj-none",
+   "expect": {
+    "allow": false,
+    "code": "project-unknown"
+   }
+  },
+  {
+   "name": "empty project",
+   "policy": "base",
+   "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+   "operation": "memory.read",
+   "project": "",
+   "expect": {
+    "allow": false,
+    "code": "project-unknown"
+   }
+  },
+  {
+   "name": "revoked person",
+   "policy": "bob-revoked",
+   "person": "54da52455fe491d3f46c91650ffa6242d0324a648de7762e81d20596c5f39386",
+   "operation": "history.read",
+   "project": "proj-shared",
+   "expect": {
+    "allow": false,
+    "code": "person-revoked"
+   }
+  },
+  {
+   "name": "other person unaffected",
+   "policy": "bob-revoked",
+   "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+   "operation": "history.read",
+   "project": "proj-shared",
+   "expect": {
+    "allow": true,
+    "person": "cecbfa527c04fe929b5c414d6725bae640a1f67b5e31e43d8dfb184da5446136",
+    "role": "contributor",
+    "via": "member"
+   }
+  }
+ ]
+}

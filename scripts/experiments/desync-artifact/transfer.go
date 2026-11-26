@@ -71,6 +71,12 @@ func strictControl(path string, value any) error {
 	if err != nil {
 		return err
 	}
+	return strictControlBytes(b, value)
+}
+
+// strictControlBytes decodes control bytes already read, refusing unknown
+// fields.
+func strictControlBytes(b []byte, value any) error {
 	decoder := json.NewDecoder(bytes.NewReader(b))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(value); err != nil {

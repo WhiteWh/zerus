@@ -448,6 +448,23 @@ pub async fn project_memory(
     .map_err(|error| error.to_string())
 }
 
+/// zerus-un7n phase 5/6: multi-person host access on one computer: the
+/// caller's status, the provider support matrix and shared project history
+/// and memory. client/core probes the host's capability marker first; the
+/// host enforces every rule, so nothing here is a security boundary.
+#[tauri::command]
+pub async fn host_access(
+    teams: State<'_, Teams>,
+    call: zerus_client_core::host_access::Call,
+) -> Result<zerus_client_core::host_access::Outcome, String> {
+    if teams.replay {
+        return Err("Host access needs hgs; a replay has none.".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || zerus_client_core::host_access::run(&default_hgs(), &call))
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// Task 11: reads one team once, as a Waiting for you answer does before it
 /// sends (Qt's TeamWaitingAnswer::read): the projected `team status`.
 #[tauri::command]

@@ -26,6 +26,7 @@ canonicalpath-rust = { git = "https://github.com/romanilyin/canonicalpath", rev 
 anyhow = "1"
 aes-gcm = "0.10.3"
 base64 = "0.22"
+ed25519-dalek = "3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = "0.10"
 fs2 = "0.4"
