@@ -123,10 +123,16 @@ func osVersion() string {
 }
 
 func (q *qualifier) setup() error {
-	installation, host := sumBytes([]byte("qualification-installation")), sumBytes([]byte("qualification-host"))
+	// The installation identity is the root's, as in production, so the
+	// operator command appcontainer-capability names the same capability.
+	parents, rootID, err := holdDirectoryChain(q.cfg.Root)
+	closeFiles(parents)
+	if err != nil {
+		return err
+	}
+	installation, host := sumBytes([]byte(rootID)), sumBytes([]byte("qualification-host"))
 	alice, bob := sumBytes([]byte("synthetic-person-a")), sumBytes([]byte("synthetic-person-b"))
 	policy := &AccessPolicy{Contexts: map[string]accessContext{alice: {"builds", appContainerBackend}, bob: {"builds", appContainerBackend}}}
-	var err error
 	if q.plan, err = planContainer(installation, host, JobOwner{Person: alice, Project: "proj-shared"}, policy, networkGrant{}); err != nil {
 		return err
 	}
@@ -323,7 +329,8 @@ func (q *qualifier) q1q3q5() (error, error, error) {
 	files := []expectation{
 		{probeAction{"read", filepath.Join(root, "identity.key")}, "deny", true},
 		{probeAction{"read", filepath.Join(root, "executor-queue.json")}, "deny", true},
-		{probeAction{"list", root}, "allow", true}, // names only (cmd.exe batch runs need it)
+		{probeAction{"names", root}, "allow", true}, // folder names only (cmd.exe batch runs need it)
+		{probeAction{"list", root}, "deny", true},   // a full read of the folder stays refused
 		{probeAction{"list", q.otherJob}, "deny", true},
 		{probeAction{"list", filepath.Join(root, "profile")}, "deny", true},
 		{probeAction{"read", filepath.Join(root, "operator-policy.json")}, "deny", true},

@@ -195,6 +195,9 @@ func grantPathListing(layout containedLayout, plan containerPlan) error {
 		return err
 	}
 	root := filepath.Clean(layout.Root)
+	if err := volumeRootListed(root, plan); err != nil {
+		return err
+	}
 	for _, dir := range append(pathFolders(root), root, filepath.Join(root, "jobs")) {
 		if err := addExplicitEntry(dir, jobs, plan, false); err != nil {
 			return fmt.Errorf("%w (%s)", accessCode("container-path-unlisted"), dir)
@@ -211,6 +214,44 @@ func grantPathListing(layout containedLayout, plan containerPlan) error {
 		}
 	}
 	return nil
+}
+
+// volumeRootListed checks that the volume root of the executor root lets the
+// installation's jobs capability list folder names: cmd.exe lists it before
+// running any batch file. Only the operator can grant that (the command
+// `hgs-executor appcontainer-capability` prints it); the executor never
+// changes a volume root.
+func volumeRootListed(root string, plan containerPlan) error {
+	var jobs *windows.SID
+	for i, name := range plan.CapabilityNames {
+		if strings.HasPrefix(name, "zerusJobs") && i < len(plan.Capabilities) {
+			jobs = plan.Capabilities[i]
+		}
+	}
+	if jobs == nil {
+		return accessCode("container-plan-invalid")
+	}
+	volume := filepath.VolumeName(root) + `\`
+	sd, err := windows.GetNamedSecurityInfo(volume, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return accessCode("container-volume-root-unreadable")
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil {
+		return accessCode("container-volume-root-unlisted")
+	}
+	need := uint32(windows.FILE_LIST_DIRECTORY | windows.FILE_TRAVERSE)
+	for i := 0; i < int(dacl.AceCount); i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if windows.GetAce(dacl, uint32(i), &ace) != nil || ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+			continue
+		}
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		if (sid.Equals(jobs) || sid.String() == "S-1-15-2-1") && uint32(ace.Mask)&need == need {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: the operator must let %s list %s (hgs-executor appcontainer-capability prints the command)", accessCode("container-volume-root-unlisted"), jobs, volume)
 }
 
 // ensureProjectGrant gives the project capability inherited read and execute

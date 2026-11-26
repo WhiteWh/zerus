@@ -421,6 +421,8 @@ func run(command, configPath string) error {
 		return runRevoke(configPath)
 	case "access-show":
 		return runShow(configPath)
+	case "appcontainer-capability":
+		return runPrintJobsCapability(configPath)
 	}
 	if strings.HasPrefix(command, "controller-") {
 		return runController(command, configPath)

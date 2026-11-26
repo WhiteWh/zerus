@@ -164,6 +164,15 @@ func runProbeAction(a probeAction) probeOutcome {
 	case "list":
 		_, err := os.ReadDir(a.Target)
 		return result(err)
+	case "names":
+		// Folder names only (FILE_LIST_DIRECTORY), as cmd.exe walks a path.
+		pattern, _ := windows.UTF16PtrFromString(a.Target + `\*`)
+		var data windows.Win32finddata
+		h, err := windows.FindFirstFile(pattern, &data)
+		if err == nil {
+			windows.FindClose(h)
+		}
+		return result(err)
 	case "openprocess":
 		pid, _ := strconv.Atoi(a.Target)
 		h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_DUP_HANDLE, false, uint32(pid))
