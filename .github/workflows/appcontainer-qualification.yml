@@ -100,6 +100,12 @@ jobs:
           $config = 'C:\ZerusQ\qualify.json'
           @{ root = 'C:\ZerusQ\root'; record = $record; listen_ip = $env:ZERUS_QUALIFY_IP; cmake = $env:ZERUS_QUALIFY_CMAKE; msbuild = $env:ZERUS_QUALIFY_MSBUILD; vs_instance = $env:ZERUS_QUALIFY_VS } |
             ConvertTo-Json | Out-File -FilePath $config -Encoding utf8NoBOM
+          # Operator step (as on a real host, once per volume): let the
+          # installation's jobs capability list the volume root's folder names.
+          $sid = (& $env:ZERUS_QUALIFY_EXE appcontainer-capability $config | Select-Object -First 1).Trim()
+          if ($sid -notlike 'S-1-15-3-*') { throw "no jobs capability: $sid" }
+          icacls 'C:\' /grant "*${sid}:(RD,X,RA)" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'volume root grant failed' }
           $secure = ConvertTo-SecureString $env:ZERUS_QSVC_PASSWORD -AsPlainText -Force
           $credential = New-Object System.Management.Automation.PSCredential('zerus-qsvc', $secure)
           # The opt-in and runner markers are set only for this one command.
