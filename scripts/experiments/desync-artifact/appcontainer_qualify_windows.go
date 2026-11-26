@@ -244,11 +244,16 @@ func (q *qualifier) contained(plan containerPlan, cases []expectation, extra map
 			// uncontained control succeeding; access denied also counts.
 			ok = !o.OK && (o.Code == errAccessDenied || o.Code == 87)
 		case "filtered":
-			// AppContainer network isolation drops packets silently. A
-			// timeout counts only together with the controls in filtered():
-			// the endpoint answers the service, and a closed port is refused
-			// to the service at once but also times out in the container.
+			// AppContainer network isolation drops the connection to a live
+			// listener silently. A timeout counts only because the service
+			// reaches the same listener before (control) and after (re-check
+			// below) the contained attempt in this run.
 			ok = !o.OK && (o.Code == wsaAccessDenied || o.Code == wsaTimedOut)
+			if ok {
+				if after := runProbeAction(c.action); !after.OK {
+					ok = false
+				}
+			}
 		}
 		if !ok {
 			failures = append(failures, fmt.Sprintf("%s %s: want %s, got ok=%v code=%d", c.action.Op, c.action.Target, c.want, o.OK, o.Code))
@@ -387,7 +392,6 @@ func (q *qualifier) q1q3q5() (error, error, error) {
 		{probeAction{"event", eventName}, "isolated", true},
 		{probeAction{"regread", `Software\ZerusQualification`}, "deny", true},
 		{probeAction{"connect", listener.Addr().String()}, "filtered", true}, // loopback, no exemption
-		{probeAction{"connect", closedPort("127.0.0.1")}, "filtered", false},
 		{probeAction{"spawn", ""}, "allow", true},
 		{probeAction{"spawn-breakaway", ""}, "deny", false},
 		{probeAction{"spawn-container", q.other.Name}, "refused", true},
@@ -399,8 +403,7 @@ func (q *qualifier) q1q3q5() (error, error, error) {
 	}
 	var network []expectation
 	if lan != nil {
-		network = append(network, expectation{probeAction{"connect", lan.Addr().String()}, "filtered", true},
-			expectation{probeAction{"connect", closedPort(q.cfg.ListenIP)}, "filtered", false})
+		network = append(network, expectation{probeAction{"connect", lan.Addr().String()}, "filtered", true})
 	}
 	filesErr := q.contained(q.plan, files, nil)
 	objectsErr := q.contained(q.plan, objects, nil)
@@ -412,21 +415,6 @@ func (q *qualifier) q1q3q5() (error, error, error) {
 		networkErr = q.contained(q.plan, network, nil)
 	}
 	return filesErr, objectsErr, networkErr
-}
-
-// closedPort returns an address on host with no listener, after checking
-// that the service itself is refused there at once.
-func closedPort(host string) string {
-	l, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
-	if err != nil {
-		return net.JoinHostPort(host, "1")
-	}
-	addr := l.Addr().String()
-	l.Close()
-	if o := runProbeAction(probeAction{"connect", addr}); o.OK || o.Code != wsaRefused {
-		return "control-failed:" + addr // fails the contained expectation visibly
-	}
-	return addr
 }
 
 func acceptAll(l net.Listener) {
@@ -693,8 +681,8 @@ func (q *qualifier) q10() error {
 	check := func(label, want string, code uint32, log string, err error) bool {
 		if err != nil || code != 0 || !strings.Contains(log, want) {
 			tail := log
-			if len(tail) > 400 {
-				tail = tail[len(tail)-400:]
+			if len(tail) > 4000 {
+				tail = tail[len(tail)-4000:]
 			}
 			failures = append(failures, fmt.Sprintf("%s: code %d err %v log %q", label, code, err, tail))
 			return false

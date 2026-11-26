@@ -78,10 +78,43 @@ func getHandleInformation(h windows.Handle, flags *uint32) error {
 // sentinels, process handles to parent, and job handles; inheritableOnly
 // limits process and job findings to inheritable handles (the parent's own
 // positive control).
+var procNtQueryInformationProcess = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtQueryInformationProcess")
+
+// ownHandles lists this process's open handle values
+// (ProcessHandleInformation, class 51), so the scan never touches an invalid
+// handle value.
+func ownHandles() ([]uintptr, error) {
+	size := uint32(64 * 1024)
+	for attempt := 0; attempt < 6; attempt++ {
+		buffer := make([]byte, size)
+		var needed uint32
+		status, _, _ := procNtQueryInformationProcess.Call(uintptr(windows.CurrentProcess()), 51, uintptr(unsafe.Pointer(&buffer[0])), uintptr(size), uintptr(unsafe.Pointer(&needed)))
+		if status == 0xc0000004 { // STATUS_INFO_LENGTH_MISMATCH
+			size = max(size*2, needed+4096)
+			continue
+		}
+		if status != 0 {
+			return nil, fmt.Errorf("handle snapshot status %#x", status)
+		}
+		count := *(*uintptr)(unsafe.Pointer(&buffer[0]))
+		const entry = 3*8 + 4*4 // PROCESS_HANDLE_TABLE_ENTRY_INFO on amd64: three pointers, four ULONGs
+		var out []uintptr
+		for i := uintptr(0); i < count && 16+(i+1)*entry <= uintptr(len(buffer)); i++ {
+			out = append(out, *(*uintptr)(unsafe.Pointer(&buffer[16+i*entry])))
+		}
+		return out, nil
+	}
+	return nil, errors.New("handle snapshot too large")
+}
+
 func probeHandleScan(sentinels string, parent int, inheritableOnly bool) []string {
 	sentinels = strings.ToLower(sentinels)
 	var found []string
-	for value := uintptr(4); value < 0x10000; value += 4 {
+	handles, err := ownHandles()
+	if err != nil {
+		return []string{"scan unavailable: " + err.Error()}
+	}
+	for _, value := range handles {
 		h := windows.Handle(value)
 		var flags uint32
 		if getHandleInformation(h, &flags) != nil {
