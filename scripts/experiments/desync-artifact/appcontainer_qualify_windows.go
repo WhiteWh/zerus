@@ -737,11 +737,60 @@ func (q *qualifier) q10() error {
 		diag("batch in bundle", cmd, []string{"/d", "/q", "/c", bundleBatch})
 		diag("batch written by the container in runtime", cmd, []string{"/d", "/c", "echo @echo diag-own> own.cmd && call own.cmd"})
 		diag("service batch via call", cmd, []string{"/d", "/c", "call " + batch})
+		// Hypothesis: cmd.exe reads the DisableCMD policy before running a
+		// batch file and the container cannot read the user's policy key.
+		regDiag := func(label string) {
+			outcomes, err := runContainedProbe(q.plan, []probeAction{{"regread", `Software\Policies\Microsoft\Windows\System`}, {"regread", `Software\Policies`}}, q.layout.Runtime, nil, 60)
+			if err != nil {
+				failures = append(failures, "diag "+label+": "+err.Error())
+				return
+			}
+			for k, o := range outcomes {
+				failures = append(failures, fmt.Sprintf("diag %s %s: ok=%v code=%d", label, k, o.OK, o.Code))
+			}
+		}
+		regDiag("policy key before grant")
+		if err := grantPolicyKeyRead(q.plan); err != nil {
+			failures = append(failures, "diag policy key grant: "+err.Error())
+		}
+		regDiag("policy key after grant")
+		diag("cmd /c batch after policy grant", cmd, []string{"/d", "/q", "/c", batch})
 		diag("container batch via cmd /c", cmd, []string{"/d", "/c", "echo @echo diag-own2> own2.cmd && " + cmd + " /d /q /c " + filepath.Join(q.layout.Runtime, "own2.cmd")})
 		diag("service batch read", cmd, []string{"/d", "/c", "type " + batch})
 		diag("icacls service batch", filepath.Join(system, "icacls.exe"), []string{batch})
 		diag("icacls container batch", filepath.Join(system, "icacls.exe"), []string{filepath.Join(q.layout.Runtime, "own2.cmd")})
 		return errors.New("unsupported: " + strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+// grantPolicyKeyRead gives the plan's package SID read on the user's
+// HKCU\Software\Policies\Microsoft\Windows\System key (created empty if
+// missing), the key cmd.exe consults before running a batch file.
+// Diagnostic for the runner only.
+func grantPolicyKeyRead(plan containerPlan) error {
+	for _, path := range []string{`Software\Policies`, `Software\Policies\Microsoft`, `Software\Policies\Microsoft\Windows`, `Software\Policies\Microsoft\Windows\System`} {
+		key, _, err := registry.CreateKey(registry.CURRENT_USER, path, registry.READ|windows.WRITE_DAC|windows.READ_CONTROL)
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		sd, err := windows.GetSecurityInfo(windows.Handle(key), windows.SE_REGISTRY_KEY, windows.DACL_SECURITY_INFORMATION)
+		if err != nil {
+			key.Close()
+			return err
+		}
+		explicit, _ := explicitEntries(sd, "")
+		next, err := windows.SecurityDescriptorFromString("D:" + explicit + "(A;CI;KR;;;" + plan.SID.String() + ")")
+		if err != nil {
+			key.Close()
+			return err
+		}
+		dacl, _, _ := next.DACL()
+		err = windows.SetSecurityInfo(windows.Handle(key), windows.SE_REGISTRY_KEY, windows.DACL_SECURITY_INFORMATION|windows.UNPROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+		key.Close()
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
 	}
 	return nil
 }
