@@ -88,7 +88,7 @@ func TestThePlanComesOnlyFromTheVerifiedContext(t *testing.T) {
 	}
 	wantName, _ := containerName(acInstallation, acHost, acPerson, "builds")
 	wantCap, _ := projectCapabilityName(acInstallation, "proj-shared")
-	if plan.Name != wantName || len(plan.Capabilities) != 1 || plan.CapabilityNames[0] != wantCap || plan.LessPrivileged {
+	if plan.Name != wantName || len(plan.Capabilities) != 2 || plan.CapabilityNames[0] != wantCap || plan.CapabilityNames[1] != jobsCapabilityName(acInstallation) || plan.LessPrivileged {
 		t.Fatalf("plan %+v", plan)
 	}
 	for name, c := range map[string]struct {
@@ -117,6 +117,15 @@ func TestTheGrantMatrixHoldsTheM2Rules(t *testing.T) {
 		copy_ := append([]containedGrant{}, appContainerGrants...)
 		return change(copy_)
 	}
+	at := func(g []containedGrant, role grantRole) int {
+		for i := range g {
+			if g[i].Role == role {
+				return i
+			}
+		}
+		t.Fatalf("no %s grant", role)
+		return -1
+	}
 	for name, grants := range map[string][]containedGrant{
 		"all application packages on the generation": mutate(func(g []containedGrant) []containedGrant {
 			return append(g, containedGrant{roleGeneration, principalAllPackage, rightsReadExec, true, false})
@@ -131,19 +140,35 @@ func TestTheGrantMatrixHoldsTheM2Rules(t *testing.T) {
 			return append(g, containedGrant{roleOperatorFolder, principalProject, rightsReadExec, false, false})
 		}),
 		"write to the generation": mutate(func(g []containedGrant) []containedGrant {
-			g[0].Rights |= windows.FILE_WRITE_DATA
+			g[at(g, roleGeneration)].Rights |= windows.FILE_WRITE_DATA
 			return g
 		}),
 		"job home without a Low label": mutate(func(g []containedGrant) []containedGrant {
-			g[3].LowLabel = false
+			g[at(g, roleJobHome)].LowLabel = false
 			return g
 		}),
 		"re-permission the out folder": mutate(func(g []containedGrant) []containedGrant {
-			g[5].Rights |= windows.WRITE_DAC
+			g[at(g, roleJobOut)].Rights |= windows.WRITE_DAC
 			return g
 		}),
-		"parent more than traverse": mutate(func(g []containedGrant) []containedGrant {
-			g[2].Rights |= windows.FILE_LIST_DIRECTORY
+		"parent may read files": mutate(func(g []containedGrant) []containedGrant {
+			g[at(g, roleJobParent)].Rights |= windows.FILE_READ_EA
+			return g
+		}),
+		"executor path inherited": mutate(func(g []containedGrant) []containedGrant {
+			g[at(g, roleExecutorPath)].Inherit = true
+			return g
+		}),
+		"executor path readable": mutate(func(g []containedGrant) []containedGrant {
+			g[at(g, roleExecutorPath)].Rights = rightsReadExec
+			return g
+		}),
+		"executor path through the package": mutate(func(g []containedGrant) []containedGrant {
+			g[at(g, roleExecutorPath)].Principal = principalPackage
+			return g
+		}),
+		"project path writable": mutate(func(g []containedGrant) []containedGrant {
+			g[at(g, roleProjectPath)].Rights |= fileAddFile
 			return g
 		}),
 		"another job's folder": mutate(func(g []containedGrant) []containedGrant {
@@ -157,7 +182,9 @@ func TestTheGrantMatrixHoldsTheM2Rules(t *testing.T) {
 	plan := containerPlan{}
 	plan.SID, _ = appContainerSID("Zerus.AC.test")
 	capability, _ := capabilitySID("zerusProjecttest")
-	plan.Capabilities = []*windows.SID{capability}
+	jobs, _ := capabilitySID("zerusJobstest")
+	plan.Capabilities = []*windows.SID{capability, jobs}
+	plan.CapabilityNames = []string{"zerusProjecttest", "zerusJobstest"}
 	for _, g := range appContainerGrants {
 		dacl, label, err := grantSDDL(g, plan)
 		if err != nil {

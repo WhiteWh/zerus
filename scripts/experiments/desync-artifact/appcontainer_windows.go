@@ -93,6 +93,14 @@ func projectCapabilityName(installation, project string) (string, error) {
 	return "zerusProject" + derivedLabel("project", installation, project)[:32], nil
 }
 
+// jobsCapabilityName names the installation-wide capability that may list
+// (names only) the folders on the path to every job: the executor root's
+// ancestors, the root and its jobs folder. cmd.exe opens and lists each
+// ancestor before it runs a batch file, which MSBuild build events need.
+func jobsCapabilityName(installation string) string {
+	return "zerusJobs" + derivedLabel("jobs", installation)[:32]
+}
+
 // appContainerSID derives the package SID of a name. The derivation is a pure
 // hash: it creates no profile and touches no registry or file.
 func appContainerSID(name string) (*windows.SID, error) {
@@ -177,7 +185,12 @@ func planContainer(installation, host string, owner JobOwner, policy *AccessPoli
 	if err != nil {
 		return containerPlan{}, err
 	}
-	return containerPlan{Name: name, SID: sid, CapabilityNames: []string{capabilityName}, Capabilities: []*windows.SID{capability}}, nil
+	jobsName := jobsCapabilityName(installation)
+	jobs, err := capabilitySID(jobsName)
+	if err != nil {
+		return containerPlan{}, err
+	}
+	return containerPlan{Name: name, SID: sid, CapabilityNames: []string{capabilityName, jobsName}, Capabilities: []*windows.SID{capability, jobs}}, nil
 }
 
 // securityCapabilitiesFor is the SECURITY_CAPABILITIES attribute value of a
