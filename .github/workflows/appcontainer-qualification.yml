@@ -1,0 +1,112 @@
+# Owner-approved qualification run (zerus-un7n.5), on its own branch only.
+#
+# Disposable AppContainer qualification of the exact distributable on one
+# standard, free GitHub-hosted windows-2025 runner. Fake data only. The
+# runner VM is destroyed afterwards; on it this job creates a throwaway
+# non-administrator service account, AppContainer profiles, synthetic folders
+# with real DACLs and labels, and a protected folder under C:\. No
+# self-hosted or paid runner, no publication or signing secret, no cache.
+#
+# Evidence kinds stay separate:
+# - harness evidence: the Go suite run by build-artifact-executor.py --test
+#   (ordinary tests; the qualification opt-in is NOT set there);
+# - distributable evidence: `hgs-executor.exe appcontainer-qualify` from the
+#   built package, run as the non-administrator account; its record names
+#   the package binary's SHA-256 and is the only kind that can activate.
+name: AppContainer qualification (draft)
+
+on:
+  push:
+    branches: [qual/appcontainer-qualification]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appcontainer-qualification
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    runs-on: windows-2025
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the distributable and run the ordinary suite (harness evidence)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python scripts/build-artifact-executor.py --test --work "$env:RUNNER_TEMP\aq" --output "$env:RUNNER_TEMP\hgs-executor.zip"
+          if ($LASTEXITCODE -ne 0) { throw "build or ordinary tests failed ($LASTEXITCODE)" }
+          Expand-Archive -LiteralPath "$env:RUNNER_TEMP\hgs-executor.zip" -DestinationPath "$env:RUNNER_TEMP\pkg"
+          $exe = "$env:RUNNER_TEMP\pkg\hgs-executor-windows-x86_64\hgs-executor.exe"
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'package has no hgs-executor.exe' }
+          "ZERUS_QUALIFY_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLower() | Out-File "$env:RUNNER_TEMP\binary.sha256" -Encoding ascii
+
+      - name: Locate tools (missing tools fail the run)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $msbuild = & $vswhere -latest -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          if (-not $msbuild) { throw 'MSBuild is unavailable' }
+          $cmake = (Get-Command cmake -ErrorAction Stop).Source
+          $ip = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' -and $_.PrefixOrigin -ne 'WellKnown' } | Select-Object -First 1).IPAddress
+          if (-not $ip) { throw 'no non-loopback IPv4 address for the network case' }
+          "ZERUS_QUALIFY_MSBUILD=$msbuild" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ZERUS_QUALIFY_CMAKE=$cmake" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ZERUS_QUALIFY_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Create the throwaway non-administrator service account
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bytes = New-Object byte[] 24
+          [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+          $password = [Convert]::ToBase64String($bytes) + 'a1!'
+          echo "::add-mask::$password"
+          net user zerus-qsvc $password /add /y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'account creation failed' }
+          $admins = (Get-LocalGroupMember -SID 'S-1-5-32-544').Name
+          if ($admins -match 'zerus-qsvc') { throw 'service account must not be an administrator' }
+          New-Item -ItemType Directory -Force -Path 'C:\ZerusQ\root' | Out-Null
+          icacls 'C:\ZerusQ' /grant 'zerus-qsvc:(OI)(CI)F' | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'folder grant failed' }
+          "ZERUS_QSVC_PASSWORD=$password" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run appcontainer-qualify from the package as the service account (distributable evidence)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $record = 'C:\ZerusQ\appcontainer-qualification.json'
+          $config = 'C:\ZerusQ\qualify.json'
+          @{ root = 'C:\ZerusQ\root'; record = $record; listen_ip = $env:ZERUS_QUALIFY_IP; cmake = $env:ZERUS_QUALIFY_CMAKE; msbuild = $env:ZERUS_QUALIFY_MSBUILD } |
+            ConvertTo-Json | Out-File -FilePath $config -Encoding utf8NoBOM
+          $secure = ConvertTo-SecureString $env:ZERUS_QSVC_PASSWORD -AsPlainText -Force
+          $credential = New-Object System.Management.Automation.PSCredential('zerus-qsvc', $secure)
+          # The opt-in and runner markers are set only for this one command.
+          $line = "set ZERUS_APPCONTAINER_QUALIFICATION=1&& set GITHUB_ACTIONS=true&& set RUNNER_ENVIRONMENT=github-hosted&& set ImageOS=$env:ImageOS&& set ImageVersion=$env:ImageVersion&& `"$env:ZERUS_QUALIFY_EXE`" appcontainer-qualify `"$config`" > C:\ZerusQ\qualify.log 2>&1"
+          $p = Start-Process -FilePath "$env:SystemRoot\System32\cmd.exe" -ArgumentList '/d', '/c', $line -Credential $credential -LoadUserProfile -WorkingDirectory 'C:\ZerusQ' -Wait -PassThru
+          Get-Content 'C:\ZerusQ\qualify.log' -ErrorAction SilentlyContinue
+          if (-not (Test-Path -LiteralPath $record)) { throw 'no qualification record: not a pass' }
+          $binary = (Get-Content "$env:RUNNER_TEMP\binary.sha256").Trim()
+          $r = Get-Content $record | ConvertFrom-Json
+          if ($r.binary_sha256 -ne $binary) { throw 'record names another binary' }
+          if ($r.service_admin) { throw 'record ran as an administrator' }
+          if ($p.ExitCode -ne 0) { throw "qualification failed or incomplete (exit $($p.ExitCode))" }
+
+      - name: Keep the qualification record and log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: appcontainer-qualification-${{ github.sha }}
+          path: |
+            C:\ZerusQ\appcontainer-qualification.json
+            C:\ZerusQ\qualify.log
+          if-no-files-found: warn
+          retention-days: 30
