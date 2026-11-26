@@ -35,6 +35,10 @@ type qualifyConfig struct {
 	// VSInstance is "<installation path>,version=<installation version>",
 	// which CMake needs inside a container (no Visual Studio Installer COM).
 	VSInstance string `json:"vs_instance"`
+	// Toolchain is the MSVC environment (INCLUDE, LIB, LIBPATH, PATH)
+	// computed outside the container from vcvars64.bat: an explicit, trusted
+	// toolchain input, since batch files cannot run in a new cmd inside it.
+	Toolchain map[string]string `json:"toolchain"`
 }
 
 // qualificationEnvironmentGate refuses outside the disposable runner and for
@@ -640,6 +644,10 @@ func trustCode(err error) string {
 // containedTool runs one real tool in the container with the scenario
 // environment plus explicit toolchain folders on PATH.
 func (q *qualifier) containedTool(tool string, args []string, path []string) (uint32, string, error) {
+	return q.containedToolWith(tool, args, path, nil)
+}
+
+func (q *qualifier) containedToolWith(tool string, args []string, path []string, extra map[string]string) (uint32, string, error) {
 	native, err := newNativeScenario(2048 * MiB)
 	if err != nil {
 		return 0, "", err
@@ -654,6 +662,9 @@ func (q *qualifier) containedTool(tool string, args []string, path []string) (ui
 	env, err := scenarioEnvironment(q.layout.Parent, ScenarioConfig{ArtifactSlot: filepath.Dir(q.layout.Generation), ScenarioSlot: filepath.Dir(q.layout.Bundle), Device: "console"})
 	if err != nil {
 		return 0, "", err
+	}
+	for k, v := range extra {
+		env[k] = v
 	}
 	env["PATH"] = strings.Join(append(path, env["PATH"]), string(os.PathListSeparator))
 	if err := native.StartContained(q.plan, tool, args, env, q.layout.Runtime, log, func(processReceipt) error { return nil }); err != nil {
@@ -706,21 +717,33 @@ func (q *qualifier) q10() error {
 	check("PowerShell", "contained-2", code, log, err)
 	code, log, err = q.containedTool(q.cfg.MSBuild, []string{filepath.Join(sources, "tiny.proj"), "-nologo", "-noAutoResponse"}, []string{filepath.Dir(q.cfg.MSBuild)})
 	check("MSBuild", "contained-msbuild", code, log, err)
-	// A real C++ build: the MSVC environment from vcvars64.bat (run with
-	// `call`), CMake with Ninja and the compiler called directly. MSBuild
-	// C++ projects are not used here: MSBuild runs their build events as a
-	// new `cmd /c <batch>`, which Windows refuses inside an AppContainer
-	// (recorded separately below).
+	// A real C++ build: the MSVC environment computed outside the container
+	// (the workflow runs vcvars64.bat and passes INCLUDE, LIB, LIBPATH and
+	// PATH), CMake with Ninja and cl called directly; no batch file runs in
+	// the container.
 	system, _ := systemDirectory()
 	cmd := filepath.Join(system, "cmd.exe")
 	vs, _, _ := strings.Cut(q.cfg.VSInstance, ",")
-	vcvars := filepath.Join(vs, "VC", "Auxiliary", "Build", "vcvars64.bat")
 	ninja := filepath.Join(vs, "Common7", "IDE", "CommonExtensions", "Microsoft", "CMake", "Ninja", "ninja.exe")
 	build := filepath.Join(q.layout.Runtime, "ninja-build")
-	line := `call "` + vcvars + `" >nul && "` + q.cfg.CMake + `" -S "` + sources + `" -B "` + build + `" -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_MAKE_PROGRAM=` + ninja +
-		`" && "` + q.cfg.CMake + `" --build "` + build + `" && "` + filepath.Join(build, "hello.exe") + `"`
-	code, log, err = q.containedTool(cmd, []string{"/d", "/s", "/c", line}, []string{filepath.Dir(q.cfg.CMake)})
-	check("C++ with CMake, Ninja and MSVC", "contained-hello", code, log, err)
+	toolchain := map[string]string{}
+	for _, key := range []string{"INCLUDE", "LIB", "LIBPATH"} {
+		toolchain[key] = q.cfg.Toolchain[key]
+	}
+	toolPath := strings.Split(q.cfg.Toolchain["PATH"], string(os.PathListSeparator))
+	if toolchain["INCLUDE"] == "" || toolchain["LIB"] == "" || len(toolPath) < 2 {
+		failures = append(failures, "MSVC toolchain environment not provided by the workflow")
+	} else {
+		code, log, err = q.containedToolWith(q.cfg.CMake, []string{"-S", sources, "-B", build, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
+			"-DCMAKE_MAKE_PROGRAM=" + ninja, "-DCMAKE_C_COMPILER=cl.exe"}, append([]string{filepath.Dir(q.cfg.CMake)}, toolPath...), toolchain)
+		if check("C++ configure (CMake, Ninja, MSVC)", "Build files have been written", code, log, err) {
+			code, log, err = q.containedToolWith(q.cfg.CMake, []string{"--build", build}, append([]string{filepath.Dir(q.cfg.CMake)}, toolPath...), toolchain)
+			if check("C++ build", "", code, log, err) {
+				code, log, err = q.containedTool(filepath.Join(build, "hello.exe"), nil, nil)
+				check("built program", "contained-hello", code, log, err)
+			}
+		}
+	}
 	// MSBuild C++ (vcxproj) build events: a known AppContainer limitation,
 	// recorded for the operator and not required.
 	vsBuild := filepath.Join(q.layout.Runtime, "vs-build")
