@@ -93,7 +93,16 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $record = 'C:\ZerusQ\appcontainer-qualification.json'
           $config = 'C:\ZerusQ\qualify.json'
-          @{ root = 'C:\ZerusQ\root'; record = $record; listen_ip = $env:ZERUS_QUALIFY_IP; cmake = $env:ZERUS_QUALIFY_CMAKE; msbuild = $env:ZERUS_QUALIFY_MSBUILD; vs_instance = $env:ZERUS_QUALIFY_VS } |
+          # The MSVC environment, computed outside the container (trusted toolchain input).
+          $vsRoot = ($env:ZERUS_QUALIFY_VS -split ',')[0]
+          $vcvars = Join-Path $vsRoot 'VC\Auxiliary\Build\vcvars64.bat'
+          $toolchain = @{}
+          foreach ($l in (& cmd.exe /d /c "call `"$vcvars`" >nul && set")) {
+            $k, $v = $l -split '=', 2
+            if ($k -in @('INCLUDE', 'LIB', 'LIBPATH', 'PATH')) { $toolchain[$k] = $v }
+          }
+          if (-not $toolchain.INCLUDE) { throw 'vcvars64 produced no INCLUDE' }
+          @{ root = 'C:\ZerusQ\root'; record = $record; listen_ip = $env:ZERUS_QUALIFY_IP; cmake = $env:ZERUS_QUALIFY_CMAKE; msbuild = $env:ZERUS_QUALIFY_MSBUILD; vs_instance = $env:ZERUS_QUALIFY_VS; toolchain = $toolchain } |
             ConvertTo-Json | Out-File -FilePath $config -Encoding utf8NoBOM
           # Operator step (as on a real host, once per volume): let the
           # installation's jobs capability list the volume root's folder names.
