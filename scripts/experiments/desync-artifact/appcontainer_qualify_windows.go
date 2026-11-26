@@ -724,7 +724,6 @@ func (q *qualifier) q10() error {
 	// may not.
 	system, _ := systemDirectory()
 	cmd := filepath.Join(system, "cmd.exe")
-	vs, _, _ := strings.Cut(q.cfg.VSInstance, ",")
 	build := filepath.Join(q.layout.Runtime, "nmake-build")
 	// Windows environment names are case-insensitive (`set` prints "Path").
 	upper := map[string]string{}
