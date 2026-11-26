@@ -719,13 +719,13 @@ func (q *qualifier) q10() error {
 	check("MSBuild", "contained-msbuild", code, log, err)
 	// A real C++ build: the MSVC environment computed outside the container
 	// (the workflow runs vcvars64.bat and passes INCLUDE, LIB, LIBPATH and
-	// PATH), CMake with Ninja and cl called directly; no batch file runs in
-	// the container.
+	// PATH), CMake with NMake and cl; no batch file runs in the container.
+	// Ninja is not used: it creates a global named pipe, which a container
+	// may not.
 	system, _ := systemDirectory()
 	cmd := filepath.Join(system, "cmd.exe")
 	vs, _, _ := strings.Cut(q.cfg.VSInstance, ",")
-	ninja := filepath.Join(vs, "Common7", "IDE", "CommonExtensions", "Microsoft", "CMake", "Ninja", "ninja.exe")
-	build := filepath.Join(q.layout.Runtime, "ninja-build")
+	build := filepath.Join(q.layout.Runtime, "nmake-build")
 	// Windows environment names are case-insensitive (`set` prints "Path").
 	upper := map[string]string{}
 	for k, v := range q.cfg.Toolchain {
@@ -739,9 +739,9 @@ func (q *qualifier) q10() error {
 	if toolchain["INCLUDE"] == "" || toolchain["LIB"] == "" || len(toolPath) < 2 {
 		failures = append(failures, "MSVC toolchain environment not provided by the workflow")
 	} else {
-		code, log, err = q.containedToolWith(q.cfg.CMake, []string{"-S", sources, "-B", build, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
-			"-DCMAKE_MAKE_PROGRAM=" + ninja, "-DCMAKE_C_COMPILER=cl.exe"}, append([]string{filepath.Dir(q.cfg.CMake)}, toolPath...), toolchain)
-		if check("C++ configure (CMake, Ninja, MSVC)", "Build files have been written", code, log, err) {
+		code, log, err = q.containedToolWith(q.cfg.CMake, []string{"-S", sources, "-B", build, "-G", "NMake Makefiles", "-DCMAKE_BUILD_TYPE=Release",
+			"-DCMAKE_C_COMPILER=cl.exe"}, append([]string{filepath.Dir(q.cfg.CMake)}, toolPath...), toolchain)
+		if check("C++ configure (CMake, NMake, MSVC)", "Build files have been written", code, log, err) {
 			code, log, err = q.containedToolWith(q.cfg.CMake, []string{"--build", build}, append([]string{filepath.Dir(q.cfg.CMake)}, toolPath...), toolchain)
 			if check("C++ build", "", code, log, err) {
 				code, log, err = q.containedTool(filepath.Join(build, "hello.exe"), nil, nil)
