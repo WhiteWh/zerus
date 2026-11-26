@@ -155,10 +155,46 @@ fn write_file(path: &Path, content: &[u8]) -> Result<(), Refusal> {
 
 /// The scrubbed environment of a mediated command.
 pub fn mediated_env() -> Vec<(String, String)> {
-    std::env::vars()
-        .filter(|(name, _)| KEPT_ENV.contains(&name.as_str()) && !secret_env(name))
-        .chain(std::iter::once(("ZERUS_REMOTE_COMPUTE".to_owned(), "1".to_owned())))
-        .collect()
+    mediated_env_from(std::env::vars(), cfg!(windows))
+}
+
+/// Windows environment names are case-insensitive: an SSH session passes
+/// `Path` and `windir`, which must be kept like `PATH` and `WINDIR`.
+fn mediated_env_from(vars: impl Iterator<Item = (String, String)>, windows: bool) -> Vec<(String, String)> {
+    vars.filter(|(name, _)| {
+        let kept = if windows {
+            KEPT_ENV.iter().any(|kept| kept.eq_ignore_ascii_case(name))
+        } else {
+            KEPT_ENV.contains(&name.as_str())
+        };
+        kept && !secret_env(name)
+    })
+    .chain(std::iter::once(("ZERUS_REMOTE_COMPUTE".to_owned(), "1".to_owned())))
+    .collect()
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::mediated_env_from;
+
+    fn vars(names: &[&str]) -> impl Iterator<Item = (String, String)> {
+        names.iter().map(|n| (n.to_string(), "x".to_string())).collect::<Vec<_>>().into_iter()
+    }
+
+    #[test]
+    fn windows_keeps_path_whatever_its_case() {
+        let kept = mediated_env_from(vars(&["Path", "windir", "ComSpec", "ANTHROPIC_API_KEY", "LOCALAPPDATA"]), true);
+        let names: Vec<_> = kept.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"Path") && names.contains(&"windir") && names.contains(&"ComSpec"), "{names:?}");
+        assert!(!names.contains(&"ANTHROPIC_API_KEY") && !names.contains(&"LOCALAPPDATA"), "{names:?}");
+    }
+
+    #[test]
+    fn unix_names_stay_exact() {
+        let kept = mediated_env_from(vars(&["Path", "PATH"]), false);
+        let names: Vec<_> = kept.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"PATH") && !names.contains(&"Path"), "{names:?}");
+    }
 }
 
 fn run_command(root: &Path, command: &str, timeout: Duration) -> Result<Value, Refusal> {
