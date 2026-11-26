@@ -51,7 +51,8 @@
   .team-age { white-space: nowrap; flex: none; }
   .team-bar-actions { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; position: relative; }
   .team-more-btn { flex: none; }
-  .team-more-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; }
+  /* Placed by TeamActions under its button: the team bar clips its overflow. */
+  .team-more-menu { position: fixed; inset: auto; margin: 0; }
   .team-note { display: inline-flex; align-items: center; gap: 5px; color: var(--z-color-info); }
   .team-note.done { color: var(--z-color-accent-muted); }
 

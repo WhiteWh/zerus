@@ -584,6 +584,36 @@ export function TeamBarActions(props: { computer: ComputerId; team: ActTeam; pla
   });
   const moved = () => props.compact === "low" || props.compact === "high";
   const [moreOpen, setMoreOpen] = createSignal(false);
+  let moreButton: HTMLButtonElement | undefined, moreMenu: HTMLDivElement | undefined;
+  // The team bar clips its overflow: the open menu goes to the top layer and
+  // stands under its button, right-aligned, inside the window.
+  createEffect(() => {
+    if (!moreOpen() || !moreButton || !moreMenu) return;
+    const menu = moreMenu, button = moreButton;
+    if (typeof menu.showPopover === "function" && !menu.matches(":popover-open")) menu.showPopover();
+    const place = () => {
+      const box = button.getBoundingClientRect();
+      const left = Math.max(8, Math.min(box.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8));
+      const below = box.bottom + 4;
+      const top = below + menu.offsetHeight > window.innerHeight - 8 ? Math.max(8, box.top - menu.offsetHeight - 4) : below;
+      menu.style.left = `${left}px`;
+      menu.style.top = `${top}px`;
+    };
+    place();
+    const away = (event: Event) => {
+      if (!button.contains(event.target as Node) && !menu.contains(event.target as Node)) setMoreOpen(false);
+    };
+    const key = (event: KeyboardEvent) => { if (event.key === "Escape") { event.stopPropagation(); setMoreOpen(false); button.focus(); } };
+    document.addEventListener("pointerdown", away, true);
+    document.addEventListener("keydown", key, true);
+    window.addEventListener("resize", place);
+    onCleanup(() => {
+      document.removeEventListener("pointerdown", away, true);
+      document.removeEventListener("keydown", key, true);
+      window.removeEventListener("resize", place);
+      if (typeof menu.hidePopover === "function" && menu.matches(":popover-open")) menu.hidePopover();
+    });
+  });
   const inline = createMemo(() => actions().filter((action) => !overflow().has(action.id)));
   const folded = () => actions().filter((action) => overflow().has(action.id));
   const moreIds = () => ["settings", "catalog", ...folded().map((action) => action.id)].join(" ");
@@ -614,11 +644,11 @@ export function TeamBarActions(props: { computer: ComputerId; team: ActTeam; pla
         </button>
       )}</For>
       <Show when={moved()}>
-        <button type="button" class="btn small ghost team-more-btn" data-more="" data-overflow={moreIds()}
+        <button ref={moreButton} type="button" class="btn small ghost team-more-btn" data-more="" data-overflow={moreIds()}
           aria-haspopup="menu" aria-expanded={moreOpen()} onClick={() => setMoreOpen(!moreOpen())}>
           {tr("More")}<Icon name="chevron-down" size={12} />
         </button>
-        <div class="menu team-more-menu" role="menu" aria-label={tr("More team actions")} hidden={!moreOpen()}>
+        <div ref={moreMenu} popover="manual" class="menu team-more-menu" role="menu" aria-label={tr("More team actions")} hidden={!moreOpen()}>
           <Show when={props.onSettings}>
             <button type="button" role="menuitem" class="menu-item" data-more-item="settings"
               onClick={() => { setMoreOpen(false); props.onSettings?.(); }}>{tr("Team settings")}</button>

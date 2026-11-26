@@ -1810,12 +1810,35 @@ pub(super) fn kimi_draft(screen: &str, cursor_y: usize) -> Option<String> {
 pub(super) fn native_draft(record: &Value, styled: &str, plain: &str, cursor_y: usize) -> Option<String> {
     match string(record, "agent") {
         "claude" => claude_draft(styled, cursor_y),
-        "codex" => codex_draft(record, plain, cursor_y).filter(|draft| !draft.trim().is_empty()),
+        "codex" => codex_draft(record, plain, cursor_y)
+            .filter(|draft| !draft.trim().is_empty() && !codex_placeholder_only(styled, draft)),
         "kimi" => kimi_draft(plain, cursor_y),
         "qwen" => qwen_draft(styled, cursor_y),
         "hermes" => hermes_draft(styled, cursor_y),
         _ => None,
     }
+}
+
+/// Whether Codex's composer shows only its dim placeholder ("Ask Codex to do
+/// anything"), which the plain capture cannot tell from a one-line draft: the
+/// last prompt row of the styled capture holds exactly `draft`, and every
+/// visible cell after its glyph is dim. A typed draft is never dim.
+fn codex_placeholder_only(styled: &str, draft: &str) -> bool {
+    if draft.contains('\n') {
+        return false;
+    }
+    let Some(cells) = styled.lines().rev().find_map(|row| {
+        let cells = styled_cells(row, &mut TerminalStyle::default());
+        let plain: String = cells.iter().map(|(ch, _)| ch).collect();
+        codex_prompt(&plain).map(|_| cells)
+    }) else {
+        return false;
+    };
+    let rest: Vec<_> = cells.iter().skip(1).filter(|(ch, _)| !ch.is_whitespace()).collect();
+    let text: String = rest.iter().map(|(ch, _)| ch).collect();
+    !rest.is_empty()
+        && rest.iter().all(|(_, style)| style.dim)
+        && text == draft.chars().filter(|ch| !ch.is_whitespace()).collect::<String>()
 }
 
 /// Qwen Code's draft (0.27.4): the rows between its two full-width rules
@@ -2982,9 +3005,20 @@ fn submit_core(
         // included. The composer was empty before this paste, so a draft now
         // is this paste: record it, and the next delivery finishes it once.
         if pasted_draft.is_none() && error.contains("no Enter was pressed") {
-            pasted_draft = super::terminal::read_draft(&record)
-                .ok()
-                .and_then(|(draft, hash)| draft.filter(|draft| !draft.trim().is_empty()).map(|_| hash));
+            // zerus-h45u: under a build's load one read often finds no
+            // composer at all and the paste stayed nobody's; read again,
+            // bounded, before giving up.
+            // The state lock is held here: keep it short.
+            let until = std::time::Instant::now() + Duration::from_secs(1);
+            loop {
+                pasted_draft = super::terminal::read_draft(&record)
+                    .ok()
+                    .and_then(|(draft, hash)| draft.filter(|draft| !draft.trim().is_empty()).map(|_| hash));
+                if pasted_draft.is_some() || std::time::Instant::now() >= until {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
         }
         if let Some(hash) = &pasted_draft {
             record_unsent_paste(name, &receipt_path, &mut receipt, &request_id, hash);
@@ -3009,6 +3043,16 @@ fn submit_core(
                 receipt_index::persist(&receipt_path, &receipt).map_err(unknown)?;
             }
             Err(composer) => {
+                // zerus-lhkr: the one Enter went but Claude did not take it,
+                // and the composer still holds exactly this paste. Record it,
+                // so the next delivery finishes it once instead of every
+                // later message being refused behind it until a person
+                // presses Enter. Anything else (queued, emptied, edited) has
+                // another hash and is left alone.
+                let current = super::terminal::read_draft(&record).ok();
+                if let Some(hash) = leftover_after_enter(pasted_draft.as_deref(), current.as_ref()) {
+                    record_unsent_paste(name, &receipt_path, &mut receipt, &request_id, hash);
+                }
                 return Err(uncertain(
                     &mut receipt,
                     "Claude recorded no submission of this message".into(),
@@ -3035,6 +3079,15 @@ fn record_unsent_paste(name: &str, receipt_path: &Path, receipt: &mut Value, req
             let _ = write(&mut fresh);
         }
     }
+}
+
+/// zerus-lhkr: the draft hash to record as this delivery's unsent paste after
+/// an Enter Claude did not take: only when the composer now shows a non-empty
+/// draft whose hash is exactly the one read right after the paste.
+fn leftover_after_enter<'a>(pasted: Option<&'a str>, current: Option<&(Option<String>, String)>) -> Option<&'a str> {
+    let pasted = pasted?;
+    let (draft, hash) = current?;
+    (draft.as_deref().is_some_and(|draft| !draft.trim().is_empty()) && hash == pasted).then_some(pasted)
 }
 
 /// Task 121: finishes the delivery's own leftover paste once with Enter before
@@ -3518,6 +3571,36 @@ mod tests {
             assert!(!first_message_ready(&first(&record)), "{case}");
         }
     }
+    /// zerus-9a1f: Codex's dim placeholder is no unsent text; a typed draft,
+    /// the same words typed included, still is.
+    #[test]
+    fn codex_dim_placeholder_is_no_draft() {
+        let record = json!({"agent":"codex"});
+        let footer = "\n\n  \x1b[38;5;223mGPT-6.1-Sol high\x1b[39m · /fixture · Session title\n  \x1b[1m←\x1b[0m for agents · \x1b[1m?\x1b[0m for shortcuts";
+        let plain_footer = "\n\n  GPT-6.1-Sol high · /fixture · Session title\n  ← for agents · ? for shortcuts";
+        let placeholder = format!("\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m{footer}");
+        let plain = format!("› Ask Codex to do anything{plain_footer}");
+        assert_eq!(codex_draft(&record, &plain, 0).as_deref(), Some("Ask Codex to do anything"));
+        assert_eq!(native_draft(&record, &placeholder, &plain, 0), None);
+        let typed = format!("\x1b[1m›\x1b[0m Ask Codex to do anything{footer}");
+        assert_eq!(native_draft(&record, &typed, &plain, 0).as_deref(), Some("Ask Codex to do anything"));
+        let partly = format!("\x1b[1m›\x1b[0m Ask \x1b[2mCodex to do anything\x1b[0m{footer}");
+        assert_eq!(native_draft(&record, &partly, &plain, 0).as_deref(), Some("Ask Codex to do anything"));
+    }
+
+    /// zerus-lhkr: after an Enter Claude did not take, only a composer that
+    /// still shows exactly the paste is recorded as this delivery's leftover.
+    #[test]
+    fn a_leftover_after_enter_needs_the_same_nonempty_draft() {
+        let same = (Some("message".to_owned()), "h1".to_owned());
+        assert_eq!(leftover_after_enter(Some("h1"), Some(&same)), Some("h1"));
+        assert_eq!(leftover_after_enter(None, Some(&same)), None);
+        assert_eq!(leftover_after_enter(Some("h1"), None), None);
+        assert_eq!(leftover_after_enter(Some("h1"), Some(&(Some("edited".into()), "h2".into()))), None);
+        assert_eq!(leftover_after_enter(Some("h1"), Some(&(None, "h1".into()))), None);
+        assert_eq!(leftover_after_enter(Some("h1"), Some(&(Some("  ".into()), "h1".into()))), None);
+    }
+
     #[test]
     fn a_paste_shows_by_its_end_through_wrapping_or_as_a_placeholder() {
         let envelope = "<send_user_message_question_reply>\n[{\"answer\":\"Two\",\"question\":\"Which option?\"}]\n</send_user_message_question_reply>";
