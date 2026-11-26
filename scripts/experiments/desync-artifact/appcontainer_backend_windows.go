@@ -11,7 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -467,7 +467,11 @@ func runContainedProbe(plan containerPlan, actions []probeAction, cwd string, ex
 	}
 	code, timedOut, err := native.Wait(seconds, nil)
 	if err != nil || timedOut || code != 0 {
-		return nil, errors.New("contained probe did not finish cleanly")
+		data, _ := os.ReadFile(logPath)
+		if len(data) > 600 {
+			data = data[len(data)-600:]
+		}
+		return nil, fmt.Errorf("contained probe did not finish cleanly: code %#x, timed out %v, err %v, log %q", code, timedOut, err, data)
 	}
 	data, err := os.ReadFile(logPath)
 	if err != nil {

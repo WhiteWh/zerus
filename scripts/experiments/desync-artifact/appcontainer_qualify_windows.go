@@ -32,6 +32,9 @@ type qualifyConfig struct {
 	ListenIP string `json:"listen_ip"` // a non-loopback address of this runner
 	CMake    string `json:"cmake"`
 	MSBuild  string `json:"msbuild"`
+	// VSInstance is "<installation path>,version=<installation version>",
+	// which CMake needs inside a container (no Visual Studio Installer COM).
+	VSInstance string `json:"vs_instance"`
 }
 
 // qualificationEnvironmentGate refuses outside the disposable runner and for
@@ -235,6 +238,17 @@ func (q *qualifier) contained(plan containerPlan, cases []expectation, extra map
 			ok = o.denied()
 		case "isolated":
 			ok = !o.OK && (o.Code == 2 || o.Code == errAccessDenied) // ERROR_FILE_NOT_FOUND in the container's namespace
+		case "refused":
+			// A nested SECURITY_CAPABILITIES launch from inside a container is
+			// rejected by the kernel as ERROR_INVALID_PARAMETER (87), with the
+			// uncontained control succeeding; access denied also counts.
+			ok = !o.OK && (o.Code == errAccessDenied || o.Code == 87)
+		case "filtered":
+			// AppContainer network isolation drops packets silently. A
+			// timeout counts only together with the controls in filtered():
+			// the endpoint answers the service, and a closed port is refused
+			// to the service at once but also times out in the container.
+			ok = !o.OK && (o.Code == wsaAccessDenied || o.Code == wsaTimedOut)
 		}
 		if !ok {
 			failures = append(failures, fmt.Sprintf("%s %s: want %s, got ok=%v code=%d", c.action.Op, c.action.Target, c.want, o.OK, o.Code))
@@ -372,11 +386,12 @@ func (q *qualifier) q1q3q5() (error, error, error) {
 		{probeAction{"pipe", pipeName}, "deny", true},
 		{probeAction{"event", eventName}, "isolated", true},
 		{probeAction{"regread", `Software\ZerusQualification`}, "deny", true},
-		{probeAction{"connect", listener.Addr().String()}, "deny", true}, // loopback, no exemption
+		{probeAction{"connect", listener.Addr().String()}, "filtered", true}, // loopback, no exemption
+		{probeAction{"connect", closedPort("127.0.0.1")}, "filtered", false},
 		{probeAction{"spawn", ""}, "allow", true},
 		{probeAction{"spawn-breakaway", ""}, "deny", false},
-		{probeAction{"spawn-container", q.other.Name}, "deny", false},
-		{probeAction{"spawn-capability", q.other.CapabilityNames[0]}, "deny", false},
+		{probeAction{"spawn-container", q.other.Name}, "refused", true},
+		{probeAction{"spawn-capability", q.other.CapabilityNames[0]}, "refused", false},
 	}
 	if otherErr == nil {
 		objects = append(objects, expectation{probeAction{"openprocess", strconv.Itoa(int(other.info.PID))}, "deny", true})
@@ -384,7 +399,8 @@ func (q *qualifier) q1q3q5() (error, error, error) {
 	}
 	var network []expectation
 	if lan != nil {
-		network = append(network, expectation{probeAction{"connect", lan.Addr().String()}, "deny", true})
+		network = append(network, expectation{probeAction{"connect", lan.Addr().String()}, "filtered", true},
+			expectation{probeAction{"connect", closedPort(q.cfg.ListenIP)}, "filtered", false})
 	}
 	filesErr := q.contained(q.plan, files, nil)
 	objectsErr := q.contained(q.plan, objects, nil)
@@ -396,6 +412,21 @@ func (q *qualifier) q1q3q5() (error, error, error) {
 		networkErr = q.contained(q.plan, network, nil)
 	}
 	return filesErr, objectsErr, networkErr
+}
+
+// closedPort returns an address on host with no listener, after checking
+// that the service itself is refused there at once.
+func closedPort(host string) string {
+	l, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	if err != nil {
+		return net.JoinHostPort(host, "1")
+	}
+	addr := l.Addr().String()
+	l.Close()
+	if o := runProbeAction(probeAction{"connect", addr}); o.OK || o.Code != wsaRefused {
+		return "control-failed:" + addr // fails the contained expectation visibly
+	}
+	return addr
 }
 
 func acceptAll(l net.Listener) {
@@ -651,7 +682,7 @@ func (q *qualifier) q10() error {
 		"CMakeLists.txt": "cmake_minimum_required(VERSION 3.20)\nproject(hello C)\nadd_executable(hello main.c)\n",
 		"main.c":         "#include <stdio.h>\nint main(void){puts(\"contained-hello\");return 0;}\n",
 		"tiny.proj":      "<Project><Target Name=\"Build\"><Message Importance=\"high\" Text=\"contained-msbuild\" /></Target></Project>\n",
-		"tiny.ps1":       "Write-Output ('contained-' + (1+1))\n",
+		"tiny.ps1":       "$value = 'contained-' + (1+1)\n$value\n",
 	}
 	for name, text := range files {
 		if err := os.WriteFile(filepath.Join(sources, name), []byte(text), 0600); err != nil {
@@ -677,9 +708,8 @@ func (q *qualifier) q10() error {
 	check("MSBuild", "contained-msbuild", code, log, err)
 	build := filepath.Join(q.layout.Runtime, "cmake-build")
 	cmakePath := []string{filepath.Dir(q.cfg.CMake), filepath.Dir(q.cfg.MSBuild)}
-	instance := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(q.cfg.MSBuild)))) // ...\18\<edition>
 	code, log, err = q.containedTool(q.cfg.CMake, []string{"-S", sources, "-B", build, "-G", "Visual Studio 18 2026", "-A", "x64",
-		"-DCMAKE_GENERATOR_INSTANCE=" + instance}, cmakePath)
+		"-DCMAKE_GENERATOR_INSTANCE=" + q.cfg.VSInstance}, cmakePath)
 	if check("CMake configure", "Build files have been written", code, log, err) {
 		code, log, err = q.containedTool(q.cfg.CMake, []string{"--build", build, "--config", "Release"}, cmakePath)
 		if check("CMake build", "", code, log, err) {
