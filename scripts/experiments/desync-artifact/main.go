@@ -312,19 +312,28 @@ type loopbackStore struct {
 	bytes, requests, verified atomic.Int64
 }
 
-// chunkAttempts bounds retries of one chunk after a transport failure or a
-// truncated body; refusals, unknown chunks and digest mismatches never retry.
-const chunkAttempts = 4
-
-var chunkRetryPause = time.Second
+// A chunk whose connection failed or whose body was cut is retried with a
+// growing pause for up to chunkRetryBudget, so a publisher host that is busy
+// for a minute does not fail a 5 GiB file; refusals, unknown chunks and
+// digest mismatches never retry.
+var (
+	chunkRetryPause  = time.Second
+	chunkRetryCap    = 10 * time.Second
+	chunkRetryBudget = 2 * time.Minute
+)
 
 func (s *loopbackStore) GetChunk(id d.ChunkID) (*d.Chunk, error) {
-	for attempt := 1; ; attempt++ {
+	started := time.Now()
+	pause := chunkRetryPause
+	for {
 		chunk, transient, err := s.getChunkOnce(id)
-		if err == nil || !transient || attempt >= chunkAttempts {
+		if err == nil || !transient || time.Since(started)+pause > chunkRetryBudget {
 			return chunk, err
 		}
-		time.Sleep(chunkRetryPause * time.Duration(attempt))
+		time.Sleep(pause)
+		if pause *= 2; pause > chunkRetryCap {
+			pause = chunkRetryCap
+		}
 	}
 }
 

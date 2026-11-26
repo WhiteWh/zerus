@@ -64,6 +64,13 @@ var errExecutorUnavailable = errors.New("paired executor unavailable")
 // lost poll on a LAN must not tear down a delivery that is still running.
 const controllerReconnectGrace = 2 * time.Minute
 
+// heldRefreshes bounds how often a live controller offers its unchanged
+// publication again when the executor held the delivery (a transfer that
+// broke on a busy host). Each refresh resumes from the bytes already in place.
+const heldRefreshes = 5
+
+var heldRefreshPause = 5 * time.Second
+
 type executorClient struct {
 	client   *http.Client
 	endpoint string
@@ -308,6 +315,8 @@ func runController(command, configPath string) error {
 	}
 	var artifact, bundle *localPublication
 	defer func() { artifact.close(); bundle.close() }()
+	var request ExecutorRequest
+	refreshes := 0
 	if status == 404 || state.Phase == "held" {
 		if cfg.Performance != nil {
 			if cfg.Device != "host" {
@@ -358,7 +367,7 @@ func runController(command, configPath string) error {
 		if err := saveController(work, &state); err != nil {
 			return err
 		} // Before the potentially unknown POST.
-		request := ExecutorRequest{deliveryProtocol, cfg.Job, cfg.Slot, cfg.Device, artifact.offer, bundle.offer, cfg.Parameters, cfg.Performance, ""}
+		request = ExecutorRequest{deliveryProtocol, cfg.Job, cfg.Slot, cfg.Device, artifact.offer, bundle.offer, cfg.Parameters, cfg.Performance, ""}
 		method, path := "POST", "/executor/v1/jobs"
 		if status != 404 {
 			method = "PUT"
@@ -406,7 +415,15 @@ func runController(command, configPath string) error {
 			return c.collect(work, cfg, &state, snapshot)
 		}
 		if state.Phase == "held" {
-			return errors.New("delivery held; reconnect with the same pinned job")
+			if artifact == nil || bundle == nil || refreshes >= heldRefreshes {
+				return errors.New("delivery held; reconnect with the same pinned job")
+			}
+			refreshes++
+			time.Sleep(heldRefreshPause * time.Duration(refreshes))
+			if _, _, _, err := c.request("PUT", "/executor/v1/jobs/"+cfg.Job+"/publication", request, nil, maxControlBytes); err != nil && !errors.Is(err, errExecutorUnavailable) {
+				return err
+			}
+			continue
 		}
 		if time.Now().After(deadline) {
 			return errors.New("controller wait expired; remote job continues; reconnect with the same ID")

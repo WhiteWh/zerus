@@ -40,9 +40,9 @@ func chunkServer(t *testing.T, data []byte, failures int32, status int) (*loopba
 }
 
 func withFastChunkRetry(t *testing.T) {
-	previous := chunkRetryPause
-	chunkRetryPause = time.Millisecond
-	t.Cleanup(func() { chunkRetryPause = previous })
+	pause, limit, budget := chunkRetryPause, chunkRetryCap, chunkRetryBudget
+	chunkRetryPause, chunkRetryCap, chunkRetryBudget = time.Millisecond, 4*time.Millisecond, 200*time.Millisecond
+	t.Cleanup(func() { chunkRetryPause, chunkRetryCap, chunkRetryBudget = pause, limit, budget })
 }
 
 func TestChunkRetriesATruncatedBody(t *testing.T) {
@@ -61,9 +61,10 @@ func TestChunkRetriesATruncatedBody(t *testing.T) {
 func TestChunkGivesUpAfterBoundedAttempts(t *testing.T) {
 	withFastChunkRetry(t)
 	data := make([]byte, 64*1024)
-	store, id, calls := chunkServer(t, data, 100, 0)
-	if _, err := store.GetChunk(id); err == nil || calls.Load() != chunkAttempts {
-		t.Fatalf("err %v calls %d", err, calls.Load())
+	store, id, calls := chunkServer(t, data, 1000, 0)
+	started := time.Now()
+	if _, err := store.GetChunk(id); err == nil || calls.Load() < 3 || time.Since(started) > 2*time.Second {
+		t.Fatalf("err %v calls %d after %v", err, calls.Load(), time.Since(started))
 	}
 }
 
