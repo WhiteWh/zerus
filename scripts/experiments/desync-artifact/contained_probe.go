@@ -28,6 +28,8 @@ import (
 const (
 	errAccessDenied = 5     // ERROR_ACCESS_DENIED
 	wsaAccessDenied = 10013 // WSAEACCES
+	wsaTimedOut     = 10060 // WSAETIMEDOUT
+	wsaRefused      = 10061 // WSAECONNREFUSED
 	maxProbeActions = 64
 )
 
@@ -55,6 +57,10 @@ func errorCode(err error) uint32 {
 	var errno syscall.Errno
 	if errors.As(err, &errno) {
 		return uint32(errno)
+	}
+	var timeout interface{ Timeout() bool }
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return wsaTimedOut
 	}
 	return 0
 }
@@ -190,13 +196,14 @@ func runProbeAction(a probeAction) probeOutcome {
 // (real builds need children), with Job breakaway, in another container, or
 // in this container with an extra capability.
 func spawnFromProbe(a probeAction) error {
-	self, err := os.Executable()
+	system, err := systemDirectory()
 	if err != nil {
 		return err
 	}
-	line, _ := windows.UTF16PtrFromString(windows.ComposeCommandLine([]string{self, "contained-probe"}))
-	app, _ := windows.UTF16PtrFromString(self)
-	env, _ := environmentBlock(map[string]string{"SystemRoot": os.Getenv("SystemRoot"), "ZERUS_CONTAINED_PROBE": "[]"})
+	cmd := system + `\cmd.exe`
+	line, _ := windows.UTF16PtrFromString(windows.ComposeCommandLine([]string{cmd, "/d", "/c", "exit 0"}))
+	app, _ := windows.UTF16PtrFromString(cmd)
+	env, _ := environmentBlock(containedBaseEnvironment(os.Getenv("TEMP")))
 	flags := uint32(windows.CREATE_NO_WINDOW | windows.CREATE_UNICODE_ENVIRONMENT)
 	startup := windows.StartupInfoEx{StartupInfo: windows.StartupInfo{Cb: uint32(unsafe.Sizeof(windows.StartupInfoEx{}))}}
 	var keep []windows.SIDAndAttributes
