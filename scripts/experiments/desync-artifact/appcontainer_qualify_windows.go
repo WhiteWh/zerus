@@ -707,6 +707,23 @@ func (q *qualifier) q10() error {
 		}
 	}
 	if len(failures) != 0 {
+		// Diagnostics for the record (they do not change the verdict): which
+		// part of a batch-file run is refused inside the container.
+		system, _ := systemDirectory()
+		cmd := filepath.Join(system, "cmd.exe")
+		batch := filepath.Join(q.layout.Runtime, "diag.cmd")
+		_ = os.WriteFile(batch, []byte("@echo diag-batch-runtime\r\n"), 0600)
+		diag := func(label string, tool string, args []string) {
+			code, log, err := q.containedTool(tool, args, nil)
+			if len(log) > 500 {
+				log = log[len(log)-500:]
+			}
+			failures = append(failures, fmt.Sprintf("diag %s: code %d err %v log %q", label, code, err, log))
+		}
+		diag("cmd direct", cmd, []string{"/d", "/c", "echo diag-direct"})
+		diag("batch in runtime", cmd, []string{"/d", "/q", "/c", batch})
+		diag("batch in temp", powershell, []string{"-NoProfile", "-NonInteractive", "-Command",
+			"$t=[IO.Path]::GetTempPath(); $f=Join-Path $t 'diag2.cmd'; [IO.File]::WriteAllText($f, \"@echo diag-batch-temp\"); \"temp=$t\"; & $env:ComSpec /d /q /c $f; \"exit=$LASTEXITCODE\"; \"comspec=$env:ComSpec\""})
 		return errors.New("unsupported: " + strings.Join(failures, "; "))
 	}
 	return nil
