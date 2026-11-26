@@ -83,6 +83,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'folder grant failed' }
           "ZERUS_QSVC_PASSWORD=$password" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: Start Process Monitor (diagnosis of denied batch files)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Invoke-WebRequest -Uri 'https://download.sysinternals.com/files/ProcessMonitor.zip' -OutFile "$env:RUNNER_TEMP\procmon.zip"
+          Expand-Archive -LiteralPath "$env:RUNNER_TEMP\procmon.zip" -DestinationPath "$env:RUNNER_TEMP\procmon"
+          Start-Process -FilePath "$env:RUNNER_TEMP\procmon\Procmon64.exe" -ArgumentList '/AcceptEula', '/Quiet', '/Minimized', '/BackingFile', 'C:\ZerusQ\trace.pml'
+          Start-Sleep -Seconds 10
+
       - name: Run appcontainer-qualify from the package as the service account (distributable evidence)
         shell: pwsh
         run: |
@@ -104,6 +113,21 @@ jobs:
           if ($r.service_admin) { throw 'record ran as an administrator' }
           if ($p.ExitCode -ne 0) { throw "qualification failed or incomplete (exit $($p.ExitCode))" }
 
+      - name: Stop Process Monitor and extract denials
+        if: always()
+        shell: pwsh
+        run: |
+          $pm = "$env:RUNNER_TEMP\procmon\Procmon64.exe"
+          if (-not (Test-Path $pm)) { exit 0 }
+          & $pm /Terminate
+          Start-Sleep -Seconds 10
+          & $pm /AcceptEula /Quiet /OpenLog 'C:\ZerusQ\trace.pml' /SaveAs 'C:\ZerusQ\trace.csv'
+          Start-Sleep -Seconds 30
+          if (-not (Test-Path 'C:\ZerusQ\trace.csv')) { Write-Output 'no trace'; exit 0 }
+          $rows = Import-Csv 'C:\ZerusQ\trace.csv' | Where-Object { $_.'Process Name' -in @('cmd.exe', 'MSBuild.exe') -and ($_.Result -match 'DENIED|PRIVILEGE|BLOCKED') }
+          $rows | Select-Object 'Time of Day', 'Process Name', PID, Operation, Path, Result, Detail | Export-Csv 'C:\ZerusQ\denied.csv' -NoTypeInformation
+          $rows | Select-Object -First 80 | ForEach-Object { "$($_.'Process Name') $($_.Operation) $($_.Path) $($_.Result) $($_.Detail)" }
+
       - name: Keep the qualification record and log
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -112,5 +136,6 @@ jobs:
           path: |
             C:\ZerusQ\appcontainer-qualification.json
             C:\ZerusQ\qualify.log
+            C:\ZerusQ\denied.csv
           if-no-files-found: warn
           retention-days: 30
