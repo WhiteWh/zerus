@@ -158,7 +158,7 @@ func (q *qualifier) setup() error {
 		filepath.Join(q.layout.Generation, "input.txt"):                                "synthetic generation",
 		filepath.Join(q.layout.Bundle, "scenario.ps1"):                                 "Write-Output 'bundle'",
 		filepath.Join(q.layout.Parent, "job-state.json"):                               "synthetic receipt",
-		filepath.Join(mk("requests", "job-a"), "run.json"): "{\"synthetic\":\"run configuration\"}",
+		filepath.Join(mk("requests", "job-a"), "run.json"):                             "{\"synthetic\":\"run configuration\"}",
 		filepath.Join(mk("profile", ".codex"), "auth.json"):                            "synthetic provider sentinel",
 		filepath.Join(mk("broad"), "broad.txt"):                                        "synthetic broad sentinel",
 		filepath.Join(mk("project-slots", "proj-other", "slot", "build"), "other.txt"): "synthetic other project",
@@ -275,7 +275,8 @@ func (q *qualifier) q0() error {
 	self, _ := os.Executable()
 	log, _ := os.Create(filepath.Join(q.cfg.Root, "q0.log"))
 	defer log.Close()
-	env := map[string]string{"SystemRoot": os.Getenv("SystemRoot"), "ZERUS_CONTAINED_PROBE": "[]"}
+	env := containedBaseEnvironment(q.layout.Runtime)
+	env["ZERUS_CONTAINED_PROBE"] = "[]"
 	var token windows.Token
 	if err := native.StartContained(q.plan, self, []string{"contained-probe"}, env, q.layout.Runtime, log, func(info processReceipt) error {
 		if info.Accepted {
@@ -421,7 +422,8 @@ func (q *qualifier) startSleeper(plan containerPlan) (*nativeScenario, error) {
 		return nil, err
 	}
 	spec, _ := json.Marshal([]probeAction{{"sleep", "120"}})
-	env := map[string]string{"SystemRoot": os.Getenv("SystemRoot"), "ZERUS_CONTAINED_PROBE": string(spec)}
+	env := containedBaseEnvironment(q.otherJob)
+	env["ZERUS_CONTAINED_PROBE"] = string(spec)
 	if err := native.StartContained(plan, self, []string{"contained-probe"}, env, q.otherJob, log, func(processReceipt) error { return nil }); err != nil {
 		native.Close()
 		return nil, err
@@ -550,7 +552,21 @@ func (q *qualifier) q8() error {
 	installer, _ := installerSIDs()
 	// The runner's service account stands in as the operator for this
 	// descriptor check only; production refuses that pairing.
-	trust := &windowsPolicyTrust{append([]*windows.SID{service}, installer...), token}
+	// The runner's service account stands in as the descriptor owner; the
+	// effective-rights layer uses this token restricted to a synthetic SID
+	// (no grant names it), so the planted entries decide the verdict.
+	synthetic, _ := windows.StringToSid("S-1-5-21-1000000001-1000000002-1000000003-4102")
+	restricted, err := restrictedToken(token, nil, []*windows.SID{synthetic})
+	if err != nil {
+		return err
+	}
+	defer restricted.Close()
+	identification, err := identificationToken(restricted)
+	if err != nil {
+		return err
+	}
+	defer identification.Close()
+	trust := &windowsPolicyTrust{append([]*windows.SID{service}, installer...), identification}
 	if _, err := readPolicyFile(policy, trust); err != nil {
 		if trustCode(err) != "policy-writable-by-service" {
 			return fmt.Errorf("protected chain refused: %v", trustDetail(err))
@@ -661,7 +677,9 @@ func (q *qualifier) q10() error {
 	check("MSBuild", "contained-msbuild", code, log, err)
 	build := filepath.Join(q.layout.Runtime, "cmake-build")
 	cmakePath := []string{filepath.Dir(q.cfg.CMake), filepath.Dir(q.cfg.MSBuild)}
-	code, log, err = q.containedTool(q.cfg.CMake, []string{"-S", sources, "-B", build}, cmakePath)
+	instance := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(q.cfg.MSBuild)))) // ...\18\<edition>
+	code, log, err = q.containedTool(q.cfg.CMake, []string{"-S", sources, "-B", build, "-G", "Visual Studio 18 2026", "-A", "x64",
+		"-DCMAKE_GENERATOR_INSTANCE=" + instance}, cmakePath)
 	if check("CMake configure", "Build files have been written", code, log, err) {
 		code, log, err = q.containedTool(q.cfg.CMake, []string{"--build", build, "--config", "Release"}, cmakePath)
 		if check("CMake build", "", code, log, err) {
