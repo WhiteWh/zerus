@@ -128,9 +128,17 @@ jobs:
           & $pm /Terminate
           Start-Sleep -Seconds 10
           & $pm /AcceptEula /Quiet /OpenLog 'C:\ZerusQ\trace.pml' /SaveAs 'C:\ZerusQ\trace.csv'
-          Start-Sleep -Seconds 30
+          $last = -1
+          for ($i = 0; $i -lt 60; $i++) {
+            Start-Sleep -Seconds 10
+            if (Test-Path 'C:\ZerusQ\trace.csv') {
+              $size = (Get-Item 'C:\ZerusQ\trace.csv').Length
+              if ($size -eq $last -and -not (Get-Process Procmon64 -ErrorAction SilentlyContinue)) { break }
+              $last = $size
+            }
+          }
           if (-not (Test-Path 'C:\ZerusQ\trace.csv')) { Write-Output 'no trace'; exit 0 }
-          $rows = Import-Csv 'C:\ZerusQ\trace.csv' | Where-Object { $_.'Process Name' -in @('cmd.exe', 'MSBuild.exe') -and ($_.Result -match 'DENIED|PRIVILEGE|BLOCKED') }
+          $rows = Import-Csv 'C:\ZerusQ\trace.csv' | Where-Object { $_.'Process Name' -in @('cmd.exe', 'MSBuild.exe') -and ($_.Result -notmatch '^(SUCCESS|NAME NOT FOUND|PATH NOT FOUND|NO MORE FILES|NO MORE ENTRIES|BUFFER OVERFLOW|END OF FILE|REPARSE|NOT REPARSE POINT|IS DIRECTORY|BUFFER TOO SMALL|FILE LOCKED WITH ONLY READERS)$') }
           $rows | Select-Object 'Time of Day', 'Process Name', PID, Operation, Path, Result, Detail | Export-Csv 'C:\ZerusQ\denied.csv' -NoTypeInformation
           $rows | Select-Object -First 80 | ForEach-Object { "$($_.'Process Name') $($_.Operation) $($_.Path) $($_.Result) $($_.Detail)" }
 
