@@ -202,6 +202,9 @@ func durableJSON(path string, value any) error {
 	if err != nil {
 		return err
 	}
+	return durableBytes(path, b)
+}
+func durableBytes(path string, b []byte) error {
 	f, err := openReceiptNext(path + ".next")
 	if err != nil {
 		return err

@@ -163,7 +163,8 @@ func assertReady(t *testing.T, config string) map[string]any {
 		t.Fatal(err)
 	}
 	allowed := map[string]bool{"config.json": true, "manifest.json": true, "receiver.bin": true,
-		"target.caibx": true, "result.json": true, "state.json": true, "slot.lock": true}
+		"target.caibx": true, "result.json": true, "state.json": true, "slot.lock": true,
+		receiverIndexFile: true, receiverIndexMeta: true}
 	for _, entry := range entries {
 		if !allowed[entry.Name()] {
 			t.Fatalf("unexpected staging or payload file in synthetic fixture: %s", entry.Name())

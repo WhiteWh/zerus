@@ -64,7 +64,8 @@ func retireControl(s *slot, path, expectedRoot string) error {
 	}
 	allowed := map[string]bool{"slot.lock": true, "manifest.json": true, "state.json": true, "result.json": true,
 		"error.json": true, "target.caibx": true, "next.caibx": true, "generation-intent.json": true,
-		"seed.new": true, "reservation.json": true}
+		"seed.new": true, "reservation.json": true,
+		receiverIndexFile: true, receiverIndexMeta: true, receiverIndexFile + ".next": true, receiverIndexMeta + ".next": true}
 	listing, err := openDirectory(dir)
 	if err != nil {
 		control.Close()

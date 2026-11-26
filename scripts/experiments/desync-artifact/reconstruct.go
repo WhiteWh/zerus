@@ -84,21 +84,35 @@ func reconstruct(slot *slot, manifest Manifest, digest string, cfg Config, idx d
 	}
 	crashCheckpoint(cfg, "before_apply")
 	indexStart := time.Now()
-	old, _, err := d.IndexFromFile(context.Background(), target, 1, cfg.Average/4, cfg.Average, cfg.Average*4, d.NullProgressBar{})
-	if err != nil {
-		return err
+	old, cached := loadReceiverIndex(work, custody, cfg.Average)
+	// The cache is only a seed; it is consumed once and rewritten after the
+	// next verified result.
+	forgetReceiverIndex(work)
+	if !cached {
+		old, _, err = d.IndexFromFile(context.Background(), target, 1, cfg.Average/4, cfg.Average, cfg.Average*4, d.NullProgressBar{})
+		if err != nil {
+			return err
+		}
 	}
 	receiverIndexSeconds := time.Since(indexStart).Seconds()
-	seed, err := d.NewFileSeed(target, target, old)
-	if err != nil {
-		return err
+	assemble := func(old d.Index) (*d.ExtractStats, error) {
+		if cached && sameChunks(old, idx) {
+			// The file already holds exactly these chunks: nothing to write.
+			return &d.ExtractStats{ChunksInPlace: uint64(len(idx.Chunks)), ChunksTotal: len(idx.Chunks), BytesTotal: idx.Length(), Seeds: 1}, nil
+		}
+		seed, err := d.NewFileSeed(target, target, old)
+		if err != nil {
+			return nil, err
+		}
+		return d.AssembleFile(context.Background(), target, idx, store, []d.Seed{seed},
+			d.AssembleOptions{N: 1, StashLimitBytes: &cfg.StashBytes})
 	}
 	start := time.Now()
-	stats, applyErr := d.AssembleFile(context.Background(), target, idx, store, []d.Seed{seed},
-		d.AssembleOptions{N: 1, StashLimitBytes: &cfg.StashBytes})
+	stats, applyErr := assemble(old)
 	applySeconds := time.Since(start).Seconds()
 	result := map[string]any{
 		"ok": false, "apply_seconds": applySeconds, "receiver_index_seconds": receiverIndexSeconds,
+		"receiver_index_cached": cached,
 		"statistics": stats,
 		"transport":  "authenticated-loopback-only", "external_network": false,
 		"stash_limit_bytes": cfg.StashBytes,
@@ -110,6 +124,22 @@ func reconstruct(slot *slot, manifest Manifest, digest string, cfg Config, idx d
 	runtime.ReadMemStats(&mem)
 	result["go_heap_bytes"] = mem.HeapAlloc
 	result["go_sys_bytes"] = mem.Sys
+	redo := func() error {
+		// A stale cached seed: recompute the index from the file and assemble again.
+		fresh, _, err := d.IndexFromFile(context.Background(), target, 1, cfg.Average/4, cfg.Average, cfg.Average*4, d.NullProgressBar{})
+		if err != nil {
+			return err
+		}
+		cached = false
+		stats, applyErr = assemble(fresh)
+		result["statistics"], result["receiver_index_cached"], result["receiver_index_redone"] = stats, false, true
+		return nil
+	}
+	if applyErr != nil && cached {
+		if err := redo(); err != nil {
+			return err
+		}
+	}
 	if applyErr != nil {
 		result["error"] = "chunk transfer or reconstruction refused"
 		result["private_diagnostic"] = applyErr.Error()
@@ -130,7 +160,28 @@ func reconstruct(slot *slot, manifest Manifest, digest string, cfg Config, idx d
 		return err
 	}
 	crashCheckpoint(cfg, "after_flush")
-	if err := verifyHandle(out, manifest); err != nil {
+	verifyErr := verifyHandle(out, manifest)
+	if verifyErr != nil && cached {
+		out.Close()
+		if err := redo(); err != nil {
+			return err
+		}
+		if applyErr != nil {
+			result["error"] = "chunk transfer or reconstruction refused"
+			result["private_diagnostic"] = applyErr.Error()
+			durableJSON(filepath.Join(work, "result.json"), result)
+			return errors.New("apply failed; receiver unavailable")
+		}
+		if out, err = openSealed(target, manifest.Receiver, true); err != nil {
+			return err
+		}
+		defer out.Close()
+		if err := out.Sync(); err != nil {
+			return err
+		}
+		verifyErr = verifyHandle(out, manifest)
+	}
+	if verifyErr != nil {
 		result["error"] = "final content mismatch"
 		durableJSON(filepath.Join(work, "result.json"), result)
 		return errors.New("final verification failed")
@@ -140,6 +191,8 @@ func reconstruct(slot *slot, manifest Manifest, digest string, cfg Config, idx d
 	}
 	result["ok"] = true
 	result["exact_hash_match"] = true
+	// Best effort: a missing cache only costs the next delivery a full index.
+	_ = saveReceiverIndex(work, out, cfg.Average, idx)
 	if err := durableJSON(filepath.Join(work, "result.json"), result); err != nil {
 		return err
 	}

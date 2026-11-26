@@ -87,6 +87,44 @@ class TreeDeliveryTests(unittest.TestCase):
         publisher.stop()
         self.assertEqual(self.invoke(config,label="offline-no-op"),0)
 
+    def results(self,config):
+        found={}
+        for path in (config.parent/"files").glob("*/result.json"):
+            manifest=json.loads((path.parent/"manifest.json").read_text(encoding="utf-8"))
+            found[manifest.get("tree_path") or manifest.get("path")]=json.loads(path.read_text(encoding="utf-8"))
+        return found
+
+    def test_next_generation_seeds_unchanged_files_from_the_cached_index(self):
+        publisher,source,config,value=self.fixture()
+        self.assertEqual(self.invoke(config),0);self.assert_ready(source,config)
+        first=self.results(config)
+        self.assertTrue(first and not any(r.get("receiver_index_cached") for r in first.values()))
+        old=value["offer"]["artifact_id"];publisher.stop()
+        with (source/"app.dll").open("r+b") as stream: stream.seek(1024);stream.write(b"new synthetic code")
+        value["offer"]=publisher.start();value["previous_artifact_id"]=old;value["delivery_id"]=uuid.uuid4().hex
+        config.write_text(json.dumps(value),encoding="utf-8")
+        self.assertEqual(self.invoke(config,label="generation"),0);self.assert_ready(source,config)
+        second=self.results(config)
+        changed=[r for r in second.values() if r.get("receiver_index_cached")]
+        self.assertTrue(changed,second)
+        self.assertTrue(all(r["ok"] and r["exact_hash_match"] for r in second.values()))
+        publisher.stop()
+
+    def test_corruption_after_install_redoes_a_cached_seed(self):
+        publisher,source,config,value=self.fixture()
+        self.assertEqual(self.invoke(config),0)
+        old=value["offer"]["artifact_id"];publisher.stop()
+        path=config.parent/"build/packs/large.container"
+        os.chmod(path,0o666)
+        with path.open("r+b") as stream:stream.seek(8192);stream.write(b"synthetic corruption")
+        with (source/"app.dll").open("r+b") as stream: stream.seek(1024);stream.write(b"new synthetic code")
+        value["offer"]=publisher.start();value["previous_artifact_id"]=old;value["delivery_id"]=uuid.uuid4().hex
+        config.write_text(json.dumps(value),encoding="utf-8")
+        self.assertEqual(self.invoke(config,label="generation"),0);self.assert_ready(source,config)
+        results=self.results(config)
+        self.assertTrue(any(r.get("receiver_index_redone") for r in results.values()),results)
+        publisher.stop()
+
     def test_crash_boundaries_repair_the_whole_tree(self):
         for phase in ("tree_intent","tree_file","tree_ready"):
             with self.subTest(phase=phase):
