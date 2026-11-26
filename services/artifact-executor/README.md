@@ -273,6 +273,27 @@ Windows 10.0 build 26100 or later. The record's runner field is asserted by
 the CI job, not signed; the packaging step and the installer's protection are
 what vouch for it. Without such a record multi-person mode refuses to start.
 
+Qualification status (disposable windows-2025 runner, 2026-11-26): every
+isolation case Q0-Q9 passes (protected files, processes, IPC, handles,
+environment, network, executor death, settled cancel, policy trust, leases).
+Q10, real builds, does not: PowerShell scripts and MSBuild projects run, but a
+C++ CMake build fails because MSBuild runs its build events as
+`cmd /c <temporary .cmd>`, and a new `cmd.exe` running a batch file is refused
+inside the container (`call` of the same file from a running `cmd` works).
+Until that is solved the backend stays unregistered. Findings recorded for
+contained jobs:
+
+- Windows rewrites TEMP and LOCALAPPDATA of a contained process to the
+  container's own storage (under the job-local LOCALAPPDATA) and refuses to
+  create it without them; the executor points TMP there too.
+- Windows PowerShell does not autoload modules such as
+  Microsoft.PowerShell.Utility inside the container; the language and the
+  built-in host work. The scenario environment carries `PSModulePath`.
+- Named objects (`Local\...`) resolve in the container's private namespace.
+- Contained processes run with strict handle checks.
+- Network isolation drops connections to listeners silently (a timeout, not a
+  refusal); a closed port is still refused.
+
 Administration of people and devices (run explicitly; the service never
 writes the policy):
 
