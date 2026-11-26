@@ -7329,5 +7329,17 @@
   "Show history": "Показать историю",
   "The host may have applied the change. Load again before retrying.": "Хост мог применить изменение. Загрузите снова, прежде чем повторять.",
   "The host refused:": "Хост отказал:",
-  "This computer's hgs has no multi-person host access; update it there.": "В hgs на этом компьютере нет многопользовательского доступа к хосту; обновите его там."
+  "This computer's hgs has no multi-person host access; update it there.": "В hgs на этом компьютере нет многопользовательского доступа к хосту; обновите его там.",
+  "Executor load measurement unavailable": "Замер нагрузки исполнителя недоступен",
+  "Executor sampled peak": "Пик нагрузки исполнителя",
+  "Executor before run": "Исполнитель до запуска",
+  "CPU %1%": "ЦП %1%",
+  "Disk busy %1%": "Диск занят %1%",
+  "Disk used %1%": "Диск заполнен %1%",
+  "Run under load": "Запуск под нагрузкой",
+  "Remote artifact tests": "Удалённые тесты артефактов",
+  "Job %1": "Задание %1",
+  "Waiting for your scenario observation": "Ждём вашего наблюдения по сценарию",
+  "Scenario instructions": "Инструкции сценария",
+  "Execution outcome is unknown; review before starting a new job": "Исход выполнения неизвестен; проверьте его, прежде чем запускать новое задание"
 }
