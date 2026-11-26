@@ -706,23 +706,34 @@ func (q *qualifier) q10() error {
 	check("PowerShell", "contained-2", code, log, err)
 	code, log, err = q.containedTool(q.cfg.MSBuild, []string{filepath.Join(sources, "tiny.proj"), "-nologo", "-noAutoResponse"}, []string{filepath.Dir(q.cfg.MSBuild)})
 	check("MSBuild", "contained-msbuild", code, log, err)
-	build := filepath.Join(q.layout.Runtime, "cmake-build")
-	cmakePath := []string{filepath.Dir(q.cfg.CMake), filepath.Dir(q.cfg.MSBuild)}
-	code, log, err = q.containedTool(q.cfg.CMake, []string{"-S", sources, "-B", build, "-G", "Visual Studio 18 2026", "-A", "x64",
-		"-DCMAKE_GENERATOR_INSTANCE=" + q.cfg.VSInstance}, cmakePath)
-	if check("CMake configure", "Build files have been written", code, log, err) {
-		code, log, err = q.containedTool(q.cfg.CMake, []string{"--build", build, "--config", "Release"}, cmakePath)
-		if check("CMake build", "", code, log, err) {
-			exe := filepath.Join(build, "Release", "hello.exe")
-			code, log, err = q.containedTool(exe, nil, nil)
-			check("built program", "contained-hello", code, log, err)
-		}
+	// A real C++ build: the MSVC environment from vcvars64.bat (run with
+	// `call`), CMake with Ninja and the compiler called directly. MSBuild
+	// C++ projects are not used here: MSBuild runs their build events as a
+	// new `cmd /c <batch>`, which Windows refuses inside an AppContainer
+	// (recorded separately below).
+	system, _ := systemDirectory()
+	cmd := filepath.Join(system, "cmd.exe")
+	vs, _, _ := strings.Cut(q.cfg.VSInstance, ",")
+	vcvars := filepath.Join(vs, "VC", "Auxiliary", "Build", "vcvars64.bat")
+	ninja := filepath.Join(vs, "Common7", "IDE", "CommonExtensions", "Microsoft", "CMake", "Ninja", "ninja.exe")
+	build := filepath.Join(q.layout.Runtime, "ninja-build")
+	line := `call "` + vcvars + `" >nul && "` + q.cfg.CMake + `" -S "` + sources + `" -B "` + build + `" -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_MAKE_PROGRAM=` + ninja +
+		`" && "` + q.cfg.CMake + `" --build "` + build + `" && "` + filepath.Join(build, "hello.exe") + `"`
+	code, log, err = q.containedTool(cmd, []string{"/d", "/s", "/c", line}, []string{filepath.Dir(q.cfg.CMake)})
+	check("C++ with CMake, Ninja and MSVC", "contained-hello", code, log, err)
+	// MSBuild C++ (vcxproj) build events: a known AppContainer limitation,
+	// recorded for the operator and not required.
+	vsBuild := filepath.Join(q.layout.Runtime, "vs-build")
+	vsCode, vsLog, vsErr := q.containedTool(q.cfg.CMake, []string{"-S", sources, "-B", vsBuild, "-G", "Visual Studio 18 2026", "-A", "x64",
+		"-DCMAKE_GENERATOR_INSTANCE=" + q.cfg.VSInstance}, []string{filepath.Dir(q.cfg.CMake), filepath.Dir(q.cfg.MSBuild)})
+	if vsErr == nil && vsCode == 0 {
+		fmt.Fprintln(os.Stderr, "note: MSBuild C++ projects also configure inside the container")
+	} else {
+		fmt.Fprintf(os.Stderr, "note: MSBuild C++ projects unsupported inside the container (build events): code %d %v %.200q\n", vsCode, vsErr, vsLog)
 	}
 	if len(failures) != 0 {
 		// Diagnostics for the record (they do not change the verdict): which
 		// part of a batch-file run is refused inside the container.
-		system, _ := systemDirectory()
-		cmd := filepath.Join(system, "cmd.exe")
 		batch := filepath.Join(q.layout.Runtime, "diag.cmd")
 		_ = os.WriteFile(batch, []byte("@echo diag-batch-runtime\r\n"), 0600)
 		diag := func(label string, tool string, args []string) {
