@@ -54,6 +54,16 @@ type ExecutorSnapshot struct {
 	Submission ExecutorSubmission `json:"submission"`
 	Result     ScenarioState      `json:"result"`
 }
+// errExecutorUnavailable is a transport failure talking to the paired
+// executor: a dropped connection, a timeout or a truncated response. It is
+// transient; identity and protocol refusals are not.
+var errExecutorUnavailable = errors.New("paired executor unavailable")
+
+// controllerReconnectGrace is how long a running controller keeps its
+// publication and retries status reads while the executor is unreachable. One
+// lost poll on a LAN must not tear down a delivery that is still running.
+const controllerReconnectGrace = 2 * time.Minute
+
 type executorClient struct {
 	client   *http.Client
 	endpoint string
@@ -80,11 +90,14 @@ func (c executorClient) request(method, path string, value any, headers map[stri
 	}
 	response, err := c.client.Do(r)
 	if err != nil {
-		return nil, nil, 0, errors.New("paired executor unavailable")
+		return nil, nil, 0, errExecutorUnavailable
 	}
 	defer response.Body.Close()
 	b, err := io.ReadAll(io.LimitReader(response.Body, maximum+1))
-	if err != nil || int64(len(b)) > maximum {
+	if err != nil {
+		return nil, nil, response.StatusCode, errExecutorUnavailable
+	}
+	if int64(len(b)) > maximum {
 		return nil, nil, response.StatusCode, errors.New("executor response exceeds limit")
 	}
 	if response.StatusCode != 200 {
@@ -103,6 +116,19 @@ func (c executorClient) snapshot(job string) (ExecutorSnapshot, int, error) {
 	}
 	return value, status, err
 }
+// snapshotWithin retries transient transport failures for up to grace,
+// pausing between attempts; any other result returns at once.
+func (c executorClient) snapshotWithin(job string, grace, pause time.Duration) (ExecutorSnapshot, int, error) {
+	started := time.Now()
+	for {
+		value, status, err := c.snapshot(job)
+		if !errors.Is(err, errExecutorUnavailable) || time.Since(started) >= grace {
+			return value, status, err
+		}
+		time.Sleep(pause)
+	}
+}
+
 func controllerDigest(cfg ControllerConfig) string {
 	cfg.Observation = nil
 	b, _ := json.Marshal(cfg)
@@ -344,7 +370,7 @@ func runController(command, configPath string) error {
 	}
 	deadline := time.Now().Add(time.Duration(cfg.Seconds) * time.Second)
 	for {
-		snapshot, _, err = c.snapshot(cfg.Job)
+		snapshot, _, err = c.snapshotWithin(cfg.Job, controllerReconnectGrace, time.Second)
 		if err != nil {
 			return err
 		}

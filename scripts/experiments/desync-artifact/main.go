@@ -309,10 +309,26 @@ type loopbackStore struct {
 	bytes, requests, verified atomic.Int64
 }
 
+// chunkAttempts bounds retries of one chunk after a transport failure or a
+// truncated body; refusals, unknown chunks and digest mismatches never retry.
+const chunkAttempts = 4
+
+var chunkRetryPause = time.Second
+
 func (s *loopbackStore) GetChunk(id d.ChunkID) (*d.Chunk, error) {
+	for attempt := 1; ; attempt++ {
+		chunk, transient, err := s.getChunkOnce(id)
+		if err == nil || !transient || attempt >= chunkAttempts {
+			return chunk, err
+		}
+		time.Sleep(chunkRetryPause * time.Duration(attempt))
+	}
+}
+
+func (s *loopbackStore) getChunkOnce(id d.ChunkID) (*d.Chunk, bool, error) {
 	req, err := http.NewRequest(http.MethodGet, s.base+"/chunks/"+hex.EncodeToString(id[:]), nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	req.Header.Set("Authorization", s.token)
 	if s.artifact != "" {
@@ -321,29 +337,33 @@ func (s *loopbackStore) GetChunk(id d.ChunkID) (*d.Chunk, error) {
 	s.requests.Add(1)
 	res, err := s.client.Do(req)
 	if err != nil {
-		return nil, errors.New("loopback transport failed")
+		return nil, true, errors.New("loopback transport failed")
 	}
 	defer res.Body.Close()
 	if s.artifact != "" && !publicationHeadersMatch(res.Header, s.artifact, s.session) {
-		return nil, errors.New("publication response changed")
+		return nil, false, errors.New("publication response changed")
 	}
 	if res.StatusCode != http.StatusOK {
-		return nil, errors.New("publisher refused chunk")
+		return nil, false, errors.New("publisher refused chunk")
 	}
 	c, ok := s.known[id]
 	if !ok {
-		return nil, errors.New("unexpected chunk")
+		return nil, false, errors.New("unexpected chunk")
 	}
 	b, err := io.ReadAll(io.LimitReader(res.Body, int64(c.Size)+1))
 	s.bytes.Add(int64(len(b)))
-	if err != nil || uint64(len(b)) != c.Size {
-		return nil, errors.New("invalid chunk length")
+	if err != nil {
+		// The connection broke mid-body: transient.
+		return nil, true, errors.New("invalid chunk length")
+	}
+	if uint64(len(b)) != c.Size {
+		return nil, false, errors.New("invalid chunk length")
 	}
 	chunk, err := d.NewChunkWithID(id, b, false)
 	if err == nil {
 		s.verified.Add(int64(len(b)))
 	}
-	return chunk, err
+	return chunk, false, err
 }
 func (s *loopbackStore) HasChunk(id d.ChunkID) (bool, error) { _, ok := s.known[id]; return ok, nil }
 func (s *loopbackStore) String() string                      { return "loopback-raw-container" }
