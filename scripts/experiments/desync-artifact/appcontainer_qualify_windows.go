@@ -726,11 +726,16 @@ func (q *qualifier) q10() error {
 	vs, _, _ := strings.Cut(q.cfg.VSInstance, ",")
 	ninja := filepath.Join(vs, "Common7", "IDE", "CommonExtensions", "Microsoft", "CMake", "Ninja", "ninja.exe")
 	build := filepath.Join(q.layout.Runtime, "ninja-build")
+	// Windows environment names are case-insensitive (`set` prints "Path").
+	upper := map[string]string{}
+	for k, v := range q.cfg.Toolchain {
+		upper[strings.ToUpper(k)] = v
+	}
 	toolchain := map[string]string{}
 	for _, key := range []string{"INCLUDE", "LIB", "LIBPATH"} {
-		toolchain[key] = q.cfg.Toolchain[key]
+		toolchain[key] = upper[key]
 	}
-	toolPath := strings.Split(q.cfg.Toolchain["PATH"], string(os.PathListSeparator))
+	toolPath := strings.Split(upper["PATH"], string(os.PathListSeparator))
 	if toolchain["INCLUDE"] == "" || toolchain["LIB"] == "" || len(toolPath) < 2 {
 		failures = append(failures, "MSVC toolchain environment not provided by the workflow")
 	} else {
