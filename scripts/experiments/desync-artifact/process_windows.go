@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -216,6 +217,9 @@ func (j *nativeScenario) start(plan *containerPlan, executable string, args []st
 	if err != nil {
 		return err
 	}
+	if plan != nil {
+		environment = containedTemporaryFolders(environment, *plan)
+	}
 	env, err := environmentBlock(environment)
 	if err != nil {
 		return err
@@ -343,6 +347,25 @@ func (j *nativeScenario) TerminateAndSettle() bool {
 		}
 	}
 	return true
+}
+
+// containedTemporaryFolders points TEMP and TMP of a contained process at
+// the folder Windows assigns it (LOCALAPPDATA\Packages\<name>\AC\Temp, under
+// the job-local LOCALAPPDATA). Windows rewrites TEMP itself but tools such as
+// MSBuild take TMP first; batch files there run, while the job runtime root
+// refuses them. The caller's map is not changed.
+func containedTemporaryFolders(environment map[string]string, plan containerPlan) map[string]string {
+	local, ok := environment["LOCALAPPDATA"]
+	if !ok {
+		return environment
+	}
+	copy_ := make(map[string]string, len(environment))
+	for k, v := range environment {
+		copy_[k] = v
+	}
+	temp := filepath.Join(local, "Packages", strings.ToLower(plan.Name), "AC", "Temp")
+	copy_["TEMP"], copy_["TMP"] = temp, temp
+	return copy_
 }
 
 func processInJob(process, job windows.Handle) (bool, error) {

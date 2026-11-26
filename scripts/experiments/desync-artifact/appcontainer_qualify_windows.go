@@ -732,6 +732,10 @@ func (q *qualifier) q10() error {
 			}
 		}
 		diag("batch in runtime with ancestor listing", cmd, []string{"/d", "/q", "/c", batch})
+		bundleBatch := filepath.Join(q.layout.Bundle, "diag-bundle.cmd")
+		_ = os.WriteFile(bundleBatch, []byte("@echo diag-batch-bundle\r\n"), 0600)
+		diag("batch in bundle", cmd, []string{"/d", "/q", "/c", bundleBatch})
+		diag("batch written by the container in runtime", cmd, []string{"/d", "/c", "echo @echo diag-own> own.cmd && call own.cmd"})
 		return errors.New("unsupported: " + strings.Join(failures, "; "))
 	}
 	return nil
