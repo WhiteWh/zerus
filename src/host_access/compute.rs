@@ -285,7 +285,8 @@ pub fn serve_stdin(mode: &Mode, state_root: &Path) -> Result<Value, Refusal> {
     if bytes.len() > MAX_REQUEST {
         return Err(refuse("too-large", "the request exceeds 2 MiB"));
     }
-    let request: Request = serde_json::from_slice(&bytes).map_err(|_| refuse("request-invalid", "malformed compute request"))?;
+    let request: Request =
+        serde_json::from_slice(crate::state::without_bom(&bytes)).map_err(|_| refuse("request-invalid", "malformed compute request"))?;
     serve(mode, request, state_root)
 }
 
