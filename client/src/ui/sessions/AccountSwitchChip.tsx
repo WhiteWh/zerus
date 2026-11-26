@@ -18,7 +18,7 @@ interface Preview { refusal: string; newSession: string; folder: string; loading
  * (task 352), a confirmation with Cancel focused, then `hgs switch-account`.
  * An account of the same agent switches in place; one of another agent moves
  * the session there with a handoff. The receipt is shown in the chip. */
-export function AccountSwitchChip(props: { session: Session; compact?: boolean; locked?: string; onSwitch?: () => void }): JSX.Element {
+export function AccountSwitchChip(props: { session: Session; compact?: boolean; locked?: string; picker?: boolean; onSwitch?: () => void }): JSX.Element {
   const [open, setOpen] = createSignal(false);
   const [target, setTarget] = createSignal<Choice>();
   const [preview, setPreview] = createSignal<Preview>({ refusal: "", newSession: "", folder: "", loading: false });
@@ -87,12 +87,16 @@ export function AccountSwitchChip(props: { session: Session; compact?: boolean; 
 
   return (
     <Show when={movable(provider())}>
-      <span class="acct-switch">
-        <button ref={chip} type="button" class="tchip" classList={{ icon: props.compact, locked: !!locked() }}
+      <span class="acct-switch" classList={{ picker: props.picker }}>
+        {/* A picker (the session's Account row) looks like the Model and
+            effort fields under it, so it reads as a choice, and opens its
+            list downward in the dialog's flow. */}
+        <button ref={chip} type="button" class={props.picker ? "field dropdown-trigger acct-switch-picker" : "tchip"} classList={{ icon: props.compact, locked: !!locked() }}
           title={locked() || tr("Account: %1 (%2)", label(), providerName(provider()))} aria-haspopup="menu" aria-expanded={open()} aria-disabled={!!locked()}
           onClick={() => { if (locked()) return; setOpen(!open()); if (open()) void loadAccounts(); }}>
           <AgentLogo agent={provider()} size={13} fallback={<Icon name="accounts" size={13} />} />
           <Show when={!props.compact}><span class="ell">{locked() ? tr("%1 (locked)", label()) : label()}</span></Show>
+          <Show when={props.picker && !locked()}><Icon name="chevron-down" size={14} class="dropdown-chevron" /></Show>
         </button>
         <Show when={open() && !locked()}>
           <div class="acct-switch-pop" role="menu" aria-label={tr("Accounts on this computer")}>

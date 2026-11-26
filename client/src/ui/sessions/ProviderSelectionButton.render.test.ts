@@ -72,7 +72,13 @@ describe("Provider selection in the composer", () => {
     port.switchAccount.mockResolvedValue({ status: "switched", to: { account_id: "personal", label: "Personal" } });
     const button = setup(); button.click(); await flush();
     const dialog = host.querySelector<HTMLDialogElement>("dialog.provider-selection-dialog")!;
-    dialog.querySelector<HTMLButtonElement>(".acct-switch > button")!.click(); await flush();
+    // The Account row reads as a choice, like the Model and effort fields,
+    // and its list opens in the dialog's flow (not upward behind its header).
+    const picker = dialog.querySelector<HTMLButtonElement>(".acct-switch.picker > button")!;
+    expect(picker.classList.contains("dropdown-trigger")).toBe(true);
+    expect(picker.querySelector(".dropdown-chevron")).not.toBeNull();
+    picker.click(); await flush();
+    expect(dialog.querySelector(".acct-switch.picker > .acct-switch-pop")).not.toBeNull();
     [...dialog.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((item) => item.textContent?.includes("Personal"))!.click(); await flush();
     const confirmation = [...host.querySelectorAll<HTMLDialogElement>("dialog")].find((item) => item !== dialog)!;
     [...confirmation.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent === "Move account")!.click(); await flush();

@@ -483,6 +483,12 @@
 .acct-switch-empty { display: block; padding: 8px; }
 .acct-switch-notice { margin: 4px; padding: 6px 8px; color: var(--z-color-text-2); font-size: var(--fs-xs); }
 .acct-switch-pop { max-height: min(60vh, 420px); overflow-y: auto; }
+/* The Account row's picker: a field like Model and effort; its list opens
+   downward in the dialog's flow, where the dialog body cannot clip it. */
+.acct-switch.picker { display: flex; flex-direction: column; align-items: stretch; min-width: 0; }
+.acct-switch.picker > .acct-switch-picker { width: 100%; }
+.acct-switch.picker > .acct-switch-picker .ell { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-switch.picker > .acct-switch-pop { position: static; margin-top: 6px; max-width: none; max-height: min(40vh, 280px); box-shadow: none; }
 .acct-switch-group + .acct-switch-group { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--z-color-card-border); }
 .acct-switch-head { display: flex; align-items: center; gap: 6px; padding: 4px 8px 2px; color: var(--z-color-text-2); font-size: var(--fs-xs); font-weight: 600; }
 .acct-switch-row .ell { flex: 1; min-width: 0; }
