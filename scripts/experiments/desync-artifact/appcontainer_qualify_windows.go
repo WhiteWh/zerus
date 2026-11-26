@@ -736,6 +736,11 @@ func (q *qualifier) q10() error {
 		_ = os.WriteFile(bundleBatch, []byte("@echo diag-batch-bundle\r\n"), 0600)
 		diag("batch in bundle", cmd, []string{"/d", "/q", "/c", bundleBatch})
 		diag("batch written by the container in runtime", cmd, []string{"/d", "/c", "echo @echo diag-own> own.cmd && call own.cmd"})
+		diag("service batch via call", cmd, []string{"/d", "/c", "call " + batch})
+		diag("container batch via cmd /c", cmd, []string{"/d", "/c", "echo @echo diag-own2> own2.cmd && " + cmd + " /d /q /c " + filepath.Join(q.layout.Runtime, "own2.cmd")})
+		diag("service batch read", cmd, []string{"/d", "/c", "type " + batch})
+		diag("icacls service batch", filepath.Join(system, "icacls.exe"), []string{batch})
+		diag("icacls container batch", filepath.Join(system, "icacls.exe"), []string{filepath.Join(q.layout.Runtime, "own2.cmd")})
 		return errors.New("unsupported: " + strings.Join(failures, "; "))
 	}
 	return nil
