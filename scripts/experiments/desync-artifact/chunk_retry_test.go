@@ -75,3 +75,24 @@ func TestChunkRefusalIsNotRetried(t *testing.T) {
 		t.Fatalf("err %v calls %d", err, calls.Load())
 	}
 }
+
+func TestChunkStallAtTheReadIdleBoundIsNotRetried(t *testing.T) {
+	withFastChunkRetry(t)
+	data := make([]byte, 64*1024)
+	id := d.Digest.Sum(data)
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Length", fmt.Sprint(len(data)))
+		w.Write(data[:1024])
+		w.(http.Flusher).Flush()
+		time.Sleep(300 * time.Millisecond)
+	}))
+	t.Cleanup(server.Close)
+	client := server.Client()
+	client.Timeout = 50 * time.Millisecond
+	store := &loopbackStore{base: server.URL, client: client, known: map[d.ChunkID]d.IndexChunk{id: {ID: id, Size: uint64(len(data))}}}
+	if _, err := store.GetChunk(id); err == nil || calls.Load() != 1 {
+		t.Fatalf("err %v calls %d", err, calls.Load())
+	}
+}

@@ -6,7 +6,8 @@ from pathlib import Path
 import zipfile
 
 REVISION="717d63b1756554abc470671ea591ad6d25e6059d"
-EXAMPLES=("identity-init.json","executor.json","profile.json","performance-policy.json","scenario/scenario.json","scenario/run.ps1")
+EXAMPLES=("identity-init.json","executor.json","profile.json","performance-policy.json","scenario/scenario.json","scenario/run.ps1",
+        "executor-shared.json","access-request-device.json","access-admit-device.json")
 
 def digest(path):
     with path.open("rb") as stream:return hashlib.file_digest(stream,"sha256").hexdigest()
@@ -24,6 +25,7 @@ def package(binary,notices,output,examples_root=None):
             files["licenses/"+relative]=path
     here=Path(__file__).resolve().parent
     files["README.md"]=here/"README.md"
+    files["install-shared-executor.ps1"]=here/"install-shared-executor.ps1"
     examples_root=(examples_root or here/"examples").resolve()
     for relative in EXAMPLES:
         path=examples_root/relative

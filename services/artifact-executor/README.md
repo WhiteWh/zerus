@@ -313,8 +313,33 @@ it is not a security boundary between people, and neither is a separate HOME.
 
 ### Operator setup, migration and rollback (multi-person)
 
-Setup is manual and reviewed; no installer provisions accounts or ACLs yet.
-The objects an operator creates, and removes on uninstall, are exactly:
+`install-shared-executor.ps1` (in the executor package) performs this setup
+from an elevated PowerShell and `-Uninstall` removes it again:
+
+```
+pwsh -File install-shared-executor.ps1 -Package hgs-executor-windows-x86_64.zip
+```
+
+It prints the host fingerprint people verify before signing a device request,
+the endpoint, and whether the service started (`error.json` otherwise). It
+creates a non-administrator operator account (default `zerus-operator`) when
+the named one is missing and stores its password in a file only the person
+running setup can read. `scripts/ci/shared-executor-e2e.ps1` installs a
+package, admits two synthetic people and runs one job for each; the fork
+release runs it on every numbered build.
+
+On a Windows 11 host older than the qualified kernel (build 22000 up to
+26100) the service also runs the kernel-dependent qualification cases on
+that host at every start (`appcontainer-host-probe` runs them on demand) and
+enables multi-person mode only when they all pass.
+
+A person's controller (or Zerus executor profile `controller` object) names the
+shared project with `"project": "<name>"` and pins the host fingerprint in
+`peer.fingerprint`; its own device identity publishes the trees, so the operator
+needs no `data_peers` entry for it. Mutations are bound to the current policy
+revision automatically.
+
+The objects setup creates, and removes on uninstall, are exactly:
 
 1. a dedicated non-administrator service account that runs
    `hgs-executor executor-serve-shared <config>` (distinct from the named

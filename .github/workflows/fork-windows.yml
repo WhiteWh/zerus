@@ -175,6 +175,18 @@ jobs:
         run: |
           python scripts/add-qualification-record.py --record artifacts/test-results/appcontainer-qualification.json \
             artifacts/zerus-windows-x86_64.zip artifacts/hgs-executor-windows-x86_64.zip </dev/null
+      # Installs the packaged executor in multi-person mode on the runner and
+      # runs two synthetic people's jobs through it; reported, not gating yet.
+      - name: Multi-person end-to-end on the release executor
+        if: steps.qualify.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 30
+        shell: pwsh
+        run: |
+          ./scripts/ci/shared-executor-e2e.ps1 -Package artifacts/hgs-executor-windows-x86_64.zip -Work "$env:RUNNER_TEMP/shared-e2e/run"
+          $code = $LASTEXITCODE
+          Copy-Item "$env:RUNNER_TEMP/shared-e2e/shared-e2e.json" artifacts/test-results/ -ErrorAction SilentlyContinue
+          exit $code
       - name: Refresh the rolling Latest prerelease
         if: env.LATEST_BUILD == 'true' && github.ref == 'refs/heads/whitewh/main'
         env:

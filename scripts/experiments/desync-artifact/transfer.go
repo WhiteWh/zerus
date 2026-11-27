@@ -26,8 +26,9 @@ import (
 	d "github.com/folbricht/desync"
 )
 
-func newRemoteStore(offer Offer, client *http.Client, idx d.Index) *loopbackStore {
-	store := &loopbackStore{base: offerBase(offer) + "/v1", token: offer.Token, artifact: offer.ID, session: offer.Session, client: client, known: make(map[d.ChunkID]d.IndexChunk, len(idx.Chunks))}
+func newRemoteStore(offer Offer, client *http.Client, idx d.Index, peer PeerConfig) *loopbackStore {
+	store := &loopbackStore{base: offerBase(offer) + "/v1", token: offer.Token, artifact: offer.ID, session: offer.Session, client: client, known: make(map[d.ChunkID]d.IndexChunk, len(idx.Chunks)),
+		retryBudget: chunkRetryWindow(peer)}
 	for _, chunk := range idx.Chunks {
 		store.known[chunk.ID] = chunk
 	}
@@ -245,7 +246,7 @@ func runSeparated(command, configPath string) error {
 	}
 	store := &loopbackStore{base: offerBase(cfg.Offer) + "/v1", token: cfg.Offer.Token,
 		artifact: cfg.Offer.ID, session: cfg.Offer.Session, client: client,
-		known: make(map[d.ChunkID]d.IndexChunk, len(idx.Chunks))}
+		known: make(map[d.ChunkID]d.IndexChunk, len(idx.Chunks)), retryBudget: chunkRetryWindow(cfg.Peer)}
 	for _, chunk := range idx.Chunks {
 		store.known[chunk.ID] = chunk
 	}

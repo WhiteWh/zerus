@@ -310,6 +310,20 @@ type loopbackStore struct {
 	client                    *http.Client
 	known                     map[d.ChunkID]d.IndexChunk
 	bytes, requests, verified atomic.Int64
+	// retryBudget replaces chunkRetryBudget for a paired peer (chunkRetryWindow).
+	retryBudget time.Duration
+}
+
+// chunkRetryWindow is how long a paired receiver keeps retrying one chunk:
+// four of the peer's read-idle bounds, so the default 30 s bound tolerates a
+// publisher host that is busy for two minutes, and a shorter configured bound
+// holds the delivery as soon as the person asked for.
+func chunkRetryWindow(peer PeerConfig) time.Duration {
+	idle, err := readIdleBound(peer.ReadIdle)
+	if err != nil {
+		return chunkRetryBudget
+	}
+	return 4 * idle
 }
 
 // A chunk whose connection failed or whose body was cut is retried with a
@@ -325,9 +339,13 @@ var (
 func (s *loopbackStore) GetChunk(id d.ChunkID) (*d.Chunk, error) {
 	started := time.Now()
 	pause := chunkRetryPause
+	budget := chunkRetryBudget
+	if s.retryBudget > 0 {
+		budget = s.retryBudget
+	}
 	for {
 		chunk, transient, err := s.getChunkOnce(id)
-		if err == nil || !transient || time.Since(started)+pause > chunkRetryBudget {
+		if err == nil || !transient || time.Since(started)+pause > budget {
 			return chunk, err
 		}
 		time.Sleep(pause)
@@ -349,7 +367,7 @@ func (s *loopbackStore) getChunkOnce(id d.ChunkID) (*d.Chunk, bool, error) {
 	s.requests.Add(1)
 	res, err := s.client.Do(req)
 	if err != nil {
-		return nil, true, errors.New("loopback transport failed")
+		return nil, !idleTimeout(err), errors.New("loopback transport failed")
 	}
 	defer res.Body.Close()
 	if s.artifact != "" && !publicationHeadersMatch(res.Header, s.artifact, s.session) {
@@ -365,8 +383,10 @@ func (s *loopbackStore) getChunkOnce(id d.ChunkID) (*d.Chunk, bool, error) {
 	b, err := io.ReadAll(io.LimitReader(res.Body, int64(c.Size)+1))
 	s.bytes.Add(int64(len(b)))
 	if err != nil {
-		// The connection broke mid-body: transient.
-		return nil, true, errors.New("invalid chunk length")
+		// The connection broke mid-body: transient. A stalled peer that
+		// reached the configured read-idle bound is not retried, so the
+		// delivery is held at once and resumes through a publication refresh.
+		return nil, !idleTimeout(err), errors.New("invalid chunk length")
 	}
 	if uint64(len(b)) != c.Size {
 		return nil, false, errors.New("invalid chunk length")
@@ -376,6 +396,11 @@ func (s *loopbackStore) getChunkOnce(id d.ChunkID) (*d.Chunk, bool, error) {
 		s.verified.Add(int64(len(b)))
 	}
 	return chunk, false, err
+}
+// idleTimeout reports a read that reached its inactivity bound.
+func idleTimeout(err error) bool {
+	var timeout net.Error
+	return errors.Is(err, errReadIdle) || (errors.As(err, &timeout) && timeout.Timeout())
 }
 func (s *loopbackStore) HasChunk(id d.ChunkID) (bool, error) { _, ok := s.known[id]; return ok, nil }
 func (s *loopbackStore) String() string                      { return "loopback-raw-container" }

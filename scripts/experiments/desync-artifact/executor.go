@@ -114,7 +114,10 @@ func (s *executorService) saveSubmission(value ExecutorSubmission) error {
 	}
 	return durableTreeJSON(s.submissionPath(value.Request.Job), value)
 }
-func (s *executorService) validateRequest(request ExecutorRequest) error {
+// validateRequest checks a request. In multi-person mode owner is the job's
+// owner: the device that submitted it may publish its own trees, so a person's
+// controller needs no operator data_peers entry.
+func (s *executorService) validateRequest(request ExecutorRequest, owner *JobOwner) error {
 	if err := validPerformance(request.Performance); err != nil {
 		return err
 	}
@@ -137,7 +140,7 @@ func (s *executorService) validateRequest(request ExecutorRequest) error {
 		if err := validTreeOffer(offer); err != nil {
 			return err
 		}
-		allowed := offer.Peer != "" && offer.Peer == s.cfg.Peer.Fingerprint
+		allowed := offer.Peer != "" && (offer.Peer == s.cfg.Peer.Fingerprint || (owner != nil && offer.Peer == owner.Device))
 		for _, peer := range s.cfg.DataPeers {
 			if offer.Peer == peer {
 				allowed = true
@@ -150,7 +153,7 @@ func (s *executorService) validateRequest(request ExecutorRequest) error {
 	return nil
 }
 func (s *executorService) submit(request ExecutorRequest, owner *JobOwner) (ExecutorSubmission, error) {
-	if err := s.validateRequest(request); err != nil {
+	if err := s.validateRequest(request, owner); err != nil {
 		return ExecutorSubmission{}, err
 	}
 	if s.shared() != (owner != nil) || (owner != nil && owner.Project != request.Project) {
@@ -628,7 +631,7 @@ func (s *executorService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		current, err := s.readSubmission(job)
-		if err != nil || current.Phase != "held" || request.Job != job || executorRequestDigest(request) != current.Digest || s.validateRequest(request) != nil {
+		if err != nil || current.Phase != "held" || request.Job != job || executorRequestDigest(request) != current.Digest || s.validateRequest(request, current.Owner) != nil {
 			http.Error(w, "publication refresh refused", 409)
 			return
 		}

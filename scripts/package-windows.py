@@ -91,7 +91,7 @@ def add_executor(package, stage):
                 target = stage / "hgs-executor.exe"
             elif relative.startswith("licenses/"):
                 target = stage / "licenses/executor" / relative[len("licenses/"):]
-            elif relative == "README.md" or relative.startswith("examples/"):
+            elif relative in ("README.md", "install-shared-executor.ps1") or relative.startswith("examples/"):
                 target = stage / "executor" / relative
             else:
                 raise ValueError(f"Unexpected executor package entry: {name!r}")

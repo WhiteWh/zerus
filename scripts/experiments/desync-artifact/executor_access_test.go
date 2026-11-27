@@ -726,3 +726,18 @@ func TestSlotsBelongToTheJobsProject(t *testing.T) {
 		t.Fatal("members of one project do not share its managed copy")
 	}
 }
+
+func TestAPersonsOwnDevicePublishesWithoutAnOperatorPeer(t *testing.T) {
+	f := newSharedFixture(t)
+	withPeer := func(job, peer string) ExecutorRequest {
+		request := f.request(job, "proj-shared")
+		request.Artifact.Peer, request.Scenario.Peer = peer, peer
+		return request
+	}
+	own := newJob("own device")
+	expect(t, f.call("alice-laptop", "POST", "/executor/v1/jobs", withPeer(own, f.devices["alice-laptop"].fingerprint), nil), 200, "alice publishes from her device")
+	other := newJob("other device")
+	if got := f.call("alice-laptop", "POST", "/executor/v1/jobs", withPeer(other, f.devices["bob-laptop"].fingerprint), nil); got.status == 200 {
+		t.Fatalf("alice named bob's device as her publisher: %s", got.body)
+	}
+}

@@ -528,7 +528,7 @@ func receiveTree(s *slot, cfg TreeConfig, client *http.Client) error {
 				if checkErr != nil {
 					err = checkErr
 				} else {
-					store := newRemoteStore(fileCfg.Offer, client, idx)
+					store := newRemoteStore(fileCfg.Offer, client, idx, cfg.Peer)
 					err = reconstruct(fileSlot, m, digest, Config{Average: e.Artifact.Average, StashBytes: cfg.Stash}, idx, store, func() error { return nil }, func() map[string]any {
 						return withScope(transportScope(fileCfg.Offer.Endpoint, fileCfg.Offer.Peer), map[string]any{"downloaded_payload_bytes": store.bytes.Load()})
 					})

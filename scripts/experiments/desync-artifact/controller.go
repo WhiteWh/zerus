@@ -33,6 +33,9 @@ type ControllerConfig struct {
 	Parameters   map[string]json.RawMessage `json:"parameters"`
 	Observation  *Observation               `json:"observation,omitempty"`
 	Performance  *PerformancePolicy         `json:"performance,omitempty"`
+	// Project names the shared project on a multi-person executor; empty
+	// for a paired single-person executor.
+	Project string `json:"project,omitempty"`
 }
 type ControllerState struct {
 	Protocol     int                `json:"protocol"`
@@ -74,9 +77,57 @@ var heldRefreshPause = 5 * time.Second
 type executorClient struct {
 	client   *http.Client
 	endpoint string
+	// shared marks a multi-person executor: every mutation is bound to the
+	// current policy revision and a deadline (executor_access.go).
+	shared bool
 }
 
+// sharedBoundWindow is the deadline a multi-person mutation carries; the
+// executor accepts at most five minutes.
+const sharedBoundWindow = 60 * time.Second
+
+// policyRevision reads the caller's current policy revision.
+func (c executorClient) policyRevision() (string, error) {
+	b, _, _, err := c.send("GET", "/executor/v1/capabilities", nil, nil, maxControlBytes)
+	if err != nil {
+		return "", err
+	}
+	var capabilities struct {
+		Access *struct {
+			Revision uint64 `json:"policy_revision"`
+		} `json:"access"`
+	}
+	if json.Unmarshal(b, &capabilities) != nil || capabilities.Access == nil || capabilities.Access.Revision == 0 {
+		return "", errors.New("executor is not in multi-person mode")
+	}
+	return strconv.FormatUint(capabilities.Access.Revision, 10), nil
+}
+
+// request sends one operation. On a multi-person executor a mutation reads
+// the current revision first and is sent again once when the policy changed
+// in between (409).
 func (c executorClient) request(method, path string, value any, headers map[string]string, maximum int64) ([]byte, http.Header, int, error) {
+	if !c.shared || method == "GET" {
+		return c.send(method, path, value, headers, maximum)
+	}
+	for attempt := 0; ; attempt++ {
+		revision, err := c.policyRevision()
+		if err != nil {
+			return nil, nil, 0, err
+		}
+		bound := map[string]string{"Zerus-Policy-Revision": revision,
+			"Zerus-Request-Deadline": strconv.FormatInt(time.Now().Add(sharedBoundWindow).UnixMilli(), 10)}
+		for key, v := range headers {
+			bound[key] = v
+		}
+		b, h, status, err := c.send(method, path, value, bound, maximum)
+		if status != http.StatusConflict || attempt > 0 {
+			return b, h, status, err
+		}
+	}
+}
+
+func (c executorClient) send(method, path string, value any, headers map[string]string, maximum int64) ([]byte, http.Header, int, error) {
 	var body io.Reader
 	if value != nil {
 		b, err := json.Marshal(value)
@@ -205,7 +256,7 @@ func runController(command, configPath string) error {
 	if err := validPerformance(cfg.Performance); err != nil {
 		return err
 	}
-	if !validHex(cfg.Job, 16) || !validDevice(cfg.Slot) || !validDevice(cfg.Device) || cfg.Memory < 256*MiB || cfg.Memory > 4*1024*MiB || cfg.Seconds < 1 || cfg.Seconds > 604800 || cfg.Average < 64*1024 || cfg.Average > 4*1024*1024 || len(cfg.Parameters) > 32 {
+	if !validHex(cfg.Job, 16) || !validDevice(cfg.Slot) || !validDevice(cfg.Device) || cfg.Memory < 256*MiB || cfg.Memory > 4*1024*MiB || cfg.Seconds < 1 || cfg.Seconds > 604800 || cfg.Average < 64*1024 || cfg.Average > 4*1024*1024 || len(cfg.Parameters) > 32 || (cfg.Project != "" && !accessName(cfg.Project)) {
 		return errors.New("invalid controller configuration")
 	}
 	if err := validateEndpoint(cfg.Endpoint, cfg.Peer.Fingerprint); err != nil {
@@ -219,7 +270,7 @@ func runController(command, configPath string) error {
 		return err
 	}
 	defer client.CloseIdleConnections()
-	c := executorClient{client, cfg.Endpoint}
+	c := executorClient{client, cfg.Endpoint, cfg.Project != ""}
 	_, builder, err := loadIdentity(cfg.Peer.Identity)
 	if err != nil {
 		return err
@@ -262,7 +313,7 @@ func runController(command, configPath string) error {
 	}
 	snapshot, status, err := c.snapshot(cfg.Job)
 	if err == nil {
-		expected := ExecutorRequest{deliveryProtocol, cfg.Job, cfg.Slot, cfg.Device, snapshot.Submission.Request.Artifact, snapshot.Submission.Request.Scenario, cfg.Parameters, cfg.Performance, ""}
+		expected := ExecutorRequest{deliveryProtocol, cfg.Job, cfg.Slot, cfg.Device, snapshot.Submission.Request.Artifact, snapshot.Submission.Request.Scenario, cfg.Parameters, cfg.Performance, cfg.Project}
 		if snapshot.Submission.Digest != executorRequestDigest(expected) || snapshot.Submission.Request.Artifact.Peer != builder || snapshot.Submission.Request.Scenario.Peer != builder {
 			return errors.New("remote request parameters or publication peer differ")
 		}
@@ -367,7 +418,7 @@ func runController(command, configPath string) error {
 		if err := saveController(work, &state); err != nil {
 			return err
 		} // Before the potentially unknown POST.
-		request = ExecutorRequest{deliveryProtocol, cfg.Job, cfg.Slot, cfg.Device, artifact.offer, bundle.offer, cfg.Parameters, cfg.Performance, ""}
+		request = ExecutorRequest{deliveryProtocol, cfg.Job, cfg.Slot, cfg.Device, artifact.offer, bundle.offer, cfg.Parameters, cfg.Performance, cfg.Project}
 		method, path := "POST", "/executor/v1/jobs"
 		if status != 404 {
 			method = "PUT"
