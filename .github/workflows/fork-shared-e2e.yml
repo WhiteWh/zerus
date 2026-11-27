@@ -1,0 +1,41 @@
+name: Fork multi-person e2e
+
+# Reruns the multi-person end-to-end check against an already published
+# fork release executor, with the installer and test script from this ref.
+# It is quicker than a full release build when only those scripts change.
+on:
+  workflow_dispatch:
+    inputs:
+      build:
+        description: Fork build number whose hgs-executor package is tested
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download the release executor
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD: ${{ inputs.build }}
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          gh release download "whitewh-$env:BUILD" -R "$env:GITHUB_REPOSITORY" -p hgs-executor-windows-x86_64.zip -D artifacts
+      - name: Multi-person end-to-end
+        shell: pwsh
+        run: |
+          ./scripts/ci/shared-executor-e2e.ps1 -Package artifacts/hgs-executor-windows-x86_64.zip -Work "$env:RUNNER_TEMP/shared-e2e/run"
+          exit $LASTEXITCODE
+      - name: Keep the result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: shared-e2e
+          path: ${{ runner.temp }}/shared-e2e
+          if-no-files-found: ignore

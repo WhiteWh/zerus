@@ -54,6 +54,7 @@ function New-JobId { [guid]::NewGuid().ToString('N') }
 New-Item -ItemType Directory -Force -Path $Work | Out-Null
 try {
     # Installation
+    & wevtutil sl Microsoft-Windows-TaskScheduler/Operational /e:true 2>$null
     $installed = & $installer -Package $Package -ListenIP $ListenIP -Port $Port -Log (Join-Path $Work 'install.log') | Out-String | ConvertFrom-Json
     $offer = Join-Path $configDir 'executor-offer.json'
     $errorFile = Join-Path $configDir 'error.json'
@@ -62,7 +63,17 @@ try {
     $taskInfo = Get-ScheduledTaskInfo -TaskName 'Zerus Shared Executor'
     $serviceError = if (Test-Path $errorFile) { Get-Content $errorFile -Raw } else { '' }
     Test-Check 'service-started' ((Test-Path $offer) -and -not $serviceError) ("task result $($taskInfo.LastTaskResult) $serviceError")
-    if ($failed) { throw 'the shared executor did not start' }
+    if ($failed) {
+        $events = Get-WinEvent -LogName 'Microsoft-Windows-TaskScheduler/Operational' -MaxEvents 30 -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -like '*Zerus Shared Executor*' } | ForEach-Object { "$($_.Id) $($_.Message)" }
+        $logons = Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = 4625 } -MaxEvents 5 -ErrorAction SilentlyContinue | ForEach-Object { $_.Message -replace '\s+', ' ' }
+        $state = (Get-ScheduledTask -TaskName 'Zerus Shared Executor').State
+        Write-Output "task state $state"
+        $events | ForEach-Object { Write-Output "task event $_" }
+        $logons | ForEach-Object { Write-Output "logon failure $_" }
+        Get-ChildItem $configDir -ErrorAction SilentlyContinue | ForEach-Object { Write-Output "config file $($_.Name)" }
+        throw 'the shared executor did not start'
+    }
     $hostId = $installed.host
     $endpoint = $installed.endpoint
     $policy = $installed.policy

@@ -91,6 +91,32 @@ if (Get-LocalUser -Name $ServiceAccount -ErrorAction SilentlyContinue) {
 }
 if ((Get-LocalGroupMember -SID 'S-1-5-32-544').Name -contains "$env:COMPUTERNAME\$ServiceAccount") { throw 'the service account must not be an administrator' }
 $serviceSid = (Get-LocalUser -Name $ServiceAccount).SID.Value
+# The task runs as a batch logon; Task Scheduler does not grant that right on
+# every Windows edition, so it is granted here explicitly.
+if (-not ('Zerus.Lsa' -as [type])) {
+    Add-Type -Namespace Zerus -Name Lsa -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential)] public struct LSA_UNICODE_STRING { public ushort Length; public ushort MaximumLength; public IntPtr Buffer; }
+[StructLayout(LayoutKind.Sequential)] public struct LSA_OBJECT_ATTRIBUTES { public int Length; public IntPtr RootDirectory; public IntPtr ObjectName; public int Attributes; public IntPtr SecurityDescriptor; public IntPtr SecurityQualityOfService; }
+[DllImport("advapi32.dll")] public static extern uint LsaOpenPolicy(IntPtr system, ref LSA_OBJECT_ATTRIBUTES attributes, int access, out IntPtr handle);
+[DllImport("advapi32.dll")] public static extern uint LsaAddAccountRights(IntPtr handle, byte[] sid, LSA_UNICODE_STRING[] rights, int count);
+[DllImport("advapi32.dll")] public static extern uint LsaClose(IntPtr handle);
+[DllImport("advapi32.dll")] public static extern int LsaNtStatusToWinError(uint status);
+public static int Grant(byte[] sid, string right) {
+    LSA_OBJECT_ATTRIBUTES a = new LSA_OBJECT_ATTRIBUTES(); IntPtr h;
+    uint st = LsaOpenPolicy(IntPtr.Zero, ref a, 0x00000800 | 0x00000010, out h);
+    if (st != 0) return LsaNtStatusToWinError(st);
+    LSA_UNICODE_STRING[] r = new LSA_UNICODE_STRING[1];
+    r[0].Buffer = Marshal.StringToHGlobalUni(right); r[0].Length = (ushort)(right.Length * 2); r[0].MaximumLength = (ushort)(right.Length * 2 + 2);
+    try { st = LsaAddAccountRights(h, sid, r, 1); } finally { Marshal.FreeHGlobal(r[0].Buffer); LsaClose(h); }
+    return st == 0 ? 0 : LsaNtStatusToWinError(st);
+}
+'@
+}
+$sidObject = New-Object Security.Principal.SecurityIdentifier($serviceSid)
+$sidBytes = New-Object byte[] ($sidObject.BinaryLength)
+$sidObject.GetBinaryForm($sidBytes, 0)
+$rightError = [Zerus.Lsa]::Grant($sidBytes, 'SeBatchLogonRight')
+if ($rightError -ne 0) { throw "granting the batch logon right failed ($rightError)" }
 
 # 2. executor folder: binary and qualification record
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
