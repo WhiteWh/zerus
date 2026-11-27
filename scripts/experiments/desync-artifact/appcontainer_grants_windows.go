@@ -383,6 +383,9 @@ func prepareContainedJob(layout containedLayout, plan containerPlan) error {
 	if err := grantPathListing(layout, plan); err != nil {
 		return err
 	}
+	if err := ensureDesktopAccess(plan); err != nil {
+		return err
+	}
 	if err := ensureProjectGrant(layout.Generation, roleGeneration, plan); err != nil {
 		return err
 	}
