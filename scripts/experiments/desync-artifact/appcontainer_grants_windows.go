@@ -268,6 +268,22 @@ func ensureProjectGrant(path string, role grantRole, plan containerPlan) error {
 }
 
 func addExplicitEntry(path string, g containedGrant, plan containerPlan, tree bool) error {
+	entry, _, err := grantSDDL(g, plan)
+	if err != nil {
+		return err
+	}
+	// An entry the installer provisioned ahead, on a folder the executor may
+	// not change (C:\ProgramData and the installation's data folder), is read
+	// only: changing the descriptor is needed only when the entry is missing.
+	if r, err := nativeOpen(path, windows.READ_CONTROL, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS); err == nil {
+		current, err := windows.GetSecurityInfo(windows.Handle(r.Fd()), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+		r.Close()
+		if err == nil {
+			if _, already := explicitEntries(current, entry); already {
+				return nil
+			}
+		}
+	}
 	f, err := nativeOpen(path, windows.READ_CONTROL|windows.WRITE_DAC, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS)
 	if err != nil {
 		return accessCode("container-folder-unavailable")
@@ -276,10 +292,6 @@ func addExplicitEntry(path string, g containedGrant, plan containerPlan, tree bo
 	current, err := windows.GetSecurityInfo(windows.Handle(f.Fd()), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return accessCode("container-grant-unreadable")
-	}
-	entry, _, err := grantSDDL(g, plan)
-	if err != nil {
-		return err
 	}
 	explicit, already := explicitEntries(current, entry)
 	if already {

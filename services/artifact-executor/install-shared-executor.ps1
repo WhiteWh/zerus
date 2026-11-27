@@ -54,7 +54,11 @@ if ($Uninstall) {
     $exe = Join-Path $InstallDir 'hgs-executor.exe'
     if ((Test-Path $cfg) -and (Test-Path $exe)) {
         $sid = (& $exe appcontainer-capability $cfg | Select-Object -First 1).Trim()
-        if ($sid -like 'S-1-15-3-*') { & icacls "$($DataDir.Substring(0,3))" /remove:g "*$sid" | Out-Null }
+        if ($sid -like 'S-1-15-3-*') {
+            & icacls "$($DataDir.Substring(0,3))" /remove:g "*$sid" | Out-Null
+            $ancestor = Split-Path $DataDir
+            while ($ancestor -and $ancestor.Length -gt 3) { & icacls $ancestor /remove:g "*$sid" | Out-Null; $ancestor = Split-Path $ancestor }
+        }
     }
     foreach ($p in @($InstallDir, $DataDir, $OperatorDir)) { if (Test-Path $p) { & takeown /f $p /r /d y | Out-Null; & icacls $p /reset /t /q | Out-Null; Remove-Item -LiteralPath $p -Recurse -Force } }
     foreach ($u in @($ServiceAccount, $Operator)) { if (Get-LocalUser -Name $u -ErrorAction SilentlyContinue) { Remove-LocalUser -Name $u } }
@@ -192,6 +196,16 @@ $sid = (& $exe appcontainer-capability $config | Select-Object -First 1).Trim()
 if ($sid -notlike 'S-1-15-3-*') { throw "no jobs capability: $sid" }
 & icacls "$($state.Substring(0,3))" /grant "*${sid}:(RD,X,RA)" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'volume root grant failed' }
+# Every folder between the volume root and the executor root lists names for
+# the same capability, as the executor's own entry (not inherited); the
+# service account may not change these folders' permissions itself.
+$ancestor = Split-Path $state
+$ancestors = @()
+while ($ancestor -and $ancestor.Length -gt 3) { $ancestors = @($ancestor) + $ancestors; $ancestor = Split-Path $ancestor }
+foreach ($folder in $ancestors) {
+    & icacls $folder /grant "*${sid}:(RD,X,RA,S)" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "folder listing grant failed on $folder" }
+}
 
 # 6. the service task
 $action = New-ScheduledTaskAction -Execute $exe -Argument "executor-serve-shared `"$config`"" -WorkingDirectory $state

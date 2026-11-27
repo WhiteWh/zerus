@@ -174,7 +174,9 @@ try {
         $config.peer.identity = Join-Path $people[$reader] 'identity'
         Write-Json (Join-Path $probe 'controller.json') $config
         $r = Invoke-Executor 'controller-status' (Join-Path $probe 'controller.json')
-        Test-Check "$reader-cannot-read-$owner" ($r.code -ne 0 -and $r.text -match '\(404\)' -and -not (Test-Path (Join-Path $probe 'controller-status.json'))) $r.text
+        # The command prints a generic failure; the refusal itself is in error.json.
+        $refusal = if (Test-Path (Join-Path $probe 'error.json')) { Get-Content (Join-Path $probe 'error.json') -Raw } else { '' }
+        Test-Check "$reader-cannot-read-$owner" ($r.code -ne 0 -and "$($r.text) $refusal" -match '\(404\)' -and -not (Test-Path (Join-Path $probe 'controller-status.json'))) ($refusal.Trim() -replace '\s+', ' ')
     }
 } catch {
     Test-Check 'run' $false ($_ | Out-String)
