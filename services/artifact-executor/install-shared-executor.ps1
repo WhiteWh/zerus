@@ -117,23 +117,24 @@ Set-Protected $state @('*S-1-5-32-544:(OI)(CI)F', '*S-1-5-18:(OI)(CI)F', "*${ser
 # may add files and owns what it creates, but may not delete the configuration.
 Set-Protected $configDir @('*S-1-5-32-544:(OI)(CI)F', '*S-1-5-18:(OI)(CI)F', "*${serviceSid}:(RX,WD)", '*S-1-3-0:(OI)(IO)F')
 
-$credential = New-Object Management.Automation.PSCredential($ServiceAccount, $secure)
-function Invoke-AsService([string[]]$Arguments) {
-    $out = Join-Path $state ('setup-' + [guid]::NewGuid() + '.log')
-    $line = '"' + $exe + '" ' + (($Arguments | ForEach-Object { '"' + $_ + '"' }) -join ' ') + ' > "' + $out + '" 2>&1'
-    $p = Start-Process -FilePath "$env:SystemRoot\System32\cmd.exe" -ArgumentList '/d', '/c', $line -Credential $credential -LoadUserProfile -WorkingDirectory $state -Wait -PassThru -WindowStyle Hidden
-    $text = Get-Content -LiteralPath $out -Raw -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $out -ErrorAction SilentlyContinue
-    if ($p.ExitCode -ne 0) { throw "hgs-executor $($Arguments[0]) as $ServiceAccount failed ($($p.ExitCode)): $text" }
-    $text
-}
+# The executor identity is created by this elevated setup, then handed to the
+# service account: a logon as another user (Start-Process -Credential) is not
+# available from every elevated context, a hosted runner's session 0 included.
 if (-not (Test-Path (Join-Path $identity 'public.json'))) {
-    $init = Join-Path $state 'identity-init.json'
+    $seed = Join-Path $DataDir ('identity-seed-' + [guid]::NewGuid())
+    New-Item -ItemType Directory -Path $seed | Out-Null
+    $init = Join-Path $seed 'identity-init.json'
     '{}' | Out-File -LiteralPath $init -Encoding ascii
-    Invoke-AsService @('identity-init', $init) | Out-Null
-    Remove-Item -LiteralPath $init
-    Move-Item -LiteralPath (Join-Path $state 'identity') -Destination $identity
+    $text = & $exe identity-init $init 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "hgs-executor identity-init failed ($LASTEXITCODE): $text" }
+    if (Test-Path $identity) { Remove-Item -LiteralPath $identity -Recurse -Force }
+    Move-Item -LiteralPath (Join-Path $seed 'identity') -Destination $identity
+    Remove-Item -LiteralPath $seed -Recurse -Force
     Set-Protected $identity @('*S-1-5-32-544:(OI)(CI)F', '*S-1-5-18:(OI)(CI)F', "*${serviceSid}:(OI)(CI)F") "*$serviceSid"
+    & icacls "$identity\*" /reset /q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'identity file permissions failed' }
+    & icacls "$identity\*" /setowner "*$serviceSid" /q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'identity file owner change failed' }
 }
 $hostFingerprint = (Get-Content -LiteralPath (Join-Path $identity 'public.json') -Raw | ConvertFrom-Json).fingerprint
 
