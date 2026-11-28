@@ -565,11 +565,18 @@ pub(super) const NOT_OWN_PASTE: &str = "The Terminal draft is not a paste Zerus 
 /// (`unsent_paste`) when its Enter did not go. The hash binds the run, the
 /// conversation, the pane, the process and the exact draft, so anything the
 /// person typed, or a paste of another run or conversation, never matches.
+///
+/// A paste whose composer could not be read at all before its window ended
+/// (a machine under load answers no terminal read for seconds) has no draft
+/// hash: it records the pasted text's digest instead (`paste_text_digest`),
+/// and the draft is its own when it shows exactly that text, wrapped or not.
 pub(super) fn own_paste(record: &Value, draft: Option<&str>, draft_hash: &str) -> Result<String> {
     let paste = &record["unsent_paste"];
     let request = paste["request_id"].as_str().filter(|id| !id.is_empty());
+    let exact = paste["draft_hash"].as_str() == Some(draft_hash)
+        || paste["text_digest"].as_str().is_some_and(|digest| draft.is_some_and(|draft| paste_text_digest(draft) == digest));
     if draft.is_some_and(|draft| !draft.trim().is_empty())
-        && paste["draft_hash"].as_str() == Some(draft_hash)
+        && exact
         && paste["run_id"] == record["run_id"]
         && paste["conversation_id"] == record["conversation_id"]
         && request.is_some()
@@ -577,6 +584,13 @@ pub(super) fn own_paste(record: &Value, draft: Option<&str>, draft_hash: &str) -
         return Ok(request.unwrap_or_default().to_owned());
     }
     Err(NOT_OWN_PASTE.into())
+}
+
+/// The digest an unread paste is recorded by: its text with every run of
+/// whitespace as one space, as a composer that wraps it still shows it.
+pub(super) fn paste_text_digest(text: &str) -> String {
+    let words = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    format!("{:x}", Sha256::digest(words.as_bytes()))
 }
 
 /// Task 98: finishes a delivery's own leftover paste with Enter, once. The
@@ -762,6 +776,23 @@ mod own_paste_tests {
         let mut gone = record();
         gone.as_object_mut().unwrap().remove("unsent_paste");
         assert!(own_paste(&gone, Some(pasted), &"a".repeat(64)).is_err());
+    }
+
+    /// A paste whose composer was never read is its own by its exact text,
+    /// however the composer wraps it; any other text is not.
+    #[test]
+    fn an_unread_paste_is_its_own_by_its_exact_text() {
+        let bell = "[Zerus team \u{b7} from: Zerus \u{b7} inbox \u{b7} normal \u{b7} w-message-1 \u{b7} 2 messages] read it with hgs team inbox";
+        let mut record = record();
+        record["unsent_paste"] = json!({"request_id":"00000000-0000-4000-8000-000000000018","text_digest":paste_text_digest(bell),
+            "run_id":"r1","conversation_id":"c1","at":10.0});
+        let wrapped = bell.replacen(" read it", "\nread it", 1);
+        assert_eq!(own_paste(&record, Some(&wrapped), &"c".repeat(64)).unwrap(), "00000000-0000-4000-8000-000000000018");
+        assert_eq!(own_paste(&record, Some(&format!("{bell} and more")), &"c".repeat(64)).unwrap_err(), NOT_OWN_PASTE);
+        assert!(own_paste(&record, None, &"c".repeat(64)).is_err());
+        let mut other = record.clone();
+        other["run_id"] = json!("r2");
+        assert!(own_paste(&other, Some(bell), &"c".repeat(64)).is_err());
     }
 
     #[test]

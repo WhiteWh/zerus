@@ -3022,6 +3022,14 @@ fn submit_core(
         }
         if let Some(hash) = &pasted_draft {
             record_unsent_paste(name, &receipt_path, &mut receipt, &request_id, hash);
+        } else if error.contains("no Enter was pressed") {
+            // A machine under load answered no terminal read for the whole
+            // window, so the paste was never seen and stayed nobody's: the
+            // next delivery, a team's second ring or the person's own message,
+            // waited behind it until a person pressed Enter. Record it by its
+            // text; the next delivery finishes it once if the composer shows
+            // exactly that text (`terminal::own_paste`).
+            record_unread_paste(name, &receipt_path, &mut receipt, &request_id, &text);
         }
         if native {
             end_typing(name, &record, &request_id, submitted_at, false);
@@ -3075,6 +3083,24 @@ fn record_unsent_paste(name: &str, receipt_path: &Path, receipt: &mut Value, req
     if let Ok(mut fresh) = read(name) {
         if fresh["run_id"] == receipt["run_id"] && fresh["conversation_id"] == receipt["conversation_id"] {
             fresh["unsent_paste"] = json!({"request_id":request_id,"draft_hash":hash,"run_id":receipt["run_id"],
+                "conversation_id":receipt["conversation_id"],"at":now()});
+            let _ = write(&mut fresh);
+        }
+    }
+}
+
+/// A paste whose composer was never read: recorded by its text's digest
+/// (`terminal::paste_text_digest`) in place of a draft hash.
+fn record_unread_paste(name: &str, receipt_path: &Path, receipt: &mut Value, request_id: &str, text: &str) {
+    if text.trim().is_empty() {
+        return;
+    }
+    let digest = super::terminal::paste_text_digest(text);
+    receipt["pasted_text_digest"] = json!(digest);
+    let _ = atomic(receipt_path, &receipt.to_string());
+    if let Ok(mut fresh) = read(name) {
+        if fresh["run_id"] == receipt["run_id"] && fresh["conversation_id"] == receipt["conversation_id"] {
+            fresh["unsent_paste"] = json!({"request_id":request_id,"text_digest":digest,"run_id":receipt["run_id"],
                 "conversation_id":receipt["conversation_id"],"at":now()});
             let _ = write(&mut fresh);
         }
