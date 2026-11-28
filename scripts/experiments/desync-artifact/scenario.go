@@ -215,12 +215,44 @@ func scenarioRuntime(spec ScenarioSpec, bundle string) (string, []string, error)
 		if err != nil {
 			return "", nil, err
 		}
-		return filepath.Join(system, "WindowsPowerShell", "v1.0", "powershell.exe"), append([]string{"-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", entry}, spec.Arguments...), nil
+		return filepath.Join(system, "WindowsPowerShell", "v1.0", "powershell.exe"), []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", powershellScenarioCommand(system, entry, spec.Arguments)}, nil
 	}
 	if spec.Runtime == "native" && strings.EqualFold(filepath.Ext(entry), ".exe") {
 		return entry, append([]string{}, spec.Arguments...), nil
 	}
 	return "", nil, errors.New("scenario runtime capability is unavailable")
+}
+
+// powershellScenarioCommand runs entry with its arguments after setting the
+// module path to Windows' own modules only. Windows PowerShell 5.1 always
+// adds the machine's Program Files modules to the path it inherits, and in
+// an AppContainer their discovery breaks command autoloading altogether:
+// Join-Path, Select-Object and ConvertTo-Json were not found (CI, build 232).
+// A script that exits with a code ends with it; one that ends normally ends
+// with the last native command's code, as $LASTEXITCODE holds it.
+func powershellScenarioCommand(system, entry string, args []string) string {
+	quoted := []string{"&", powershellLiteral(entry)}
+	for _, arg := range args {
+		quoted = append(quoted, powershellLiteral(arg))
+	}
+	modules := filepath.Join(system, "WindowsPowerShell", "v1.0", "Modules")
+	return "$env:PSModulePath = " + powershellLiteral(modules) + "; $global:LASTEXITCODE = 0; " + strings.Join(quoted, " ") + "; exit $LASTEXITCODE"
+}
+
+// powershellLiteral is s as a single-quoted PowerShell string: every quote
+// character PowerShell ends such a string with is doubled.
+func powershellLiteral(s string) string {
+	var b strings.Builder
+	b.WriteByte('\'')
+	for _, r := range s {
+		switch r {
+		case '\'', '\u2018', '\u2019', '\u201a', '\u201b':
+			b.WriteRune(r)
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('\'')
+	return b.String()
 }
 
 func runScenario(command, configPath string) error {
